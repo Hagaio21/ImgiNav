@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pt
+*.ckpt
+*.npz
+checkpoints/
+results/
+temp/
+logs/
+notebooks/__pycache__/
