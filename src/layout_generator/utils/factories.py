@@ -1,9 +1,9 @@
 import json
-from models.autoencoder import Decoder,Encoder
-from models.diffusion import DiffusionModel
-from models.unet import UNet
-from modules.scheduler import NoiseScheduler
-from utils.logger import Logger
+from ..models.autoencoder import Decoder,Encoder
+from ..models.diffusion import DiffusionModel
+from ..models.unet import UNet
+from ..modules.scheduler import NoiseScheduler
+from ..utils.logger import Logger
 
 
 class AutoEncoderFactory:
