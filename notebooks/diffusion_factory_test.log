@@ -1,0 +1,26 @@
+# Log start for FactoryTest at 2025-08-17 14:34:40
+[INFO] [FactoryTest] [2025-08-17 14:34:40] Starting diffusion factory test on device: cpu
+[INFO] [FactoryTest] [2025-08-17 14:34:40] DiffusionFactory initialized for model 'diffusion_test_v1'
+[DEBUG] [FactoryTest] [2025-08-17 14:34:40] Config: {
+    "name": "diffusion_test_v1",
+    "in_channels": 4,
+    "out_channels": 4,
+    "base_channels": 128,
+    "depth": 3,
+    "cond_dim": 256,
+    "time_dim": 256,
+    "schedule_type": "cosine",
+    "timesteps": 1000,
+    "beta_start": 0.0001,
+    "beta_end": 0.02
+}
+[INFO] [FactoryTest] [2025-08-17 14:34:40] Building Diffusion model components...
+[DEBUG] [FactoryTest] [2025-08-17 14:34:40] UNet params: 12,256,388
+[DEBUG] [FactoryTest] [2025-08-17 14:34:40] Scheduler: cosine with 1000 timesteps
+[INFO] [FactoryTest] [2025-08-17 14:34:40] ✓ DiffusionModel built successfully
+[INFO] [FactoryTest] [2025-08-17 14:34:40] --- Diffusion Model Details ---
+[INFO] [FactoryTest] [2025-08-17 14:34:40] Model Name: diffusion_test_v1
+[INFO] [FactoryTest] [2025-08-17 14:34:40] UNet Parameters: 12,256,388
+[INFO] [FactoryTest] [2025-08-17 14:34:40] Scheduler Type: cosine
+[INFO] [FactoryTest] [2025-08-17 14:34:40] -----------------------------
+[INFO] [FactoryTest] [2025-08-17 14:34:40] ✅ Factory test completed successfully.
