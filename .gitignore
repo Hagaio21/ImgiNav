@@ -18,8 +18,9 @@ env/
 # Project-specific ignores
 
 # Ignore large data and output files from version control
-data/
+dataset/
 outputs/
+logs/
 
 # Environment variables file
 .env
