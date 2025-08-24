@@ -6,6 +6,81 @@ from ..modules.scheduler import NoiseScheduler
 from ..utils.logger import Logger
 
 
+
+import yaml
+from ..models import MODEL_REGISTRY
+from ..models.base_model import BaseModel
+from ..models.diffusion import DiffusionModel
+from ..modules.scheduler import NoiseScheduler
+from ..modules.conditioning import CONDITIONING_REGISTRY
+import torch.nn as nn
+
+
+
+def create_conditioning_module(config: dict) -> nn.Module:
+    """
+    A helper factory that builds a conditioning module from its config dict.
+    """
+    name = config['name']
+    params = config.get('params', {})
+    module_class = CONDITIONING_REGISTRY.get(name)
+    if module_class is None:
+        raise ValueError(f"Unknown conditioning module name: '{name}'. Is it registered?")
+    return module_class(config=params)
+
+def create_model(config_path: str, device='cuda') -> BaseModel:
+    """
+    Creates any registered model from a YAML configuration file.
+    This function is the single entry point for model creation and now
+    handles the injection of conditioning modules into the UNet.
+    """
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    model_name = config['model']['name']
+    model_params = config['model']['params']
+
+    # Special case for the main DiffusionModel which is a wrapper
+    if model_name == "DiffusionModel":
+        # Build the UNet from its own section in the config
+        unet_config = model_params['unet']
+        
+        # --- THIS IS THE CORE CHANGE ---
+        # Instead of building the UNet directly, we recursively call this same factory
+        # which now knows how to build a UNet with conditioning.
+        unet = create_model({'model': unet_config}, device=device) # Re-wrap in expected format
+
+        # Build the scheduler (this remains the same)
+        scheduler = NoiseScheduler(**model_params['scheduler']).to(device)
+        
+        return DiffusionModel(unet=unet, scheduler=scheduler, name=model_params.get("name", "diffusion_model")).to(device)
+
+    # --- NEW: Specific handling for UNet to inject conditioning ---
+    elif model_name == "UNet":
+        unet_class = MODEL_REGISTRY.get(model_name)
+        if unet_class is None:
+            raise ValueError(f"UNet model not found in registry.")
+
+        # 1. Pop the conditioning config from the main parameters
+        if 'conditioning' not in model_params:
+            raise ValueError("UNet config must contain a 'conditioning' section.")
+        conditioning_config = model_params.pop('conditioning')
+        
+        # 2. Build the conditioning module using its helper factory
+        conditioning_module = create_conditioning_module(conditioning_config)
+
+        # 3. Build the UNet, passing the module to its constructor
+        return unet_class(config=model_params, conditioning_module=conditioning_module).to(device)
+
+    # General case for all other registered models (Encoder, Decoder, etc.)
+    else:
+        model_class = MODEL_REGISTRY.get(model_name)
+        if model_class is None:
+            raise ValueError(
+                f"Unknown model name: '{model_name}'. "
+                f"Ensure it's registered with @register_model."
+            )
+        return model_class(config=model_params).to(device)
 class AutoEncoderFactory:
 
     def __init__(self, name="autoencoder", channel_list=None,
