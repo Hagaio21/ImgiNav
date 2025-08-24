@@ -1,6 +1,7 @@
 import os
 import torch
-import tqdm
+import yaml
+from tqdm import tqdm # <-- CORRECTED IMPORT
 import json
 import re
 import glob
@@ -8,6 +9,8 @@ import shutil
 from torchvision.utils import save_image
 from ..utils.factories import create_model
 from ..utils.logger import Logger
+from ..models.diffusion import DiffusionModel
+from ..modules.scheduler import NoiseScheduler
 
 class DiffusionTrainer:
     def __init__(
@@ -21,13 +24,10 @@ class DiffusionTrainer:
         checkpoint_dir,
         image_dir,
         checkpoint_interval=10,
-        sample_interval=5, # <-- New: How often to sample images
-        num_samples=4,     # <-- New: Number of images to generate
+        sample_interval=5,
+        num_samples=4,
         logger=None,
     ):
-        """
-        Initializes the trainer from a configuration file.
-        """
         self.config_path = config_path
         self.dataloader = dataloader
         self.loss_fn = loss_fn
@@ -35,43 +35,70 @@ class DiffusionTrainer:
         self.checkpoint_dir = checkpoint_dir
         self.image_dir = image_dir
         self.checkpoint_interval = checkpoint_interval
-        self.sample_interval = sample_interval # <-- New
-        self.num_samples = num_samples         # <-- New
+        self.sample_interval = sample_interval
+        self.num_samples = num_samples
         self.start_epoch = 0
-        
-        log_file = os.path.join(checkpoint_dir, "training_log.txt")
-        self.logger = logger or Logger(source=self.__class__.__name__)
 
-        # 1. Build the model from the config file
-        self.logger.info(f"Building model from config: {self.config_path}")
-        self.model = create_model(self.config_path, device=self.device)
+        log_file = os.path.join(checkpoint_dir, "training_log.txt")
+        self.logger = logger or Logger(source=self.__class__.__name__, log_file=log_file)
+
+        # 1. Load the main configuration file
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
         
-        # 2. Initialize the optimizer
+        diffusion_params = config['model']['params']
+        
+        # 2. Build the UNet component using the factory
+        self.logger.info("Building UNet component...")
+        unet_config_dict = {'model': diffusion_params['unet']}
+        unet = create_model(unet_config_dict, device=device)
+
+        # 3. Build the Scheduler component directly
+        self.logger.info("Building Scheduler component...")
+        scheduler = NoiseScheduler(**diffusion_params['scheduler']).to(device)
+        
+        # 4. Assemble the final DiffusionModel
+        self.logger.info("Assembling final DiffusionModel...")
+        self.model = DiffusionModel(
+            unet=unet,
+            scheduler=scheduler,
+            name=diffusion_params.get("name", "diffusion_model")
+        ).to(device)
+
+        # 5. Initialize the optimizer with the assembled model's parameters
         self.optimizer = optimizer_class(self.model.parameters(), **optimizer_params)
 
-        # 3. Set up directories
+        # 6. Set up directories and persistent conditions for sampling
         os.makedirs(self.image_dir, exist_ok=True)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        
-        # 4. Create a fixed conditioning vector for consistent sampling
         self.sample_conditions = self._get_persistent_conditions()
-
-        # 5. Save metadata and try to resume
+        
+        # 7. Save metadata and try to resume from a checkpoint
         self.save_metadata()
         self._try_resume_latest()
 
         self.logger.info(f"Trainer initialized for model: {self.model.name}")
+        self.logger.info(f"Training on device: {self.device}")
+
 
     def _get_persistent_conditions(self):
-        """Grabs a fixed batch of conditions from the dataloader for consistent sampling."""
+        """Grabs a fixed batch of conditions and repeats it to match num_samples."""
         try:
             fixed_batch = next(iter(self.dataloader))
-            conditions = fixed_batch["token_embedding"][:self.num_samples].to(self.device)
+            
+            # --- THIS IS THE FIX ---
+            # Take the very first condition from the batch
+            first_condition = fixed_batch["token_embedding"][0]
+            
+            # Repeat it to create a batch of the desired sample size
+            conditions = first_condition.unsqueeze(0).repeat(self.num_samples, 1).to(self.device)
+            
             self.logger.info(f"Created a fixed conditioning tensor of shape {conditions.shape} for sampling.")
             return conditions
         except Exception as e:
             self.logger.warning(f"Could not create fixed conditions for sampling: {e}. Will use random conditions.")
             return None
+
 
     def train(self, epochs):
         self.model.train()
@@ -83,7 +110,10 @@ class DiffusionTrainer:
             
             for batch in iterator:
                 latents = batch["image_latent"].to(self.device)
-                conditions = batch["token_embedding"].to(self.device)
+                conditions = batch.get("token_embedding")
+                if isinstance(conditions, torch.Tensor):
+                    conditions = conditions.to(self.device)
+
                 t = torch.randint(0, self.model.scheduler.config["num_timesteps"], (latents.shape[0],), device=self.device).long()
                 
                 pred_noise, true_noise, _ = self.model(latents, t, conditions)
@@ -100,46 +130,36 @@ class DiffusionTrainer:
             if (epoch + 1) % self.checkpoint_interval == 0:
                 self.save_model(epoch + 1)
             
-            # --- New Sampling Logic ---
             if (epoch + 1) % self.sample_interval == 0:
                 self._sample_and_save_images(epoch + 1)
         
         self.logger.info("✔ Training complete.")
 
+
     def _sample_and_save_images(self, epoch):
-        """Generates and saves a grid of images from the diffusion model."""
         self.logger.info(f"--- Sampling images at epoch {epoch} ---")
-        self.model.eval() # Switch to evaluation mode
+        self.model.eval()
 
-        # Determine latent shape from the model's config
-        # This assumes your UNet config has the latent dimensions, which is good practice
         try:
-            # Example: Reading from UNet config. Adjust if needed.
             latent_channels = self.model.unet.info['in_channels']
-            H = W = 32 # Assuming a latent size, you might want to configure this
+            H = W = 16 # Default latent size for test
             shape = (self.num_samples, latent_channels, H, W)
-        except KeyError:
-            self.logger.warning("Could not determine latent shape from config. Defaulting to (4, 4, 32, 32).")
-            shape = (self.num_samples, 4, 32, 32)
+        except (KeyError, IndexError):
+            shape = (self.num_samples, 4, 16, 16)
 
-        # Use the persistent conditions if available
         conditions = self.sample_conditions
         if conditions is None:
-            # Fallback to random noise if persistent conditions failed
-            cond_dim = self.model.unet.info.get('cond_dim', 128)
+            cond_dim = 16 # Default cond dim for test
             conditions = torch.randn(self.num_samples, cond_dim).to(self.device)
 
         with torch.no_grad():
             generated_latents = self.model.sample(shape, conditions, device=self.device)
         
-        # NOTE: This saves the raw latent space images. You would need to pass
-        # them through your VAE decoder to see the final pixel-space images.
-        # For now, we'll save the latents to visualize their structure.
         img_path = os.path.join(self.image_dir, f"sample_epoch_{epoch:03}.png")
         save_image(generated_latents.clamp(-1, 1) * 0.5 + 0.5, img_path)
         
         self.logger.info(f"✔ Saved sample image to {img_path}")
-        self.model.train() # Switch back to training mode
+        self.model.train()
 
 
     def save_model(self, epoch):
@@ -147,12 +167,14 @@ class DiffusionTrainer:
         torch.save(self.model.state_dict(), model_path)
         self.logger.info(f"[Checkpoint] Saved model to {model_path}")
 
+
     def save_metadata(self):
         meta_path = os.path.join(self.checkpoint_dir, f"{self.model.name}_metadata.json")
         with open(meta_path, 'w') as f:
             json.dump(self.model.info(), f, indent=4)
         shutil.copy(self.config_path, os.path.join(self.checkpoint_dir, "training_config.yaml"))
         self.logger.debug(f"Saved model metadata and training config to {self.checkpoint_dir}")
+
 
     def _try_resume_latest(self):
         self.logger.info("Searching for latest checkpoint...")

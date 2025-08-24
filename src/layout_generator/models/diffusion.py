@@ -8,14 +8,16 @@ class DiffusionModel(nn.Module):
         self.name = name
         self.unet = unet
         self.scheduler = scheduler
-
+        
+        # --- THIS IS THE FIX ---
+        # We now access the .info attribute from the BaseModel standard.
         self.config = {
             "name": name,
-            "unet": self.unet.config,
+            "unet": self.unet.info,
             "scheduler": self.scheduler.config
         }
 
-    def forward(self, x_0: torch.Tensor, t: torch.Tensor, cond: torch.Tensor):
+    def forward(self, x_0: torch.Tensor, t: torch.Tensor, cond):
         """
         Training forward pass: generate x_t and target noise.
         Returns: predicted noise, true noise, x_t
@@ -25,7 +27,7 @@ class DiffusionModel(nn.Module):
         pred_noise = self.predict_noise(x_t, t, cond)
         return pred_noise, noise, x_t
 
-    def predict_noise(self, x_t: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+    def predict_noise(self, x_t: torch.Tensor, t: torch.Tensor, cond) -> torch.Tensor:
         """
         Calls U-Net to predict noise from x_t, timestep, and condition.
         """
@@ -38,20 +40,20 @@ class DiffusionModel(nn.Module):
         return self.scheduler.add_noise(x_0, noise, t)
 
     @torch.no_grad()
-    def sample(self, shape: tuple, cond: torch.Tensor, device='cuda'):
+    def sample(self, shape: tuple, cond, device='cuda'):
         """
         Run the full reverse process starting from noise.
         shape: (B, C, H, W)
-        cond: [B, cond_dim]
+        cond: Conditioning data (tensor or list of strings)
         """
         x_t = torch.randn(shape, device=device)
-
         num_timesteps = self.scheduler.config["num_timesteps"]
-        for t in tqdm(reversed(range(num_timesteps)), desc="Sampling", total=num_timesteps):
-            t_batch = torch.full((shape[0],), t, device=device, dtype=torch.long)
+        
+        for t_int in tqdm.tqdm(reversed(range(num_timesteps)), desc="Sampling", total=num_timesteps):
+            t_batch = torch.full((shape[0],), t_int, device=device, dtype=torch.long)
             pred_noise = self.predict_noise(x_t, t_batch, cond)
             x_t = self.scheduler.reverse_step(x_t, t_batch, pred_noise)
-
+            
         return x_t.clamp(-1, 1)
 
     def info(self):
@@ -62,7 +64,7 @@ class DiffusionModel(nn.Module):
             "unet_params": sum(p.numel() for p in self.unet.parameters()),
             "scheduler_type": self.scheduler.config["schedule"]
         }
-    
-    def load(self, path, map_location=None):
-        self.load_state_dict(torch.load(path, map_location=map_location))
-
+        
+    def load_state_dict(self, state_dict, strict=True):
+        # Overriding to handle loading into the composite model correctly
+        super().load_state_dict(state_dict, strict=strict)

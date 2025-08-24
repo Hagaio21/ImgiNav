@@ -1,0 +1,4 @@
+model:
+  name: "Encoder"
+  params:
+    architecture: [3, 16, 32, 4] # in_channels, h1, h2, latent_channels

@@ -3,7 +3,7 @@ import os
 import itertools
 import shutil
 from ..utils.logger import Logger
-import tqdm
+from tqdm import tqdm
 from torchvision.utils import save_image
 import json
 import re
@@ -26,9 +26,6 @@ class AutoEncoderTrainer:
         headless=False,
         logger=None,
     ):
-        """
-        Initializes the trainer for an Autoencoder from configuration files.
-        """
         self.encoder_config_path = encoder_config_path
         self.decoder_config_path = decoder_config_path
         self.dataloader = dataloader
@@ -40,30 +37,25 @@ class AutoEncoderTrainer:
         self.start_epoch = 0
         self.headless = headless
 
-        # Initialize logger
         log_file = os.path.join(checkpoint_dir, "autoencoder_log.txt")
         self.logger = logger or Logger(
             source=f"{self.__class__.__name__}",
             log_file=log_file
         )
 
-        # 1. Build Encoder and Decoder from config files using the factory
         self.logger.info(f"Building encoder from: {encoder_config_path}")
         self.encoder = create_model(encoder_config_path, device=device)
         self.logger.info(f"Building decoder from: {decoder_config_path}")
         self.decoder = create_model(decoder_config_path, device=device)
 
-        # 2. Initialize Optimizer with parameters from both models
         self.optimizer = optimizer_class(
             itertools.chain(self.encoder.parameters(), self.decoder.parameters()),
             **optimizer_params
         )
         
-        # 3. Setup directories
         os.makedirs(self.image_dir, exist_ok=True)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # 4. Save metadata and try to resume from checkpoints
         self.save_metadata()
         self._try_resume_latest()
 
@@ -81,10 +73,15 @@ class AutoEncoderTrainer:
             iterator = tqdm(self.dataloader, desc=f"Epoch {epoch + 1}/{self.start_epoch + epochs}", disable=self.headless)
 
             for batch in iterator:
-                batch = batch.to(self.device)
-                latent = self.encoder(batch)
+                # Handle both dict and tensor batches for flexibility
+                if isinstance(batch, dict):
+                    image_batch = batch['image'].to(self.device)
+                else:
+                    image_batch = batch.to(self.device)
+
+                latent = self.encoder(image_batch)
                 recon = self.decoder(latent)
-                loss = self.loss_fn(recon, batch)
+                loss = self.loss_fn(recon, image_batch)
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -96,7 +93,7 @@ class AutoEncoderTrainer:
             self.logger.info(f"[Train] Epoch {epoch + 1} | Avg Loss: {avg_loss:.4f}")
 
             if self.image_dir and (epoch + 1) % log_images_every == 0:
-                self._save_reconstruction_preview(batch, recon, epoch + 1)
+                self._save_reconstruction_preview(image_batch, recon, epoch + 1)
 
             if self.checkpoint_dir and (epoch + 1) % self.checkpoint_interval == 0:
                 self.save_model(epoch + 1)
@@ -104,7 +101,6 @@ class AutoEncoderTrainer:
         self.logger.info("✔ Training complete.")
 
     def _save_reconstruction_preview(self, batch, recon, epoch):
-        # Detach tensors from graph before concatenating
         comparison = torch.cat([batch[:4].detach(), recon[:4].detach()])
         img_path = os.path.join(self.image_dir, f"recon_epoch_{epoch:03}.png")
         save_image(comparison.clamp(-1, 1) * 0.5 + 0.5, img_path)
@@ -120,7 +116,6 @@ class AutoEncoderTrainer:
         self.logger.info(f"[Checkpoint] Saved model at epoch {epoch}")
 
     def save_metadata(self):
-        """Saves the model info and a copy of the training configs."""
         enc_meta_path = os.path.join(self.checkpoint_dir, "encoder_metadata.json")
         dec_meta_path = os.path.join(self.checkpoint_dir, "decoder_metadata.json")
 
