@@ -1,0 +1,35 @@
+2025-08-05 09:25:08,755 [INFO] STARTING EXPERIMENT: latent1_base32_lossL1_img1024
+2025-08-05 09:25:08,756 [INFO] Output will be saved to: /zhome/62/5/203350/ws/ImgiNav/latent1_base32_lossL1_img1024
+2025-08-05 09:25:08,756 [INFO] World Size: 1
+2025-08-05 09:25:08,757 [INFO] Configuration:
+paths:
+  output_dir: /zhome/62/5/203350/ws/ImgiNav
+  image_dir: /tmp/s233249_data_25757642_1
+training:
+  epochs: 50
+  batch_size: 32
+  lr: 0.0001
+  num_workers: 0
+  loss: L1
+  img_size: 1024
+  save_interval: 10
+model:
+  latent_channels: 1
+  base_channels: 32
+run_id: latent1_base32_lossL1_img1024
+local_rank: 0
+
+2025-08-05 09:25:08,759 [INFO] Model metadata saved to /zhome/62/5/203350/ws/ImgiNav/latent1_base32_lossL1_img1024/metadata.json
+2025-08-05 09:25:34,485 [INFO] Training with 4329 train and 481 val images.
+2025-08-05 09:51:12,517 [INFO] Saving checkpoint at epoch 10...
+2025-08-05 10:16:45,675 [INFO] Saving checkpoint at epoch 20...
+2025-08-05 10:42:25,175 [INFO] Saving checkpoint at epoch 30...
+2025-08-05 11:08:31,961 [INFO] Saving checkpoint at epoch 40...
+2025-08-05 11:34:53,181 [INFO] Saving checkpoint at epoch 50...
+2025-08-05 11:34:53,215 [INFO] Training finished. Saving final models and artifacts.
+2025-08-05 11:34:54,027 [INFO] Loss curves saved to /zhome/62/5/203350/ws/ImgiNav/latent1_base32_lossL1_img1024/loss_curves.png
+2025-08-05 11:34:54,030 [INFO] Training data JSON saved to /zhome/62/5/203350/ws/ImgiNav/latent1_base32_lossL1_img1024/training_data.json
+2025-08-05 11:34:54,398 [INFO] Saved comparison image to /zhome/62/5/203350/ws/ImgiNav/latent1_base32_lossL1_img1024/comparison.png
+2025-08-05 11:34:54,398 [INFO] Generating latent space PCA plot...
+2025-08-05 11:35:09,990 [INFO] Latent space PCA plot saved to /zhome/62/5/203350/ws/ImgiNav/latent1_base32_lossL1_img1024/latent_space_pca.png
+2025-08-05 11:35:09,991 [INFO] All artifacts saved successfully.

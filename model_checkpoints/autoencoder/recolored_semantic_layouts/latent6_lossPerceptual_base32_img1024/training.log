@@ -1,0 +1,35 @@
+2025-08-07 19:56:43,324 [INFO] STARTING EXPERIMENT: latent6_lossPerceptual_base32_img1024
+2025-08-07 19:56:43,324 [INFO] Output will be saved to: /zhome/62/5/203350/ws/ImgiNav/ae/recolored_semantic_layouts/latent6_lossPerceptual_base32_img1024
+2025-08-07 19:56:43,324 [INFO] World Size: 1
+2025-08-07 19:56:43,325 [INFO] Configuration:
+paths:
+  output_dir: /zhome/62/5/203350/ws/ImgiNav/ae/recolored_semantic_layouts
+  image_dir: /tmp/s233249_data_25766999_9
+training:
+  epochs: 50
+  batch_size: 32
+  lr: 0.0001
+  num_workers: 0
+  loss: Perceptual
+  img_size: 1024
+  save_interval: 10
+model:
+  latent_channels: 6
+  base_channels: 32
+run_id: latent6_lossPerceptual_base32_img1024
+local_rank: 0
+
+2025-08-07 19:56:43,328 [INFO] Model metadata saved to /zhome/62/5/203350/ws/ImgiNav/ae/recolored_semantic_layouts/latent6_lossPerceptual_base32_img1024/metadata.json
+2025-08-07 19:57:00,888 [INFO] Training with 4329 train and 481 val images.
+2025-08-07 20:24:18,777 [INFO] Saving checkpoint at epoch 10...
+2025-08-07 20:51:31,586 [INFO] Saving checkpoint at epoch 20...
+2025-08-07 21:18:48,660 [INFO] Saving checkpoint at epoch 30...
+2025-08-07 21:46:02,267 [INFO] Saving checkpoint at epoch 40...
+2025-08-07 22:13:16,797 [INFO] Saving checkpoint at epoch 50...
+2025-08-07 22:13:16,830 [INFO] Training finished. Saving final models and artifacts.
+2025-08-07 22:13:17,744 [INFO] Loss curves saved to /zhome/62/5/203350/ws/ImgiNav/ae/recolored_semantic_layouts/latent6_lossPerceptual_base32_img1024/loss_curves.png
+2025-08-07 22:13:17,747 [INFO] Training data JSON saved to /zhome/62/5/203350/ws/ImgiNav/ae/recolored_semantic_layouts/latent6_lossPerceptual_base32_img1024/training_data.json
+2025-08-07 22:13:18,093 [INFO] Saved comparison image to /zhome/62/5/203350/ws/ImgiNav/ae/recolored_semantic_layouts/latent6_lossPerceptual_base32_img1024/comparison.png
+2025-08-07 22:13:18,093 [INFO] Generating latent space PCA plot...
+2025-08-07 22:13:34,575 [INFO] Latent space PCA plot saved to /zhome/62/5/203350/ws/ImgiNav/ae/recolored_semantic_layouts/latent6_lossPerceptual_base32_img1024/latent_space_pca.png
+2025-08-07 22:13:34,575 [INFO] All artifacts saved successfully.
