@@ -81,7 +81,7 @@ def orient_n_up(n: np.ndarray, all_xyz: np.ndarray, origin: np.ndarray):
     return n / (np.linalg.norm(n)+1e-12)
 
 def build_uvn(origin, n):
-    """Coherent in-plane axes: v = proj(+Y), fallback +X; u = n × v; re-orthonormalize."""
+    """Coherent in-plane axes: v = proj(+Y), fallback +X; u = n x v; re-orthonormalize."""
     Y = np.array([0,1,0], dtype=np.float64)
     X = np.array([1,0,0], dtype=np.float64)
     v = Y - (Y @ n) * n
@@ -93,8 +93,8 @@ def build_uvn(origin, n):
     return u, v, n
 
 def world_to_uvh(xyz, origin, u, v, n):
-    R = np.stack([u, v, n], axis=1)  # world <- local (columns are local axes in world)
-    return (xyz - origin) @ R        # row-wise dot with each column → [u,v,h]
+    R = np.stack([u, v, n], axis=1)  # world 2 local (columns are local axes in world)
+    return (xyz - origin) @ R        # row-wise dot with each column  [u,v,h]
 
 def compute_room_frame(parquet_path: Path, floor_label_ids=None, band=(0.05, 0.50)):
     import pandas as pd

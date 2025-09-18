@@ -19,6 +19,10 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from typing import Optional
+import csv
+from typing import Optional, List
+from pathlib import Path
+
 
 # ---------------- IO helpers ----------------
 def load_meta(room_dir: Path):
@@ -66,7 +70,7 @@ def draw_point(canvas, x, y, color, size=1):
     canvas[y0:y1+1, x0:x1+1] = color
 
 # ---------------- layout generation ----------------
-def create_seg_layout(parquet_path: Path, out_path: Path, res=768, margin=10,
+def create_seg_layout(parquet_path: Path, out_path: Path, res=512, margin=10,
                       hmin=None, hmax=None, point_size=1):
     # meta + palette
     origin, u, v, n, uv_bounds, band = load_meta(parquet_path.parent)
@@ -125,9 +129,6 @@ def create_seg_layout(parquet_path: Path, out_path: Path, res=768, margin=10,
     print(f"✔ wrote {out_path} (h∈[{hmin},{hmax}] m)")
 
 # ---------------- discovery ----------------
-import csv
-from typing import Optional, List
-from pathlib import Path
 
 def find_parquets(in_root: Path, pattern: Optional[str], manifest: Optional[Path] = None) -> List[Path]:
     """
@@ -152,7 +153,7 @@ def find_parquets(in_root: Path, pattern: Optional[str], manifest: Optional[Path
         parts = sorted(in_root.rglob("rooms/*/*.parquet"))
     return parts
 
-def create_scene_layout(scene_dir: Path, out_path: Path, res=768, margin=10,
+def create_scene_layout(scene_dir: Path, out_path: Path, res=512, margin=10,
                         hmin=None, hmax=None, point_size=1):
     import pandas as pd
     import numpy as np

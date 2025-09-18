@@ -18,7 +18,6 @@ Dependencies:
   optional: pyarrow or fastparquet for Parquet
   optional: pyyaml (only if you use YAML config/taxonomy)
 
-Author: you :)
 """
 
 from __future__ import annotations
@@ -54,10 +53,6 @@ SAVE = SavePolicy()
 # Normalization: "none" | "center_only" | "unit_cube"
 DEFAULT_NORM_MODE = "center_only"
 
-
-# ==========================================================
-# Taxonomy helpers (categories + super-categories only)
-# ==========================================================
 
 def _norm(s: str) -> str:
     """Lowercase, strip punctuation, unify separators; for robust matching."""
@@ -144,10 +139,6 @@ def resolve_category(raw_label: str,
     return {"category": cat_name, "super": super_name, "merged": merged}
 
 
-# ==========================================================
-# Semantic maps (multi-key in one JSON)
-# ==========================================================
-
 def _load_or_create_maps_multi(root: Path,
                                values_by: dict[str, list[str]],
                                freeze: bool = False):
@@ -181,10 +172,6 @@ def _load_or_create_maps_multi(root: Path,
         maps_path.write_text(json.dumps(maps, indent=2), encoding="utf-8")
     return out, maps_path
 
-
-# ==========================================================
-# IO helpers & geometry utilities
-# ==========================================================
 
 def _read_scene_list_file(path: Path) -> List[Path]:
     paths: List[Path] = []
@@ -309,11 +296,11 @@ def get_point_colors(mesh: trimesh.Trimesh, points: np.ndarray, face_indices: np
 def save_scene_info(meshes_info: List[Dict], output_dir: Path, scene_id: str) -> Dict | None:
     """Bounds/size/up_normal (simple Z-up heuristic)."""
     if not meshes_info:
-        print("⚠️  Cannot generate scene_info.json because no meshes were processed.")
+        print("[WARNING] Cannot generate scene_info.json because no meshes were processed.")
         return None
     all_vertices_list = [info['mesh'].vertices for info in meshes_info]
     if not all_vertices_list:
-        print("⚠️  No vertices found to calculate scene info.")
+        print("[WARNING]  No vertices found to calculate scene info.")
         return None
     all_vertices = np.vstack(all_vertices_list)
     min_bounds = all_vertices.min(axis=0)
@@ -338,7 +325,7 @@ def save_scene_info(meshes_info: List[Dict], output_dir: Path, scene_id: str) ->
     json_path = output_dir / f"{scene_id}_scene_info.json"
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(scene_info, f, indent=4)
-    print(f"💾 Saved scene parameters → {json_path}")
+    print(f"[INFO] Saved scene parameters : {json_path}")
     return scene_info
 
 def get_normalization_transform(scene_info: Dict, mode: str = DEFAULT_NORM_MODE) -> np.ndarray:
@@ -371,11 +358,6 @@ def normalize_point_cloud(point_cloud: np.ndarray, transform_matrix: np.ndarray)
     normalized_point_cloud = point_cloud.copy()
     normalized_point_cloud['x'], normalized_point_cloud['y'], normalized_point_cloud['z'] = normalized_xyz.T
     return normalized_point_cloud
-
-
-# ==========================================================
-# Core: process one scene (taxonomy + density controls)
-# ==========================================================
 
 def process_scene_for_all_outputs(
     scene_data: dict,
@@ -563,11 +545,6 @@ def process_scene_for_all_outputs(
 
     return textured_scene, meshes_info_world, point_cloud_structured, failed_models
 
-
-# ==========================================================
-# Compact exporters (IDs + compression)
-# ==========================================================
-
 def _export_pointcloud_compact(
     output_dir: Path,
     scene_id: str,
@@ -658,11 +635,6 @@ def _export_pointcloud_compact(
         pd.DataFrame(data).to_csv(output_dir / f"{scene_id}_sem_pointcloud.csv", index=False)
         print(f"💾 CSV  → {output_dir / f'{scene_id}_sem_pointcloud.csv'}")
 
-
-# ==========================================================
-# Prescan mode: build canonical maps first (then freeze)
-# ==========================================================
-
 def _prescan_build_maps(scene_paths: List[Path],
                         model_dir: Path,
                         model_info_file: Path,
@@ -735,11 +707,6 @@ def _prescan_build_maps(scene_paths: List[Path],
 
     _load_or_create_maps_multi(maps_root, values_by, freeze=False)
     print(f"✅ Prescan complete. Maps at: {maps_root / 'semantic_maps.json'}")
-
-
-# ==========================================================
-# One-scene wrapper (IO + exports)
-# ==========================================================
 
 def _process_one_scene(scene_path: Path,
                        model_dir: Path,
@@ -857,11 +824,6 @@ def _process_one_scene(scene_path: Path,
 
     return True
 
-
-# ==========================================================
-# Config + CLI parser (profiles + BooleanOptionalAction)
-# ==========================================================
-
 def _load_config_dict(path: str) -> dict:
     p = Path(path)
     if not p.exists():
@@ -971,11 +933,6 @@ def _parse_args_with_config() -> argparse.Namespace:
 
     return args
 
-
-# ==========================================================
-# Main
-# ==========================================================
-
 def main():
     args = _parse_args_with_config()
 
@@ -1022,7 +979,6 @@ def main():
                 break
 
     print(f"\n✅ Done. {ok}/{total} scenes completed.")
-
 
 if __name__ == "__main__":
     main()

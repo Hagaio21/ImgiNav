@@ -4,8 +4,15 @@ import argparse, json, math, re, sys, hashlib
 from pathlib import Path
 from typing import Optional, Tuple, List
 import numpy as np
-from xvfbwrapper import Xvfb
-from xvfbwrapper import Xvfb
+
+import csv
+from pathlib import Path
+from typing import Optional, List
+
+
+# only for HPC
+# from xvfbwrapper import Xvfb
+# from xvfbwrapper import Xvfb
 
 # ----------- constants -----------
 TILT_DEG = 10.0  # look slightly downward for better floor visibility
@@ -30,9 +37,7 @@ def infer_room_id(p: Path) -> int:
     if m: return int(m.group(1))
     return -1
 
-import csv
-from pathlib import Path
-from typing import Optional, List
+
 
 def find_room_files(root: Path, manifest: Optional[Path] = None) -> List[Path]:
     """
@@ -234,207 +239,6 @@ def stable_room_seed(scene_id: str, room_id: int, user_seed: int) -> np.random.R
     key = f"{scene_id}:{room_id}".encode("utf-8")
     seed = int(hashlib.sha1(key).hexdigest()[:8], 16)
     return np.random.RandomState(seed)
-
-# ----------- per-room -----------
-# def process_room(parquet_path: Path, root_out_unused: Path,
-#                  width=1280, height=800, fov_deg=70.0, eye_height=1.6,
-#                  point_size=2.0, bg_rgb=(0,0,0),
-#                  num_views: int = 6, seed: int = -1) -> bool:
-#     import open3d as o3d
-#     import pandas as pd
-
-#     meta = load_meta(parquet_path)
-#     if meta is None:
-#         print(f"[skip] no meta.json → {parquet_path.parent}")
-#         return False
-#     origin, u, v, n, uv_bounds_all, yaw_auto, _band = meta
-
-#     maps_path = find_semantic_maps_json(parquet_path.parent)
-#     if maps_path is None:
-#         raise RuntimeError(f"semantic_maps.json not found near {parquet_path.parent}")
-#     floor_ids = floor_label_ids_from_maps(maps_path)
-
-#     df = pd.read_parquet(parquet_path)
-#     xyz = df[["x","y","z"]].to_numpy(np.float32)
-#     raw = df[["r","g","b"]].to_numpy()
-#     rgb = (raw.astype(np.float32)/255.0) if not np.issubdtype(raw.dtype, np.floating) else raw.astype(np.float32)
-#     labels = df["label_id"].to_numpy() if "label_id" in df.columns else None
-#     scene_id = df["scene_id"].iloc[0] if "scene_id" in df.columns else infer_scene_id(parquet_path)
-#     room_id  = int(df["room_id"].iloc[0]) if "room_id" in df.columns else infer_room_id(parquet_path)
-
-#     if labels is None:
-#         raise RuntimeError(f"'label_id' column missing in {parquet_path}")
-
-#     # --- output dirs inside room folder ---
-#     out_dir = parquet_path.parent / "povs"
-#     tex_dir = out_dir / "tex"
-#     seg_dir = out_dir / "seg"
-#     tex_dir.mkdir(parents=True, exist_ok=True)
-#     seg_dir.mkdir(parents=True, exist_ok=True)
-
-#     # build Open3D clouds
-#     pcd = o3d.geometry.PointCloud()
-#     pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64, copy=False))
-#     pcd.colors = o3d.utility.Vector3dVector(rgb.astype(np.float64, copy=False))
-
-#     palette = load_global_palette(parquet_path.parent)
-#     seg_cols = np.zeros((labels.shape[0], 3), dtype=np.float32)
-#     for uid in np.unique(labels):
-#         color = palette.get(int(uid), (128, 128, 128))
-#         seg_cols[labels == uid] = np.array(color, dtype=np.float32) / 255.0
-#     seg = o3d.geometry.PointCloud()
-#     seg.points = pcd.points
-#     seg.colors = o3d.utility.Vector3dVector(seg_cols.astype(np.float64, copy=False))
-
-#     # local coords strictly from meta
-#     R = np.stack([u, v, n], axis=1)           # world <- local
-#     uvh = (xyz - origin) @ R
-#     is_floor = np.isin(labels, np.array(floor_ids, dtype=labels.dtype))
-
-#     # FLOOR AABB for placement
-#     if is_floor.any():
-#         fu = uvh[is_floor, 0]; fv = uvh[is_floor, 1]
-#         uminF, umaxF = float(fu.min()), float(fu.max())
-#         vminF, vmaxF = float(fv.min()), float(fv.max())
-#         center_u = float(np.median(fu))
-#         center_v = float(np.median(fv))
-#     else:
-#         uminF, umaxF, vminF, vmaxF = uv_bounds_all
-#         center_u = float(np.median(uvh[:,0]))
-#         center_v = float(np.median(uvh[:,1]))
-
-#     # base camera UV at floor median (clamped)
-#     uc = float(np.clip(center_u, uminF, umaxF))
-#     vc = float(np.clip(center_v, vminF, vmaxF))
-
-#     # -------- assemble views --------
-#     cams_uv: List[Tuple[float,float]] = []
-#     used_f_world: List[np.ndarray] = []  # EXACT horizontal aims used for renders (before tilt)
-#     rs = stable_room_seed(scene_id, room_id, seed)
-
-#     # helper: yaw → horizontal aim in world; two conventions; pick inward
-#     def horiz_from_yaw_inward(yaw_deg: float, cu: float, cv: float) -> Tuple[np.ndarray, float]:
-#         # candidate A: 0°=+v, 90°=+u
-#         fA = math.cos(math.radians(yaw_deg))*v + math.sin(math.radians(yaw_deg))*u
-#         # candidate B: 0°=+u, 90°=+v
-#         fB = math.cos(math.radians(yaw_deg))*u + math.sin(math.radians(yaw_deg))*v
-#         # choose the one pointing more toward the room center
-#         d = np.array([center_u - cu, center_v - cv], dtype=np.float32)
-#         if np.linalg.norm(d) < 1e-9:
-#             f = fA
-#         else:
-#             auA, avA = float(np.dot(fA, u)), float(np.dot(fA, v))
-#             auB, avB = float(np.dot(fB, u)), float(np.dot(fB, v))
-#             scoreA = auA*d[0] + avA*d[1]
-#             scoreB = auB*d[0] + avB*d[1]
-#             f = fA if scoreA >= scoreB else fB
-#         # if still outward (negative dot), flip 180°
-#         au, av = float(np.dot(f, u)), float(np.dot(f, v))
-#         if au*(center_u - cu) + av*(center_v - cv) < 0.0:
-#             f = -f
-#             yaw_fix = (yaw_deg + 180.0) % 360.0
-#         else:
-#             yaw_fix = float(yaw_deg)
-#         return f, yaw_fix
-
-#             # -------- corner views only --------
-#     cams_uv = []
-#     used_f_world = []
-#     corner_names = []
-
-#     duF = umaxF - uminF
-#     dvF = vmaxF - vminF
-#     inset = max(0.05 * max(duF, dvF), 0.10)  # 5% span, min 10cm
-#     corners = [
-#         (uminF + inset, vminF + inset),
-#         (umaxF - inset, vminF + inset),
-#         (umaxF - inset, vmaxF - inset),
-#         (uminF + inset, vmaxF - inset),
-#     ]
-
-#     for j, (cu, cv) in enumerate(corners):
-#         cu = float(np.clip(cu, uminF, umaxF))
-#         cv = float(np.clip(cv, vminF, vmaxF))
-#         cams_uv.append((cu, cv))
-
-#         d = np.array([center_u - cu, center_v - cv], dtype=np.float32)
-#         if np.linalg.norm(d) < 1e-9:
-#             f_world, yaw_used = horiz_from_yaw_inward(float(yaw_auto), cu, cv)
-#         else:
-#             d = d / (np.linalg.norm(d) + 1e-12)
-#             # convert (du, dv) in (u,v) → world
-#             f_world = float(d[0]) * u + float(d[1]) * v
-#             au, av = float(np.dot(f_world, u)), float(np.dot(f_world, v))
-#             yaw_used = math.degrees(math.atan2(au, av))  # 0°=+v, 90°=+u
-
-#         used_f_world.append(f_world)
-#         corner_names.append(f"{j:02d}")
-
-#     all_names = corner_names
-
-
-#     # -------- render all POVs with a slight downward tilt --------
-#     tilt = math.tan(math.radians(TILT_DEG))  # magnitude for +n (down in image when up=-n)
-
-#     def render_pair(view_num: str, f_world: np.ndarray, cu: float, cv: float):
-#         try:
-#             # exact aim used to render
-#             aim = f_world - tilt * n   # downward tilt
-#             eye = origin + cu*u + cv*v + eye_height*n
-#             center = eye + aim
-#             up = -n
-
-#             # simplified filename
-#             base_name = f"{scene_id}_{room_id}_v-{view_num}"
-#             tex_name = f"{base_name}_pov_tex.png"
-#             seg_name = f"{base_name}_pov_seg.png"
-
-#             tex_path = tex_dir / tex_name
-#             seg_path = seg_dir / seg_name
-
-#             render_offscreen(pcd, width, height, eye, center, up,
-#                             fov_deg, bg_rgb, point_size, tex_path)
-#             print(f"  ✔ {tex_path}", flush=True)
-
-#             render_offscreen(seg, width, height, eye, center, up,
-#                             fov_deg, bg_rgb, point_size, seg_path)
-#             print(f"  ✔ {seg_path}", flush=True)
-
-#             return aim
-#         except Exception as e:
-#             print(f"Failed to render pair for {scene_id}", flush=True)
-#             print(f"{e}")
-
-
-
-
-
-#     # render in the same order we built names/uv/aims
-#     all_names = corner_names
-#     aims_used = []
-#     for (cu, cv), f_world, name in zip(cams_uv, used_f_world, all_names):
-#         aims_used.append(render_pair(name, f_world, cu, cv))
-
-#     # -------- minimap LAST: arrows from the exact aims used --------
-#     uv = uvh[:, :2]
-#     mm_img, uvb = minimap_floor_black(uv, is_floor, res=768, margin=10)
-
-#     # project each aim onto (u,v) for arrow angle
-#     angles = []
-#     for aim in aims_used:
-#         # remove vertical component (along n)
-#         horiz = aim - np.dot(aim, n) * n
-#         au, av = float(np.dot(horiz, u)), float(np.dot(horiz, v))
-#         angles.append(math.degrees(math.atan2(au, av)))  # 0°=+v, 90°=+u
-
-#     mm_uv = np.array(cams_uv, dtype=np.float32)
-#     draw_cam_arrows_on_minimap_uv(mm_img, uvb, mm_uv, angles, 768)
-#     mm_name = f"{scene_id}_{room_id}_minimap.png"
-#     mm_path = out_dir / mm_name
-#     mm_img.save(str(mm_path))
-#     print(f"  ✔ {mm_path}", flush=True)
-
-#     return True
 
 def process_room(parquet_path: Path, root_out_unused: Path,
                  width=1280, height=800, fov_deg=70.0, eye_height=1.6,
@@ -653,8 +457,9 @@ def main():
     vdisplay = None
     try:
         print("Starting virtual X display for Open3D...", flush=True)
-        vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
-        vdisplay.start()
+        # only for HPC:
+        # vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
+        # vdisplay.start()
 
         print(f"Found {len(files)} room files...", flush=True)
         print(f"Will generate {(args.num_views+4)*2} images per room, "
