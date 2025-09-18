@@ -1,9 +1,0 @@
-{
-    "model_architecture": {
-        "img_size": 1024,
-        "latent_channels": 7,
-        "base_channels": 32
-    },
-    "run_id": "latent7_lossL1_base32_img1024",
-    "date": "2025-08-07 21:15:38"
-}
