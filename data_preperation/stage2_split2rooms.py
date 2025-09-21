@@ -288,7 +288,7 @@ def main():
     
     # Process splits
     processed = split_scene_to_rooms(input_files, output_config, args.columns)
-    print(f"✅ Processed {processed} scene files")
+    print(f" Processed {processed} scene files")
     
     # Compute frames if requested
     if args.compute_frames:
@@ -308,7 +308,7 @@ def main():
         else:
             print(f"Using provided floor label IDs: {list(floor_ids)}")
         
-        print("🔧 Computing per-room floor frames...")
+        print("Computing per-room floor frames...")
         layout = "inplace" if args.inplace else "default"
         search_root = in_dir if args.inplace else output_config["output_dir"]
         
@@ -317,7 +317,7 @@ def main():
             floor_label_ids=floor_ids, 
             height_band=tuple(args.map_band)
         )
-        print("🔧 Done computing frames")
+        print("Done computing frames")
 
 if __name__ == "__main__":
     main()

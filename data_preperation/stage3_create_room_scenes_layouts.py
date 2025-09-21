@@ -17,9 +17,13 @@ from PIL import Image
 
 from utils.utils import (
     discover_files, load_room_meta, extract_frame_from_meta, 
-    find_semantic_maps_json, load_global_palette, world_to_local_coords,
-    get_bounds_from_points, safe_mkdir, create_progress_tracker
+    find_semantic_maps_json, load_global_palette, create_progress_tracker, safe_mkdir
 )
+from utils.geometry_utils import (
+    world_to_local_coords
+
+)
+
 
 # ---------- Rendering Helpers ----------
 
@@ -49,7 +53,7 @@ def points_to_image_coords(u_vals: np.ndarray, v_vals: np.ndarray,
 
 # ---------- Room Layout Generation ----------
 
-def create_room_layout(parquet_path: Path, output_path: Path, 
+def create_room_layout(parquet_path: Path, output_path: Path, taxonomy_path: Path,
                       resolution: int = 512, margin: int = 10,
                       height_min: float = None, height_max: float = None,
                       point_size: int = 1):
@@ -62,7 +66,7 @@ def create_room_layout(parquet_path: Path, output_path: Path,
     origin, u, v, n, uv_bounds, _, map_band = extract_frame_from_meta(meta)
     
     # Load color palette
-    palette = load_global_palette(parquet_path.parent)
+    palette = load_global_palette(taxonomy_path)
     
     # Resolve height filtering bounds
     if height_min is None or height_max is None:
@@ -121,11 +125,11 @@ def create_room_layout(parquet_path: Path, output_path: Path,
 
 # ---------- Scene Layout Generation ----------
 
-def create_scene_layout(scene_dir: Path, output_path: Path,
+def create_scene_layout(scene_dir: Path, output_path: Path, taxonomy_path: Path,
                        resolution: int = 512, margin: int = 10,
                        height_min: float = None, height_max: float = None,
                        point_size: int = 1):
-    """Generate combined layout image for entire scene."""
+    """Generate combined layout image for entire scene using taxonomy palette."""
     scene_id = scene_dir.name
     room_parquets = sorted(scene_dir.rglob("rooms/*/*.parquet"))
     
@@ -147,18 +151,15 @@ def create_scene_layout(scene_dir: Path, output_path: Path,
         print(f"[warn] semantic_maps.json not found for {scene_dir}")
         return
     
-    maps_data = load_global_palette(scene_dir)  # This loads the full maps data
     # Get floor IDs (simplified - assumes maps has label2id)
     floor_ids = set()
     try:
-        maps_json = find_semantic_maps_json(scene_dir)
-        if maps_json:
-            import json
-            maps = json.loads(maps_json.read_text(encoding="utf-8"))
-            if "label2id" in maps:
-                for name, lid in maps["label2id"].items():
-                    if str(name).strip().lower() == "floor":
-                        floor_ids.add(int(lid))
+        import json
+        maps = json.loads(maps_path.read_text(encoding="utf-8"))
+        if "label2id" in maps:
+            for name, lid in maps["label2id"].items():
+                if str(name).strip().lower() == "floor":
+                    floor_ids.add(int(lid))
     except Exception:
         pass
     
@@ -192,7 +193,7 @@ def create_scene_layout(scene_dir: Path, output_path: Path,
     
     # Render all rooms to single canvas
     canvas = np.full((resolution, resolution, 3), 240, dtype=np.uint8)
-    palette = load_global_palette(scene_dir)
+    palette = load_global_palette(taxonomy_path)
     
     for parquet_path in room_parquets:
         try:
