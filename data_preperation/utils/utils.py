@@ -360,17 +360,35 @@ def load_global_palette(taxonomy_path: Path) -> Dict[int, Tuple[int, int, int]]:
 # ----------------------------
 
 def load_room_meta(room_dir: Path):
-    """Load room metadata and extract frame info in one call."""
-    # Find meta file (new or legacy format)
+    """Load the metadata JSON (room-level or scene-level)."""
     candidates = list(room_dir.glob("*_meta.json"))
-    meta_path = candidates[0] if candidates else room_dir / "meta.json"
-    
-    if not meta_path.exists():
+    if not candidates:
+        candidates = list(room_dir.glob("*_scene_info.json"))
+    if not candidates:
         return None
-    
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        
+
+    meta_path = candidates[0]
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    # Unwrap list
+    if isinstance(meta, list) and len(meta) > 0:
+        meta = meta[0]
+
+    return meta
+
+def extract_frame_from_meta(meta):
+    """
+    Extract origin, u, v, n, uv_bounds, yaw_auto, map_band
+    from either a room-level *_meta.json or a scene-level *_scene_info.json.
+    """
+    # Handle list wrapper
+    if isinstance(meta, list):
+        if not meta:
+            raise ValueError("Empty metadata list")
+        meta = meta[0]
+
+    # Case 1: Room-level meta.json
+    if "origin_world" in meta:
         origin = np.array(meta["origin_world"], dtype=np.float32)
         u = np.array(meta["u_world"], dtype=np.float32)
         v = np.array(meta["v_world"], dtype=np.float32)
@@ -378,37 +396,30 @@ def load_room_meta(room_dir: Path):
         uv_bounds = tuple(meta["uv_bounds"])
         yaw_auto = float(meta.get("yaw_auto", 0.0))
         map_band = tuple(meta.get("map_band_m", [0.05, 0.50]))
-        
-        return {
-            "origin": origin, "u": u, "v": v, "n": n,
-            "uv_bounds": uv_bounds, "yaw_auto": yaw_auto, "map_band": map_band
-        }
-    except Exception:
-        return None
+        return origin, u, v, n, uv_bounds, yaw_auto, map_band
 
+    # Case 2: Scene-level scene_info.json
+    if "bounds" in meta:
+        bounds = meta["bounds"]
+        if not bounds or len(bounds) != 2:
+            raise ValueError("Invalid bounds in scene_info.json")
 
-def extract_frame_from_meta(meta: dict):
-    """
-    Extract (origin, u, v, n, uv_bounds, yaw_auto, map_band) 
-    from a room meta.json entry.
+        # Bounds are [[xmin,ymin,zmin],[xmax,ymax,zmax]]
+        (xmin, ymin, zmin), (xmax, ymax, zmax) = bounds
+        origin = np.array([(xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2], dtype=np.float32)
 
-    Accepts either a dict or a list-of-dicts (as produced in your files).
-    """
-    if isinstance(meta, list):
-        if not meta:
-            raise ValueError("Empty meta list")
-        meta = meta[0]  # take first entry
+        # Default orthogonal frame
+        u = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        v = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        n = np.array([0.0, 0.0, 1.0], dtype=np.float32)
 
-    origin = np.array(meta["origin_world"], dtype=np.float32)
-    u = np.array(meta["u_world"], dtype=np.float32)
-    v = np.array(meta["v_world"], dtype=np.float32)
-    n = np.array(meta["n_world"], dtype=np.float32)
-    uv_bounds = tuple(meta["uv_bounds"])
-    yaw_auto = float(meta.get("yaw_auto", 0.0))
-    map_band = tuple(meta.get("map_band_m", [0.05, 0.50]))
+        uv_bounds = (xmin, xmax, ymin, ymax)
+        yaw_auto = 0.0
+        map_band = (0.0, zmax - zmin)  # crude height range
 
-    return origin, u, v, n, uv_bounds, yaw_auto, map_band
+        return origin, u, v, n, uv_bounds, yaw_auto, map_band
 
+    raise KeyError("Unrecognized metadata format (no origin_world or bounds)")
 # ----------------------------
 # Common Helpers (kept)
 # ----------------------------

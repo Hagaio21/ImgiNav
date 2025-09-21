@@ -280,6 +280,8 @@ def discover_scenes_from_manifest(manifest: Path) -> List[str]:
 
 # ---------- Main Processing ----------
 
+# ---------- Main Processing ----------
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in_root", required=True, help="Root folder with scenes or room dataset")
@@ -290,11 +292,12 @@ def main():
     ap.add_argument("--point-size", type=int, default=5, help="Point rendering size")
     ap.add_argument("--manifest", help="Optional manifest CSV")
     ap.add_argument("--mode", choices=["room", "scene", "both"], default="room")
-    ap.add_argument("--taxonomy", help="Alternative taxonomy file (unused in this version)")
-    
+    ap.add_argument("--taxonomy", required=True, help="Path to taxonomy JSON file")
+
     args = ap.parse_args()
     
     in_root = Path(args.in_root)
+    taxonomy_path = Path(args.taxonomy)
     manifest_path = Path(args.manifest) if args.manifest else None
     
     # Generate room layouts
@@ -307,7 +310,6 @@ def main():
             progress = create_progress_tracker(len(room_files), "room layouts")
             
             for i, parquet_path in enumerate(room_files, 1):
-                # Extract scene_id and room_id for naming
                 parts = parquet_path.stem.split("_")
                 if len(parts) >= 2:
                     scene_id, room_id = parts[0], parts[1]
@@ -321,7 +323,9 @@ def main():
                 try:
                     start_time = time.time()
                     create_room_layout(
-                        parquet_path, output_path,
+                        parquet_path,
+                        output_path,
+                        taxonomy_path,      # <-- pass taxonomy_path here
                         resolution=args.res,
                         height_min=args.hmin,
                         height_max=args.hmax,
@@ -337,7 +341,6 @@ def main():
         if manifest_path:
             scene_ids = discover_scenes_from_manifest(manifest_path)
         else:
-            # Find scenes from scene_info files or room structure
             scene_info_files = list(in_root.rglob("*_scene_info.json"))
             scene_ids = [p.stem.replace("_scene_info", "") for p in scene_info_files]
         
@@ -354,7 +357,9 @@ def main():
                 try:
                     start_time = time.time()
                     create_scene_layout(
-                        scene_dir, output_path,
+                        scene_dir,
+                        output_path,
+                        taxonomy_path,      # <-- pass taxonomy_path here
                         resolution=args.res,
                         height_min=args.hmin,
                         height_max=args.hmax,
@@ -364,6 +369,8 @@ def main():
                     progress(i, f"{scene_id} ({elapsed:.2f}s) -> {output_path}", True)
                 except Exception as e:
                     progress(i, f"failed {scene_id}: {e}", False)
+
+
 
 if __name__ == "__main__":
     main()
