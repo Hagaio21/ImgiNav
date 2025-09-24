@@ -4,19 +4,23 @@ import argparse, json, math, re, sys, hashlib
 from pathlib import Path
 from typing import Optional, Tuple, List
 import numpy as np
-
+import open3d as o3d
+import pandas as pd
 import csv
+import time
 from pathlib import Path
 from typing import Optional, List
-
-
+from sklearn.cluster import KMeans
+from utils.utils import create_progress_tracker
+from shapely.geometry import MultiPoint
+import alphashape
 # only for HPC
 # from xvfbwrapper import Xvfb
 # from xvfbwrapper import Xvfb
 
 # ----------- constants -----------
 TILT_DEG = 10.0  # look slightly downward for better floor visibility
-
+SEED = 1
 # ----------- IO helpers -----------
 def infer_scene_id(p: Path) -> str:
     # new filename format: <scene_id>_<room_id>.parquet
@@ -36,8 +40,6 @@ def infer_room_id(p: Path) -> int:
     m = re.search(r"room_id=(\d+)", str(p))
     if m: return int(m.group(1))
     return -1
-
-
 
 def find_room_files(root: Path, manifest: Optional[Path] = None) -> List[Path]:
     """
@@ -83,6 +85,85 @@ def find_semantic_maps_json(start: Path) -> Optional[Path]:
             return cand
     return None
 
+def get_pov_locations(
+    u: np.ndarray,
+    v: np.ndarray,
+    n: np.ndarray,
+    origin: np.ndarray,
+    uvh: np.ndarray,
+    is_floor: np.ndarray,
+    num_views: int,
+    yaw_auto: float,
+    center_uv: Tuple[float, float],
+    seed: int
+):
+    """
+    Extract POVs from floor corners instead of clustering.
+    Works for convex and concave rooms (e.g. L-shaped).
+    """
+
+    # --- Step 1: collect floor points ---
+    floor_pts = uvh[is_floor, :2] if is_floor.any() else uvh[:, :2]
+    if floor_pts.shape[0] < 4:
+        return []  # not enough data for polygon
+
+    # --- Step 2: concave hull polygon (α-shape) ---
+    try:
+        alpha = 0.05  # controls detail, may tune per dataset
+        poly = alphashape.alphashape(floor_pts, alpha)
+    except Exception:
+        return []
+
+    if poly.is_empty or not poly.is_valid:
+        return []
+
+    # --- Step 3: polygon vertices ---
+    coords = list(poly.exterior.coords)
+    corners = []
+
+    # --- Step 4: corner detection via angle test ---
+    def angle(p_prev, p, p_next):
+        a = np.array(p_prev) - np.array(p)
+        b = np.array(p_next) - np.array(p)
+        cosang = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
+        return np.degrees(np.arccos(np.clip(cosang, -1.0, 1.0)))
+
+    angle_thresh = 150.0  # anything sharper = real corner
+    for i in range(1, len(coords) - 1):
+        ang = angle(coords[i - 1], coords[i], coords[i + 1])
+        if ang < angle_thresh:
+            corners.append(coords[i])
+
+    # --- Step 5: select up to num_views corners ---
+    if len(corners) > num_views:
+        rng = np.random.RandomState(seed if seed is not None else 0)
+        if len(corners) > num_views:
+            rng = np.random.RandomState(seed if seed is not None else 0)
+            idxs = rng.choice(len(corners), num_views, replace=False)
+            corners = [corners[i] for i in idxs]
+
+    povs = []
+    for idx, (cu, cv) in enumerate(corners, start=1):
+        # direction: look at polygon centroid
+        center = np.array(poly.centroid.coords[0])
+        d = center - np.array([cu, cv])
+        if np.linalg.norm(d) < 1e-9:
+            f_world = math.cos(math.radians(yaw_auto)) * v + math.sin(math.radians(yaw_auto)) * u
+        else:
+            d = d / (np.linalg.norm(d) + 1e-12)
+            f_world = float(d[0]) * u + float(d[1]) * v
+
+        povs.append({
+            "name": f"v{idx:02d}",
+            "uv": (float(cu), float(cv)),
+            "forward": f_world,
+            "center_uv": (float(center[0]), float(center[1]))
+        })
+
+    return povs
+
+
+
 def floor_label_ids_from_maps(maps_path: Path) -> Tuple[int, ...]:
     j = json.loads(maps_path.read_text(encoding="utf-8"))
     ids = set()
@@ -98,7 +179,6 @@ def floor_label_ids_from_maps(maps_path: Path) -> Tuple[int, ...]:
     if not ids:
         raise RuntimeError("'floor' not found in semantic_maps.json")
     return tuple(sorted(ids))
-
 
 def render_offscreen(pcd, width, height, eye, center, up, fov_deg, bg_rgb, point_size, out_path) -> bool:
     import open3d as o3d
@@ -233,24 +313,14 @@ def load_global_palette(start: Path) -> dict:
         raise RuntimeError("id2color missing in semantic_maps.json. Run generate_palette.py first.")
     return {int(k): tuple(v) for k, v in j["id2color"].items()}
 
-def stable_room_seed(scene_id: str, room_id: int, user_seed: int) -> np.random.RandomState:
-    if user_seed >= 0:
-        return np.random.RandomState(user_seed)
-    key = f"{scene_id}:{room_id}".encode("utf-8")
-    seed = int(hashlib.sha1(key).hexdigest()[:8], 16)
-    return np.random.RandomState(seed)
-
 def process_room(parquet_path: Path, root_out_unused: Path,
                  width=1280, height=800, fov_deg=70.0, eye_height=1.6,
                  point_size=2.0, bg_rgb=(0,0,0),
-                 num_views: int = 6, seed: int = -1) -> bool:
-    import open3d as o3d
-    import pandas as pd
-
+                 num_views: int = 6, seed: int = SEED, verbose=False) -> bool:
     meta = load_meta(parquet_path)
     if meta is None:
         print(f"[skip] no meta.json → {parquet_path.parent}")
-        return False
+        return 0
     origin, u, v, n, uv_bounds_all, yaw_auto, _band = meta
 
     maps_path = find_semantic_maps_json(parquet_path.parent)
@@ -294,107 +364,65 @@ def process_room(parquet_path: Path, root_out_unused: Path,
     R = np.stack([u, v, n], axis=1)           # world <- local
     uvh = (xyz - origin) @ R
     is_floor = np.isin(labels, np.array(floor_ids, dtype=labels.dtype))
+    center_uv = uvh[:, :2].mean(axis=0)
+    # --- determine valid POV locations ---
+    pov_locs = get_pov_locations(
+            u=u,
+            v=v,
+            n=n,
+            origin=origin,
+            uvh=uvh,
+            is_floor=is_floor,
+            num_views=num_views,
+            yaw_auto=yaw_auto,
+            center_uv=center_uv,
+            seed=seed
+        )
 
-    # FLOOR AABB for placement
-    if is_floor.any():
-        fu = uvh[is_floor, 0]; fv = uvh[is_floor, 1]
-        uminF, umaxF = float(fu.min()), float(fu.max())
-        vminF, vmaxF = float(fv.min()), float(fv.max())
-        center_u = float(np.median(fu))
-        center_v = float(np.median(fv))
-    else:
-        uminF, umaxF, vminF, vmaxF = uv_bounds_all
-        center_u = float(np.median(uvh[:,0]))
-        center_v = float(np.median(uvh[:,1]))
+    pov_meta = {"views": []}
+    aims_used = []
 
-    # -------- corner views only --------
-    cams_uv = []
-    used_f_world = []
-    corner_names = []
+    tilt = math.tan(math.radians(TILT_DEG))
 
-    duF = umaxF - uminF
-    dvF = vmaxF - vminF
-    inset = max(0.05 * max(duF, dvF), 0.10)  # 5% span, min 10cm
-    corners = [
-        (uminF + inset, vminF + inset),
-        (umaxF - inset, vminF + inset),
-        (umaxF - inset, vmaxF - inset),
-        (uminF + inset, vmaxF - inset),
-    ]
+    for idx, pov in enumerate(pov_locs, 1):
+        cu, cv = pov["uv"]
+        f_world = pov["forward"]
 
-    def horiz_from_yaw_inward(yaw_deg: float, cu: float, cv: float) -> Tuple[np.ndarray, float]:
-        # candidate A: 0°=+v, 90°=+u
-        fA = math.cos(math.radians(yaw_deg))*v + math.sin(math.radians(yaw_deg))*u
-        # candidate B: 0°=+u, 90°=+v
-        fB = math.cos(math.radians(yaw_deg))*u + math.sin(math.radians(yaw_deg))*v
-        # choose the one pointing more toward the room center
-        d = np.array([center_u - cu, center_v - cv], dtype=np.float32)
-        if np.linalg.norm(d) < 1e-9:
-            f = fA
-        else:
-            auA, avA = float(np.dot(fA, u)), float(np.dot(fA, v))
-            auB, avB = float(np.dot(fB, u)), float(np.dot(fB, v))
-            scoreA = auA*d[0] + avA*d[1]
-            scoreB = auB*d[0] + avB*d[1]
-            f = fA if scoreA >= scoreB else fB
-        # if still outward (negative dot), flip 180°
-        au, av = float(np.dot(f, u)), float(np.dot(f, v))
-        if au*(center_u - cu) + av*(center_v - cv) < 0.0:
-            f = -f
-        return f, yaw_deg
+        aim = f_world - tilt * n
+        eye = origin + cu*u + cv*v + eye_height*n
+        center = eye + aim
+        up = -n
 
-    for j, (cu, cv) in enumerate(corners):
-        cu = float(np.clip(cu, uminF, umaxF))
-        cv = float(np.clip(cv, vminF, vmaxF))
-        cams_uv.append((cu, cv))
+        base_name = f"{scene_id}_{room_id}_v{idx:02d}"
+        tex_name = f"{base_name}_pov_tex.png"
+        seg_name = f"{base_name}_pov_seg.png"
 
-        d = np.array([center_u - cu, center_v - cv], dtype=np.float32)
-        if np.linalg.norm(d) < 1e-9:
-            f_world, yaw_used = horiz_from_yaw_inward(float(yaw_auto), cu, cv)
-        else:
-            d = d / (np.linalg.norm(d) + 1e-12)
-            f_world = float(d[0]) * u + float(d[1]) * v
-            yaw_used = math.degrees(math.atan2(np.dot(f_world, u), np.dot(f_world, v)))
-        used_f_world.append(f_world)
-        corner_names.append(f"{j:02d}")
+        tex_path = tex_dir / tex_name
+        seg_path = seg_dir / seg_name
 
-    all_names = corner_names
-
-    # -------- render all POVs with a slight downward tilt --------
-    tilt = math.tan(math.radians(TILT_DEG))  # magnitude for +n (down in image when up=-n)
-
-    def render_pair(view_num: str, f_world: np.ndarray, cu: float, cv: float):
         try:
-            aim = f_world - tilt * n
-            eye = origin + cu*u + cv*v + eye_height*n
-            center = eye + aim
-            up = -n
-
-            base_name = f"{scene_id}_{room_id}_v-{view_num}"
-            tex_name = f"{base_name}_pov_tex.png"
-            seg_name = f"{base_name}_pov_seg.png"
-
-            tex_path = tex_dir / tex_name
-            seg_path = seg_dir / seg_name
-
             render_offscreen(pcd, width, height, eye, center, up,
                              fov_deg, bg_rgb, point_size, tex_path)
-            print(f"  ✔ {tex_path}", flush=True)
-
             render_offscreen(seg, width, height, eye, center, up,
                              fov_deg, bg_rgb, point_size, seg_path)
-            print(f"  ✔ {seg_path}", flush=True)
+            if verbose:
+                print(f"  ✔ {tex_path}", flush=True)
+            aims_used.append(aim)
 
-            return aim
+            pov_meta["views"].append({
+                "name": base_name,
+                "tex": str(tex_path),
+                "seg": str(seg_path),
+                "eye": eye.tolist(),
+                "center": center.tolist(),
+                "up": up.tolist(),
+                "uv": [float(cu), float(cv)],
+                "forward": f_world.tolist()
+            })
         except Exception as e:
-            print(f"Failed to render pair for {scene_id}", flush=True)
-            print(f"{e}")
+            print(f"  ✗ Failed POV {base_name}: {e}", flush=True)
 
-    aims_used = []
-    for (cu, cv), f_world, name in zip(cams_uv, used_f_world, all_names):
-        aims_used.append(render_pair(name, f_world, cu, cv))
-
-    # -------- minimap LAST --------
+    # --- minimap ---
     uv = uvh[:, :2]
     mm_img, uvb = minimap_floor_black(uv, is_floor, res=768, margin=10)
 
@@ -404,47 +432,84 @@ def process_room(parquet_path: Path, root_out_unused: Path,
         au, av = float(np.dot(horiz, u)), float(np.dot(horiz, v))
         angles.append(math.degrees(math.atan2(au, av)))
 
-    mm_uv = np.array(cams_uv, dtype=np.float32)
+    mm_uv = np.array([p["uv"] for p in pov_locs], dtype=np.float32)
     draw_cam_arrows_on_minimap_uv(mm_img, uvb, mm_uv, angles, 768)
     mm_name = f"{scene_id}_{room_id}_minimap.png"
     mm_path = out_dir / mm_name
     mm_img.save(str(mm_path))
     print(f"  ✔ {mm_path}", flush=True)
 
-    return True
+    pov_meta["minimap"] = str(mm_path)
 
-# ----------- CLI -----------
-def main():
+    # --- save pov meta ---
+    pov_meta_path = out_dir / f"{scene_id}_{room_id}_pov_meta.json"
+    with open(pov_meta_path, "w", encoding="utf-8") as f:
+        json.dump(pov_meta, f, indent=2)
+    print(f"  ✔ {pov_meta_path}", flush=True)
+
+    return len(pov_locs)
+
+
+
+def render_pair(
+    pcd, seg, eye, center, up,
+    width, height, fov_deg, bg_rgb, point_size,
+    tex_path: Path, seg_path: Path
+):
+    render_offscreen(pcd, width, height, eye, center, up,
+                     fov_deg, bg_rgb, point_size, tex_path)
+    render_offscreen(seg, width, height, eye, center, up,
+                     fov_deg, bg_rgb, point_size, seg_path)
+    return center - eye
+
+
+
+def main_entry():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--path", type=str, help="Single room parquet (new or old layout)")
     g.add_argument("--dataset-root", type=str, help="Root with scenes or room_dataset")
-    ap.add_argument("--out-dir", type=str, default="./pov_out",
-                    help="(Kept for compatibility; in new layout outputs go beside each room)")
+    ap.add_argument("--out-dir", type=str, default="./pov_out")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
     ap.add_argument("--fov-deg", type=float, default=70.0)
     ap.add_argument("--eye-height", type=float, default=1.6)
     ap.add_argument("--point-size", type=float, default=2.0)
-    ap.add_argument("--bg", type=int, nargs=3, default=[0,0,0])
-    ap.add_argument("--num-views", type=int, default=6,
-                    help="Total base views per room (>=1). 1 auto + (N-1) random. Corner views are added on top.")
-    ap.add_argument("--seed", type=int, default=-1,
-                    help="Random seed; if <0 uses deterministic seed per room.")
-    ap.add_argument("--manifest", type=str,
-                    help="Optional manifest CSV listing files to process (overrides --dataset-root / auto discovery)")
+    ap.add_argument("--bg", type=int, nargs=3, default=[0, 0, 0])
+    ap.add_argument("--num-views", type=int, default=6)
+    ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--manifest", type=str)
+    ap.add_argument("--taxonomy", type=str, required=True)
+    ap.add_argument("--hpc", action="store_true",default=False,
+                    help="Run inside Xvfb for headless HPC rendering")
 
     args = ap.parse_args()
+
+    if args.hpc:
+        try:
+            from xvfbwrapper import Xvfb
+            with Xvfb(width=args.width, height=args.height, colordepth=24):
+                return run_main(args)
+        except ImportError:
+            print("[error] --hpc flag set but xvfbwrapper not installed", flush=True)
+            sys.exit(1)
+    else:
+        return run_main(args)
+
+def run_main(args):
     bg_rgb = tuple(args.bg)
 
     # --- Single room mode ---
     if args.path:
+        t0 = time.time()
         ok = process_room(
             Path(args.path), Path(args.out_dir),
             args.width, args.height, args.fov_deg,
             args.eye_height, args.point_size, bg_rgb,
             num_views=args.num_views, seed=args.seed
         )
+        dt = time.time() - t0
+        print(f"Time for room {args.path}: {dt:.2f}s", flush=True)
         sys.exit(0 if ok else 1)
 
     # --- Multi-room mode ---
@@ -454,37 +519,52 @@ def main():
         print(f"No room parquets found (manifest or scan).", flush=True)
         sys.exit(2)
 
-    vdisplay = None
-    try:
-        print("Starting virtual X display for Open3D...", flush=True)
-        # only for HPC:
-        # vdisplay = Xvfb(width=1920, height=1080, colordepth=24)
-        # vdisplay.start()
+    total_images = (args.num_views * 2 + 1) * len(files)  # 2 images per view (tex+seg) + minimap
+    print(f"Found {len(files)} room files.")
+    print(f"Will generate {total_images} images total ({args.num_views * 2 + 1} per room)", flush=True)
+    
+    ok_count = 0
+    fail_count = 0
+    skip_count = 0
+    total_views = 0
+    skipped_rooms = []
+    failed_rooms = []
 
-        print(f"Found {len(files)} room files...", flush=True)
-        print(f"Will generate {(args.num_views+4)*2} images per room, "
-              f"{(args.num_views+4)*len(files)*2} images", flush=True)
+    for i, f in enumerate(files, 1):
+        try:
+            print(f"[{i}/{len(files)}] Processing {f}", flush=True)
+            t0 = time.time()
+            views = process_room(
+                f, Path(args.out_dir),
+                args.width, args.height, args.fov_deg,
+                args.eye_height, args.point_size, bg_rgb,
+                num_views=args.num_views, seed=args.seed
+            )
+            dt = time.time() - t0
 
-        any_ok = False
-        for f in files:
-            try:
-                print(f"- {f}", flush=True)
-                ok = process_room(
-                    f, Path(args.out_dir),
-                    args.width, args.height, args.fov_deg,
-                    args.eye_height, args.point_size, bg_rgb,
-                    num_views=args.num_views, seed=args.seed
-                )
-                any_ok = any_ok or ok
-            except Exception as e:
-                print(f"  [error] {e}", flush=True)
+            if views > 0:
+                ok_count += 1
+                total_views += views
+                print(f"  ✓ Completed in {dt:.2f}s with {views} POVs", flush=True)
+            else:
+                skip_count += 1
+                skipped_rooms.append(str(f))
+                print(f"  [skip] No valid POVs → {f}", flush=True)
 
-        sys.exit(0 if any_ok else 1)
+        except Exception as e:
+            fail_count += 1
+            failed_rooms.append(str(f))
+            print(f"  [error] {e}", flush=True)
 
-    finally:
-        if vdisplay is not None:
-            print("Stopping virtual X display.", flush=True)
-            vdisplay.stop()
+    # --- final summary ---
+    print("\nSummary:")
+    print(f"  Completed: {ok_count}/{len(files)} rooms")
+    print(f"  Skipped:   {skip_count} {skipped_rooms}")
+    print(f"  Failed:    {fail_count} {failed_rooms}")
+    print(f"  Generated: {total_views * 2 + ok_count} images total "
+          f"({total_views} POVs × 2 + {ok_count} minimaps)")
+
+
 
 if __name__ == "__main__":
-    main()
+    main_entry()

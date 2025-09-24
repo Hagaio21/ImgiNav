@@ -10,7 +10,7 @@ import argparse
 import sys
 import numpy as np
 import pandas as pd
-
+import json
 from pathlib import Path
 from typing import Optional, Tuple, List
 from utils.utils import (
@@ -18,6 +18,9 @@ from utils.utils import (
     get_floor_label_ids, safe_mkdir, write_json, 
     create_progress_tracker
 )
+from utils.semantic_utils import Taxonomy
+TAXONOMY: Taxonomy = None
+
 
 # ---------- Frame Computation ----------
 
@@ -100,7 +103,7 @@ def compute_room_frame(parquet_path: Path, floor_label_ids=None, height_band=(0.
             floor_pts = candidates
     
     if floor_pts.shape[0] < 3:
-        raise RuntimeError("Too few floor points to compute plane (check floor_label_ids)")
+        raise RuntimeError(f"Too few floor points to compute plane (check floor_label_ids) point num = {floor_pts.shape[0]}")
     
     # Compute floor plane
     origin, normal = pca_plane(floor_pts)
@@ -130,7 +133,7 @@ def compute_room_frame(parquet_path: Path, floor_label_ids=None, height_band=(0.
 def write_room_meta_files(root: Path, layout: str, floor_label_ids=None, height_band=(0.05, 0.50)):
     """Write meta.json files for all rooms based on layout type."""
     if layout == "inplace":
-        pattern = "rooms/*/*.parquet"
+        pattern = "*/rooms/*/*.parquet"
     else:
         pattern = "part-*.parquet"
     
@@ -239,6 +242,8 @@ def split_scene_to_rooms(input_files: List[Path], output_config: dict, columns: 
     
     return processed_count
 
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in_dir", required=True, help="Root folder with scene parquet files")
@@ -247,77 +252,72 @@ def main():
     ap.add_argument("--dataset_name", default="room_dataset", help="(Default mode) Dataset folder name")
     ap.add_argument("--columns", nargs="*", default=[], help="Optional column restriction")
     ap.add_argument("--engine", choices=["auto", "dataset", "pandas"], default="auto")
-    ap.add_argument("--inplace", action="store_true", 
-                    help="Write inside each scene directory instead of separate dataset")
-    
+    ap.add_argument("--inplace", action="store_true", help="Write inside each scene directory instead of separate dataset")
+
     # Frame computation
     ap.add_argument("--compute-frames", action="store_true", help="Compute per-room floor frames")
-    ap.add_argument("--floor-label-ids", type=int, nargs="*", help="Override floor label IDs")
-    ap.add_argument("--map-band", type=float, nargs=2, default=[0.05, 0.50], 
+    ap.add_argument("--floor-label-ids", type=int, nargs="*", help="Override floor label IDs manually")
+    ap.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
+    ap.add_argument("--map-band", type=float, nargs=2, default=[0.05, 0.50],
                     help="Height band [min max] above floor")
     ap.add_argument("--manifest", help="Optional manifest CSV listing files to process")
 
     args = ap.parse_args()
-    
+    global TAXONOMY
+    TAXONOMY = Taxonomy(Path(args.taxonomy))
+
     in_dir = Path(args.in_dir)
-    
+
     # Validate output configuration
     if not args.inplace and not args.out_root:
         print("ERROR: --out_root required unless using --inplace", file=sys.stderr)
         sys.exit(2)
-    
+
     # Set up output configuration
     output_config = {
         "inplace": args.inplace,
         "engine": args.engine
     }
-    
+
     if not args.inplace:
         output_config["output_dir"] = Path(args.out_root) / args.dataset_name
         safe_mkdir(output_config["output_dir"])
-    
+
     # Discover input files
     manifest_path = Path(args.manifest) if args.manifest else None
     input_files = discover_files(in_dir, args.glob, manifest_path, "scene_parquet")
-    
+
     if not input_files:
         print("No input files found", file=sys.stderr)
         sys.exit(2)
-    
+
     print(f"Found {len(input_files)} input files")
-    
+
     # Process splits
     processed = split_scene_to_rooms(input_files, output_config, args.columns)
-    print(f" Processed {processed} scene files")
-    
+    print(f"Processed {processed} scene files")
+
     # Compute frames if requested
     if args.compute_frames:
-        # Resolve floor label IDs
-        floor_ids = tuple(args.floor_label_ids) if args.floor_label_ids else None
-        if floor_ids is None:
-            # Find semantic_maps.json
-            search_root = in_dir if args.inplace else output_config.get("output_dir", in_dir)
-            maps_path = find_semantic_maps_json(search_root)
-            if maps_path is None:
-                maps_path = find_semantic_maps_json(in_dir)  # fallback
-            if maps_path is None:
-                raise RuntimeError("semantic_maps.json not found for floor label resolution")
-            
-            floor_ids = get_floor_label_ids(maps_path)
-            print(f"Using floor label IDs from {maps_path}: {list(floor_ids)}")
-        else:
+        if args.floor_label_ids:
+            floor_ids = tuple(args.floor_label_ids)
             print(f"Using provided floor label IDs: {list(floor_ids)}")
-        
+        else:
+            floor_ids = TAXONOMY.get_floor_ids()
+            print(f"Using floor label IDs from taxonomy {args.taxonomy}: {list(floor_ids)}")
+
+        # --- Write per-room frames ---
         print("Computing per-room floor frames...")
         layout = "inplace" if args.inplace else "default"
         search_root = in_dir if args.inplace else output_config["output_dir"]
-        
+
         write_room_meta_files(
-            search_root, layout, 
-            floor_label_ids=floor_ids, 
+            search_root, layout,
+            floor_label_ids=floor_ids,
             height_band=tuple(args.map_band)
         )
         print("Done computing frames")
+
 
 if __name__ == "__main__":
     main()

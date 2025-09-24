@@ -1,31 +1,114 @@
 #!/usr/bin/env python3
 """
-stage1_build_scenes.py (simple refactor)
+Stage 1: Build 3D-FRONT scenes into point clouds + metadata.
 """
 
 import argparse
 import json
+import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
+
 import numpy as np
 import pandas as pd
 import trimesh
 from scipy.spatial.transform import Rotation
 
+# --- imports ---
+from utils.semantic_utils import Taxonomy
 from utils.utils import (
-    gather_paths_from_sources, infer_ids_from_path, load_taxonomy_resolver,
-    SemanticMaps, load_config_with_profile, create_progress_tracker, 
+    gather_paths_from_sources, infer_ids_from_path,
+    load_config_with_profile, create_progress_tracker,
     safe_mkdir, write_json
 )
 
+# --- Global Taxonomy Object ---
+TAXONOMY: Taxonomy = None
+ARGS = None
+
+# ---------------------------------------------------------------------
+# Utility Functions
+# ---------------------------------------------------------------------
+def export_outputs(scene_id, output_dir, textured_scene, meshes_info, point_cloud, args, taxonomy):
+    """Export all requested formats and scene metadata."""
+
+    # ----- Save GLB -----
+    if args.save_glb and textured_scene:
+        textured_scene.export(output_dir / f"{scene_id}_textured.glb", file_type="glb")
+
+    # ----- Save OBJ -----
+    if args.save_obj and meshes_info:
+        with open(output_dir / f"{scene_id}.obj", 'w') as f:
+            f.write("# Scene OBJ\n")
+            vertex_offset = 1
+            for info in meshes_info:
+                mesh = info['mesh']
+                for v in mesh.vertices:
+                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+                for face in mesh.faces:
+                    f.write(f"f {face[0]+vertex_offset} {face[1]+vertex_offset} {face[2]+vertex_offset}\n")
+                vertex_offset += len(mesh.vertices)
+
+    # ----- Scene Metadata -----
+    if meshes_info:
+        all_vertices = np.vstack([info['mesh'].vertices for info in meshes_info])
+        scene_info = {
+            "bounds": {
+                "min": all_vertices.min(axis=0).tolist(),
+                "max": all_vertices.max(axis=0).tolist()
+            },
+            "size": (all_vertices.max(axis=0) - all_vertices.min(axis=0)).tolist(),
+            "up_normal": [0.0, 0.0, 1.0]
+        }
+        write_json(scene_info, output_dir / f"{scene_id}_scene_info.json")
+
+    # ----- Point Cloud Exports -----
+    if point_cloud is not None and point_cloud.size > 0:
+        xyz = np.column_stack([point_cloud["x"], point_cloud["y"], point_cloud["z"]])
+        rgb = np.column_stack([point_cloud["r"], point_cloud["g"], point_cloud["b"]])
+
+        titles = point_cloud["title"].tolist()
+        labels = point_cloud["label"].tolist()
+        categories = point_cloud["category"].tolist()
+        supers = point_cloud["super"].tolist()
+        rooms = point_cloud["room_type"].tolist()
+
+        df_data = {
+            "x": xyz[:, 0], "y": xyz[:, 1], "z": xyz[:, 2],
+            "r": rgb[:, 0], "g": rgb[:, 1], "b": rgb[:, 2],
+            "title": titles,
+            "label": labels,
+            "category": categories,
+            "super": supers,
+            "room_type": rooms,
+            "title_id": point_cloud["title_id"].tolist(),
+            "label_id": point_cloud["label_id"].tolist(),
+            "category_id": point_cloud["category_id"].tolist(),
+            "super_id": point_cloud["super_id"].tolist(),
+            "room_id": point_cloud["room_id"].tolist(),
+        }
+
+
+        if args.save_parquet:
+            pd.DataFrame(df_data).to_parquet(
+                output_dir / f"{scene_id}_sem_pointcloud.parquet", index=False
+            )
+
+        if args.save_csv:
+            pd.DataFrame(df_data).to_csv(
+                output_dir / f"{scene_id}_sem_pointcloud.csv", index=False
+            )
+
+
 def get_point_colors(mesh, points, face_indices):
-    """Sample colors from mesh."""
+    """Sample colors from mesh using UV/vertex colors."""
     N = len(points)
     if N == 0 or mesh is None or mesh.is_empty:
         return np.zeros((0, 3), dtype=np.uint8)
 
     vis = getattr(mesh, "visual", None)
 
+    # Try UV texture sampling
     try:
         uv = getattr(vis, "uv", None) if vis else None
         mat = getattr(vis, "material", None) if vis else None
@@ -36,7 +119,7 @@ def get_point_colors(mesh, points, face_indices):
             faces = mesh.faces[face_indices]
             tri_uv = uv[faces]
             uv_pts = (bary[:, :, None] * tri_uv).sum(axis=1)
-            
+
             img_np = np.asarray(img.convert("RGB"))
             H, W = img_np.shape[:2]
             u = np.clip(uv_pts[:, 0], 0.0, 1.0) * (W - 1)
@@ -47,6 +130,7 @@ def get_point_colors(mesh, points, face_indices):
     except Exception:
         pass
 
+    # Try vertex colors
     try:
         vcols = getattr(vis, "vertex_colors", None) if vis else None
         if vcols is not None and len(vcols) == len(mesh.vertices):
@@ -59,33 +143,34 @@ def get_point_colors(mesh, points, face_indices):
     except Exception:
         pass
 
+    # Fallback: flat gray
     return np.full((N, 3), 128, dtype=np.uint8)
 
-def load_mesh(model_dir, jid):
+def load_mesh(model_dir: Path, jid: str):
     """Load mesh from OBJ or GLB."""
     obj_path = model_dir / jid / "raw_model.obj"
     glb_path = model_dir / jid / "raw_model.glb"
 
     if obj_path.exists():
         resolver = trimesh.visual.resolvers.FilePathResolver(obj_path.parent)
-        return trimesh.load(str(obj_path), force='mesh', process=False, 
-                          maintain_order=True, resolver=resolver)
+        return trimesh.load(str(obj_path), force="mesh", process=False,
+                            maintain_order=True, resolver=resolver)
     elif glb_path.exists():
-        return trimesh.load(str(glb_path), force='mesh', process=False, 
-                          maintain_order=True)
+        return trimesh.load(str(glb_path), force="mesh", process=False,
+                            maintain_order=True)
     else:
         raise FileNotFoundError(f"Model not found: {obj_path} or {glb_path}")
 
-def create_arch_mesh(arch):
-    """Create mesh from architectural data."""
+def create_arch_mesh(arch: Dict):
+    """Create mesh from architectural JSON data."""
     vertices = np.array(arch["xyz"], dtype=np.float64).reshape(-1, 3)
     faces = np.array(arch["faces"], dtype=np.int64).reshape(-1, 3)
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
     mesh.visual.vertex_colors = np.array([200, 200, 200, 255], dtype=np.uint8)
     return mesh
 
-def build_transform(child):
-    """Build transform matrix from child data."""
+def build_transform(child: Dict):
+    """Build transform matrix from child node."""
     pos = np.array(child.get("pos", [0, 0, 0]), dtype=np.float64)
     rot = np.array(child.get("rot", [0, 0, 0, 1]), dtype=np.float64)
     scl = np.array(child.get("scale", [1, 1, 1]), dtype=np.float64)
@@ -97,7 +182,109 @@ def build_transform(child):
     T[:3, :3] = Rm @ Sm
     return T
 
-def process_scene(scene_data, model_dir, model_info_map, config, taxonomy_resolver):
+def sample_points(scene_objects):
+    """Sample points from scene objects and attach taxonomy info."""
+    areas = [max(0.0, obj['mesh'].area) for obj in scene_objects]
+    total_area = sum(a for a in areas if a > 0.0) or 1.0
+
+    all_data = []
+    for obj, area in zip(scene_objects, areas):
+        if area <= 0.0:
+            continue
+
+        if ARGS.ppsm > 0.0:
+            n_pts = int(round(area * ARGS.ppsm))
+        else:
+            n_pts = int(round((area / total_area) * ARGS.total_points))
+
+        n_pts = max(ARGS.min_pts_per_mesh, n_pts)
+        if ARGS.max_pts_per_mesh > 0:
+            n_pts = min(n_pts, ARGS.max_pts_per_mesh)
+
+        if n_pts <= 0:
+            continue
+
+        # ---- sample points ----
+        pts_local, face_indices = trimesh.sample.sample_surface(obj['mesh'], n_pts)
+        colors = get_point_colors(obj['mesh'], pts_local, face_indices)
+        pts_world = trimesh.transform_points(pts_local, obj['transform'])
+
+        title = obj['label']
+        room_type = obj.get('room_type', 'UnknownRoom')
+
+        # category
+        category_id = TAXONOMY.translate(title, output="id")
+        category = TAXONOMY.translate(category_id, output="name") if category_id else "UnknownCategory"
+
+        # super (explicit name + id)
+        super_cat = TAXONOMY.get_sup(title, output="name")
+        super_id  = TAXONOMY.get_sup(title, output="id")
+
+
+        # title id
+        title_id = TAXONOMY.translate(title, output="id")
+
+        # room
+        room_id = TAXONOMY.translate(room_type, output="id")
+
+
+        all_data.append({
+            'xyz': pts_world.astype(np.float32),
+            'rgb': colors.astype(np.uint8),
+            'title': [title] * n_pts,
+            'label': [title] * n_pts,
+            'category': [category] * n_pts,
+            'super': [super_cat] * n_pts,
+            'room_type': [room_type] * n_pts,
+            'title_id': [title_id] * n_pts,
+            'label_id': [title_id] * n_pts,
+            'category_id': [category_id or 0] * n_pts,
+            'super_id': [super_id] * n_pts,
+            'room_id': [room_id] * n_pts,
+        })
+
+    if not all_data:
+        return np.array([])
+
+    # ---- combine into structured array ----
+    xyz = np.vstack([d['xyz'] for d in all_data])
+    rgb = np.vstack([d['rgb'] for d in all_data])
+
+    def flat(key): return sum([d[key] for d in all_data], [])
+
+    dtype = [
+        ('x','f4'), ('y','f4'), ('z','f4'),
+        ('r','u1'), ('g','u1'), ('b','u1'),
+        ('title','U100'), ('label','U100'),
+        ('category','U80'), ('super','U80'),
+        ('room_type','U50'),
+        ('title_id','i4'), ('label_id','i4'),
+        ('category_id','i4'), ('super_id','i4'),
+        ('room_id','i4'),
+    ]
+
+    N = xyz.shape[0]
+    structured = np.empty(N, dtype=dtype)
+    structured['x'], structured['y'], structured['z'] = xyz.T
+    structured['r'], structured['g'], structured['b'] = rgb.T
+    structured['title'] = flat('title')
+    structured['label'] = flat('label')
+    structured['category'] = flat('category')
+    structured['super'] = flat('super')
+    structured['room_type'] = flat('room_type')
+    structured['title_id'] = flat('title_id')
+    structured['label_id'] = flat('label_id')
+    structured['category_id'] = flat('category_id')
+    structured['super_id'] = flat('super_id')
+    structured['room_id'] = flat('room_id')
+
+    return structured
+
+
+# ---------------------------------------------------------------------
+# Main Processing
+# ---------------------------------------------------------------------
+def process_scene(scene_data, model_dir, model_info_map):
     """Process scene into objects and point cloud."""
     failed_models = {}
     scene_objects = []
@@ -105,7 +292,8 @@ def process_scene(scene_data, model_dir, model_info_map, config, taxonomy_resolv
     arch_map = {m['uid']: m for m in scene_data.get('mesh', [])}
 
     for room in scene_data.get("scene", {}).get("room", []):
-        room_type = room.get("type", "UnknownRoom")
+        room_type = room.get("type", "UnknownRoom")  # <-- capture room type once
+
         for child_index, child in enumerate(room.get("children", [])):
             ref_id = child.get("ref")
             if not ref_id:
@@ -119,10 +307,10 @@ def process_scene(scene_data, model_dir, model_info_map, config, taxonomy_resolv
                     jid = item_info.get('jid')
                     if not jid:
                         raise ValueError("Missing 'jid'")
-                    
+
                     mesh = load_mesh(model_dir, jid)
-                    label = (model_info_map.get(jid, {}).get('category') 
-                            or item_info.get('title') or "unknown")
+                    label = (model_info_map.get(jid, {}).get('category')
+                             or item_info.get('title') or "unknown")
                     model_item = item_info
 
                 elif ref_id in arch_map:
@@ -139,9 +327,14 @@ def process_scene(scene_data, model_dir, model_info_map, config, taxonomy_resolv
                     raise ValueError("Empty mesh")
 
                 transform = build_transform(child)
+
+                # ---- Save room type alongside the object ----
                 scene_objects.append({
-                    "mesh": mesh, "transform": transform, "label": label,
-                    "room_type": room_type, "node_name": f"{ref_id}_{child_index}",
+                    "mesh": mesh,
+                    "transform": transform,
+                    "label": label,
+                    "room_type": room_type,            # << attach parent room type
+                    "node_name": f"{ref_id}_{child_index}",
                     "model_item": model_item
                 })
 
@@ -155,231 +348,110 @@ def process_scene(scene_data, model_dir, model_info_map, config, taxonomy_resolv
     textured_scene = trimesh.Scene()
     meshes_world = []
     for obj in scene_objects:
-        textured_scene.add_geometry(obj['mesh'], node_name=obj['node_name'], 
-                                  transform=obj['transform'])
+        textured_scene.add_geometry(obj['mesh'], node_name=obj['node_name'],
+                                    transform=obj['transform'])
         mesh_copy = obj['mesh'].copy()
         mesh_copy.apply_transform(obj['transform'])
         meshes_world.append({'mesh': mesh_copy, 'label': obj['label']})
 
-    point_cloud = sample_points(scene_objects, config, taxonomy_resolver)
+    point_cloud = sample_points(scene_objects)
     return textured_scene, meshes_world, point_cloud, failed_models
 
-def sample_points(scene_objects, config, taxonomy_resolver):
-    """Sample points from scene objects."""
-    areas = [max(0.0, obj['mesh'].area) for obj in scene_objects]
-    total_area = sum(a for a in areas if a > 0.0) or 1.0
+def process_one_scene(
+    scene_path: Path, model_dir: Path, model_info_file: Path, out_root: Path,
+    args: argparse.Namespace
+) -> bool:
+    """Process one scene into meshes, point cloud, and metadata."""
+    scene_id = infer_ids_from_path(scene_path)
+    if isinstance(scene_id, tuple):
+        scene_id = scene_id[0]
+    scene_id = str(scene_id)
 
-    all_data = []
-    for obj, area in zip(scene_objects, areas):
-        if area <= 0.0:
-            continue
+    out_dir = out_root / scene_id if args.per_scene_subdir else out_root
+    if args.per_scene_subdir:
+        safe_mkdir(out_dir)
 
-        if config['ppsm'] > 0.0:
-            n_pts = int(round(area * config['ppsm']))
-        else:
-            n_pts = int(round((area / total_area) * config['total_points']))
-        
-        n_pts = max(config['min_pts'], n_pts)
-        if config['max_pts'] > 0:
-            n_pts = min(n_pts, config['max_pts'])
-        
-        if n_pts <= 0:
-            continue
+    # Load scene JSON
+    with open(scene_path, "r", encoding="utf-8") as f:
+        scene = json.load(f)
 
-        pts_local, face_indices = trimesh.sample.sample_surface(obj['mesh'], n_pts)
-        colors = get_point_colors(obj['mesh'], pts_local, face_indices)
-        pts_world = trimesh.transform_points(pts_local, obj['transform'])
+    # Load model_info.json
+    with open(model_info_file, "r", encoding="utf-8") as f:
+        model_info_map = {m["model_id"]: m for m in json.load(f)}
 
-        if taxonomy_resolver:
-            sem = taxonomy_resolver(obj['label'], obj.get("model_item"))
-        else:
-            sem = {"category": "", "super": obj['label'], "merged": obj['label']}
-
-        all_data.append({
-            'xyz': pts_world.astype(np.float32),
-            'rgb': colors.astype(np.uint8),
-            'labels': [obj['label']] * n_pts,
-            'room_types': [obj['room_type']] * n_pts,
-            'categories': [sem["category"]] * n_pts,
-            'supers': [sem["super"]] * n_pts,
-            'merged': [sem["merged"]] * n_pts
-        })
-
-    if not all_data:
-        return np.array([])
-
-    # Combine all data
-    xyz = np.vstack([d['xyz'] for d in all_data])
-    rgb = np.vstack([d['rgb'] for d in all_data])
-    labels = sum([d['labels'] for d in all_data], [])
-    room_types = sum([d['room_types'] for d in all_data], [])
-    categories = sum([d['categories'] for d in all_data], [])
-    supers = sum([d['supers'] for d in all_data], [])
-    merged = sum([d['merged'] for d in all_data], [])
-
-    dtype = [('x','f4'),('y','f4'),('z','f4'),('r','u1'),('g','u1'),('b','u1'),
-             ('label','U100'),('room_type','U50'),('category','U80'),
-             ('super','U80'),('merged','U80')]
-    
-    N = xyz.shape[0]
-    structured = np.empty(N, dtype=dtype)
-    structured['x'], structured['y'], structured['z'] = xyz.T
-    structured['r'], structured['g'], structured['b'] = rgb.T
-    structured['label'] = labels
-    structured['room_type'] = room_types
-    structured['category'] = categories
-    structured['super'] = supers
-    structured['merged'] = merged
-
-    return structured
-
-def export_outputs(scene_id, output_dir, textured_scene, meshes_info, point_cloud, args):
-    """Export all requested formats."""
-    if args.save_glb and textured_scene:
-        textured_scene.export(output_dir / f"{scene_id}_textured.glb", file_type="glb")
-
-    if args.save_obj and meshes_info:
-        with open(output_dir / f"{scene_id}.obj", 'w') as f:
-            f.write("# Scene OBJ\n")
-            vertex_offset = 1
-            for info in meshes_info:
-                mesh = info['mesh']
-                for v in mesh.vertices:
-                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-                for face in mesh.faces:
-                    f.write(f"f {face[0]+vertex_offset} {face[1]+vertex_offset} {face[2]+vertex_offset}\n")
-                vertex_offset += len(mesh.vertices)
-
-    if meshes_info:
-        all_vertices = np.vstack([info['mesh'].vertices for info in meshes_info])
-        scene_info = {
-            "bounds": {"min": all_vertices.min(axis=0).tolist(), 
-                      "max": all_vertices.max(axis=0).tolist()},
-            "size": (all_vertices.max(axis=0) - all_vertices.min(axis=0)).tolist(),
-            "up_normal": [0.0, 0.0, 1.0]
-        }
-        write_json(scene_info, output_dir / f"{scene_id}_scene_info.json")
-
-    if point_cloud.size > 0:
-        xyz = np.column_stack([point_cloud["x"], point_cloud["y"], point_cloud["z"]])
-        rgb = np.column_stack([point_cloud["r"], point_cloud["g"], point_cloud["b"]])
-        
-        labels = point_cloud["label"].tolist()
-        rooms = point_cloud["room_type"].tolist()
-        cats = point_cloud["category"].tolist()
-        supers = point_cloud["super"].tolist()
-        merged = point_cloud["merged"].tolist()
-
-        values_by = {"label": labels, "room": rooms, "category": cats, 
-                    "super": supers, "merged": merged}
-
-        semantic_maps = SemanticMaps(output_dir)
-        semantic_maps.update_with_values(values_by)
-        maps_data = semantic_maps.data
-
-        if args.save_parquet:
-            df_data = {"x": xyz[:,0], "y": xyz[:,1], "z": xyz[:,2],
-                      "r": rgb[:,0], "g": rgb[:,1], "b": rgb[:,2],
-                      "label_id": [maps_data["label2id"].get(s,0) for s in labels],
-                      "room_id": [maps_data["room2id"].get(s,0) for s in rooms]}
-            pd.DataFrame(df_data).to_parquet(
-                output_dir / f"{scene_id}_sem_pointcloud.parquet", index=False)
-
-    if args.save_csv:
-        csv_data = df_data.copy()  # Same data as parquet
-        # Add string labels for debugging
-        csv_data.update({
-            "label": labels,
-            "room_type": rooms,
-            "category": cats,
-            "super": supers,
-            "merged": merged
-        })
-        pd.DataFrame(csv_data).to_csv(
-            output_dir / f"{scene_id}_sem_pointcloud.csv", index=False)
-
-def process_one_scene(scene_path, model_dir, model_info_file, out_root, args):
-    """Process single scene."""
-    with open(model_info_file) as f:
-        model_info_map = {item["model_id"]: item for item in json.load(f)}
-    
-    with open(scene_path) as f:
-        scene_data = json.load(f)
-
-    scene_id, _ = infer_ids_from_path(scene_path)
-    output_dir = (out_root / scene_id) if args.per_scene_subdir else out_root
-    safe_mkdir(output_dir)
-
-    taxonomy_resolver = None
-    if args.taxonomy:
-        taxonomy_resolver = load_taxonomy_resolver(Path(args.taxonomy))
-
+    # Build config dict
     config = {
-        'total_points': args.total_points, 'ppsm': args.ppsm,
-        'min_pts': args.min_pts_per_mesh, 'max_pts': args.max_pts_per_mesh
+        "ppsm": args.ppsm,
+        "total_points": args.total_points,
+        "min_pts": args.min_pts_per_mesh,
+        "max_pts": args.max_pts_per_mesh,
     }
 
+    # Process scene: returns (trimesh.Scene, meshes_world, structured_pointcloud, failed_models)
     textured_scene, meshes_info, point_cloud, failed = process_scene(
-        scene_data, model_dir, model_info_map, config, taxonomy_resolver)
+        scene, model_dir, model_info_map)
 
-    if not meshes_info:
+    if point_cloud is None or point_cloud.size == 0:
+        print(f"[WARN] No points sampled for scene {scene_id}")
         return False
 
-    export_outputs(scene_id, output_dir, textured_scene, meshes_info, point_cloud, args)
+    # Delegate all saving to export_outputs
+    export_outputs(scene_id, out_dir, textured_scene, meshes_info, point_cloud, args, TAXONOMY)
+
     return True
 
+
+# ---------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------
+
 def main():
-    """Main entry point."""
+    global TAXONOMY
+    global ARGS
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config")
-    ap.add_argument("--scene_file")
-    ap.add_argument("--scenes", nargs="*")
+    ap.add_argument("--scenes", nargs="+")
     ap.add_argument("--scene_list")
-    ap.add_argument("--model_dir", default="3D-FRONT_FUTURE/3D-FUTURE-model")
-    ap.add_argument("--model_info", default="3D-FRONT_FUTURE/3D-FUTURE-model/model_info.json")
-    ap.add_argument("--out_dir", default="stage1_test_out")
-    ap.add_argument("--taxonomy")
+    ap.add_argument("--scene_file")
+    ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--model_dir", required=True)
+    ap.add_argument("--model_info", required=True)
+    ap.add_argument("--taxonomy", required=True)
+    ap.add_argument("--num_points", type=int, default=2048)
     ap.add_argument("--total_points", type=int, default=500000)
     ap.add_argument("--ppsm", type=float, default=0.0)
     ap.add_argument("--min_pts_per_mesh", type=int, default=100)
     ap.add_argument("--max_pts_per_mesh", type=int, default=0)
-    ap.add_argument("--save_glb", action="store_true", default=False)
-    ap.add_argument("--save_obj", action="store_true", default=False)
-    ap.add_argument("--save_parquet", action="store_true", default=True)
-    ap.add_argument("--per_scene_subdir", action="store_true",default=True)
+    ap.add_argument("--save_glb", action="store_true")
+    ap.add_argument("--save_obj", action="store_true")
+    ap.add_argument("--save_parquet", action="store_true")
     ap.add_argument("--save_csv", action="store_true")
-
+    ap.add_argument("--per_scene_subdir", action="store_true", default=True)
     args = ap.parse_args()
-    
-    config = load_config_with_profile(args.config)
-    for key, value in config.items():
-        if hasattr(args, key) and getattr(args, key) is None:
-            setattr(args, key, value)
+    ARGS = args
+    TAXONOMY = Taxonomy(Path(args.taxonomy))
 
     scene_paths = gather_paths_from_sources(args.scene_file, args.scenes, args.scene_list)
     if not scene_paths:
         print("No scenes found")
         return
 
-    model_dir = Path(args.model_dir)
-    model_info_file = Path(args.model_info)
     out_root = Path(args.out_dir)
     safe_mkdir(out_root)
 
     progress = create_progress_tracker(len(scene_paths), "scenes")
     success_count = 0
-    
     for i, scene_path in enumerate(scene_paths, 1):
         try:
-            success = process_one_scene(scene_path, model_dir, model_info_file, out_root, args)
+            success = process_one_scene(scene_path, Path(args.model_dir),
+                                        Path(args.model_info), out_root, args)
             if success:
                 success_count += 1
             progress(i, scene_path.name, success)
         except Exception as e:
-            print(f"Error: {e}")
-            progress(i, scene_path.name, False)
+            progress(i, f"failed {scene_path.name}: {e}", False)
 
-    print(f"Done. {success_count}/{len(scene_paths)} completed.")
+    print(f"\nSuccessfully processed {success_count}/{len(scene_paths)} scenes")
+
 
 if __name__ == "__main__":
     main()

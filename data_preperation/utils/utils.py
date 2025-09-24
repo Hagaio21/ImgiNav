@@ -280,52 +280,30 @@ def load_config_with_profile(config_path: str = None, profile: str = None) -> Di
 # Taxonomy (simplified)
 # ----------------------------
 
-def load_taxonomy_resolver(taxonomy_path: Path) -> Optional[callable]:
-    """Load taxonomy and return resolver function, or None if no taxonomy."""
+def load_taxonomy_resolver(taxonomy_path: Path):
+    """Load taxonomy and return resolver function (category → super)."""
     if not taxonomy_path or not taxonomy_path.exists():
         return None
-    
-    data = load_config_with_profile(str(taxonomy_path))
-    
-    # Build lookup indices
-    supers = {c["category"]: int(c["id"]) for c in data.get("super_categories_3d", [])}
-    cats = {c["category"]: int(c["id"]) for c in data.get("categories_3d", [])}
-    cat_to_super = {c["category"]: c.get("super", "Other") for c in data.get("categories_3d", [])}
+
+    data = json.loads(taxonomy_path.read_text(encoding="utf-8"))
+
+    category2super = data.get("category2super", {})
     aliases = data.get("aliases", {})
-    
-    # Normalized indices
-    def normalize(label: str) -> str:
-        if not label:
-            return ""
-        s = label.lower().strip()
-        s = re.sub(r"[/_]+", " ", s)
-        s = re.sub(r"[^a-z0-9\s\-]+", "", s)
-        return re.sub(r"\s+", " ", s)
-    
-    idx_super = {normalize(k): k for k in supers.keys()}
-    idx_cat = {normalize(k): k for k in cats.keys()}
-    idx_alias = {normalize(k): v for k, v in aliases.items()}
-    
-    def resolve(raw_label: str, model_info: Dict = None, alias_only_merge: bool = False) -> Dict[str, str]:
+
+    def resolve(raw_label: str, model_info: Dict = None) -> Dict[str, str]:
         candidate = (model_info or {}).get("category") or raw_label or "unknown"
-        normalized = normalize(candidate)
-        
-        # Apply alias
-        if normalized in idx_alias:
-            candidate = idx_alias[normalized]
-            normalized = normalize(candidate)
-        
-        # Resolve category
-        category_name = idx_cat.get(normalized, "")
-        if category_name:
-            super_name = cat_to_super.get(category_name, "Other")
-        else:
-            super_name = idx_super.get(normalized, "Other")
-        
-        merged = category_name or super_name if alias_only_merge else super_name
-        
-        return {"category": category_name, "super": super_name, "merged": merged}
-    
+
+        # Exact category
+        if candidate in category2super:
+            return {"category": candidate, "super": category2super[candidate]}
+
+        # Alias fallback
+        if candidate in aliases:
+            alias = aliases[candidate]
+            return {"category": alias, "super": category2super.get(alias, "Other")}
+
+        return {"category": "", "super": "Other"}
+
     return resolve
 
 
