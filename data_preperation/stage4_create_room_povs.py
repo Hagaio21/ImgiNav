@@ -14,6 +14,8 @@ from sklearn.cluster import KMeans
 from utils.utils import create_progress_tracker
 from shapely.geometry import MultiPoint
 import alphashape
+from utils.semantic_utils import Taxonomy  # Import our taxonomy class
+
 # only for HPC
 # from xvfbwrapper import Xvfb
 # from xvfbwrapper import Xvfb
@@ -21,6 +23,7 @@ import alphashape
 # ----------- constants -----------
 TILT_DEG = 10.0  # look slightly downward for better floor visibility
 SEED = 1
+
 # ----------- IO helpers -----------
 def infer_scene_id(p: Path) -> str:
     # new filename format: <scene_id>_<room_id>.parquet
@@ -77,13 +80,6 @@ def load_meta(parquet_path: Path):
     yaw_auto = float(j.get("yaw_auto", 0.0))
     map_band = tuple(j.get("map_band_m", [0.05, 0.50]))
     return origin, u, v, n, uv_bounds, yaw_auto, map_band
-
-def find_semantic_maps_json(start: Path) -> Optional[Path]:
-    for p in [start, *start.parents]:
-        cand = p / "semantic_maps.json"
-        if cand.exists():
-            return cand
-    return None
 
 def get_pov_locations(
     u: np.ndarray,
@@ -161,24 +157,6 @@ def get_pov_locations(
         })
 
     return povs
-
-
-
-def floor_label_ids_from_maps(maps_path: Path) -> Tuple[int, ...]:
-    j = json.loads(maps_path.read_text(encoding="utf-8"))
-    ids = set()
-    if isinstance(j, dict) and "label2id" in j:
-        for name, lid in j["label2id"].items():
-            if str(name).strip().lower() == "floor":
-                ids.add(int(lid))
-    if isinstance(j, dict) and "id2label" in j:
-        for lid, name in j["id2label"].items():
-            if str(name).strip().lower() == "floor":
-                try: ids.add(int(lid))
-                except Exception: pass
-    if not ids:
-        raise RuntimeError("'floor' not found in semantic_maps.json")
-    return tuple(sorted(ids))
 
 def render_offscreen(pcd, width, height, eye, center, up, fov_deg, bg_rgb, point_size, out_path) -> bool:
     import open3d as o3d
@@ -303,30 +281,25 @@ def draw_cam_arrows_on_minimap_uv(img, uv_bounds, cams_uv: np.ndarray, angles_de
         p3=(ex+head*math.sin(right), ey-head*math.cos(right))
         draw.polygon([(ex,ey),p2,p3], fill=(220,30,30))
 
-# ----------- utils -----------
-def load_global_palette(start: Path) -> dict:
-    maps_path = find_semantic_maps_json(start)
-    if maps_path is None:
-        raise RuntimeError("semantic_maps.json not found.")
-    j = json.loads(maps_path.read_text(encoding="utf-8"))
-    if "id2color" not in j:
-        raise RuntimeError("id2color missing in semantic_maps.json. Run generate_palette.py first.")
-    return {int(k): tuple(v) for k, v in j["id2color"].items()}
-
-def process_room(parquet_path: Path, root_out_unused: Path,
+def process_room(parquet_path: Path, root_out_unused: Path, taxonomy: Taxonomy,
                  width=1280, height=800, fov_deg=70.0, eye_height=1.6,
                  point_size=2.0, bg_rgb=(0,0,0),
                  num_views: int = 6, seed: int = SEED, verbose=False) -> bool:
+    """
+    Process a single room and generate POV renders.
+    Now uses the Taxonomy class instead of hardcoded semantic_maps.json lookups.
+    """
     meta = load_meta(parquet_path)
     if meta is None:
         print(f"[skip] no meta.json → {parquet_path.parent}")
         return 0
     origin, u, v, n, uv_bounds_all, yaw_auto, _band = meta
 
-    maps_path = find_semantic_maps_json(parquet_path.parent)
-    if maps_path is None:
-        raise RuntimeError(f"semantic_maps.json not found near {parquet_path.parent}")
-    floor_ids = floor_label_ids_from_maps(maps_path)
+    # Get floor IDs from taxonomy instead of semantic_maps.json
+    floor_ids = taxonomy.get_floor_ids()
+    if not floor_ids:
+        print(f"[warning] No floor IDs found in taxonomy for {parquet_path.parent}")
+        floor_ids = []
 
     df = pd.read_parquet(parquet_path)
     xyz = df[["x","y","z"]].to_numpy(np.float32)
@@ -351,11 +324,12 @@ def process_room(parquet_path: Path, root_out_unused: Path,
     pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64, copy=False))
     pcd.colors = o3d.utility.Vector3dVector(rgb.astype(np.float64, copy=False))
 
-    palette = load_global_palette(parquet_path.parent)
+    # Use taxonomy for colors instead of loading global palette
     seg_cols = np.zeros((labels.shape[0], 3), dtype=np.float32)
     for uid in np.unique(labels):
-        color = palette.get(int(uid), (128, 128, 128))
+        color = taxonomy.get_color(int(uid))
         seg_cols[labels == uid] = np.array(color, dtype=np.float32) / 255.0
+    
     seg = o3d.geometry.PointCloud()
     seg.points = pcd.points
     seg.colors = o3d.utility.Vector3dVector(seg_cols.astype(np.float64, copy=False))
@@ -365,6 +339,7 @@ def process_room(parquet_path: Path, root_out_unused: Path,
     uvh = (xyz - origin) @ R
     is_floor = np.isin(labels, np.array(floor_ids, dtype=labels.dtype))
     center_uv = uvh[:, :2].mean(axis=0)
+    
     # --- determine valid POV locations ---
     pov_locs = get_pov_locations(
             u=u,
@@ -449,8 +424,6 @@ def process_room(parquet_path: Path, root_out_unused: Path,
 
     return len(pov_locs)
 
-
-
 def render_pair(
     pcd, seg, eye, center, up,
     width, height, fov_deg, bg_rgb, point_size,
@@ -461,8 +434,6 @@ def render_pair(
     render_offscreen(seg, width, height, eye, center, up,
                      fov_deg, bg_rgb, point_size, seg_path)
     return center - eye
-
-
 
 def main_entry():
     ap = argparse.ArgumentParser()
@@ -479,8 +450,9 @@ def main_entry():
     ap.add_argument("--num-views", type=int, default=6)
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--manifest", type=str)
-    ap.add_argument("--taxonomy", type=str, required=True)
-    ap.add_argument("--hpc", action="store_true",default=False,
+    ap.add_argument("--taxonomy", type=str, required=True, 
+                    help="Path to taxonomy.json file")
+    ap.add_argument("--hpc", action="store_true", default=False,
                     help="Run inside Xvfb for headless HPC rendering")
 
     args = ap.parse_args()
@@ -499,11 +471,16 @@ def main_entry():
 def run_main(args):
     bg_rgb = tuple(args.bg)
 
+    # Load taxonomy once at the beginning
+    print(f"Loading taxonomy from {args.taxonomy}...")
+    taxonomy = Taxonomy(args.taxonomy)
+    print(f"Taxonomy loaded successfully.")
+
     # --- Single room mode ---
     if args.path:
         t0 = time.time()
         ok = process_room(
-            Path(args.path), Path(args.out_dir),
+            Path(args.path), Path(args.out_dir), taxonomy,
             args.width, args.height, args.fov_deg,
             args.eye_height, args.point_size, bg_rgb,
             num_views=args.num_views, seed=args.seed
@@ -514,7 +491,7 @@ def run_main(args):
 
     # --- Multi-room mode ---
     root = Path(args.dataset_root)
-    files = find_room_files(root, args.manifest)
+    files = find_room_files(root, Path(args.manifest) if args.manifest else None)
     if not files:
         print(f"No room parquets found (manifest or scan).", flush=True)
         sys.exit(2)
@@ -535,7 +512,7 @@ def run_main(args):
             print(f"[{i}/{len(files)}] Processing {f}", flush=True)
             t0 = time.time()
             views = process_room(
-                f, Path(args.out_dir),
+                f, Path(args.out_dir), taxonomy,
                 args.width, args.height, args.fov_deg,
                 args.eye_height, args.point_size, bg_rgb,
                 num_views=args.num_views, seed=args.seed
@@ -562,9 +539,7 @@ def run_main(args):
     print(f"  Skipped:   {skip_count} {skipped_rooms}")
     print(f"  Failed:    {fail_count} {failed_rooms}")
     print(f"  Generated: {total_views * 2 + ok_count} images total "
-          f"({total_views} POVs × 2 + {ok_count} minimaps)")
-
-
+          f"({total_views} POVs x 2 + {ok_count} minimaps)")
 
 if __name__ == "__main__":
     main_entry()
