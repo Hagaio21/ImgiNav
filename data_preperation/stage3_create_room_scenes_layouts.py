@@ -132,7 +132,7 @@ def create_room_layout(
     #print("DEBUG layout:", height_min, height_max)
     height_mask = (uvh[:, 2] >= height_min) & (uvh[:, 2] <= height_max)
     if height_mask.sum() == 0:
-        print(f"[warn] no points in height band [{height_min},{height_max}] m in {parquet_path}")
+        print(f"[warn] no points in height band [{height_min},{height_max}] m in {parquet_path}",flush=True)
         return
 
     u_vals, v_vals = uvh[height_mask, 0], uvh[height_mask, 1]
@@ -169,13 +169,13 @@ def create_scene_layout(
     scene_id = scene_dir.name
     room_parquets = sorted(scene_dir.rglob("rooms/*/*.parquet"))
     if not room_parquets:
-        print(f"[warn] no room parquets found in {scene_dir}")
+        print(f"[warn] no room parquets found in {scene_dir}",flush=True)
         return
 
     # Get reference frame from first room
     first_meta = load_room_meta(room_parquets[0].parent)
     if first_meta is None:
-        print(f"[warn] missing metadata for {room_parquets[0]}")
+        print(f"[warn] missing metadata for {room_parquets[0]}",flush=True)
         return
     origin, u, v, n, _, _, _ = extract_frame_from_meta(first_meta)
 
@@ -189,10 +189,10 @@ def create_scene_layout(
             all_u_bounds.extend([uvh[:, 0].min(), uvh[:, 0].max()])
             all_v_bounds.extend([uvh[:, 1].min(), uvh[:, 1].max()])
         except Exception as e:
-            print(f"[warn] failed bounds for {parquet_path}: {e}")
+            print(f"[warn] failed bounds for {parquet_path}: {e}",flush=True)
 
     if not all_u_bounds:
-        print(f"[warn] no usable points in {scene_dir}")
+        print(f"[warn] no usable points in {scene_dir}",flush=True)
         return
     global_uv_bounds = (min(all_u_bounds), max(all_u_bounds), min(all_v_bounds), max(all_v_bounds))
 
@@ -223,7 +223,7 @@ def create_scene_layout(
                 color = TAXONOMY.get_color(lbl, mode=color_mode)
                 draw_point(canvas, x, y, np.array(color, dtype=np.uint8), size=point_size)
         except Exception as e:
-            print(f"[warn] skipping {parquet_path}: {e}")
+            print(f"[warn] skipping {parquet_path}: {e}",flush=True)
 
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)

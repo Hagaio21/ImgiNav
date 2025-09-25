@@ -24,5 +24,8 @@ logs/
 src/layout_generator.egg-info
 # Environment variables file
 .env
-
 .log
+
+
+# dataset files
+*.csv

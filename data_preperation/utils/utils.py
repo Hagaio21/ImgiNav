@@ -27,18 +27,36 @@ def discover_files(root: Path, pattern: str = None, manifest: Path = None,
     # Method 1: From manifest
     if manifest and manifest.exists():
         files = []
-        with open(manifest, newline='', encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if column_name in row and row[column_name]:
-                    path = Path(row[column_name]).expanduser().resolve()
-                    if path.exists():
-                        files.append(path)
-        return files
+        try:
+            with open(manifest, newline='', encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row_num, row in enumerate(reader, start=2):  # start=2 because row 1 is header
+                    if column_name in row and row[column_name]:
+                        try:
+                            path = Path(row[column_name]).expanduser().resolve()
+                            if path.exists():
+                                files.append(path)
+                            else:
+                                print(f"Warning: File in manifest row {row_num} doesn't exist: {path}")
+                        except Exception as e:
+                            print(f"Warning: Invalid path in manifest row {row_num}: {row[column_name]} - {e}")
+            
+            if not files:
+                print(f"Warning: No valid files found in manifest {manifest} using column '{column_name}'")
+                print(f"Available columns: {list(csv.DictReader(open(manifest)))}")
+            
+            return files
+        except Exception as e:
+            print(f"Error reading manifest {manifest}: {e}")
+            # Fall through to other methods
     
     # Method 2: Pattern-based
     if pattern:
-        return sorted(root.rglob(pattern))
+        files = sorted(root.rglob(pattern))
+        if files:
+            return files
+        else:
+            print(f"Warning: No files found with pattern '{pattern}' in {root}")
     
     # Method 3: Default patterns
     for default_pattern in [
@@ -46,8 +64,10 @@ def discover_files(root: Path, pattern: str = None, manifest: Path = None,
     ]:
         files = sorted(root.rglob(default_pattern))
         if files:
+            print(f"Found {len(files)} files using default pattern '{default_pattern}'")
             return files
     
+    print(f"Error: No files found in {root} using any method")
     return []
 
 def gather_paths_from_sources(file_path: str = None, patterns: List[str] = None, 
