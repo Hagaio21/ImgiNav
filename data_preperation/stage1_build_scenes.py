@@ -426,6 +426,12 @@ def main():
     ap.add_argument("--save_parquet", action="store_true")
     ap.add_argument("--save_csv", action="store_true")
     ap.add_argument("--per_scene_subdir", action="store_true", default=True)
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of scenes to process (default: all)"
+    )
     args = ap.parse_args()
     ARGS = args
     TAXONOMY = Taxonomy(Path(args.taxonomy))
@@ -434,6 +440,9 @@ def main():
     if not scene_paths:
         print("No scenes found")
         return
+
+    if args.limit is not None:
+        scene_paths = scene_paths[:args.limit]
 
     out_root = Path(args.out_dir)
     safe_mkdir(out_root)
@@ -451,6 +460,7 @@ def main():
             progress(i, f"failed {scene_path.name}: {e}", False)
 
     print(f"\nSuccessfully processed {success_count}/{len(scene_paths)} scenes")
+
 
 
 if __name__ == "__main__":
