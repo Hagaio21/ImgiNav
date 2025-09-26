@@ -233,32 +233,32 @@ def create_scene_layout(
 def discover_rooms(root: Path, pattern: str = None, manifest: Path = None) -> List[Path]:
     """Discover room parquet files."""
     if manifest:
-        return discover_files(root, pattern, manifest, "room_parquet")
+        # Match your manifest column header
+        return discover_files(root, pattern, manifest, "room_parquet_file_path")
     
     # Default discovery
-    files = list(root.rglob("part-*.parquet"))  # old format
-    files.extend(root.rglob("*_*[0-9].parquet"))  # new format
+    files = list(root.rglob("part-*.parquet"))        # old format
+    files.extend(root.rglob("*_*[0-9].parquet"))      # new format
     if not files:
         files = list(root.rglob("rooms/*/*.parquet"))
     
     return sorted(files)
 
+
 def discover_scenes_from_rooms(room_files: List[Path]) -> List[str]:
     """Extract unique scene IDs from room files."""
     scene_ids = set()
     for room_file in room_files:
-        # Extract scene ID from filename or path
         parts = room_file.stem.split("_")
         if len(parts) >= 2:
             scene_ids.add(parts[0])  # <scene_id>_<room_id>
         else:
-            # Try parent directory structure
             for parent in room_file.parents:
                 if parent.name.startswith("scene_id="):
                     scene_ids.add(parent.name.replace("scene_id=", ""))
                     break
-    
     return sorted(scene_ids)
+
 
 def discover_scenes_from_manifest(manifest: Path) -> List[str]:
     """Extract scene IDs from manifest CSV."""
@@ -268,7 +268,6 @@ def discover_scenes_from_manifest(manifest: Path) -> List[str]:
         for row in reader:
             if "scene_id" in row and row["scene_id"]:
                 scene_ids.add(row["scene_id"])
-    
     return sorted(scene_ids)
 
 # ---------- Main Processing ----------
