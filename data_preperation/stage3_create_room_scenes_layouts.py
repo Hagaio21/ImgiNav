@@ -316,8 +316,15 @@ def main():
 
     # Scenes
     if args.mode in ("scene", "both"):
-        scene_info_files = list(in_root.rglob("*_scene_info.json"))
-        scene_ids = [p.stem.replace("_scene_info", "") for p in scene_info_files]
+        if manifest_path:
+            # Use scene IDs from manifest
+            scene_ids = discover_scenes_from_manifest(manifest_path)
+            scene_info_files = [in_root / sid / f"{sid}_scene_info.json" for sid in scene_ids]
+        else:
+            # Default discovery
+            scene_info_files = list(in_root.rglob("*_scene_info.json"))
+            scene_ids = [p.stem.replace("_scene_info", "") for p in scene_info_files]
+
         progress = create_progress_tracker(len(scene_ids), "scene layouts")
         for i, scene_id in enumerate(scene_ids, 1):
             scene_dir = in_root / scene_id
@@ -330,6 +337,7 @@ def main():
                 progress(i, f"{scene_id} -> {output_path}", True)
             except Exception as e:
                 progress(i, f"failed {scene_id}: {e}", False)
+
 
 
 
