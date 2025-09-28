@@ -53,8 +53,11 @@ def find_room_files(root: Path, manifest: Optional[Path] = None) -> List[Path]:
         with open(manifest, newline='', encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if "room_parquet" in row:   # manifests for stage2/3/4 always have this
+                if "room_parquet" in row:
                     rows.append(Path(row["room_parquet"]))
+                elif "room_parquet_file_path" in row:
+                    rows.append(Path(row["room_parquet_file_path"]))
+
         return rows
 
     files = sorted(root.rglob("scene_id=*/room_id=*/*.parquet"))

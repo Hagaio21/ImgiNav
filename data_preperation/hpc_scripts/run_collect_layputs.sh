@@ -12,7 +12,7 @@ set -euo pipefail
 # Paths
 ROOT_DIR="/work3/s233249/ImgiNav/datasets/scenes"
 SCRIPT_PATH="/zhome/62/5/203350/ws/ImgiNav/data_preperation/layout_collection.py"
-OUT_CSV="/zhome/62/5/203350/ws/ImgiNav/datasets/layouts.csv"
+OUT_CSV="/work3/s233249/ImgiNav/datasets/layouts.csv"
 
 # Conda activation (if you use it)
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
