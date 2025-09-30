@@ -13,7 +13,7 @@ import time
 from tqdm import tqdm
 import numpy as np
 
-from dataset.datasets import LayoutDataset
+from modules.datasets import LayoutDataset
 from modules.autoencoder import AutoEncoder
 
 
