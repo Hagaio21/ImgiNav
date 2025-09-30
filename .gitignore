@@ -30,3 +30,4 @@ src/layout_generator.egg-info
 # dataset files
 *.csv
 training/runs
+*.yml
