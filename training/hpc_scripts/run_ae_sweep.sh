@@ -1,13 +1,12 @@
 #!/bin/bash
 #BSUB -J ae_sweep[1-36]
-#BSUB -o /zhome/62/5/203350/ws/ImgiNav/hpc_scripts/logs/ae_sweep.%I.%J.out
-#BSUB -e /zhome/62/5/203350/ws/ImgiNav/hpc_scripts/logs/ae_sweep.%I.%J.err
+#BSUB -o /zhome/62/5/203350/ws/ImgiNav/training/hpc_scripts/logs/ae_sweep.%I.%J.out
+#BSUB -e /zhome/62/5/203350/ws/ImgiNav/training/hpc_scripts/logs/ae_sweep.%I.%J.err
 #BSUB -n 4
 #BSUB -R "rusage[mem=16000]"
-#BSUB -R "select[gpu40gb]"
 #BSUB -gpu "num=1"
 #BSUB -W 12:00
-#BSUB -q gpua40
+#BSUB -q gpuv100
 
 set -euo pipefail
 
@@ -15,10 +14,10 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/zhome/62/5/203350/ws/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/training/train_autoencoder.py"
-LAYOUT_MANIFEST="${BASE_DIR}/indexes/layouts.csv"
-OUTPUT_DIR="${BASE_DIR}/experiments/ae_architecture_sweep"
-CONFIG_DIR="${BASE_DIR}/experiments/ae_configs"
+PYTHON_SCRIPT="/zhome/62/5/203350/ws/ImgiNav/training/train_autoencoder.py"
+LAYOUT_MANIFEST="/zhome/62/5/203350/ws/ImgiNav/datasets/layouts.csv"
+OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/ae_architecture_sweep"
+CONFIG_DIR="/work3/s233249/ImgiNav/experiments/ae_configs"
 
 # =============================================================================
 # SWEEP PARAMETERS (36 combinations total)
@@ -217,6 +216,12 @@ LAYOUT_MODE="scene"
 LOSS="mse"
 
 # =============================================================================
+# MODULE LOADS (for DTU HPC)
+# =============================================================================
+module load cuda/11.8
+module load cudnn/8.6.0-cuda11
+
+# =============================================================================
 # CONDA ACTIVATION
 # =============================================================================
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
@@ -225,6 +230,24 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     echo "Failed to activate conda environment" >&2
     exit 1
   }
+fi
+
+# =============================================================================
+# FIX PYTHON PATH FOR IMPORTS
+# =============================================================================
+export PYTHONPATH="${BASE_DIR}:${PYTHONPATH}"
+echo "PYTHONPATH set to include: ${BASE_DIR}"
+
+# Create dataset module symlink if needed
+if [ ! -d "${BASE_DIR}/dataset" ]; then
+    echo "Creating dataset module directory..."
+    mkdir -p "${BASE_DIR}/dataset"
+    # Copy your datasets.py file there
+    if [ -f "${BASE_DIR}/datasets.py" ]; then
+        cp "${BASE_DIR}/datasets.py" "${BASE_DIR}/dataset/datasets.py"
+    elif [ -f "${BASE_DIR}/training/datasets.py" ]; then
+        cp "${BASE_DIR}/training/datasets.py" "${BASE_DIR}/dataset/datasets.py"
+    fi
 fi
 
 # =============================================================================
