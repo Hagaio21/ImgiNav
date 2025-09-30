@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+from __future__ import annotations
 
 # --- helpers ---
 def make_layer(in_channels, out_channels, kernel_size=3, stride=1, padding=1, 

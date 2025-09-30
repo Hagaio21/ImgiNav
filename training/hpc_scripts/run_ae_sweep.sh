@@ -219,35 +219,21 @@ LOSS="mse"
 # MODULE LOADS (for DTU HPC)
 # =============================================================================
 module load cuda/11.8
-module load cudnn/8.6.0-cuda11
+module load cudnn/v8.6.0.163-prod-cuda-11.X
 
 # =============================================================================
 # CONDA ACTIVATION
 # =============================================================================
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate scenefactor || {
-    echo "Failed to activate conda environment" >&2
-    exit 1
+  conda activate imginav || {
+    echo "Failed to activate conda environment 'imginav'" >&2
+    echo "Trying fallback environment 'scenefactor'..." >&2
+    conda activate scenefactor || {
+      echo "Failed to activate any conda environment" >&2
+      exit 1
+    }
   }
-fi
-
-# =============================================================================
-# FIX PYTHON PATH FOR IMPORTS
-# =============================================================================
-export PYTHONPATH="${BASE_DIR}:${PYTHONPATH}"
-echo "PYTHONPATH set to include: ${BASE_DIR}"
-
-# Create dataset module symlink if needed
-if [ ! -d "${BASE_DIR}/dataset" ]; then
-    echo "Creating dataset module directory..."
-    mkdir -p "${BASE_DIR}/dataset"
-    # Copy your datasets.py file there
-    if [ -f "${BASE_DIR}/datasets.py" ]; then
-        cp "${BASE_DIR}/datasets.py" "${BASE_DIR}/dataset/datasets.py"
-    elif [ -f "${BASE_DIR}/training/datasets.py" ]; then
-        cp "${BASE_DIR}/training/datasets.py" "${BASE_DIR}/dataset/datasets.py"
-    fi
 fi
 
 # =============================================================================
