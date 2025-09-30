@@ -11,7 +11,7 @@ set -euo pipefail
 
 # Paths
 ROOT_DIR="/work3/s233249/ImgiNav/datasets/scenes"
-SCRIPT_PATH="/zhome/62/5/203350/ws/ImgiNav/data_preperation/pov_data_collect.py"
+SCRIPT_PATH="/zhome/62/5/203350/ws/ImgiNav/data_preperation/collect_dataset.py"
 OUT_DIR="/work3/s233249/ImgiNav/datasets/manifests"
 LAYOUTS_CSV="/zhome/62/5/203350/ws/ImgiNav/datasets/layouts.csv"
 
