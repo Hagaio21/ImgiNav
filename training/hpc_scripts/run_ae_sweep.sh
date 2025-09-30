@@ -1,216 +1,107 @@
 #!/bin/bash
-#BSUB -J ae_sweep[1-36]
-#BSUB -o /zhome/62/5/203350/ws/ImgiNav/training/hpc_scripts/logs/ae_sweep.%I.%J.out
-#BSUB -e /zhome/62/5/203350/ws/ImgiNav/training/hpc_scripts/logs/ae_sweep.%I.%J.err
+#BSUB -J ae_sweep[1-27]
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_sweep.%I.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_sweep.%I.%J.err
 #BSUB -n 4
 #BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
 #BSUB -W 12:00
-#BSUB -q gpuv100
+#BSUB -q gpul40s
 
 set -euo pipefail
 
 # =============================================================================
 # PATHS
 # =============================================================================
-BASE_DIR="/zhome/62/5/203350/ws/ImgiNav"
-PYTHON_SCRIPT="/zhome/62/5/203350/ws/ImgiNav/training/train_autoencoder.py"
-LAYOUT_MANIFEST="/zhome/62/5/203350/ws/ImgiNav/datasets/layouts.csv"
-OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/ae_architecture_sweep"
+BASE_DIR="/work3/s233249/ImgiNav/ImgiNav/"
+PYTHON_SCRIPT="${BASE_DIR}/training/train_autoencoder.py"
+LAYOUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
+OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/ae_diffusion_sweep"
 CONFIG_DIR="/work3/s233249/ImgiNav/experiments/ae_configs"
+TEMPLATE_DIR="/work3/s233249/ImgiNav/ImgiNav/modules/templates"
 
 # =============================================================================
-# SWEEP PARAMETERS (36 combinations total)
+# SWEEP PARAMETERS - Optimized for diffusion models
 # =============================================================================
-# 4 latent dimensions for finding optimal size
-LATENT_DIMS=(16 32 64 128)
+# Latent spatial sizes: larger is better for diffusion (more detail preserved)
+LATENT_BASE_OPTIONS=(16 32 64)
 
-# 3 architecture families
+# Latent channels: 4-8 channels is standard for diffusion (e.g., Stable Diffusion uses 4)
+LATENT_CHANNELS_OPTIONS=(4 8 16)
+
+# Architectures
 ARCHITECTURES=("vanilla" "skip" "deep")
 
-# 3 channel progressions for each architecture
-CHANNEL_CONFIGS=("small" "medium" "large")
-
-# Calculate configuration from job array index (1-36)
+# Total jobs: 3 bases × 3 channels × 3 architectures = 27
 IDX=$((LSB_JOBINDEX - 1))
-LATENT_IDX=$((IDX / 9))
-ARCH_IDX=$(((IDX / 3) % 3))
-CHANNEL_IDX=$((IDX % 3))
+BASE_IDX=$((IDX / 9))
+CHANNEL_IDX=$(((IDX / 3) % 3))
+ARCH_IDX=$((IDX % 3))
 
-LATENT_DIM=${LATENT_DIMS[$LATENT_IDX]}
+LATENT_BASE=${LATENT_BASE_OPTIONS[$BASE_IDX]}
+LATENT_CHANNELS=${LATENT_CHANNELS_OPTIONS[$CHANNEL_IDX]}
 ARCH=${ARCHITECTURES[$ARCH_IDX]}
-CHANNELS=${CHANNEL_CONFIGS[$CHANNEL_IDX]}
 
-CONFIG_ID="ld${LATENT_DIM}_${ARCH}_${CHANNELS}"
+LATENT_DIM=$((LATENT_CHANNELS * LATENT_BASE * LATENT_BASE))
+
+CONFIG_ID="diff_${LATENT_CHANNELS}ch_${LATENT_BASE}x${LATENT_BASE}_${ARCH}"
 
 echo "=========================================="
-echo "Task ${LSB_JOBINDEX}/36: Config ${CONFIG_ID}"
-echo "  Latent Dim: ${LATENT_DIM}"
+echo "Task ${LSB_JOBINDEX}/27: Config ${CONFIG_ID}"
+echo "  Latent Channels: ${LATENT_CHANNELS}"
+echo "  Latent Spatial: ${LATENT_BASE}x${LATENT_BASE}"
+echo "  Total Latent Dim: ${LATENT_DIM}"
 echo "  Architecture: ${ARCH}"
-echo "  Channel Config: ${CHANNELS}"
 echo "=========================================="
 
 # =============================================================================
-# GENERATE CONFIG FILE BASED ON ARCHITECTURE
+# CHANNEL PROGRESSION - Scale with latent complexity
+# =============================================================================
+# Use medium-large capacity for diffusion latents
+case $LATENT_BASE in
+  16)
+    # Smaller latent space -> can use larger conv channels
+    CH1=64; CH2=128; CH3=256 ;;
+  32)
+    # Medium latent space -> balanced
+    CH1=48; CH2=96; CH3=192 ;;
+  64)
+    # Larger latent space -> smaller conv channels (memory constraint)
+    CH1=32; CH2=64; CH3=128 ;;
+esac
+CH4=$((CH3 + CH3/2))
+CH5=$((CH3 * 2))
+
+echo "  Channel progression: ${CH1} -> ${CH2} -> ${CH3} -> ${CH4} -> ${CH5}"
+
+# =============================================================================
+# TEMPLATE SELECTION + CONFIG GENERATION
 # =============================================================================
 mkdir -p "${CONFIG_DIR}"
 CONFIG_FILE="${CONFIG_DIR}/config_${CONFIG_ID}.yml"
 
-# Define channel progressions based on size
-case $CHANNELS in
-  "small")
-    CH1=16
-    CH2=32
-    CH3=64
-    ;;
-  "medium")
-    CH1=32
-    CH2=64
-    CH3=128
-    ;;
-  "large")
-    CH1=64
-    CH2=128
-    CH3=256
-    ;;
-esac
+TEMPLATE_FILE="${TEMPLATE_DIR}/ae_template_${ARCH}.yml"
 
-# Generate config based on architecture family
-cat > "${CONFIG_FILE}" << EOF
-encoder:
-  in_channels: 3
-  latent_dim: ${LATENT_DIM}
-  image_size: 512
-  global_norm: null
-  global_act: null
-  global_dropout: 0.0
-  layers:
-EOF
-
-# Add layers based on architecture type
-case $ARCH in
-  "vanilla")
-    # Simple 3-layer encoder
-    cat >> "${CONFIG_FILE}" << EOF
-    - out_channels: ${CH1}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-    - out_channels: ${CH2}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-    - out_channels: ${CH3}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-EOF
-    ;;
-  
-  "skip")
-    # 4-layer with skip connections simulation (using dropout for regularization)
-    cat >> "${CONFIG_FILE}" << EOF
-    - out_channels: ${CH1}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.1
-    - out_channels: ${CH2}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.1
-    - out_channels: ${CH3}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.1
-    - out_channels: ${CH3}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.1
-EOF
-    ;;
-  
-  "deep")
-    # 5-layer deep encoder
-    CH4=$((CH3 + CH3/2))
-    CH5=$((CH3 * 2))
-    cat >> "${CONFIG_FILE}" << EOF
-    - out_channels: ${CH1}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-    - out_channels: ${CH2}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-    - out_channels: ${CH3}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-    - out_channels: ${CH4}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-    - out_channels: ${CH5}
-      kernel_size: 3
-      stride: 2
-      padding: 1
-      norm: batch
-      act: relu
-      dropout: 0.0
-EOF
-    ;;
-esac
-
-# Add decoder config
-cat >> "${CONFIG_FILE}" << EOF
-
-decoder:
-  out_channels: 3
-  latent_dim: ${LATENT_DIM}
-  image_size: 512
-EOF
+sed \
+  -e "s|\${LATENT_DIM}|${LATENT_DIM}|g" \
+  -e "s|\${LATENT_CHANNELS}|${LATENT_CHANNELS}|g" \
+  -e "s|\${LATENT_BASE}|${LATENT_BASE}|g" \
+  -e "s|\${CH1}|${CH1}|g" \
+  -e "s|\${CH2}|${CH2}|g" \
+  -e "s|\${CH3}|${CH3}|g" \
+  -e "s|\${CH4}|${CH4}|g" \
+  -e "s|\${CH5}|${CH5}|g" \
+  "${TEMPLATE_FILE}" > "${CONFIG_FILE}"
 
 echo "Config file created: ${CONFIG_FILE}"
+echo ""
 
 # =============================================================================
 # TRAINING PARAMETERS
 # =============================================================================
 BATCH_SIZE=32
-EPOCHS=50  # Reduced for sweep
-LEARNING_RATE=0.001
+EPOCHS=50  # More epochs for better convergence
+LEARNING_RATE=0.001  # Lower LR for stability
 RESIZE=512
 LAYOUT_MODE="scene"
 LOSS="mse"
@@ -220,6 +111,7 @@ LOSS="mse"
 # =============================================================================
 module load cuda/11.8
 module load cudnn/v8.6.0.163-prod-cuda-11.X
+export MKL_INTERFACE_LAYER=LP64
 
 # =============================================================================
 # CONDA ACTIVATION
@@ -259,14 +151,14 @@ python "${PYTHON_SCRIPT}" \
   --outdir "${OUTPUT_DIR}" \
   --layout_mode "${LAYOUT_MODE}" \
   --save_images \
-  --save_every 10 \
+  --save_every 5 \
   --keep_only_best || {
   echo "ERROR: Training failed" >&2
   exit 1
 }
 
 echo "=========================================="
-echo "Task ${LSB_JOBINDEX}/36 COMPLETED"
+echo "Task ${LSB_JOBINDEX}/27 COMPLETED"
 echo "End: $(date)"
 echo "=========================================="
 

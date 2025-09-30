@@ -1,6 +1,6 @@
+from __future__ import annotations
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from __future__ import annotations
 import argparse
 import yaml
 import torch
@@ -474,6 +474,16 @@ if __name__ == "__main__":
     print("[CONFIG] Loading model configuration...")
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    print("==========================================")
+    print("Loaded AutoEncoder configuration:")
+    print(yaml.dump(cfg, sort_keys=False, indent=2))
+
+    if 'latent_channels' in cfg['encoder']:
+        print(f"  → Latent channels: {cfg['encoder']['latent_channels']}")
+    if 'latent_base' in cfg['encoder']:
+        print(f"  → Latent base size: {cfg['encoder']['latent_base']}x{cfg['encoder']['latent_base']}")
+    print("==========================================")
+
     print("  ✓ Configuration loaded successfully")
     print()
     
