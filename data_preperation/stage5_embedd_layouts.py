@@ -3,6 +3,8 @@ import argparse
 import os
 from pathlib import Path
 import pandas as pd
+import tqdm
+
 
 import torch
 from torch.utils.data import DataLoader
@@ -10,7 +12,6 @@ import torchvision.transforms as T
 
 from modules.datasets import LayoutDataset
 from modules.autoencoder import AutoEncoder
-
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -51,8 +52,10 @@ def main():
     if "embedding_path" not in df.columns:
         df["embedding_path"] = None
 
-    # --- Encode and save ---
+    # --- Encode and save with progress bar ---
+    total = len(ds)
     with torch.no_grad():
+        pbar = tqdm(total=total, desc="Embedding layouts", unit="layout")
         for batch in dl:
             imgs = batch["layout"].to(device)
             z = ae.encoder(imgs)
@@ -64,7 +67,8 @@ def main():
                 is_empty = batch["is_empty"][i]
                 layout_path = Path(batch["path"][i])
 
-                if is_empty:  # keep manifest but no embedding
+                if is_empty:
+                    pbar.update(1)
                     continue
 
                 if typ == "room":
@@ -81,11 +85,13 @@ def main():
                     import numpy as np
                     np.save(out_path.with_suffix(".npy"), emb.numpy())
 
-                # Update manifest
                 mask = (df["scene_id"] == scene_id) & (df["room_id"] == room_id) & (df["type"] == typ)
                 df.loc[mask, "embedding_path"] = str(out_path.resolve())
 
-    # --- Write updated manifest ---
+                pbar.update(1)
+
+        pbar.close()
+
     df.to_csv(args.out_manifest, index=False)
     print(f"[INFO] Wrote updated manifest to {args.out_manifest}")
 
