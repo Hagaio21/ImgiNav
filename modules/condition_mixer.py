@@ -15,4 +15,4 @@ class ConditionMixer(nn.Module):
 class ConcatMixer(ConditionMixer):
     pass
 
-class WeightedMixer(ConditionMixer:
+class WeightedMixer(ConditionMixer):
