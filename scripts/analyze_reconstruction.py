@@ -110,42 +110,25 @@ def load_test_images(image_paths, image_size=512):
 
 
 def load_taxonomy_colors(taxonomy_path=None):
-    """Load category colors from taxonomy file."""
+    """Load super-category colors from taxonomy file."""
     import json
     
-    if taxonomy_path and Path(taxonomy_path).exists():
-        with open(taxonomy_path, 'r') as f:
-            taxonomy = json.load(f)
-    else:
-        # Fallback: define key colors manually
-        taxonomy = {
-            'id2color': {
-                '2053': [200, 200, 200],  # wall
-                '1001': [228, 26, 28],     # Bed
-                '1002': [55, 126, 184],    # Cabinet/Shelf/Desk
-                '1003': [77, 175, 74],     # Chair
-                '1004': [152, 78, 163],    # Lighting
-                '1007': [255, 255, 51],    # Sofa
-                '1009': [166, 86, 40],     # Table
-            },
-            'id2category': {
-                '2053': 'wall',
-                '1001': 'Bed',
-                '1002': 'Cabinet/Shelf/Desk',
-                '1003': 'Chair',
-                '1004': 'Lighting',
-                '1007': 'Sofa',
-                '1009': 'Table',
-            }
-        }
+    if not taxonomy_path or not Path(taxonomy_path).exists():
+        print("WARNING: No taxonomy file provided or file not found")
+        return {}
     
-    # Convert to numpy arrays and normalize to 0-1
+    with open(taxonomy_path, 'r') as f:
+        taxonomy = json.load(f)
+    
+    # Only use super-categories (id2super), not fine-grained categories
     colors_dict = {}
-    for cat_id, rgb in taxonomy['id2color'].items():
-        if cat_id in taxonomy.get('id2category', {}) or cat_id in taxonomy.get('id2super', {}):
-            cat_name = taxonomy.get('id2category', {}).get(cat_id) or taxonomy.get('id2super', {}).get(cat_id)
-            if cat_name:
-                colors_dict[cat_name] = np.array(rgb) / 255.0
+    id2super = taxonomy.get('id2super', {})
+    id2color = taxonomy.get('id2color', {})
+    
+    for cat_id in id2super.keys():
+        if cat_id in id2color:
+            cat_name = id2super[cat_id]
+            colors_dict[cat_name] = np.array(id2color[cat_id]) / 255.0
     
     return colors_dict
 
@@ -221,32 +204,6 @@ def compute_reconstruction_metrics(original, reconstruction):
         metrics[channel + '_corr'] = (numerator / denominator).item()
     
     return metrics
-    """Compute comprehensive reconstruction metrics."""
-    diff = torch.abs(original - reconstruction)
-    
-    metrics = {
-        'overall_mae': diff.mean().item(),
-        'overall_mse': ((original - reconstruction) ** 2).mean().item(),
-    }
-    
-    # Per-channel metrics
-    for i, channel in enumerate(['red', 'green', 'blue']):
-        metrics[channel + '_mae'] = diff[:, i].mean().item()
-        metrics[channel + '_mse'] = ((original[:, i] - reconstruction[:, i]) ** 2).mean().item()
-        
-        # Correlation
-        orig_flat = original[:, i].flatten()
-        recon_flat = reconstruction[:, i].flatten()
-        orig_mean = orig_flat.mean()
-        recon_mean = recon_flat.mean()
-        
-        numerator = ((orig_flat - orig_mean) * (recon_flat - recon_mean)).sum()
-        denominator = torch.sqrt(((orig_flat - orig_mean) ** 2).sum() * 
-                                 ((recon_flat - recon_mean) ** 2).sum())
-        
-        metrics[channel + '_corr'] = (numerator / denominator).item()
-    
-    return metrics
 
 
 def find_models_to_compare(experiments_dir, num_models=10):
@@ -290,44 +247,145 @@ def find_models_to_compare(experiments_dir, num_models=10):
     return model_info[:num_models]
 
 
-def plot_single_model_reconstruction(model_name, original, reconstruction, img_name, output_dir):
-    """Plot input, output, and difference heatmap for a single model."""
+def plot_architecture_family_comparison(family_name, models_data, sample_image_name, output_dir):
+    """
+    Create a single comprehensive figure comparing all models in an architecture family.
+    Shows: 1 input + N reconstructions + N difference heatmaps for one test image.
     
-    orig_np = original.permute(1, 2, 0).numpy()
-    recon_np = reconstruction.permute(1, 2, 0).numpy()
-    diff = np.abs(orig_np - recon_np)
+    Args:
+        family_name: 'vanilla', 'medium', or 'deep'
+        models_data: list of model data dicts filtered to this family
+        sample_image_name: name of the test image to visualize
+        output_dir: where to save the figure
+    """
+    if not models_data:
+        print(f"    No models found for family: {family_name}")
+        return
     
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    fig.suptitle('Model: ' + model_name + ' | Image: ' + img_name, fontsize=14, fontweight='bold')
+    # Get the input image (same for all models)
+    input_img = None
+    reconstructions = []
+    model_names = []
     
-    # Input
-    axes[0].imshow(orig_np)
-    axes[0].set_title('Input Image')
-    axes[0].axis('off')
+    for model_data in models_data:
+        if sample_image_name in model_data['images']:
+            result = model_data['images'][sample_image_name]
+            if input_img is None:
+                input_img = result['original']
+            reconstructions.append(result['reconstruction'])
+            model_names.append(model_data['name'])
     
-    # Output
-    axes[1].imshow(recon_np)
-    mae = np.mean(diff)
-    axes[1].set_title('Reconstruction (MAE: ' + str(round(mae, 4)) + ')')
-    axes[1].axis('off')
+    if input_img is None or len(reconstructions) == 0:
+        print(f"    No data available for {family_name} / {sample_image_name}")
+        return
     
-    # Difference heatmap
-    overall_diff = diff.mean(axis=2)
-    im = axes[2].imshow(overall_diff, cmap='hot', vmin=0, vmax=0.5)
-    axes[2].set_title('Error Heatmap')
-    axes[2].axis('off')
-    plt.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)
+    n_models = len(reconstructions)
+    
+    # Create figure: 1 input + n_models outputs + n_models diffs
+    # Layout: top row = input (spans multiple columns) + outputs, bottom row = diffs
+    fig = plt.figure(figsize=(20, 8))
+    gs = fig.add_gridspec(2, n_models + 1, hspace=0.3, wspace=0.2)
+    
+    fig.suptitle(f'Architecture Family: {family_name.upper()} | Image: {sample_image_name}', 
+                 fontsize=16, fontweight='bold', y=0.98)
+    
+    # Convert input to numpy
+    orig_np = input_img.permute(1, 2, 0).numpy()
+    
+    # Top-left: Input image (spans first column, both rows)
+    ax_input = fig.add_subplot(gs[:, 0])
+    ax_input.imshow(orig_np)
+    ax_input.set_title('INPUT IMAGE', fontsize=12, fontweight='bold', pad=10)
+    ax_input.axis('off')
+    
+    # Top row: Reconstructions
+    for i, (recon, model_name) in enumerate(zip(reconstructions, model_names)):
+        ax = fig.add_subplot(gs[0, i + 1])
+        recon_np = recon.permute(1, 2, 0).numpy()
+        ax.imshow(recon_np)
+        
+        # Calculate MAE for this reconstruction
+        diff = np.abs(orig_np - recon_np)
+        mae = np.mean(diff)
+        
+        # Shortened model name for display
+        short_name = model_name.replace(f'_{family_name}', '').replace('ch_', 'ch\n')
+        ax.set_title(f'{short_name}\nMAE: {mae:.4f}', fontsize=9)
+        ax.axis('off')
+    
+    # Bottom row: Difference heatmaps
+    for i, (recon, model_name) in enumerate(zip(reconstructions, model_names)):
+        ax = fig.add_subplot(gs[1, i + 1])
+        recon_np = recon.permute(1, 2, 0).numpy()
+        diff = np.abs(orig_np - recon_np)
+        overall_diff = diff.mean(axis=2)
+        
+        im = ax.imshow(overall_diff, cmap='hot', vmin=0, vmax=0.5)
+        ax.set_title('Error Heatmap', fontsize=9)
+        ax.axis('off')
+        
+        # Add colorbar to the rightmost heatmap
+        if i == len(reconstructions) - 1:
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar.set_label('Absolute Error', rotation=270, labelpad=15, fontsize=9)
     
     plt.tight_layout()
     
-    # Save with model name and image name
-    safe_model_name = model_name.replace('/', '_')
-    safe_img_name = img_name.replace('/', '_')
-    output_file_png = output_dir / ('recon_' + safe_model_name + '_' + safe_img_name + '.png')
-    output_file_svg = output_dir / ('recon_' + safe_model_name + '_' + safe_img_name + '.svg')
+    # Save
+    safe_family = family_name.replace('/', '_')
+    safe_img = sample_image_name.replace('/', '_')
+    output_file_png = output_dir / f'family_comparison_{safe_family}_{safe_img}.png'
+    output_file_svg = output_dir / f'family_comparison_{safe_family}_{safe_img}.svg'
     plt.savefig(output_file_png, dpi=300, bbox_inches='tight')
     plt.savefig(output_file_svg, format='svg', bbox_inches='tight')
+    print(f"    Saved: {output_file_png}")
     plt.close()
+
+
+def generate_family_comparison_plots(all_models_data, output_dir):
+    """
+    Generate one comprehensive plot per architecture family.
+    Uses the first test image that all models have processed.
+    """
+    print("  Creating architecture family comparison plots...")
+    
+    # Group models by architecture family
+    families = {}
+    for model_data in all_models_data:
+        arch = model_data['arch']
+        if arch not in families:
+            families[arch] = []
+        families[arch].append(model_data)
+    
+    # Find a common test image that all models have
+    all_image_names = set()
+    for model_data in all_models_data:
+        if all_image_names:
+            all_image_names &= set(model_data['images'].keys())
+        else:
+            all_image_names = set(model_data['images'].keys())
+    
+    if not all_image_names:
+        print("    WARNING: No common test images across all models")
+        return
+    
+    # Use the first common image
+    sample_image = sorted(list(all_image_names))[0]
+    print(f"    Using test image: {sample_image}")
+    
+    # Generate one plot per family
+    for family_name in ['vanilla', 'medium', 'deep']:
+        if family_name in families:
+            # Sort models by name for consistent ordering
+            family_models = sorted(families[family_name], key=lambda x: x['name'])
+            plot_architecture_family_comparison(
+                family_name, 
+                family_models, 
+                sample_image, 
+                output_dir
+            )
+        else:
+            print(f"    No models found for family: {family_name}")
 
 
 def plot_class_color_preservation(all_models_data, taxonomy_colors, output_dir):
@@ -647,101 +705,6 @@ def plot_aggregate_metrics(all_models_data, output_dir):
     plt.close()
     
     return df
-    
-    # Plot 1: Overall MAE by model
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Model Performance Comparison', fontsize=16, fontweight='bold')
-    
-    ax = axes[0, 0]
-    model_mae = df.groupby('model')['overall_mae'].mean().sort_values()
-    colors = ['red' if 'vanilla' in m else 'green' if 'medium' in m else 'blue' 
-              for m in model_mae.index]
-    model_mae.plot(kind='barh', ax=ax, color=colors, alpha=0.7)
-    ax.set_xlabel('Mean Absolute Error')
-    ax.set_title('Overall Reconstruction Error by Model')
-    ax.grid(True, alpha=0.3, axis='x')
-    
-    # Plot 2: MAE by architecture
-    ax = axes[0, 1]
-    if 'architecture' in df.columns:
-        arch_mae = df.groupby('architecture')['overall_mae'].agg(['mean', 'std'])
-        arch_mae['mean'].plot(kind='bar', ax=ax, yerr=arch_mae['std'], 
-                              capsize=5, alpha=0.7)
-        ax.set_xlabel('Architecture')
-        ax.set_ylabel('Mean Absolute Error')
-        ax.set_title('Error by Architecture Type')
-        ax.grid(True, alpha=0.3, axis='y')
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
-    
-    # Plot 3: Color channel comparison
-    ax = axes[1, 0]
-    channel_cols = ['red_mae', 'green_mae', 'blue_mae']
-    channel_means = df[channel_cols].mean()
-    bars = ax.bar(['Red', 'Green', 'Blue'], channel_means, 
-                  color=['red', 'green', 'blue'], alpha=0.7)
-    ax.set_ylabel('Mean Absolute Error')
-    ax.set_title('Average Error by Color Channel (all models)')
-    ax.grid(True, alpha=0.3, axis='y')
-    for bar, val in zip(bars, channel_means):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                str(round(val, 5)), ha='center', va='bottom')
-    
-    # Plot 4: Correlation by channel
-    ax = axes[1, 1]
-    corr_cols = ['red_corr', 'green_corr', 'blue_corr']
-    corr_means = df[corr_cols].mean()
-    bars = ax.bar(['Red', 'Green', 'Blue'], corr_means,
-                  color=['red', 'green', 'blue'], alpha=0.7)
-    ax.set_ylabel('Correlation')
-    ax.set_title('Color Preservation by Channel (all models)')
-    ax.set_ylim([0, 1])
-    ax.grid(True, alpha=0.3, axis='y')
-    for bar, val in zip(bars, corr_means):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                str(round(val, 4)), ha='center', va='bottom')
-    
-    plt.tight_layout()
-    output_file = output_dir / 'aggregate_comparison.png'
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print("    Saved: " + str(output_file))
-    plt.close()
-    
-    # Plot 5: Detailed model ranking
-    fig, ax = plt.subplots(1, 1, figsize=(14, max(8, len(df['model'].unique()) * 0.4)))
-    
-    # Calculate composite score (lower is better)
-    model_scores = df.groupby('model').agg({
-        'overall_mae': 'mean',
-        'red_corr': 'mean',
-        'green_corr': 'mean',
-        'blue_corr': 'mean'
-    })
-    model_scores['avg_corr'] = model_scores[['red_corr', 'green_corr', 'blue_corr']].mean(axis=1)
-    model_scores['composite_score'] = model_scores['overall_mae'] * (2 - model_scores['avg_corr'])
-    model_scores = model_scores.sort_values('composite_score')
-    
-    y_pos = np.arange(len(model_scores))
-    bars = ax.barh(y_pos, model_scores['composite_score'], alpha=0.7)
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(model_scores.index)
-    ax.set_xlabel('Composite Score (lower is better)')
-    ax.set_title('Model Ranking by Reconstruction Quality')
-    ax.grid(True, alpha=0.3, axis='x')
-    
-    # Color bars by rank
-    cmap = plt.cm.RdYlGn_r
-    for i, bar in enumerate(bars):
-        bar.set_color(cmap(i / len(bars)))
-    
-    plt.tight_layout()
-    output_file = output_dir / 'model_ranking.png'
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print("    Saved: " + str(output_file))
-    plt.close()
-    
-    return df
 
 
 def main():
@@ -752,48 +715,51 @@ def main():
     parser.add_argument("--num_models", type=int, default=10)
     parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda", "mps"])
     parser.add_argument("--taxonomy_path", type=str, default=None, help="Path to taxonomy.json file")
+    parser.add_argument("--batch_size", type=int, default=100, help="Number of images to process at once")
     
     args = parser.parse_args()
     
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n" + "="*80)
-    print("MULTI-MODEL RECONSTRUCTION COMPARISON")
-    print("="*80)
-    print("Experiments directory: " + args.experiments_dir)
-    print("Test images: " + str(len(args.test_images)))
-    print("Number of models to compare: " + str(args.num_models))
-    print("Device: " + args.device)
-    print("="*80)
+    print("\n" + "="*80, flush=True)
+    print("MULTI-MODEL RECONSTRUCTION COMPARISON", flush=True)
+    print("="*80, flush=True)
+    print("Experiments directory: " + args.experiments_dir, flush=True)
+    print("Test images: " + str(len(args.test_images)), flush=True)
+    print("Batch size: " + str(args.batch_size), flush=True)
+    print("Number of models to compare: " + str(args.num_models), flush=True)
+    print("Device: " + args.device, flush=True)
+    print("="*80, flush=True)
     print()
     
     # Load taxonomy colors
-    print("[0/5] Loading taxonomy colors...")
+    print("[0/6] Loading taxonomy colors...", flush=True)
     taxonomy_colors = load_taxonomy_colors(args.taxonomy_path)
-    print("  Loaded " + str(len(taxonomy_colors)) + " class colors")
+    print("  Loaded " + str(len(taxonomy_colors)) + " class colors", flush=True)
     print()
     
     # Find models
-    print("[1/5] Finding models to compare...")
+    print("[1/6] Finding models to compare...", flush=True)
     models_to_compare = find_models_to_compare(args.experiments_dir, args.num_models)
-    print("  Found " + str(len(models_to_compare)) + " models")
+    print("  Found " + str(len(models_to_compare)) + " models", flush=True)
     for m in models_to_compare:
-        print("    - " + m['name'] + " (loss: " + str(round(m['best_loss'], 6)) + ")")
+        print("    - " + m['name'] + " (loss: " + str(round(m['best_loss'], 6)) + ")", flush=True)
     print()
     
-    # Load test images
-    print("[2/5] Loading test images...")
-    test_images, image_names = load_test_images(args.test_images)
-    print("  Loaded " + str(len(test_images)) + " images")
+    # Get image paths
+    print("[2/6] Preparing test images...", flush=True)
+    image_paths = args.test_images
+    print("  Total images to process: " + str(len(image_paths)), flush=True)
+    visualization_image_path = image_paths[0]  # First image for visualization
     print()
     
-    # Process each model
-    print("[3/5] Processing models...")
+    # Process each model for STATISTICS ONLY
+    print("[3/6] Processing models (computing statistics)...", flush=True)
     all_models_data = []
     
-    for model_info in models_to_compare:
-        print("\n  Processing model: " + model_info['name'])
+    for model_idx, model_info in enumerate(models_to_compare):
+        print(f"\n  [{model_idx+1}/{len(models_to_compare)}] Processing model: {model_info['name']}", flush=True)
         
         try:
             model = load_autoencoder_model(
@@ -810,58 +776,111 @@ def main():
                 'arch': model_info['arch'],
                 'channels': model_info['channels'],
                 'base': model_info['base'],
+                'model': model,  # Keep model for later visualization
+                'config': model_info['config'],
+                'checkpoint': model_info['checkpoint'],
                 'images': {}
             }
             
-            # Process each test image
-            for i, img_name in enumerate(image_names):
-                img = test_images[i:i+1].to(args.device)
+            # Process images in batches - STATISTICS ONLY
+            num_batches = (len(image_paths) - 1) // args.batch_size + 1
+            
+            for batch_idx in range(0, len(image_paths), args.batch_size):
+                batch_end = min(batch_idx + args.batch_size, len(image_paths))
+                batch_paths = image_paths[batch_idx:batch_end]
+                batch_num = batch_idx // args.batch_size + 1
                 
-                with torch.no_grad():
-                    recon = model(img)
+                print(f"    Batch {batch_num}/{num_batches} ({len(batch_paths)} images)...", end=' ', flush=True)
                 
-                # Overall metrics
-                metrics = compute_reconstruction_metrics(
-                    img.cpu(), recon.cpu()
-                )
+                # Load batch
+                test_images, image_names = load_test_images(batch_paths)
                 
-                # Class-specific color metrics
-                class_metrics = compute_color_class_preservation(
-                    test_images[i],
-                    recon.cpu().squeeze(0),
-                    taxonomy_colors
-                )
+                # Process each image in batch
+                for i, img_name in enumerate(image_names):
+                    img = test_images[i:i+1].to(args.device)
+                    
+                    with torch.no_grad():
+                        recon = model(img)
+                    
+                    # Compute metrics
+                    metrics = compute_reconstruction_metrics(
+                        img.cpu(), recon.cpu()
+                    )
+                    
+                    # Class-specific color metrics
+                    class_metrics = compute_color_class_preservation(
+                        test_images[i],
+                        recon.cpu().squeeze(0),
+                        taxonomy_colors
+                    )
+                    
+                    # Store ONLY metrics (no tensors!)
+                    model_results['images'][img_name] = {
+                        'metrics': metrics,
+                        'class_metrics': class_metrics
+                    }
                 
-                model_results['images'][img_name] = {
-                    'original': test_images[i],
-                    'reconstruction': recon.cpu().squeeze(0),
-                    'metrics': metrics,
-                    'class_metrics': class_metrics
-                }
+                print("Done", flush=True)
+                
+                # Free memory
+                del test_images
+                if args.device == 'cuda':
+                    torch.cuda.empty_cache()
             
             all_models_data.append(model_results)
-            print("    Completed")
+            print("    Model completed", flush=True)
             
         except Exception as e:
-            print("    ERROR: " + str(e))
+            print(f"    ERROR: {str(e)}", flush=True)
+            import traceback
+            traceback.print_exc()
             continue
     
-    print("\n  Successfully processed " + str(len(all_models_data)) + " models")
+    print("\n  Successfully processed " + str(len(all_models_data)) + " models", flush=True)
+    print()
+    
+    # Now generate visualizations by running inference on ONE image
+    print("[4/6] Generating visualization data (running inference on sample image)...", flush=True)
+    
+    # Load the visualization image once
+    viz_images, viz_names = load_test_images([visualization_image_path])
+    viz_img_tensor = viz_images[0]
+    viz_img_name = viz_names[0]
+    
+    print(f"  Using image: {viz_img_name}", flush=True)
+    
+    # Run inference on this one image for each model
+    for model_data in all_models_data:
+        print(f"    Processing {model_data['name']}...", end=' ', flush=True)
+        
+        model = model_data['model']
+        img = viz_img_tensor.unsqueeze(0).to(args.device)
+        
+        with torch.no_grad():
+            recon = model(img)
+        
+        # Store visualization data
+        model_data['visualization'] = {
+            'image_name': viz_img_name,
+            'original': viz_img_tensor.clone(),
+            'reconstruction': recon.cpu().squeeze(0).clone()
+        }
+        
+        # Clean up model reference to free memory
+        del model_data['model']
+        
+        print("Done", flush=True)
+    
+    if args.device == 'cuda':
+        torch.cuda.empty_cache()
+    
     print()
     
     # Generate comparison plots
-    print("[4/5] Generating comparison visualizations...")
+    print("[5/6] Generating comparison visualizations...", flush=True)
     
-    # Per-model, per-image reconstructions
-    for model_data in all_models_data:
-        for img_name, result in model_data['images'].items():
-            plot_single_model_reconstruction(
-                model_data['name'],
-                result['original'],
-                result['reconstruction'],
-                img_name,
-                output_dir
-            )
+    # Architecture family comparisons (3 comprehensive plots)
+    generate_family_comparison_plots_from_viz(all_models_data, output_dir)
     
     # Aggregate plots
     df = plot_aggregate_metrics(all_models_data, output_dir)
@@ -870,22 +889,142 @@ def main():
     plot_class_color_preservation(all_models_data, taxonomy_colors, output_dir)
     
     # Save metrics to CSV
+    print("[6/6] Saving results...", flush=True)
     csv_file = output_dir / 'comparison_metrics.csv'
     df.to_csv(csv_file, index=False)
-    print("  Saved metrics CSV: " + str(csv_file))
+    print("  Saved metrics CSV: " + str(csv_file), flush=True)
     
-    print("\n" + "="*80)
-    print("COMPARISON COMPLETE")
-    print("="*80)
-    print("\nResults saved to: " + str(output_dir))
-    print("\nGenerated files:")
-    print("  comparison_*.png - Per-image model comparisons")
-    print("  aggregate_comparison.png - Overall metrics comparison")
-    print("  model_ranking.png - Ranked models by quality")
-    print("  class_color_preservation.png - Class-specific color analysis")
-    print("  comparison_metrics.csv - All metrics data")
+    print("\n" + "="*80, flush=True)
+    print("COMPARISON COMPLETE", flush=True)
+    print("="*80, flush=True)
+    print("\nResults saved to: " + str(output_dir), flush=True)
+    print("\nGenerated files:", flush=True)
+    print("  family_comparison_*.png - Per-family comprehensive comparisons (3 files)", flush=True)
+    print("  aggregate_comparison.png - Overall metrics comparison", flush=True)
+    print("  color_channel_analysis.png - Channel-specific analysis", flush=True)
+    print("  model_ranking.png - Ranked models by quality", flush=True)
+    print("  class_preservation_by_architecture.png - Class-specific color analysis by arch", flush=True)
+    print("  class_preservation_by_channels.png - Class-specific color analysis by channels", flush=True)
+    print("  comparison_metrics.csv - All metrics data", flush=True)
     print()
 
+
+def generate_family_comparison_plots_from_viz(all_models_data, output_dir):
+    """
+    Generate one comprehensive plot per architecture family using pre-computed visualizations.
+    """
+    print("  Creating architecture family comparison plots...", flush=True)
+    
+    # Group models by architecture family
+    families = {}
+    for model_data in all_models_data:
+        arch = model_data['arch']
+        if arch not in families:
+            families[arch] = []
+        families[arch].append(model_data)
+    
+    # Get the visualization image name
+    viz_img_name = all_models_data[0]['visualization']['image_name'] if all_models_data else None
+    if not viz_img_name:
+        print("    WARNING: No visualization data available")
+        return
+    
+    print(f"    Using test image: {viz_img_name}", flush=True)
+    
+    # Generate one plot per family
+    for family_name in ['vanilla', 'medium', 'deep']:
+        if family_name in families:
+            # Sort models by name for consistent ordering
+            family_models = sorted(families[family_name], key=lambda x: x['name'])
+            plot_architecture_family_comparison_from_viz(
+                family_name, 
+                family_models, 
+                output_dir
+            )
+        else:
+            print(f"    No models found for family: {family_name}", flush=True)
+
+
+def plot_architecture_family_comparison_from_viz(family_name, models_data, output_dir):
+    """
+    Create a single comprehensive figure comparing all models in an architecture family.
+    Uses pre-computed visualization data.
+    """
+    if not models_data:
+        print(f"    No models found for family: {family_name}")
+        return
+    
+    # Get the input image and reconstructions from visualization data
+    input_img = models_data[0]['visualization']['original']
+    img_name = models_data[0]['visualization']['image_name']
+    
+    reconstructions = []
+    model_names = []
+    
+    for model_data in models_data:
+        reconstructions.append(model_data['visualization']['reconstruction'])
+        model_names.append(model_data['name'])
+    
+    n_models = len(reconstructions)
+    
+    # Create figure
+    fig = plt.figure(figsize=(20, 8))
+    gs = fig.add_gridspec(2, n_models + 1, hspace=0.3, wspace=0.2)
+    
+    fig.suptitle(f'Architecture Family: {family_name.upper()} | Image: {img_name}', 
+                 fontsize=16, fontweight='bold', y=0.98)
+    
+    # Convert input to numpy
+    orig_np = input_img.permute(1, 2, 0).numpy()
+    
+    # Top-left: Input image (spans first column, both rows)
+    ax_input = fig.add_subplot(gs[:, 0])
+    ax_input.imshow(orig_np)
+    ax_input.set_title('INPUT IMAGE', fontsize=12, fontweight='bold', pad=10)
+    ax_input.axis('off')
+    
+    # Top row: Reconstructions
+    for i, (recon, model_name) in enumerate(zip(reconstructions, model_names)):
+        ax = fig.add_subplot(gs[0, i + 1])
+        recon_np = recon.permute(1, 2, 0).numpy()
+        ax.imshow(recon_np)
+        
+        # Calculate MAE
+        diff = np.abs(orig_np - recon_np)
+        mae = np.mean(diff)
+        
+        # Shortened model name
+        short_name = model_name.replace(f'_{family_name}', '').replace('ch_', 'ch\n')
+        ax.set_title(f'{short_name}\nMAE: {mae:.4f}', fontsize=9)
+        ax.axis('off')
+    
+    # Bottom row: Difference heatmaps
+    for i, (recon, model_name) in enumerate(zip(reconstructions, model_names)):
+        ax = fig.add_subplot(gs[1, i + 1])
+        recon_np = recon.permute(1, 2, 0).numpy()
+        diff = np.abs(orig_np - recon_np)
+        overall_diff = diff.mean(axis=2)
+        
+        im = ax.imshow(overall_diff, cmap='hot', vmin=0, vmax=0.5)
+        ax.set_title('Error Heatmap', fontsize=9)
+        ax.axis('off')
+        
+        # Add colorbar to rightmost heatmap
+        if i == len(reconstructions) - 1:
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar.set_label('Absolute Error', rotation=270, labelpad=15, fontsize=9)
+    
+    plt.tight_layout()
+    
+    # Save
+    safe_family = family_name.replace('/', '_')
+    safe_img = img_name.replace('/', '_')
+    output_file_png = output_dir / f'family_comparison_{safe_family}_{safe_img}.png'
+    output_file_svg = output_dir / f'family_comparison_{safe_family}_{safe_img}.svg'
+    plt.savefig(output_file_png, dpi=300, bbox_inches='tight')
+    plt.savefig(output_file_svg, format='svg', bbox_inches='tight')
+    print(f"    Saved: {output_file_png}", flush=True)
+    plt.close()
 
 if __name__ == "__main__":
     main()
