@@ -3,9 +3,9 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_train.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_train.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=16000]"
+#BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
-#BSUB -W 12:00
+#BSUB -W 20:00
 #BSUB -q gpul40s
 
 set -euo pipefail
@@ -16,22 +16,22 @@ set -euo pipefail
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav/"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_autoencoder.py"
 LAYOUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
-OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/ae_diffusion_sweep"
+OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/autoencoder_final_32x32x4_vanila"
 
 # =============================================================================
 # CONFIG (fill this in)
 # =============================================================================
-CONFIG_FILE="PATH/TO/CHOSEN/CONFIG.yml"   # <--- replace with your config path
-JOB_NAME="ae_custom"
+CONFIG_FILE="/work3/s233249/ImgiNav/experiments/ae_configs/config_diff_4ch_32x32_vanilla.yml"   # <--- replace with your config path
+JOB_NAME="ae_final"
 
 # =============================================================================
 # TRAINING PARAMETERS
 # =============================================================================
 BATCH_SIZE=32
-EPOCHS=50
+EPOCHS=100
 LEARNING_RATE=0.001
 RESIZE=512
-LAYOUT_MODE="scene"
+LAYOUT_MODE="all"
 LOSS="mse"
 
 # =============================================================================
