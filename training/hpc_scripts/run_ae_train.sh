@@ -27,7 +27,7 @@ JOB_NAME="ae_final"
 # =============================================================================
 # TRAINING PARAMETERS
 # =============================================================================
-BATCH_SIZE=32
+BATCH_SIZE=64
 EPOCHS=100
 LEARNING_RATE=0.001
 RESIZE=512
@@ -78,8 +78,9 @@ python "${PYTHON_SCRIPT}" \
   --outdir "${OUTPUT_DIR}" \
   --layout_mode "${LAYOUT_MODE}" \
   --save_images \
-  --save_every 5 \
-  --keep_only_best
+  --save_every 10 \
+  --keep_only_best \
+  --train_split 0.8
 
 echo "=========================================="
 echo "Training COMPLETE"

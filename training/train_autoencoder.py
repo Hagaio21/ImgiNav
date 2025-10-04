@@ -52,6 +52,36 @@ def get_model_size(model):
     return size_mb
 
 
+def evaluate(model, loader, criterion, device):
+    """Evaluate model on validation set"""
+    model.eval()
+    total_loss = 0.0
+    total_samples = 0
+    batch_losses = []
+    
+    with torch.no_grad():
+        for batch in loader:
+            if batch["layout"] is None:
+                continue
+            
+            imgs = batch["layout"].to(device)
+            batch_size = imgs.size(0)
+            
+            recon = model(imgs)
+            loss = criterion(recon, imgs)
+            
+            batch_loss = loss.item()
+            batch_losses.append(batch_loss)
+            total_loss += batch_loss * batch_size
+            total_samples += batch_size
+    
+    if total_samples == 0:
+        return float('inf'), [], 0
+    
+    avg_loss = total_loss / total_samples
+    return avg_loss, batch_losses, total_samples
+
+
 def train(cfg, args):
     print_separator("=")
     print("AUTOENCODER TRAINING SESSION")
@@ -114,6 +144,7 @@ def train(cfg, args):
     print(f"  Mode: {args.layout_mode}")
     print(f"  Keep empty: {args.keep_empty}")
     print(f"  Return embeddings: False")
+    print(f"  Train/Eval split: {args.train_split:.2%} / {1-args.train_split:.2%}")
     
     # ----- Transform -----
     print(f"\n[TRANSFORM] Setting up data transformations...")
@@ -125,21 +156,45 @@ def train(cfg, args):
     ])
     
     print(f"\n[DATASET] Initializing LayoutDataset...")
-    dataset = LayoutDataset(
+    full_dataset = LayoutDataset(
         args.layout_manifest,
         transform=transform,
         mode=args.layout_mode,
         skip_empty=not args.keep_empty,
         return_embeddings=False
     )
-    print(f"  ✓ Dataset loaded with {len(dataset)} samples")
+    print(f"  ✓ Full dataset loaded with {len(full_dataset)} samples")
     
-    print(f"\n[DATALOADER] Creating DataLoader...")
+    # Split dataset into train and eval
+    print(f"\n[SPLIT] Splitting dataset...")
+    total_size = len(full_dataset)
+    train_size = int(args.train_split * total_size)
+    eval_size = total_size - train_size
+    
+    # Set random seed for reproducibility
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        print(f"  Random seed: {args.seed}")
+    
+    train_dataset, eval_dataset = torch.utils.data.random_split(
+        full_dataset, [train_size, eval_size]
+    )
+    
+    print(f"  ✓ Training set: {len(train_dataset)} samples ({len(train_dataset)/total_size:.1%})")
+    print(f"  ✓ Evaluation set: {len(eval_dataset)} samples ({len(eval_dataset)/total_size:.1%})")
+    
+    print(f"\n[DATALOADER] Creating DataLoaders...")
     print(f"  Batch size: {args.batch_size}")
-    print(f"  Shuffle: True")
-    print(f"  Number of batches: {len(dataset) // args.batch_size}")
-    loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
-    print(f"  ✓ DataLoader ready")
+    print(f"  Training batches: {len(train_dataset) // args.batch_size}")
+    print(f"  Evaluation batches: {len(eval_dataset) // args.batch_size}")
+    
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True
+    )
+    eval_loader = torch.utils.data.DataLoader(
+        eval_dataset, batch_size=args.batch_size, shuffle=False
+    )
+    print(f"  ✓ DataLoaders ready")
     print()
 
     # ----- Training setup -----
@@ -208,6 +263,7 @@ def train(cfg, args):
     
     # Checkpoint saving info
     print(f"\n[CHECKPOINT POLICY]")
+    print(f"  → Best model selection: Based on evaluation loss")
     if args.keep_only_best:
         print(f"  → Only keeping best.pt and last.pt")
     elif args.save_checkpoint_every > 0:
@@ -224,20 +280,21 @@ def train(cfg, args):
     print(f"[TRAINING] Training for {args.epochs} epochs")
     print()
     
-    best_loss = float("inf")
+    best_eval_loss = float("inf")
     total_start_time = time.time()
     
     for epoch in range(args.epochs):
         epoch_start_time = time.time()
         print(f"[EPOCH {epoch+1}/{args.epochs}] " + "="*50)
         
+        # ===== TRAINING PHASE =====
         ae.train()
-        total_loss = 0.0
-        batch_losses = []
+        total_train_loss = 0.0
+        train_batch_losses = []
         num_skipped = 0
         
         # Progress bar for batches
-        pbar = tqdm(loader, desc=f"Epoch {epoch+1}", unit="batch", 
+        pbar = tqdm(train_loader, desc=f"Training {epoch+1}", unit="batch", 
                     bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         
         for batch_idx, batch in enumerate(pbar):
@@ -259,49 +316,83 @@ def train(cfg, args):
             
             # Track loss
             batch_loss = loss.item()
-            batch_losses.append(batch_loss)
-            total_loss += batch_loss * batch_size
+            train_batch_losses.append(batch_loss)
+            total_train_loss += batch_loss * batch_size
             
             # Update progress bar
             pbar.set_postfix({'loss': f'{batch_loss:.4f}', 
-                             'avg_loss': f'{np.mean(batch_losses):.4f}'})
+                             'avg_loss': f'{np.mean(train_batch_losses):.4f}'})
             
             # Verbose batch logging every 10 batches
             if (batch_idx + 1) % 10 == 0:
-                print(f"    Batch {batch_idx+1}/{len(loader)}: "
+                print(f"    Batch {batch_idx+1}/{len(train_loader)}: "
                       f"Loss={batch_loss:.4f}, "
-                      f"Running avg={np.mean(batch_losses):.4f}")
+                      f"Running avg={np.mean(train_batch_losses):.4f}")
         
         pbar.close()
         
-        # Epoch statistics
-        epoch_time = time.time() - epoch_start_time
-        avg_loss = total_loss / len(loader.dataset)
+        # Calculate training statistics
+        avg_train_loss = total_train_loss / len(train_dataset)
         
-        print(f"\n[EPOCH {epoch+1} COMPLETE]")
-        print(f"  → Average Loss: {avg_loss:.6f}")
-        print(f"  → Min batch loss: {min(batch_losses):.6f}")
-        print(f"  → Max batch loss: {max(batch_losses):.6f}")
-        print(f"  → Std batch loss: {np.std(batch_losses):.6f}")
-        print(f"  → Epoch time: {epoch_time:.2f} seconds")
-        print(f"  → Samples/second: {len(dataset)/epoch_time:.2f}")
+        print(f"\n[TRAINING PHASE COMPLETE]")
+        print(f"  → Average Train Loss: {avg_train_loss:.6f}")
+        print(f"  → Min batch loss: {min(train_batch_losses):.6f}")
+        print(f"  → Max batch loss: {max(train_batch_losses):.6f}")
+        print(f"  → Std batch loss: {np.std(train_batch_losses):.6f}")
         if num_skipped > 0:
             print(f"  ⚠ Skipped {num_skipped} empty batches")
         
-        # Check if best model
-        is_best = avg_loss < best_loss
+        # ===== EVALUATION PHASE =====
+        print(f"\n[EVALUATION PHASE]")
+        print(f"  Evaluating on {len(eval_dataset)} samples...")
+        
+        eval_start_time = time.time()
+        avg_eval_loss, eval_batch_losses, eval_samples = evaluate(
+            ae, eval_loader, criterion, device
+        )
+        eval_time = time.time() - eval_start_time
+        
+        if eval_samples > 0:
+            print(f"  → Average Eval Loss: {avg_eval_loss:.6f}")
+            print(f"  → Min batch loss: {min(eval_batch_losses):.6f}")
+            print(f"  → Max batch loss: {max(eval_batch_losses):.6f}")
+            print(f"  → Std batch loss: {np.std(eval_batch_losses):.6f}")
+            print(f"  → Evaluation time: {eval_time:.2f} seconds")
+        else:
+            print(f"  ⚠ No valid evaluation samples!")
+            avg_eval_loss = float('inf')
+        
+        # Epoch statistics
+        epoch_time = time.time() - epoch_start_time
+        
+        print(f"\n[EPOCH {epoch+1} COMPLETE]")
+        print(f"  → Epoch time: {epoch_time:.2f} seconds")
+        print(f"  → Training samples/second: {len(train_dataset)/(epoch_time-eval_time):.2f}")
+        
+        # Check if best model (based on eval loss)
+        is_best = avg_eval_loss < best_eval_loss
         if is_best:
-            print(f"  ★ NEW BEST MODEL! (previous best: {best_loss:.6f})")
-            best_loss = avg_loss
+            improvement = best_eval_loss - avg_eval_loss
+            print(f"  ★ NEW BEST MODEL! Eval loss improved by {improvement:.6f}")
+            print(f"    (previous best: {best_eval_loss:.6f}, new best: {avg_eval_loss:.6f})")
+            best_eval_loss = avg_eval_loss
+        else:
+            diff = avg_eval_loss - best_eval_loss
+            print(f"  → Not best model (eval loss {diff:.6f} above best)")
         
         # Save metrics
         metrics.append({
             "epoch": epoch+1, 
-            "loss": avg_loss,
-            "min_loss": min(batch_losses),
-            "max_loss": max(batch_losses),
-            "std_loss": np.std(batch_losses),
-            "epoch_time": epoch_time
+            "train_loss": avg_train_loss,
+            "eval_loss": avg_eval_loss,
+            "train_min_loss": min(train_batch_losses),
+            "train_max_loss": max(train_batch_losses),
+            "train_std_loss": np.std(train_batch_losses),
+            "eval_min_loss": min(eval_batch_losses) if eval_batch_losses else None,
+            "eval_max_loss": max(eval_batch_losses) if eval_batch_losses else None,
+            "eval_std_loss": np.std(eval_batch_losses) if eval_batch_losses else None,
+            "epoch_time": epoch_time,
+            "eval_time": eval_time
         })
         pd.DataFrame(metrics).to_csv(metrics_path, index=False)
         print(f"  ✓ Metrics saved")
@@ -316,7 +407,7 @@ def train(cfg, args):
         # Save best checkpoint if this is the best epoch
         if is_best:
             torch.save(ae.state_dict(), os.path.join(run_dir, "best.pt"))
-            print(f"  ✓ Updated best.pt (loss={best_loss:.6f})")
+            print(f"  ✓ Updated best.pt (eval_loss={best_eval_loss:.6f})")
         
         # Save numbered checkpoint only if specified
         if args.save_checkpoint_every > 0 and (epoch+1) % args.save_checkpoint_every == 0:
@@ -334,10 +425,10 @@ def train(cfg, args):
             with torch.no_grad():
                 ae.eval()
                 
-                # Get a fresh batch for visualization
-                sample_batch = next(iter(loader))
+                # Get a fresh batch for visualization from eval set
+                sample_batch = next(iter(eval_loader))
                 while sample_batch["layout"] is None:
-                    sample_batch = next(iter(loader))
+                    sample_batch = next(iter(eval_loader))
                 
                 sample_imgs = sample_batch["layout"].to(device)[:8]
                 sample_recon = ae(sample_imgs)
@@ -387,8 +478,9 @@ def train(cfg, args):
     print(f"[SUMMARY]")
     print(f"  Total training time: {total_time/60:.2f} minutes")
     print(f"  Average epoch time: {total_time/args.epochs:.2f} seconds")
-    print(f"  Final loss: {avg_loss:.6f}")
-    print(f"  Best loss: {best_loss:.6f}")
+    print(f"  Final train loss: {avg_train_loss:.6f}")
+    print(f"  Final eval loss: {avg_eval_loss:.6f}")
+    print(f"  Best eval loss: {best_eval_loss:.6f}")
     print(f"  Results directory: {run_dir}")
     print()
     print(f"[FILES SAVED]")
@@ -437,6 +529,12 @@ if __name__ == "__main__":
     parser.add_argument("--loss", type=str, default="mse",
                         choices=["mse", "l1", "huber", "bce"],
                         help="Loss function to use (default: mse)")
+    
+    # dataset split
+    parser.add_argument("--train_split", type=float, default=0.8,
+                        help="Fraction of dataset to use for training (default: 0.8)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for dataset split (default: 42)")
     
     # checkpoint params
     parser.add_argument("--save_checkpoint_every", type=int, default=0,
