@@ -155,6 +155,81 @@ def create_room_layout(
 
 # ---------- Scene Layout Generation ----------
 
+# def create_scene_layout(
+#     scene_dir: Path,
+#     output_path: Path,
+#     color_mode: str = "category",
+#     resolution: int = 512,
+#     margin: int = 10,
+#     height_min: float = None,
+#     height_max: float = None,
+#     point_size: int = 1,
+# ):
+#     """Generate combined layout image for entire scene using taxonomy palette."""
+#     scene_id = scene_dir.name
+#     room_parquets = sorted(scene_dir.rglob("rooms/*/*.parquet"))
+#     if not room_parquets:
+#         print(f"[warn] no room parquets found in {scene_dir}",flush=True)
+#         return
+
+#     # Get reference frame from first room
+#     first_meta = load_room_meta(room_parquets[0].parent)
+#     if first_meta is None:
+#         print(f"[warn] missing metadata for {room_parquets[0]}",flush=True)
+#         return
+#     origin, u, v, n, _, _, _ = extract_frame_from_meta(first_meta)
+
+#     # Collect global bounds
+#     all_u_bounds, all_v_bounds = [], []
+#     for parquet_path in room_parquets:
+#         try:
+#             df = pd.read_parquet(parquet_path, columns=["x", "y", "z"])
+#             xyz = df.to_numpy(dtype=np.float32)
+#             uvh = world_to_local_coords(xyz, origin, u, v, n)
+#             all_u_bounds.extend([uvh[:, 0].min(), uvh[:, 0].max()])
+#             all_v_bounds.extend([uvh[:, 1].min(), uvh[:, 1].max()])
+#         except Exception as e:
+#             print(f"[warn] failed bounds for {parquet_path}: {e}",flush=True)
+
+#     if not all_u_bounds:
+#         print(f"[warn] no usable points in {scene_dir}",flush=True)
+#         return
+#     global_uv_bounds = (min(all_u_bounds), max(all_u_bounds), min(all_v_bounds), max(all_v_bounds))
+
+#     # Render all rooms to single canvas
+#     canvas = np.full((resolution, resolution, 3), 240, dtype=np.uint8)
+#     for parquet_path in room_parquets:
+#         try:
+#             df = pd.read_parquet(parquet_path)
+#             required_cols = {"x", "y", "z", "label_id"}
+#             if not required_cols.issubset(df.columns):
+#                 continue
+
+#             xyz = df[["x", "y", "z"]].to_numpy(dtype=np.float32)
+#             labels = df["label_id"].to_numpy(dtype=np.int32)
+
+#             uvh = world_to_local_coords(xyz, origin, u, v, n)
+#             mask = np.ones(len(xyz), dtype=bool)
+#             if height_min is not None:
+#                 mask &= uvh[:, 2] >= height_min
+#             if height_max is not None:
+#                 mask &= uvh[:, 2] <= height_max
+
+#             u_vals, v_vals = uvh[mask, 0], uvh[mask, 1]
+#             f_labels = labels[mask]
+
+#             x_img, y_img = points_to_image_coords(u_vals, v_vals, global_uv_bounds, resolution, margin)
+#             for lbl, x, y in zip(f_labels, x_img, y_img):
+#                 color = TAXONOMY.get_color(lbl, mode=color_mode)
+#                 draw_point(canvas, x, y, np.array(color, dtype=np.uint8), size=point_size)
+#         except Exception as e:
+#             print(f"[warn] skipping {parquet_path}: {e}",flush=True)
+
+#     safe_mkdir(output_path.parent)
+#     Image.fromarray(canvas).save(output_path)
+
+
+
 def create_scene_layout(
     scene_dir: Path,
     output_path: Path,
@@ -178,6 +253,23 @@ def create_scene_layout(
         print(f"[warn] missing metadata for {room_parquets[0]}",flush=True)
         return
     origin, u, v, n, _, _, _ = extract_frame_from_meta(first_meta)
+
+    # SAVE THE SCENE COORDINATE FRAME TO scene_info.json
+    scene_info_path = scene_dir / f"{scene_id}_scene_info.json"
+    if scene_info_path.exists():
+        # Load existing scene_info
+        scene_info = json.loads(scene_info_path.read_text(encoding="utf-8"))
+    else:
+        scene_info = {}
+    
+    # Add coordinate frame (same frame used to generate layout)
+    scene_info["origin_world"] = origin.tolist()
+    scene_info["u_world"] = u.tolist()
+    scene_info["v_world"] = v.tolist()
+    scene_info["n_world"] = n.tolist()
+    
+    # Save updated scene_info
+    scene_info_path.write_text(json.dumps(scene_info, indent=2), encoding="utf-8")
 
     # Collect global bounds
     all_u_bounds, all_v_bounds = [], []
@@ -227,7 +319,6 @@ def create_scene_layout(
 
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)
-
 # ---------- Discovery Helpers ----------
 
 def discover_rooms(root: Path, pattern: str = None, manifest: Path = None) -> List[Path]:
