@@ -21,6 +21,7 @@ env/
 dataset/
 outputs/
 indexes/
+notebooks/
 logs/
 src/layout_generator.egg-info
 # Environment variables file
