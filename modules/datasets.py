@@ -41,12 +41,14 @@ class LayoutDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.entries[idx]
-        path = row["layout_path"]
 
         try:
             if self.return_embeddings:
+                # Use embedding_path if available, otherwise fall back to layout_path
+                path = row.get("embedding_path", row["layout_path"])
                 layout = load_embedding(path)
             else:
+                path = row["layout_path"]
                 layout = load_image(path, self.transform)
         except Exception:
             # skip only broken or unreadable files
@@ -56,7 +58,7 @@ class LayoutDataset(Dataset):
             "scene_id": row["scene_id"],
             "room_id": row["room_id"],
             "type": row["type"],
-            "is_empty": row["is_empty"],  # metadata only
+            "is_empty": row["is_empty"],
             "path": path,
             "layout": layout,
         }

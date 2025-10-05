@@ -8,7 +8,7 @@ experiment:
 
 # U-Net Configuration
 unet:
-  config_path: configs/unet_medium.yaml
+  config_path: /work3/s233249/ImgiNav/ImgiNav/config/base_unet_small.yml
 
 # Noise Scheduler
 scheduler:
@@ -17,12 +17,12 @@ scheduler:
 
 # Autoencoder (for generating samples during training)
 autoencoder:
-  config_path: configs/autoencoder.yaml
-  checkpoint_path: checkpoints/autoencoder_best.pt
+  config_path: /work3/s233249/ImgiNav/experiments/ae_configs/config_diff_4ch_64x64_vanilla.yml
+  checkpoint_path: /work3/s233249/ImgiNav/experiments/autoencoder_final_64x64x4_vanila/20251004-082051_ae_final/best.pt
 
 # Dataset
 dataset:
-  manifest_path: indexes/layouts.csv
+  manifest_path: /work3/s233249/ImgiNav/datasets/layout_manifest_with_emb.csv
 
 # Latent shape (C, H, W)
 latent_shape: [4, 64, 64]
