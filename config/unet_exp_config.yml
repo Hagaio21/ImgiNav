@@ -2,9 +2,9 @@
 # This file contains all parameters needed to run/resume training
 
 experiment:
-  exp_dir: experiments/diffusion_medium_001
-  name: "Diffusion Medium - Run 001"
-  description: "Training diffusion model with medium U-Net"
+  exp_dir: experiments/diffusion_small_001
+  name: "Diffusion small - Run 001"
+  description: "Training diffusion model with small U-Net"
 
 # U-Net Configuration
 unet:
@@ -13,7 +13,7 @@ unet:
 # Noise Scheduler
 scheduler:
   type: CosineScheduler  # LinearScheduler, CosineScheduler, SquaredCosineScheduler, etc.
-  num_steps: 500
+  num_steps: 200
 
 # Autoencoder (for generating samples during training)
 autoencoder:
@@ -30,7 +30,7 @@ latent_shape: [4, 64, 64]
 # Training Parameters
 training:
   batch_size: 32
-  num_epochs: 100
+  num_epochs: 30
   learning_rate: 0.0001
   sample_every: 5      # Generate samples every N epochs
   num_samples: 4      # Number of samples to generate
