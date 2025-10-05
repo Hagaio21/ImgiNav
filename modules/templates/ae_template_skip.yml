@@ -1,0 +1,45 @@
+encoder:
+  in_channels: 3
+  image_size: 512
+  latent_dim: ${LATENT_DIM}
+  latent_channels: ${LATENT_CHANNELS}
+  latent_base: ${LATENT_BASE}
+  global_norm: null
+  global_act: null
+  global_dropout: 0.0
+  layers:
+    - out_channels: ${CH1}
+      kernel_size: 3
+      stride: 2
+      padding: 1
+      norm: batch
+      act: relu
+      dropout: 0.1
+    - out_channels: ${CH2}
+      kernel_size: 3
+      stride: 2
+      padding: 1
+      norm: batch
+      act: relu
+      dropout: 0.1
+    - out_channels: ${CH3}
+      kernel_size: 3
+      stride: 2
+      padding: 1
+      norm: batch
+      act: relu
+      dropout: 0.1
+    - out_channels: ${CH4}
+      kernel_size: 3
+      stride: 2
+      padding: 1
+      norm: batch
+      act: relu
+      dropout: 0.1
+
+decoder:
+  out_channels: 3
+  image_size: 512
+  latent_dim: ${LATENT_DIM}
+  latent_channels: ${LATENT_CHANNELS}
+  latent_base: ${LATENT_BASE}
