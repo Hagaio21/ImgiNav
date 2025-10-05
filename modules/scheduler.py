@@ -10,12 +10,19 @@ class NoiseScheduler(ABC):
     @abstractmethod
     def build_schedule(self, num_steps):
         pass
+    
+    def to(self, device):
+        """Move scheduler tensors to device"""
+        self.alphas = self.alphas.to(device)
+        self.betas = self.betas.to(device)
+        self.alpha_bars = self.alpha_bars.to(device)
+        return self
 
     def add_noise(self, x0, t, noise):
-        sqrt_alpha_bar = self.alpha_bars[t].sqrt()
-        sqrt_one_minus = (1 - self.alpha_bars[t]).sqrt()
+        # Reshape for broadcasting: [B] -> [B, 1, 1, 1]
+        sqrt_alpha_bar = self.alpha_bars[t].sqrt().view(-1, 1, 1, 1)
+        sqrt_one_minus = (1 - self.alpha_bars[t]).sqrt().view(-1, 1, 1, 1)
         return sqrt_alpha_bar * x0 + sqrt_one_minus * noise, noise
-
 
 class LinearScheduler(NoiseScheduler):
     def build_schedule(self, num_steps):

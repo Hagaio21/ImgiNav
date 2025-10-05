@@ -284,7 +284,7 @@ def main():
     print(f"Loading {scheduler_type} with {scheduler_steps} steps", flush=True)
     scheduler_class = globals()[scheduler_type]
     scheduler = scheduler_class(num_steps=scheduler_steps)
-    
+    scheduler.to(device)
     # Load Autoencoder (for sampling only)
     print(f"Loading Autoencoder from {autoencoder_config}", flush=True)
     autoencoder = AutoEncoder.from_config(autoencoder_config)
