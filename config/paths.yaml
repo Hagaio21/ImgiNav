@@ -1,8 +1,0 @@
-
-model_dir: /dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT/3D-FUTURE-model
-model_info: /dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT/3D-FUTURE-model/model_info.json
-scene_list: /path/to/scene_to_process.json
-scene_dir: /dtu/datasets2/ScanNet/FutureFront3D/3D-FRONT/ 
-taxonomy: "/zhome/62/5/203350/ws/ImgiNav/config/taxonomy.json"
-dataset-root: "/work3/s233249/ImgiNav/datasets/scenes"
-manifeset-output:
