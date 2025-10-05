@@ -38,7 +38,7 @@ def load_taxonomy(tax_path: Path):
                 "label": super_label
             }
     
-    print(f"Loaded {len(color_to_label)} taxonomy colors (super categories + wall)")
+    print(f"Loaded {len(color_to_label)} taxonomy colors (super categories + wall)", flush=True)
     return color_to_label
 
 def find_layouts(root: Path | None, manifest: Path | None):
@@ -93,7 +93,7 @@ def extract_color_regions(img, color_to_label):
     # Get unique colors in the image
     unique_colors = np.unique(img.reshape(-1, 3), axis=0)
     
-    print(f"  Found {len(unique_colors)} unique colors in image")
+    print(f"  Found {len(unique_colors)} unique colors in image", flush=True)
     
     # For each unique color, check if it matches a taxonomy color
     for color in unique_colors:
@@ -110,9 +110,9 @@ def extract_color_regions(img, color_to_label):
             ys, xs = np.nonzero(mask)
             points = list(zip(xs, ys))
             color_masks[color_t] = points
-            print(f"  Matched color {color_t} ({color_to_label[color_t]['label']}): {len(points)} pixels")
+            print(f"  Matched color {color_t} ({color_to_label[color_t]['label']}): {len(points)} pixels", flush=True)
         else:
-            print(f"  Skipping unknown color {color_t}")
+            print(f"  Skipping unknown color {color_t}", flush=True)
     
     return color_masks
 
@@ -227,13 +227,13 @@ def visualize(img, room_center, nodes, edges, out_path):
     # Convert back to BGR for saving with OpenCV
     vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
     cv2.imwrite(str(out_path), vis_bgr)
-    print(f"  ↳ saved visualization {out_path}")
+    print(f"  ↳ saved visualization {out_path}", flush=True)
 
 # ------------------------------------------------------------
 def build_room_graph(scene_id, room_id, layout_path, color_to_label):
     img = cv2.imread(str(layout_path))
     if img is None:
-        print(f"[warn] cannot read {layout_path}")
+        print(f"[warn] cannot read {layout_path}", flush=True)
         return None
     
     # Convert BGR to RGB (OpenCV loads as BGR, taxonomy is RGB)
@@ -246,7 +246,7 @@ def build_room_graph(scene_id, room_id, layout_path, color_to_label):
 
     # Extract color regions with exact matching
     color_regions = extract_color_regions(img, color_to_label)
-    print(f"  Found {len(color_regions)} distinct taxonomy colors")
+    print(f"  Found {len(color_regions)} distinct taxonomy colors", flush=True)
 
     nodes = []
     node_id = 0
@@ -258,7 +258,7 @@ def build_room_graph(scene_id, room_id, layout_path, color_to_label):
     for tax_color, points in color_regions.items():
         label_info = color_to_label[tax_color]
         clusters = find_color_clusters(points, linkage_thresh=15)
-        print(f"  Color {tax_color} ({label_info['label']}): {len(clusters)} clusters from {len(points)} pixels")
+        print(f"  Color {tax_color} ({label_info['label']}): {len(clusters)} clusters from {len(points)} pixels", flush=True)
         
         for ci, cluster in enumerate(clusters):
             centroid = cluster.mean(axis=0)
@@ -274,7 +274,7 @@ def build_room_graph(scene_id, room_id, layout_path, color_to_label):
             node_clusters[node_key] = cluster
             node_id += 1
 
-    print(f"  Total nodes created: {len(nodes)}")
+    print(f"  Total nodes created: {len(nodes)}", flush=True)
 
     from scipy.spatial.distance import cdist
     
@@ -352,7 +352,7 @@ def build_room_graph(scene_id, room_id, layout_path, color_to_label):
     out_vis = layout_path.with_name(f"{scene_id}_{room_id}_graph_vis.png")
     out_json.write_text(json.dumps(graph, indent=2), encoding="utf-8")
     visualize(img, room_center, nodes, edges, out_vis)
-    print(f"✔ wrote {out_json}")
+    print(f"✔ wrote {out_json}", flush=True)
     return graph
 
 # ------------------------------------------------------------
@@ -380,7 +380,7 @@ def main():
     layouts = find_layouts(Path(args.in_dir) if args.in_dir else None, 
                           Path(args.manifest) if args.manifest else None)
     if not layouts:
-        print("No layouts found.")
+        print("No layouts found.", flush=True)
         return
 
     for sid, rid, layout_path in layouts:

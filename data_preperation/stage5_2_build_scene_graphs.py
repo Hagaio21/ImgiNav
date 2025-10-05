@@ -27,12 +27,12 @@ def find_scene_pointclouds(root: Path, manifest: Path = None):
     if manifest and manifest.exists():
         with open(manifest, newline='', encoding='utf-8') as f:
             for row in csv.DictReader(f):
-                if row.get("category") != "scene_parquet":
-                    continue
+                # Accept your existing scene_list.csv format
                 scene_id = row["scene_id"]
-                pc_path = Path(row["file_path"])
+                pc_path = Path(row["parquet_file_path"])
                 if pc_path.exists():
                     scenes.append((scene_id, pc_path))
+
     else:
         for pc_path in root.rglob("*_sem_pointcloud.parquet"):
             scene_id = pc_path.stem.replace("_sem_pointcloud", "")
@@ -45,7 +45,7 @@ def extract_room_data(pc_path: Path, id2room: dict):
     df = pd.read_parquet(pc_path)
     
     if "room_id" not in df.columns:
-        print(f"[warn] No room_id column in {pc_path}")
+        print(f"[warn] No room_id column in {pc_path}", flush=True)
         return []
     
     rooms = []
@@ -117,14 +117,14 @@ def angle_from_center(center, point):
 
 def build_scene_graph(scene_id, pc_path, id2room, dataset_root):
     """Build scene graph from point cloud."""
-    print(f"\nProcessing: {scene_id}")
+    print(f"\nProcessing: {scene_id}", flush=True)
     
     rooms = extract_room_data(pc_path, id2room)
     if len(rooms) == 0:
-        print(f"[warn] No rooms found")
+        print(f"[warn] No rooms found", flush=True)
         return None
     
-    print(f"  Found {len(rooms)} rooms")
+    print(f"  Found {len(rooms)} rooms", flush=True)
     
     scene_center = compute_scene_center([r["floor_centroid_xy"] for r in rooms])
     
@@ -187,7 +187,7 @@ def build_scene_graph(scene_id, pc_path, id2room, dataset_root):
     # Save
     output_json = pc_path.parent / f"{scene_id}_scene_graph.json"
     output_json.write_text(json.dumps(scene_graph, indent=2), encoding="utf-8")
-    print(f"  ✔ Saved scene graph")
+    print(f"  ✔ Saved scene graph", flush=True)
     
     return scene_graph
 
@@ -202,14 +202,14 @@ def visualize_scene_graph(scene_id, dataset_root):
     layout_path = scene_dir / "layouts" / f"{scene_id}_scene_layout.png"
     
     if not all([scene_graph_path.exists(), scene_info_path.exists(), layout_path.exists()]):
-        print(f"  [skip] Missing files for visualization")
+        print(f"  [skip] Missing files for visualization", flush=True)
         return
     
     scene_graph = json.loads(scene_graph_path.read_text(encoding="utf-8"))
     scene_info = json.loads(scene_info_path.read_text(encoding="utf-8"))
     
     if "origin_world" not in scene_info:
-        print(f"  [skip] No coordinate frame in scene_info")
+        print(f"  [skip] No coordinate frame in scene_info", flush=True)
         return
     
     # Load coordinate frame
@@ -227,7 +227,7 @@ def visualize_scene_graph(scene_id, dataset_root):
     # Load image
     img = cv2.imread(str(layout_path))
     if img is None:
-        print(f"  [skip] Cannot read layout")
+        print(f"  [skip] Cannot read layout", flush=True)
         return
     
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -311,7 +311,7 @@ def visualize_scene_graph(scene_id, dataset_root):
     output_path = scene_dir / "layouts" / f"{scene_id}_scene_graph_vis.png"
     output_path.parent.mkdir(exist_ok=True)
     cv2.imwrite(str(output_path), cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
-    print(f"  ✔ Saved visualization")
+    print(f"  ✔ Saved visualization", flush=True)
 
 
 def main():
@@ -327,14 +327,14 @@ def main():
     manifest_path = Path(args.manifest) if args.manifest else None
     
     scenes = find_scene_pointclouds(dataset_root, manifest_path)
-    print(f"Found {len(scenes)} scenes\n")
+    print(f"Found {len(scenes)} scenes\n", flush=True)
     
     for scene_id, pc_path in scenes:
         try:
             build_scene_graph(scene_id, pc_path, id2room, dataset_root)
             visualize_scene_graph(scene_id, dataset_root)
         except Exception as e:
-            print(f"[error] {scene_id}: {e}")
+            print(f"[error] {scene_id}: {e}", flush=True)
 
 
 if __name__ == "__main__":

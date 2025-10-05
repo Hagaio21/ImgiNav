@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 import argparse
-import os
+import os, sys
 from pathlib import Path
 import pandas as pd
-import tqdm
+from tqdm import tqdm
 
 
 import torch
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
 
-from modules.datasets import LayoutDataset
-from modules.autoencoder import AutoEncoder
+sys.path.append(str(Path(__file__).parent.parent / "modules"))
+from datasets import LayoutDataset, collate_skip_none
+from autoencoder import AutoEncoder
+
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -39,18 +41,28 @@ def main():
 
     # --- Transform (match training setup) ---
     transform = T.Compose([
-        T.Resize((128, 128)),  # adjust if config differs
+        T.Resize((512, 512)),  # adjust if config differs
         T.ToTensor()
     ])
 
     # --- Dataset + Loader ---
     ds = LayoutDataset(args.manifest, transform=transform, mode="all", skip_empty=False, return_embeddings=False)
-    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    dl = DataLoader(
+                    ds,
+                    batch_size=args.batch_size,
+                    shuffle=False,
+                    num_workers=args.num_workers,
+                    collate_fn=collate_skip_none
+                    )
 
     # --- Prepare manifest update ---
     df = pd.read_csv(args.manifest)
+    df = pd.read_csv(args.manifest)
     if "embedding_path" not in df.columns:
         df["embedding_path"] = None
+    if "embedding_dim" not in df.columns:
+        df["embedding_dim"] = None
+
 
     # --- Encode and save with progress bar ---
     total = len(ds)
@@ -81,13 +93,14 @@ def main():
 
                 if args.format == "pt":
                     torch.save(emb, out_path)
+                    emb_dim = emb.numel()
                 else:
                     import numpy as np
                     np.save(out_path.with_suffix(".npy"), emb.numpy())
 
                 mask = (df["scene_id"] == scene_id) & (df["room_id"] == room_id) & (df["type"] == typ)
                 df.loc[mask, "embedding_path"] = str(out_path.resolve())
-
+                df.loc[mask, "embedding_dim"] = emb_dim
                 pbar.update(1)
 
         pbar.close()

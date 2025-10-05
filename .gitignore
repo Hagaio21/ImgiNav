@@ -20,6 +20,7 @@ env/
 # Ignore large data and output files from version control
 dataset/
 outputs/
+indexes/
 logs/
 src/layout_generator.egg-info
 # Environment variables file

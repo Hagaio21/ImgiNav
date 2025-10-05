@@ -16,6 +16,8 @@ def load_image(path, transform=None):
 def load_embedding(path):
     return torch.load(path) if path.endswith(".pt") else torch.from_numpy(np.load(path))
 
+
+
 # ---------- Layout Dataset ----------
 
 class LayoutDataset(Dataset):
@@ -39,23 +41,25 @@ class LayoutDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.entries[idx]
-        sample = {
+        path = row["layout_path"]
+
+        try:
+            if self.return_embeddings:
+                layout = load_embedding(path)
+            else:
+                layout = load_image(path, self.transform)
+        except Exception:
+            # skip only broken or unreadable files
+            return None
+
+        return {
             "scene_id": row["scene_id"],
             "room_id": row["room_id"],
             "type": row["type"],
-            "is_empty": row["is_empty"],
-            "path": row["layout_path"]
+            "is_empty": row["is_empty"],  # metadata only
+            "path": path,
+            "layout": layout,
         }
-
-        if not row["is_empty"]:
-            if self.return_embeddings:
-                sample["layout"] = load_embedding(row["layout_path"])
-            else:
-                sample["layout"] = load_image(row["layout_path"], self.transform)
-        else:
-            sample["layout"] = None
-
-        return sample
 
 # ---------- POV Dataset ----------
 
@@ -144,6 +148,17 @@ def make_dataloaders(layout_manifest, pov_manifest, graph_manifest, batch_size=3
     return layout_loader, pov_loader, graph_loader
 
 
+from torch.utils.data._utils.collate import default_collate
+
+def collate_skip_none(batch):
+    batch = [b for b in batch if b is not None and b.get("layout") is not None]
+    if not batch:
+        return None
+    return default_collate(batch)
+
+
+
+
 def main():
     import os
     import torchvision.transforms as T
@@ -202,6 +217,9 @@ def main():
     print("Layout batch keys:", batch.keys())
     if "layout" in batch:
         print("Layout batch tensor shape:", batch["layout"].shape)
+
+
+
 
 
 if __name__ == "__main__":
