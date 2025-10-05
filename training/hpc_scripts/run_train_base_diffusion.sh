@@ -14,12 +14,12 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav/"
-PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
+PYTHON_SCRIPT="${BASE_DIR}/training/train_base_diffusion.py"
 
 # =============================================================================
 # CONFIG (fill this in)
 # =============================================================================
-EXP_CONFIG="/work3/s233249/ImgiNav/experiments/diffusion_configs/experiment_config_medium.yaml"
+EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/unet_exp_config.yml
 
 # =============================================================================
 # RESUME FLAG (uncomment to resume training)
@@ -58,6 +58,9 @@ echo "Experiment Config: ${EXP_CONFIG}"
 echo "Resume: ${RESUME_FLAG:-false}"
 echo "Start: $(date)"
 echo "=========================================="
+
+export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
+cd "${BASE_DIR}"
 
 if [ -n "$RESUME_FLAG" ]; then
   python "${PYTHON_SCRIPT}" \
