@@ -1,0 +1,11 @@
+scheduler:
+  type: CosineScheduler
+  num_steps: 1000
+
+unet_config: configs/unet_medium.yaml
+unet_checkpoint: checkpoints/unet.pt  # optional
+
+autoencoder_config: configs/autoencoder.yaml
+autoencoder_checkpoint: checkpoints/autoencoder.pt
+
+latent_shape: [4, 64, 64]

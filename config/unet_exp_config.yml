@@ -1,0 +1,45 @@
+# Experiment Configuration
+# This file contains all parameters needed to run/resume training
+
+experiment:
+  exp_dir: experiments/diffusion_medium_001
+  name: "Diffusion Medium - Run 001"
+  description: "Training diffusion model with medium U-Net"
+
+# U-Net Configuration
+unet:
+  config_path: configs/unet_medium.yaml
+
+# Noise Scheduler
+scheduler:
+  type: CosineScheduler  # LinearScheduler, CosineScheduler, SquaredCosineScheduler, etc.
+  num_steps: 500
+
+# Autoencoder (for generating samples during training)
+autoencoder:
+  config_path: configs/autoencoder.yaml
+  checkpoint_path: checkpoints/autoencoder_best.pt
+
+# Dataset
+dataset:
+  manifest_path: indexes/layouts.csv
+
+# Latent shape (C, H, W)
+latent_shape: [4, 64, 64]
+
+# Training Parameters
+training:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 0.0001
+  sample_every: 5      # Generate samples every N epochs
+  num_samples: 4      # Number of samples to generate
+
+# Notes:
+# - To start training: python train_diffusion.py --exp_config experiment_config.yaml
+# - To resume training: python train_diffusion.py --exp_config experiment_config.yaml --resume
+# - Experiment directory will contain:
+#     checkpoints/    (latest.pt, best.pt, epoch_*.pt)
+#     samples/        (generated images per epoch)
+#     configs/        (copy of unet config)
+#     experiment_config.yaml (copy of this file)
