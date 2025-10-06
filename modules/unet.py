@@ -65,9 +65,16 @@ class ResidualBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
 
         self.time_proj = nn.Linear(time_dim, out_ch)
-
-        self.norm1 = nn.BatchNorm2d(out_ch) if norm == "batch" else nn.Identity()
-        self.norm2 = nn.BatchNorm2d(out_ch) if norm == "batch" else nn.Identity()
+        if norm == 'batch':
+            self.norm1 = nn.BatchNorm2d(out_ch) if norm == "batch" else nn.Identity()
+            self.norm2 = nn.BatchNorm2d(out_ch) if norm == "batch" else nn.Identity()
+        elif norm == "group":
+            num_groups = min(32, out_ch // 4) if out_ch >= 8 else 1
+            self.norm1 = nn.GroupNorm(num_groups=num_groups, num_channels=out_ch)
+            self.norm2 = nn.GroupNorm(num_groups=num_groups, num_channels=out_ch)
+        else:
+            self.norm1 = nn.Identity()
+            self.norm2 = nn.Identity()
 
         if act == "relu":
             self.act = nn.ReLU(inplace=True)

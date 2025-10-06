@@ -6,5 +6,5 @@
   depth: 5
   num_res_blocks: 3
   time_dim: 512
-  norm: batch
+  norm: group
   act: relu
