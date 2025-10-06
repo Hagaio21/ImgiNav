@@ -34,6 +34,7 @@ training:
   learning_rate: 0.0001
   sample_every: 5      # Generate samples every N epochs
   num_samples: 9      # Number of samples to generate
+  periodic_checkpoint_every: 10  # Save lightweight checkpoint every N epochs
 
 # Notes:
 # - To start training: python train_diffusion.py --exp_config experiment_config.yaml

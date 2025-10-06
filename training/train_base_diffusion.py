@@ -86,9 +86,14 @@ def load_checkpoint(checkpoint_path, unet, optimizer, scheduler_lr):
     return epoch, best_loss, training_stats
 
 
-def save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, loss, best_loss, training_stats, is_best=False):
-    """Save checkpoint"""
-    checkpoint = {
+def save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, loss, best_loss, training_stats, is_best=False, save_periodic=False):
+    """Save latest, best, and optional periodic checkpoints."""
+    ckpt_dir = exp_dir / 'checkpoints'
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Full checkpoint for resuming (latest only) ---
+    latest_path = ckpt_dir / 'latest.pt'
+    torch.save({
         'epoch': epoch,
         'unet_state_dict': unet.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
@@ -96,23 +101,31 @@ def save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, loss, best_lo
         'loss': loss,
         'best_loss': best_loss,
         'training_stats': training_stats,
-    }
-    
-    # Save latest
-    latest_path = exp_dir / 'checkpoints' / 'latest.pt'
-    torch.save(checkpoint, latest_path)
-    
-    # Save best
+    }, latest_path)
+
+    # --- Full checkpoint for best model ---
     if is_best:
-        best_path = exp_dir / 'checkpoints' / 'best.pt'
-        torch.save(checkpoint, best_path)
+        best_path = ckpt_dir / 'best.pt'
+        torch.save({
+            'epoch': epoch,
+            'unet_state_dict': unet.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler_lr.state_dict() if scheduler_lr else None,
+            'loss': loss,
+            'best_loss': best_loss,
+            'training_stats': training_stats,
+        }, best_path)
         print(f"Saved best checkpoint with loss: {loss:.6f}", flush=True)
     
-    # Save periodic
-    if (epoch + 1) % 10 == 0:
-        periodic_path = exp_dir / 'checkpoints' / f'epoch_{epoch+1}.pt'
-        torch.save(checkpoint, periodic_path)
-
+    # --- Lightweight periodic checkpoint (model only) ---
+    if save_periodic:
+        periodic_path = ckpt_dir / f'epoch_{epoch+1}.pt'
+        torch.save({
+            'epoch': epoch,
+            'unet_state_dict': unet.state_dict(),
+            'loss': loss,
+        }, periodic_path)
+        print(f"Saved periodic checkpoint (model only) at epoch {epoch+1}", flush=True)
 
 def save_training_stats(exp_dir, training_stats):
     """Save training statistics to JSON and generate plots"""
@@ -406,9 +419,13 @@ def main():
         is_best = avg_val_loss < best_loss
         if is_best:
             best_loss = avg_val_loss
-        
-        save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, avg_val_loss, best_loss, training_stats, is_best)
-        
+
+        # Save periodic lightweight checkpoint every N epochs
+        save_periodic = (epoch + 1) % 10 == 0  # or whatever interval you want
+
+        save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, avg_val_loss, 
+                        best_loss, training_stats, is_best, save_periodic)
+                        
         # Save training stats
         save_training_stats(exp_dir, training_stats)
         
