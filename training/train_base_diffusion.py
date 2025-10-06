@@ -210,40 +210,34 @@ def generate_samples(unet, scheduler, autoencoder, exp_dir, epoch, num_samples, 
         t_batch = torch.full((num_samples,), t, device=device, dtype=torch.long)
         noise_pred = unet(latents, t_batch, cond=None)
         
-        alpha_bar = scheduler.alpha_bars[t].item()  # Get scalar value
-        
         if t > 0:
-            alpha_bar_prev = scheduler.alpha_bars[t - 1].item()
-            beta = scheduler.betas[t].item()
+            # Standard DDPM sampling step
+            alpha_t = scheduler.alphas[t]
+            alpha_bar_t = scheduler.alpha_bars[t]
+            alpha_bar_prev = scheduler.alpha_bars[t - 1]
+            beta_t = scheduler.betas[t]
             
-            # Add epsilon for numerical stability
-            eps = 1e-8
-            sqrt_alpha_bar = torch.sqrt(torch.tensor(alpha_bar + eps, device=device))
-            sqrt_one_minus = torch.sqrt(torch.tensor(1 - alpha_bar + eps, device=device))
+            # Predict x_0
+            pred_x0 = (latents - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+            pred_x0 = torch.clamp(pred_x0, -3, 3)  # Clamp to reasonable range
             
-            pred_x0 = (latents - sqrt_one_minus * noise_pred) / sqrt_alpha_bar
-            pred_x0 = torch.clamp(pred_x0, -10, 10)  # Prevent explosion
+            # Compute direction pointing to x_t
+            dir_xt = torch.sqrt(1 - alpha_bar_prev) * noise_pred
             
-            sqrt_alpha_bar_prev = torch.sqrt(torch.tensor(alpha_bar_prev + eps, device=device))
-            sigma = torch.sqrt(torch.tensor(beta + eps, device=device))
-            noise = torch.randn_like(latents)
+            # Compute x_{t-1}
+            latents = torch.sqrt(alpha_bar_prev) * pred_x0 + dir_xt
             
-            sqrt_term = torch.sqrt(torch.tensor((1 - alpha_bar_prev - sigma**2).clamp(min=0) + eps, device=device))
-            
-            latents = (
-                sqrt_alpha_bar_prev * pred_x0 +
-                sqrt_term * noise_pred +
-                sigma * noise
-            )
+            # Add noise
+            if t > 1:
+                noise = torch.randn_like(latents)
+                latents = latents + torch.sqrt(beta_t) * noise
         else:
-            eps = 1e-8
-            sqrt_alpha_bar = torch.sqrt(torch.tensor(alpha_bar + eps, device=device))
-            sqrt_one_minus = torch.sqrt(torch.tensor(1 - alpha_bar + eps, device=device))
-            latents = (latents - sqrt_one_minus * noise_pred) / sqrt_alpha_bar
-    
-    # Print stats before decoding
-    print(f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, mean: {latents.mean():.4f}, std: {latents.std():.4f}", flush=True)
-    
+            # Final step: just predict x_0
+            alpha_bar_t = scheduler.alpha_bars[t]
+            latents = (latents - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+        # Print stats before decoding
+        print(f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, mean: {latents.mean():.4f}, std: {latents.std():.4f}", flush=True)
+        
     # Decode
     images = autoencoder.decoder(latents)
     
@@ -425,7 +419,7 @@ def main():
 
         save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, avg_val_loss, 
                         best_loss, training_stats, is_best, save_periodic)
-                        
+
         # Save training stats
         save_training_stats(exp_dir, training_stats)
         
