@@ -19,7 +19,7 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_base_diffusion.py"
 # =============================================================================
 # CONFIG (fill this in)
 # =============================================================================
-EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/unet_exp_config.yml
+EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/unet_exp_config_medium.yml
 
 # =============================================================================
 # RESUME FLAG (uncomment to resume training)

@@ -8,6 +8,7 @@ from datetime import datetime
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.data import random_split
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
@@ -17,6 +18,7 @@ from modules.scheduler import *
 from modules.autoencoder import AutoEncoder
 from modules.datasets import LayoutDataset
 
+torch.manual_seed(1)
 
 def load_experiment_config(config_path):
     """Load experiment config from YAML"""
@@ -128,9 +130,10 @@ def save_training_stats(exp_dir, training_stats):
         
         # Loss plot
         axes[0].plot(training_stats['epochs'], training_stats['train_loss'], label='Train Loss')
+        axes[0].plot(training_stats['epochs'], training_stats['val_loss'], label='Val Loss')
         axes[0].set_xlabel('Epoch')
         axes[0].set_ylabel('Loss')
-        axes[0].set_title('Training Loss')
+        axes[0].set_title('Training and Validation Loss')
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         
@@ -153,6 +156,32 @@ def save_training_stats(exp_dir, training_stats):
 
 
 @torch.no_grad()
+def validate(unet, scheduler, dataloader, device):
+    """Compute validation loss"""
+    unet.eval()
+    total_loss = 0
+    
+    for batch in dataloader:
+        if batch is None:
+            continue
+        
+        latents = batch['layout'].to(device)
+        B = latents.shape[0]
+        
+        t = torch.randint(0, scheduler.num_steps, (B,), device=device)
+        noise = torch.randn_like(latents)
+        noisy_latents, _ = scheduler.add_noise(latents, t, noise)
+        
+        noise_pred = unet(noisy_latents, t, cond=None)
+        loss = F.mse_loss(noise_pred, noise)
+        
+        total_loss += loss.item()
+    
+    avg_loss = total_loss / len(dataloader)
+    unet.train()
+    return avg_loss
+
+@torch.no_grad()
 def generate_samples(unet, scheduler, autoencoder, exp_dir, epoch, num_samples, latent_shape, device):
     """Generate and save sample images"""
     unet.eval()
@@ -164,26 +193,43 @@ def generate_samples(unet, scheduler, autoencoder, exp_dir, epoch, num_samples, 
     # Denoise
     timesteps = torch.linspace(scheduler.num_steps - 1, 0, scheduler.num_steps, dtype=torch.long, device=device)
     
-    for t in tqdm(timesteps, desc="Sampling", leave=False):
+    for i, t in enumerate(timesteps):
         t_batch = torch.full((num_samples,), t, device=device, dtype=torch.long)
         noise_pred = unet(latents, t_batch, cond=None)
         
-        alpha_bar = scheduler.alpha_bars[t]
+        alpha_bar = scheduler.alpha_bars[t].item()  # Get scalar value
         
         if t > 0:
-            alpha_bar_prev = scheduler.alpha_bars[t - 1]
-            beta = scheduler.betas[t]
+            alpha_bar_prev = scheduler.alpha_bars[t - 1].item()
+            beta = scheduler.betas[t].item()
             
-            pred_x0 = (latents - torch.sqrt(1 - alpha_bar) * noise_pred) / torch.sqrt(alpha_bar)
-            sigma = torch.sqrt(beta)
+            # Add epsilon for numerical stability
+            eps = 1e-8
+            sqrt_alpha_bar = torch.sqrt(torch.tensor(alpha_bar + eps, device=device))
+            sqrt_one_minus = torch.sqrt(torch.tensor(1 - alpha_bar + eps, device=device))
+            
+            pred_x0 = (latents - sqrt_one_minus * noise_pred) / sqrt_alpha_bar
+            pred_x0 = torch.clamp(pred_x0, -10, 10)  # Prevent explosion
+            
+            sqrt_alpha_bar_prev = torch.sqrt(torch.tensor(alpha_bar_prev + eps, device=device))
+            sigma = torch.sqrt(torch.tensor(beta + eps, device=device))
             noise = torch.randn_like(latents)
+            
+            sqrt_term = torch.sqrt(torch.tensor((1 - alpha_bar_prev - sigma**2).clamp(min=0) + eps, device=device))
+            
             latents = (
-                torch.sqrt(alpha_bar_prev) * pred_x0 +
-                torch.sqrt(1 - alpha_bar_prev - sigma**2) * noise_pred +
+                sqrt_alpha_bar_prev * pred_x0 +
+                sqrt_term * noise_pred +
                 sigma * noise
             )
         else:
-            latents = (latents - torch.sqrt(1 - alpha_bar) * noise_pred) / torch.sqrt(alpha_bar)
+            eps = 1e-8
+            sqrt_alpha_bar = torch.sqrt(torch.tensor(alpha_bar + eps, device=device))
+            sqrt_one_minus = torch.sqrt(torch.tensor(1 - alpha_bar + eps, device=device))
+            latents = (latents - sqrt_one_minus * noise_pred) / sqrt_alpha_bar
+    
+    # Print stats before decoding
+    print(f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, mean: {latents.mean():.4f}, std: {latents.std():.4f}", flush=True)
     
     # Decode
     images = autoencoder.decoder(latents)
@@ -195,7 +241,6 @@ def generate_samples(unet, scheduler, autoencoder, exp_dir, epoch, num_samples, 
     print(f"Saved samples to {sample_path}", flush=True)
     
     unet.train()
-
 
 
 def train_epoch(unet, scheduler, dataloader, optimizer, device, epoch):
@@ -302,15 +347,16 @@ def main():
         skip_empty=True,
         return_embeddings=True
     )
-    
+    train_size = int(0.9 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}", flush=True)
+
     from modules.datasets import collate_skip_none
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        collate_fn=collate_skip_none
-    )
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, collate_fn=collate_skip_none)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_skip_none)
     
     # Optimizer and scheduler
     optimizer = Adam(unet.parameters(), lr=learning_rate)
@@ -322,6 +368,7 @@ def main():
     training_stats = {
         'epochs': [],
         'train_loss': [],
+        'val_loss': [],
         'learning_rate': [],
         'timestamps': []
     }
@@ -334,31 +381,32 @@ def main():
     # Training loop
     print(f"\nStarting training from epoch {start_epoch+1} to {num_epochs}")
     print(f"Batch size: {batch_size}, Learning rate: {learning_rate}")
-    print(f"Dataset size: {len(dataset)}, Batches per epoch: {len(dataloader)}")
+    print(f"Dataset size: {len(train_dataset)}, Batches per epoch: {len(train_loader)}")
     print("="*60)
     
     for epoch in range(start_epoch, num_epochs):
         # Train
-        avg_loss = train_epoch(unet, scheduler, dataloader, optimizer, device, epoch)
+        avg_train_loss = train_epoch(unet, scheduler, train_loader, optimizer, device, epoch)
         scheduler_lr.step()
-        
+        avg_val_loss = validate(unet, scheduler, val_loader, device)
         current_lr = optimizer.param_groups[0]['lr']
         timestamp = datetime.now().isoformat()
         
         # Update training stats
         training_stats['epochs'].append(epoch + 1)
-        training_stats['train_loss'].append(avg_loss)
+        training_stats['train_loss'].append(avg_train_loss)
+        training_stats['val_loss'].append(avg_val_loss)
         training_stats['learning_rate'].append(current_lr)
         training_stats['timestamps'].append(timestamp)
         
-        print(f"Epoch {epoch+1}/{num_epochs} - Loss: {avg_loss:.6f}, LR: {current_lr:.6f}")
+        print(f"Epoch {epoch+1}/{num_epochs} - Loss: {avg_train_loss:.6f}, LR: {current_lr:.6f}")
         
         # Save checkpoint
-        is_best = avg_loss < best_loss
+        is_best = avg_val_loss < best_loss
         if is_best:
-            best_loss = avg_loss
+            best_loss = avg_val_loss
         
-        save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, avg_loss, best_loss, training_stats, is_best)
+        save_checkpoint(exp_dir, epoch, unet, optimizer, scheduler_lr, avg_val_loss, best_loss, training_stats, is_best)
         
         # Save training stats
         save_training_stats(exp_dir, training_stats)
