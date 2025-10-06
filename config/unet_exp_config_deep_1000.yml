@@ -2,18 +2,18 @@
 # This file contains all parameters needed to run/resume training
 
 experiment:
-  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_medium_001
-  name: "Diffusion small - Run 001"
+  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_deep_t1000_001
+  name: "Diffusion deep t=1000- Run 001"
   description: "Training diffusion model with small U-Net"
 
 # U-Net Configuration
 unet:
-  config_path: /work3/s233249/ImgiNav/ImgiNav/config/base_unet_medium.yml
+  config_path: /work3/s233249/ImgiNav/ImgiNav/config/base_unet_deep.yml
 
 # Noise Scheduler
 scheduler:
   type: CosineScheduler  # LinearScheduler, CosineScheduler, SquaredCosineScheduler, etc.
-  num_steps: 500
+  num_steps: 1000
 
 # Autoencoder (for generating samples during training)
 autoencoder:
