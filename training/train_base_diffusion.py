@@ -211,33 +211,33 @@ def generate_samples(unet, scheduler, autoencoder, exp_dir, epoch, num_samples, 
         noise_pred = unet(latents, t_batch, cond=None)
         
         if t > 0:
-            # Standard DDPM sampling step
+            # Get scheduler parameters
             alpha_t = scheduler.alphas[t]
             alpha_bar_t = scheduler.alpha_bars[t]
             alpha_bar_prev = scheduler.alpha_bars[t - 1]
             beta_t = scheduler.betas[t]
             
-            # Predict x_0
+            # Predict x_0 from current latents
             pred_x0 = (latents - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
-            pred_x0 = torch.clamp(pred_x0, -3, 3)  # Clamp to reasonable range
+            pred_x0 = torch.clamp(pred_x0, -3, 3)
             
-            # Compute direction pointing to x_t
-            dir_xt = torch.sqrt(1 - alpha_bar_prev) * noise_pred
+            # Compute mean of x_{t-1}
+            coef1 = torch.sqrt(alpha_bar_prev) * beta_t / (1 - alpha_bar_t)
+            coef2 = torch.sqrt(alpha_t) * (1 - alpha_bar_prev) / (1 - alpha_bar_t)
+            mean = coef1 * pred_x0 + coef2 * latents
             
-            # Compute x_{t-1}
-            latents = torch.sqrt(alpha_bar_prev) * pred_x0 + dir_xt
-            
-            # Add noise
-            if t > 1:
-                noise = torch.randn_like(latents)
-                latents = latents + torch.sqrt(beta_t) * noise
+            # Add noise (variance)
+            noise = torch.randn_like(latents)
+            variance = ((1 - alpha_bar_prev) / (1 - alpha_bar_t)) * beta_t
+            latents = mean + torch.sqrt(variance) * noise
         else:
             # Final step: just predict x_0
             alpha_bar_t = scheduler.alpha_bars[t]
             latents = (latents - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
-        # Print stats before decoding
-        print(f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, mean: {latents.mean():.4f}, std: {latents.std():.4f}", flush=True)
-        
+    
+    # Print stats AFTER denoising loop completes
+    print(f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, mean: {latents.mean():.4f}, std: {latents.std():.4f}", flush=True)
+    
     # Decode
     images = autoencoder.decoder(latents)
     
