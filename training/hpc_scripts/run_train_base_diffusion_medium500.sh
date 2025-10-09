@@ -6,7 +6,7 @@
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
 #BSUB -W 20:00
-#BSUB -q gpul40s
+#BSUB -q gpua10
 
 set -euo pipefail
 
@@ -25,7 +25,7 @@ EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/unet_exp_config_medium_500.yml
 # RESUME FLAG (uncomment to resume training)
 # =============================================================================
 # RESUME_FLAG="--resume"
-RESUME_FLAG=""
+RESUME_FLAG="--resume"
 
 # =============================================================================
 # MODULE LOADS (for DTU HPC)
@@ -86,3 +86,6 @@ echo "=========================================="
 EXP_DIR=$(grep -A 1 "^experiment:" "${EXP_CONFIG}" | grep "exp_dir:" | awk '{print $2}')
 
 if [ -d "$EXP_DIR" ]; then
+  # optional actions, e.g.:
+  echo "Experiment directory: $EXP_DIR"
+fi
