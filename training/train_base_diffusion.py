@@ -19,6 +19,9 @@ from modules.autoencoder import AutoEncoder
 from modules.datasets import LayoutDataset
 
 torch.manual_seed(1)
+torch.cuda.manual_seed_all(1)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 def load_experiment_config(config_path):
     """Load experiment config from YAML"""
@@ -197,11 +200,22 @@ def validate(unet, scheduler, dataloader, device):
 @torch.no_grad()
 def generate_samples(unet, scheduler, autoencoder, exp_dir, epoch, num_samples, latent_shape, device):
     """Generate and save sample images"""
+    # show progress on same noise
+
+
     unet.eval()
     autoencoder.eval()
     
     # Sample latents
-    latents = torch.randn(num_samples, *latent_shape, device=device)
+    fixed_latents_path = exp_dir / "fixed_latents.pt"
+    if fixed_latents_path.exists():
+        latents = torch.load(fixed_latents_path).to(device)
+    else:
+        # set seed for reproducibility
+        torch.manual_seed(1234)
+        torch.cuda.manual_seed_all(1234)
+        latents = torch.randn(num_samples, *latent_shape, device=device)
+        torch.save(latents.cpu(), fixed_latents_path)
     
     # Denoise
     timesteps = torch.linspace(scheduler.num_steps - 1, 0, scheduler.num_steps, dtype=torch.long, device=device)

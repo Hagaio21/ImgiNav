@@ -17,7 +17,7 @@ SCRIPT_PATH="/work3/s233249/ImgiNav/ImgiNav/data_preperation/stage7_create_pov_e
 MANIFEST="/work3/s233249/ImgiNav/datasets/povs.csv"
 OUT_MANIFEST="/work3/s233249/ImgiNav/datasets/povs_with_embeddings.csv"
 FORMAT="pt"
-
+BATCH=32
 echo "Running POV ResNet embedding job"
 
 # ----------------------------------------------------------------------
@@ -31,6 +31,7 @@ fi
 # Run embedding
 python "${SCRIPT_PATH}" \
   --manifest "${MANIFEST}" \
+  --batch_size "${BATCH}" \
   --output "${OUT_MANIFEST}" \
   --format "${FORMAT}"
 
