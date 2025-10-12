@@ -10,8 +10,9 @@
 set -euo pipefail
 
 # Paths
+ROOT_DIR="/work3/s233249/ImgiNav/datasets/scenes"
 LAYOUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
-SCRIPT_PATH="/zhome/62/5/203350/ws/ImgiNav/data_preperation/create_graph_manifest.py"
+SCRIPT_PATH="/zhome/62/5/203350/ws/ImgiNav/data_preperation/collect_graph_manifest.py"
 OUT_CSV="/work3/s233249/ImgiNav/datasets/graphs.csv"
 
 # Conda activation (if you use it)
@@ -20,9 +21,10 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   conda activate scenefactor || true
 fi
 
-echo "Creating graph manifest from $LAYOUT_MANIFEST"
+echo "Collecting graph manifest from $ROOT_DIR"
 python "$SCRIPT_PATH" \
+  --root "$ROOT_DIR" \
   --layout_manifest "$LAYOUT_MANIFEST" \
   --output "$OUT_CSV"
 
-echo "Finished. Output manifest: $OUT_CSV"
+echo "Finished. Graph manifest: $OUT_CSV"
