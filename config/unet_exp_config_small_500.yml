@@ -2,18 +2,18 @@
 # This file contains all parameters needed to run/resume training
 
 experiment:
-  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_medium_t500_002
-  name: "Diffusion medium t=500- Run 001"
+  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_small_t200_001
+  name: "Diffusion small - Run 001"
   description: "Training diffusion model with small U-Net"
 
 # U-Net Configuration
 unet:
-  config_path: /work3/s233249/ImgiNav/ImgiNav/config/base_unet_medium.yml
+  config_path: /work3/s233249/ImgiNav/ImgiNav/config/base_unet_small.yml
 
 # Noise Scheduler
 scheduler:
   type: CosineScheduler  # LinearScheduler, CosineScheduler, SquaredCosineScheduler, etc.
-  num_steps: 500
+  num_steps: 200
 
 # Autoencoder (for generating samples during training)
 autoencoder:
@@ -33,8 +33,8 @@ training:
   num_epochs: 400
   learning_rate: 0.0001
   sample_every: 5      # Generate samples every N epochs
-  num_samples: 9      # Number of samples to generate
-  periodic_checkpoint_every: 10  # Save lightweight checkpoint every N epochs
+  num_samples: 4      # Number of samples to generate
+  periodic_checkpoint_every: 20  # Save lightweight checkpoint every N epochs
 
 # Notes:
 # - To start training: python train_diffusion.py --exp_config experiment_config.yaml

@@ -5,7 +5,7 @@
 #BSUB -n 4
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
-#BSUB -W 24:00
+#BSUB -W 20:00
 #BSUB -q gpua10
 
 set -euo pipefail
@@ -19,12 +19,13 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_base_diffusion.py"
 # =============================================================================
 # CONFIG (fill this in)
 # =============================================================================
-EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/unet_exp_config_deep_500.yml
+EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/unet_exp_config_small_500.yml
+
 # =============================================================================
 # RESUME FLAG (uncomment to resume training)
 # =============================================================================
 # RESUME_FLAG="--resume"
-RESUME_FLAG="--resume"
+RESUME_FLAG=""
 
 # =============================================================================
 # MODULE LOADS (for DTU HPC)
@@ -85,3 +86,6 @@ echo "=========================================="
 EXP_DIR=$(grep -A 1 "^experiment:" "${EXP_CONFIG}" | grep "exp_dir:" | awk '{print $2}')
 
 if [ -d "$EXP_DIR" ]; then
+  # optional actions, e.g.:
+  echo "Experiment directory: $EXP_DIR"
+fi
