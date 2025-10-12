@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-create_graph_manifest.py
+collect_graph_manifest.py
 
-Creates a graph manifest CSV from layout manifest, adding graph_path column.
-Graphs are expected to be in the same directory as layout images.
+Scans filesystem for existing graph JSON files and creates manifest.
 """
 
 import argparse
@@ -11,97 +10,81 @@ import csv
 from pathlib import Path
 
 
-def create_graph_manifest(layout_manifest_path: Path, output_path: Path):
-    """
-    Read layout manifest and create graph manifest with graph_path column.
+def collect_graphs(root_dir: Path):
+    """Scan filesystem for graph JSON files that exist."""
+    graphs = []
     
-    Args:
-        layout_manifest_path: Path to input layout manifest CSV
-        output_path: Path to output graph manifest CSV
-    """
-    rows_written = 0
-    rows_with_graphs = 0
+    print("Scanning for graph files...")
     
-    with open(layout_manifest_path, 'r', newline='', encoding='utf-8') as infile:
-        reader = csv.DictReader(infile)
+    for graph_path in root_dir.rglob("*_graph.json"):
+        filename = graph_path.stem
         
-        # Verify required columns exist
-        required_cols = ['scene_id', 'type', 'room_id', 'layout_path', 'is_empty']
-        if not all(col in reader.fieldnames for col in required_cols):
-            raise ValueError(f"Layout manifest must contain columns: {required_cols}")
+        if filename.endswith("_scene_graph"):
+            scene_id = filename.replace("_scene_graph", "")
+            graph_type = "scene"
+            room_id = "scene"
+        else:
+            parts = filename.replace("_graph", "").split("_")
+            if len(parts) >= 2:
+                room_id = parts[-1]
+                scene_id = "_".join(parts[:-1])
+                graph_type = "room"
+            else:
+                continue
         
-        # Open output file
-        with open(output_path, 'w', newline='', encoding='utf-8') as outfile:
-            fieldnames = ['scene_id', 'type', 'room_id', 'layout_path', 'graph_path', 'is_empty']
-            writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-            writer.writeheader()
-            
-            for row in reader:
-                scene_id = row['scene_id']
-                room_id = row['room_id']
-                layout_path = Path(row['layout_path'])
-                
-                # Construct graph path in same directory as layout
-                if room_id == 'scene':
-                    # Scene-level graph
-                    graph_filename = f"{scene_id}_scene_graph.json"
-                else:
-                    # Room-level graph
-                    graph_filename = f"{scene_id}_{room_id}_graph.json"
-                
-                graph_path = layout_path.parent / graph_filename
-                
-                # Add graph_path to row
-                output_row = {
-                    'scene_id': scene_id,
-                    'type': row['type'],
-                    'room_id': room_id,
-                    'layout_path': str(layout_path),
-                    'graph_path': str(graph_path),
-                    'is_empty': row['is_empty']
-                }
-                
-                writer.writerow(output_row)
-                rows_written += 1
-                
-                # Check if graph file exists
-                if graph_path.exists():
-                    rows_with_graphs += 1
+        if graph_type == "scene":
+            layout_filename = f"{scene_id}_scene_layout.png"
+        else:
+            layout_filename = f"{scene_id}_{room_id}_room_seg_layout.png"
+        
+        layout_path = graph_path.parent / layout_filename
+        
+        graphs.append({
+            'scene_id': scene_id,
+            'type': graph_type,
+            'room_id': room_id,
+            'layout_path': str(layout_path) if layout_path.exists() else '',
+            'graph_path': str(graph_path),
+            'is_empty': 'false'
+        })
     
-    print(f"✓ Created graph manifest: {output_path}")
-    print(f"  Total rows: {rows_written}")
-    print(f"  Graphs found: {rows_with_graphs}")
-    print(f"  Graphs missing: {rows_written - rows_with_graphs}")
+    return graphs
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Create graph manifest CSV from layout manifest"
-    )
-    parser.add_argument(
-        "--layout_manifest",
-        required=True,
-        help="Path to input layout manifest CSV"
-    )
-    parser.add_argument(
-        "--output",
-        required=True,
-        help="Path to output graph manifest CSV"
-    )
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--output", required=True)
     args = parser.parse_args()
     
-    layout_manifest = Path(args.layout_manifest)
+    root_dir = Path(args.root)
     output_path = Path(args.output)
     
-    if not layout_manifest.exists():
-        print(f"[error] Layout manifest not found: {layout_manifest}")
+    if not root_dir.exists():
+        print(f"[error] Directory not found: {root_dir}")
         return
     
-    # Create output directory if needed
+    graphs = collect_graphs(root_dir)
+    
+    if not graphs:
+        print("[error] No graphs found")
+        return
+    
+    scene_count = sum(1 for g in graphs if g['type'] == 'scene')
+    room_count = sum(1 for g in graphs if g['type'] == 'room')
+    
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    create_graph_manifest(layout_manifest, output_path)
+    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+        fieldnames = ['scene_id', 'type', 'room_id', 'layout_path', 'graph_path', 'is_empty']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(graphs)
+    
+    print(f"\nTotal graphs: {len(graphs)}")
+    print(f"Scene graphs: {scene_count}")
+    print(f"Room graphs:  {room_count}")
+    print(f"\nManifest: {output_path}")
 
 
 if __name__ == "__main__":
