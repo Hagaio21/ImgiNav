@@ -17,6 +17,13 @@ def load_embedding(path):
     return torch.load(path) if path.endswith(".pt") else torch.from_numpy(np.load(path))
 
 
+def compute_sample_weights(df: pd.DataFrame) -> torch.DoubleTensor:
+    # create grouping key: scene uses 'scene', rooms use room_id
+    keys = df.apply(lambda r: f"{r['type']}:{r['room_id']}" if r["type"] == "room" else "scene", axis=1)
+    counts = keys.value_counts()
+    weights = keys.map(lambda k: 1.0 / counts[k])
+    weights = weights / weights.sum()
+    return torch.DoubleTensor(weights.values)
 
 # ---------- Layout Dataset ----------
 
@@ -135,125 +142,6 @@ class GraphDataset(Dataset):
             sample["graph"] = None
 
         return sample
-
-
-class CombinedMultiModalDataset(Dataset):
-    """
-    Combines scene-level and room-level samples.
-    - Scene samples: layout + graph (no POV)
-    - Room samples: layout + graph + POV
-    """
-    def __init__(self, pov_manifest, layout_manifest, graph_manifest,
-                 transform=None, pov_type="seg", skip_empty=True,
-                 return_embeddings=False):
-        
-        self.transform = transform
-        self.return_embeddings = return_embeddings
-        
-        # Load all manifests
-        pov_df = pd.read_csv(pov_manifest)
-        layout_df = pd.read_csv(layout_manifest)
-        graph_df = pd.read_csv(graph_manifest)
-        
-        # Filter
-        pov_df = pov_df[pov_df["type"] == pov_type]
-        if skip_empty:
-            pov_df = pov_df[pov_df["is_empty"] == 0]
-            layout_df = layout_df[layout_df["is_empty"] == False]
-            graph_df = graph_df[graph_df["is_empty"] == False]
-        
-        # Build lookups: key -> row dict
-        self.layout_lookup = {}
-        for _, row in layout_df.iterrows():
-            if row["type"] == "scene":
-                key = ("scene", row["scene_id"], None)
-            else:  # room
-                key = ("room", row["scene_id"], row["room_id"])
-            self.layout_lookup[key] = row.to_dict()
-        
-        self.graph_lookup = {}
-        for _, row in graph_df.iterrows():
-            if row["type"] == "scene":
-                key = ("scene", row["scene_id"], None)
-            else:  # room
-                key = ("room", row["scene_id"], row["room_id"])
-            self.graph_lookup[key] = row.to_dict()
-        
-        # Build entries list
-        self.entries = []
-        
-        # Add scene entries
-        for key in self.layout_lookup:
-            if key[0] == "scene" and key in self.graph_lookup:
-                self.entries.append({
-                    "type": "scene",
-                    "scene_id": key[1],
-                    "room_id": None,
-                    "pov_row": None
-                })
-        
-        # Add room entries (POV-based)
-        for _, pov_row in pov_df.iterrows():
-            key = ("room", pov_row["scene_id"], pov_row["room_id"])
-            if key in self.layout_lookup and key in self.graph_lookup:
-                self.entries.append({
-                    "type": "room",
-                    "scene_id": pov_row["scene_id"],
-                    "room_id": pov_row["room_id"],
-                    "pov_row": pov_row.to_dict()
-                })
-        
-        print(f"Loaded {len(self.entries)} samples:")
-        print(f"  - Scenes: {sum(1 for e in self.entries if e['type'] == 'scene')}")
-        print(f"  - Rooms: {sum(1 for e in self.entries if e['type'] == 'room')}")
-    
-    def __len__(self):
-        return len(self.entries)
-    
-    def __getitem__(self, idx):
-        entry = self.entries[idx]
-        
-        # Build lookup key
-        key = (entry["type"], entry["scene_id"], entry["room_id"])
-        
-        layout_row = self.layout_lookup[key]
-        graph_row = self.graph_lookup[key]
-        
-        try:
-            # Load layout
-            if self.return_embeddings:
-                layout = load_embedding(layout_row.get("embedding_path", layout_row["layout_path"]))
-            else:
-                layout = load_image(layout_row["layout_path"], self.transform)
-            
-            # Load graph
-            if self.return_embeddings:
-                graph = load_embedding(graph_row["graph_path"])
-            else:
-                with open(graph_row["graph_path"], "r") as f:
-                    graph = f.read()
-            
-            # Load POV (only for rooms)
-            pov = None
-            if entry["type"] == "room":
-                pov_row = entry["pov_row"]
-                if self.return_embeddings:
-                    pov = load_embedding(pov_row["pov_path"])
-                else:
-                    pov = load_image(pov_row["pov_path"], self.transform)
-            
-            return {
-                "type": entry["type"],
-                "scene_id": entry["scene_id"],
-                "room_id": entry["room_id"],
-                "layout": layout,
-                "graph": graph,
-                "pov": pov,  # None for scenes
-            }
-        
-        except Exception as e:
-            print(f"Error loading {entry['type']} sample {idx}: {e}")
-            return None
 
 
 

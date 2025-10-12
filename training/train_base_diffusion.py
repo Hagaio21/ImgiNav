@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.data import random_split
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -16,7 +16,7 @@ from tqdm import tqdm
 from modules.unet import UNet
 from modules.scheduler import *
 from modules.autoencoder import AutoEncoder
-from modules.datasets import LayoutDataset
+from modules.datasets import LayoutDataset, compute_sample_weights
 
 torch.manual_seed(1)
 torch.cuda.manual_seed_all(1)
@@ -377,8 +377,26 @@ def main():
 
     from modules.datasets import collate_skip_none
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, collate_fn=collate_skip_none)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_skip_none)
+    # compute weights for training set
+    train_weights = compute_sample_weights(train_dataset.df)
+    train_sampler = WeightedRandomSampler(train_weights, num_samples=len(train_weights), replacement=True)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        shuffle=False,
+        num_workers=4,
+        collate_fn=collate_skip_none,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        collate_fn=collate_skip_none,
+    )
     
     # Optimizer and scheduler
     optimizer = Adam(unet.parameters(), lr=learning_rate)
