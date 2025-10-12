@@ -1,150 +1,18 @@
-import torch
-import torch.nn as nn
-from pathlib import Path
-from typing import Optional, Union
-import yaml
+# configs/diffusion.yaml
 
-from scheduler import NoiseScheduler
-from unet import UNet
-from autoencoder import AutoEncoder
+latent:
+  base: 64          # spatial resolution of latent map (H = W = 64)
+  channels: 4       # latent channels (C)
 
+scheduler:
+  type: CosineScheduler      # One of: LinearScheduler, CosineScheduler, SquaredCosineScheduler,
+                             # SigmoidScheduler, ExponentialScheduler, QuadraticScheduler
+  num_steps: 200
 
-class LatentDiffusion(nn.Module):
-    """
-    Inference-only Latent Diffusion wrapper.
-    Loads scheduler, UNet, and AutoEncoder (decoder only).
-    Uses latent size specified in the config.
-    """
+autoencoder:
+  config: C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\indexes\ae_configs\config_diff_4ch_64x64_vanilla.yml
+  checkpoint: C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\indexes\autoencoder_final_64x64x4_vanila\20251004-082051_ae_final\best.pt
 
-    def __init__(
-        self,
-        unet: UNet,
-        scheduler: NoiseScheduler,
-        autoencoder: Optional[AutoEncoder] = None,
-        latent_shape: Optional[tuple[int, int, int]] = None,
-    ):
-        super().__init__()
-        self.unet = unet
-        self.scheduler = scheduler
-        self.autoencoder = autoencoder
-        self.latent_shape = latent_shape
-
-    @torch.no_grad()
-    def sample(
-        self,
-        batch_size: int = 1,
-        image: bool = False,
-        cond: Optional[torch.Tensor] = None,
-        num_steps: Optional[int] = None,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    ) -> torch.Tensor:
-        """
-        Generate samples from pure noise in latent space.
-
-        Args:
-            batch_size: number of samples
-            image: if True, decode latents to RGB images
-            cond: conditioning tensor [B, C_cond, H, W] or None
-            num_steps: optional override for scheduler steps
-            device: device string
-        Returns:
-            Latents [B, C, H, W] or decoded images [B, 3, H*, W*]
-        """
-        assert self.latent_shape is not None, "latent_shape must be set"
-
-        self.eval()
-        self.unet.eval()
-
-        C, H, W = self.latent_shape
-        x_t = torch.randn(batch_size, C, H, W, device=device)
-
-        steps = num_steps or self.scheduler.num_steps
-        timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
-
-        for t in timesteps:
-            t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
-            noise_pred = self.unet(x_t, t_batch, cond)
-
-            alpha_bar = self.scheduler.alpha_bars[t]
-            if t > 0:
-                alpha_bar_prev = self.scheduler.alpha_bars[t - 1]
-                beta = self.scheduler.betas[t]
-                pred_x0 = (x_t - torch.sqrt(1 - alpha_bar) * noise_pred) / torch.sqrt(alpha_bar)
-                sigma = torch.sqrt(beta)
-                noise = torch.randn_like(x_t)
-                x_t = (
-                    torch.sqrt(alpha_bar_prev) * pred_x0
-                    + torch.sqrt(1 - alpha_bar_prev - sigma**2) * noise_pred
-                    + sigma * noise
-                )
-            else:
-                x_t = (x_t - torch.sqrt(1 - alpha_bar) * noise_pred) / torch.sqrt(alpha_bar)
-
-        if image:
-            assert self.autoencoder is not None, "AutoEncoder required for image decoding"
-            x_t = self.autoencoder.decoder(x_t)
-
-        return x_t
-
-    @classmethod
-    def from_config(
-        cls,
-        config_path: Union[str, Path],
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    ):
-        """
-        Build inference model from master YAML config:
-        ---
-        latent:
-          base: 64
-          channels: 4
-
-        scheduler:
-          type: LinearScheduler
-          num_steps: 1000
-
-        autoencoder:
-          config: configs/ae.yaml
-          checkpoint: checkpoints/ae.pt
-
-        unet:
-          config: configs/unet.yaml
-          checkpoint: checkpoints/unet.pt
-        """
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-
-        # Scheduler
-        sched_cfg = config["scheduler"]
-        sched_class = globals()[sched_cfg["type"]]
-        scheduler = sched_class(num_steps=sched_cfg["num_steps"]).to(device)
-
-        # Autoencoder
-        ae_cfg_path = config["autoencoder"]["config"]
-        ae_ckpt_path = config["autoencoder"].get("checkpoint", None)
-        autoencoder = AutoEncoder.from_config(ae_cfg_path).to(device)
-        if ae_ckpt_path:
-            autoencoder.load_state_dict(torch.load(ae_ckpt_path, map_location=device))
-        autoencoder.eval()
-
-        # UNet
-        unet_cfg_path = config["unet"]["config"]
-        unet_ckpt_path = config["unet"].get("checkpoint", None)
-        with open(unet_cfg_path, "r", encoding="utf-8") as f:
-            unet_cfg = yaml.safe_load(f)["unet"]
-        unet = UNet(**unet_cfg).to(device)
-        if unet_ckpt_path:
-            unet.load_state_dict(torch.load(unet_ckpt_path, map_location=device))
-        unet.eval()
-
-        # Latent shape from config (preferred) or AE config
-        if "latent" in config:
-            C = config["latent"]["channels"]
-            H = W = config["latent"]["base"]
-        else:
-            with open(ae_cfg_path, "r", encoding="utf-8") as f:
-                ae_cfg = yaml.safe_load(f)
-            C = ae_cfg["encoder"]["latent_channels"]
-            H = W = ae_cfg["encoder"]["latent_base"]
-
-        return cls(unet=unet, scheduler=scheduler, autoencoder=autoencoder, latent_shape=(C, H, W)).to(device)
+unet:
+  config: C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\config\base_unet_small.yml
+  checkpoint: C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\indexes\d_small_500_e400.pt

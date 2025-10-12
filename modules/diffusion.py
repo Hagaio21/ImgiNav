@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Optional, Union
 import yaml
 
-from scheduler import NoiseScheduler
-from unet import UNet
-from autoencoder import AutoEncoder
-
+from modules.scheduler import *
+from modules.unet import UNet
+from modules.autoencoder import AutoEncoder
+from tqdm import tqdm
 
 class LatentDiffusion(nn.Module):
     """
@@ -39,7 +39,8 @@ class LatentDiffusion(nn.Module):
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ) -> torch.Tensor:
         """
-        Generate samples from pure noise in latent space.
+        Generate samples from pure noise in latent space using the same DDPM
+        update rule as training.
 
         Args:
             batch_size: number of samples
@@ -61,30 +62,41 @@ class LatentDiffusion(nn.Module):
         steps = num_steps or self.scheduler.num_steps
         timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
 
-        for t in timesteps:
+        print("Generating...")
+        for t in tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)):
             t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
             noise_pred = self.unet(x_t, t_batch, cond)
 
-            alpha_bar = self.scheduler.alpha_bars[t]
             if t > 0:
+                alpha_t = self.scheduler.alphas[t]
+                alpha_bar_t = self.scheduler.alpha_bars[t]
                 alpha_bar_prev = self.scheduler.alpha_bars[t - 1]
-                beta = self.scheduler.betas[t]
-                pred_x0 = (x_t - torch.sqrt(1 - alpha_bar) * noise_pred) / torch.sqrt(alpha_bar)
-                sigma = torch.sqrt(beta)
+                beta_t = self.scheduler.betas[t]
+
+                # Predict x0 and clamp for stability
+                pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+                pred_x0 = torch.clamp(pred_x0, -3, 3)
+
+                # Compute DDPM mean
+                coef1 = torch.sqrt(alpha_bar_prev) * beta_t / (1 - alpha_bar_t)
+                coef2 = torch.sqrt(alpha_t) * (1 - alpha_bar_prev) / (1 - alpha_bar_t)
+                mean = coef1 * pred_x0 + coef2 * x_t
+
+                # Add variance noise
                 noise = torch.randn_like(x_t)
-                x_t = (
-                    torch.sqrt(alpha_bar_prev) * pred_x0
-                    + torch.sqrt(1 - alpha_bar_prev - sigma**2) * noise_pred
-                    + sigma * noise
-                )
+                variance = ((1 - alpha_bar_prev) / (1 - alpha_bar_t)) * beta_t
+                x_t = mean + torch.sqrt(variance) * noise
             else:
-                x_t = (x_t - torch.sqrt(1 - alpha_bar) * noise_pred) / torch.sqrt(alpha_bar)
+                alpha_bar_t = self.scheduler.alpha_bars[t]
+                x_t = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
 
         if image:
             assert self.autoencoder is not None, "AutoEncoder required for image decoding"
+            print("Decoding...")
             x_t = self.autoencoder.decoder(x_t)
 
         return x_t
+
 
     @classmethod
     def from_config(
@@ -131,11 +143,23 @@ class LatentDiffusion(nn.Module):
         unet_cfg_path = config["unet"]["config"]
         unet_ckpt_path = config["unet"].get("checkpoint", None)
         with open(unet_cfg_path, "r", encoding="utf-8") as f:
-            unet_cfg = yaml.safe_load(f)["unet"]
+            unet_cfg = yaml.safe_load(f)
+            if "unet" in unet_cfg:
+                unet_cfg = unet_cfg["unet"]
+
         unet = UNet(**unet_cfg).to(device)
         if unet_ckpt_path:
-            unet.load_state_dict(torch.load(unet_ckpt_path, map_location=device))
+            ckpt = torch.load(unet_ckpt_path, map_location=device)
+            # handle both plain and wrapped checkpoints
+            if "state_dict" in ckpt:
+                state = ckpt["state_dict"]
+            elif "unet_state_dict" in ckpt:
+                state = ckpt["unet_state_dict"]
+            else:
+                state = ckpt
+            unet.load_state_dict(state, strict=False)
         unet.eval()
+
 
         # Latent shape from config (preferred) or AE config
         if "latent" in config:

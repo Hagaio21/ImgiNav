@@ -13,7 +13,7 @@ unet:
 # Noise Scheduler
 scheduler:
   type: CosineScheduler  # LinearScheduler, CosineScheduler, SquaredCosineScheduler, etc.
-  num_steps: 200
+  num_steps: 500
 
 # Autoencoder (for generating samples during training)
 autoencoder:
