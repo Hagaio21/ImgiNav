@@ -6,7 +6,7 @@ Creates room-level graphs from color-segmented layouts.
 Each color blob (clustered by minimal linkage) becomes a node.
 """
 
-import argparse, json, csv
+import argparse, json, csv, gc
 from pathlib import Path
 import cv2
 import numpy as np
@@ -253,7 +253,6 @@ def build_room_graph(scene_id, room_id, layout_path, color_to_label):
 
     # Store cluster points with nodes for distance calculations
     node_clusters = {}
-    node_id = 0
 
     for tax_color, points in color_regions.items():
         label_info = color_to_label[tax_color]
@@ -293,9 +292,11 @@ def build_room_graph(scene_id, room_id, layout_path, color_to_label):
             cluster_b = node_clusters[b["id"]]
             
             # Compute true minimum distance between clusters using cdist
-            # This computes distance from every point in cluster_a to every point in cluster_b
             distances = cdist(cluster_a, cluster_b, metric='euclidean')
             min_cluster_distance = distances.min()
+            
+            # Delete distance matrix immediately
+            del distances
 
             # Determine proximity relation based on minimum cluster distance
             prox_a_to_b = None
@@ -353,7 +354,12 @@ def build_room_graph(scene_id, room_id, layout_path, color_to_label):
     out_json.write_text(json.dumps(graph, indent=2), encoding="utf-8")
     visualize(img, room_center, nodes, edges, out_vis)
     print(f"✔ wrote {out_json}", flush=True)
-    return graph
+    
+    # Clean up memory before returning
+    del img, color_regions, node_clusters, nodes, edges, graph
+    gc.collect()
+    
+    return None  # Changed from returning graph since we delete it
 
 # ------------------------------------------------------------
 def main():
@@ -385,6 +391,7 @@ def main():
 
     for sid, rid, layout_path in layouts:
         build_room_graph(sid, rid, layout_path, color_to_label)
+        gc.collect()  # Force garbage collection after each graph
 
 if __name__ == "__main__":
     main()
