@@ -2,7 +2,7 @@
 # This file contains all parameters needed to run/resume training
 
 experiment:
-  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_small_t200_001
+  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_small_t500_001
   name: "Diffusion small - Run 001"
   description: "Training diffusion model with small U-Net"
 
