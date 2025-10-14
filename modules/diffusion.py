@@ -57,17 +57,18 @@ class LatentDiffusion(nn.Module):
         self.unet.eval()
 
         C, H, W = self.latent_shape
-        x_t = torch.randn(batch_size, C, H, W, device=device)
+        x_t = torch.randn(batch_size, C, H, W, device=device) # create initial noise
 
-        steps = num_steps or self.scheduler.num_steps
-        timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
+        steps = num_steps or self.scheduler.num_steps # set number of steps 
+        timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device) # set actual steps vector
 
         print("Generating...")
-        for t in tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)):
+        for t in tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)): # for each step in reverse
             t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
             noise_pred = self.unet(x_t, t_batch, cond)
 
             if t > 0:
+                # get cooeficcients from scheduler 
                 alpha_t = self.scheduler.alphas[t]
                 alpha_bar_t = self.scheduler.alpha_bars[t]
                 alpha_bar_prev = self.scheduler.alpha_bars[t - 1]

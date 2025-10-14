@@ -378,7 +378,8 @@ def main():
     from modules.datasets import collate_skip_none
 
     # compute weights for training set
-    train_weights = compute_sample_weights(train_dataset.df)
+    # train_weights = compute_sample_weights(train_dataset.df)
+    train_weights = compute_sample_weights(dataset.df.iloc[train_dataset.indices])
     train_sampler = WeightedRandomSampler(train_weights, num_samples=len(train_weights), replacement=True)
 
     train_loader = DataLoader(
