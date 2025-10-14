@@ -2,7 +2,7 @@
 # This file contains all parameters needed to run/resume training
 
 experiment:
-  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_medium_t500_002
+  exp_dir: /work3/s233249/ImgiNav/experiments/diffusion_medium_t500_003
   name: "Diffusion medium t=500- Run 001"
   description: "Training diffusion model with small U-Net"
 
@@ -30,7 +30,7 @@ latent_shape: [4, 64, 64]
 # Training Parameters
 training:
   batch_size: 32
-  num_epochs: 600
+  num_epochs: 400
   learning_rate: 0.0001
   sample_every: 5      # Generate samples every N epochs
   num_samples: 9      # Number of samples to generate

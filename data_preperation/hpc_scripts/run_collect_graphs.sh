@@ -12,12 +12,8 @@ set -euo pipefail
 
 # Paths
 ROOT_DIR="/work3/s233249/ImgiNav/datasets/scenes"
-<<<<<<< HEAD
 LAYOUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
-SCRIPT_PATH="/zhome/62/5/203350/ws/ImgiNav/data_preperation/collect_graph_manifest.py"
-=======
-SCRIPT_PATH="/work3/s233249/ImgiNav/ImgiNav/data_preperation/collect_graph_manifest.py"
->>>>>>> df24a91eaaad283d2889718ac7e29fef65d1113f
+SCRIPT_PATH="/work3/s233249/ImgiNav/ImgiNav/data_preperation/collect_graphs.py"
 OUT_CSV="/work3/s233249/ImgiNav/datasets/graphs.csv"
 
 # Conda activation
@@ -34,10 +30,7 @@ echo ""
 echo "Collecting graph manifest from $ROOT_DIR"
 python "$SCRIPT_PATH" \
   --root "$ROOT_DIR" \
-<<<<<<< HEAD
-  --layout_manifest "$LAYOUT_MANIFEST" \
-=======
->>>>>>> df24a91eaaad283d2889718ac7e29fef65d1113f
   --output "$OUT_CSV"
+
 
 echo "Finished. Graph manifest: $OUT_CSV"

@@ -13,8 +13,8 @@ export MKL_INTERFACE_LAYER=LP64
 
 # ----------------------------------------------------------------------
 # Configuration
-SCRIPT_PATH="/work3/s233249/ImgiNav/ImgiNav/data_preperation/stage7_create_graph_embeddings.py"
-TAXONOMY="/work3/s233249/ImgiNav/config/taxonomy.json"
+SCRIPT_PATH="/work3/s233249/ImgiNav/ImgiNav/data_preperation/stage8_create_graph_embeddings.py"
+TAXONOMY="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
 MANIFEST="/work3/s233249/ImgiNav/datasets/graphs.csv"
 OUT_MANIFEST="/work3/s233249/ImgiNav/datasets/graphs_with_embeddings.csv"
 MODEL="all-MiniLM-L6-v2"
