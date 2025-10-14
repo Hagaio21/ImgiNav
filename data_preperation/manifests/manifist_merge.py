@@ -22,6 +22,7 @@ def build_room_dataset(graphs_path, layouts_path, pov_path, out_path):
 
     merged = pov.merge(graphs_room, on=["scene_id", "room_id"], how="left", suffixes=("", "_graph"))
     merged = merged.merge(layouts_room, on=["scene_id", "room_id"], how="left", suffixes=("", "_layout"))
+    merged = merged.dropna(subset=["graph_path", "embedding_path_graph", "layout_path_layout", "embedding_path_layout"])
 
     df = pd.DataFrame({
         "number": range(len(merged)),
