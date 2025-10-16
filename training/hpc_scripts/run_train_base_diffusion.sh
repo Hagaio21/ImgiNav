@@ -25,7 +25,7 @@ EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/unet_exp_config_medium.yml
 # RESUME FLAG (uncomment to resume training)
 # =============================================================================
 # RESUME_FLAG="--resume"
-RESUME_FLAG=""
+RESUME_FLAG="--resume"
 
 # =============================================================================
 # MODULE LOADS (for DTU HPC)

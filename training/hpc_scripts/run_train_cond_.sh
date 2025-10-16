@@ -6,7 +6,7 @@
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
 #BSUB -W 24:00
-#BSUB -q gpul40s
+#BSUB -q gpua10
 
 set -euo pipefail
 
@@ -19,9 +19,9 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_conditioned_diffusion.py"
 # =============================================================================
 # CONFIG 
 # =============================================================================
-EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/conditioned_exp_config.yml
-ROOM_MANIFEST=/work3/s233249/ImgiNav/datasets/room_manifest_with_emb.csv
-SCENE_MANIFEST=/work3/s233249/ImgiNav/datasets/scene_manifest_with_emb.csv
+EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/cond_exp_small_200.yml
+ROOM_MANIFEST=/work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
+SCENE_MANIFEST=/work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
 
 # =============================================================================
 # MIXER TYPE (choices: concat, weighted, learned)
@@ -37,7 +37,7 @@ POV_MODE="seg"  # Set to "seg", "tex", or "" for all POV types
 # RESUME FLAG 
 # =============================================================================
 # RESUME_FLAG="--resume"
-RESUME_FLAG=""
+RESUME_FLAG="--resume"
 
 # =============================================================================
 # MODULE LOADS
@@ -87,7 +87,7 @@ CMD_ARGS=(
 )
 
 if [ -n "$POV_MODE" ]; then
-  CMD_ARGS+=(--pov_mode "${POV_MODE}")
+  CMD_ARGS+=(--pov_type "${POV_MODE}")
 fi
 
 if [ -n "$RESUME_FLAG" ]; then
