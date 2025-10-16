@@ -36,6 +36,7 @@ class LatentDiffusion(nn.Module):
         image: bool = False,
         cond: Optional[torch.Tensor] = None,
         num_steps: Optional[int] = None,
+        return_latents = False,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ) -> torch.Tensor:
         """
@@ -61,11 +62,15 @@ class LatentDiffusion(nn.Module):
 
         steps = num_steps or self.scheduler.num_steps # set number of steps 
         timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device) # set actual steps vector
-
+        if return_latents:
+            noise_history = []
+            latents_history = []
         print("Generating...")
         for t in tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)): # for each step in reverse
             t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
             noise_pred = self.unet(x_t, t_batch, cond)
+            if return_latents:
+                noise_history.append(noise_pred)
 
             if t > 0:
                 # get cooeficcients from scheduler 
@@ -87,16 +92,27 @@ class LatentDiffusion(nn.Module):
                 noise = torch.randn_like(x_t)
                 variance = ((1 - alpha_bar_prev) / (1 - alpha_bar_t)) * beta_t
                 x_t = mean + torch.sqrt(variance) * noise
+                if return_latents:
+                    latents_history.append(x_t.clone())
             else:
                 alpha_bar_t = self.scheduler.alpha_bars[t]
                 x_t = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+                if return_latents:
+                    latents_history.append(x_t.clone())
 
         if image:
             assert self.autoencoder is not None, "AutoEncoder required for image decoding"
             print("Decoding...")
             x_t = self.autoencoder.decoder(x_t)
 
-        return x_t
+        if return_latents:
+            history = {
+                "latents": latents_history,
+                "noise": noise_history
+            }
+            return x_t , history
+        else:
+            return x_t 
 
 
     @classmethod
