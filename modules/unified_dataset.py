@@ -78,6 +78,13 @@ class UnifiedLayoutDataset(Dataset):
         scene_df["POV_TYPE"] = ""
         scene_df["POV_PATH"] = ""
         scene_df["POV_EMBEDDING_PATH"] = ""
+        scene_df = scene_df.rename(columns={
+                    "SCENE_GRAPH_PATH": "GRAPH_PATH",
+                    "SCENE_GRAPH_EMBEDDING_PATH": "GRAPH_EMBEDDING_PATH",
+                    "SCENE_LAYOUT_PATH": "LAYOUT_PATH",
+                    "SCENE_LAYOUT_EMBEDDING_PATH": "LAYOUT_EMBEDDING_PATH"
+                })
+
 
         # --- Common column order ---
         cols = [
@@ -149,16 +156,28 @@ class UnifiedLayoutDataset(Dataset):
         }
 
 
+
 def collate_fn(batch):
-    """Custom collate function to handle None POV values in batches"""
-    # Collect all non-None POVs
-    pov_list = [b['pov'] for b in batch if b['pov'] is not None]
-    
+    """Ensure batch size consistency when some samples have no POV."""
+    pov_example = next((b["pov"] for b in batch if b["pov"] is not None), None)
+
+    pov_batch, graph_batch, layout_batch = [], [], []
+    for b in batch:
+        if b["pov"] is None:
+            if pov_example is not None:
+                pov_batch.append(torch.zeros_like(pov_example))
+            else:
+                pov_batch.append(torch.zeros(1))
+        else:
+            pov_batch.append(b["pov"])
+        graph_batch.append(b["graph"])
+        layout_batch.append(b["layout"])
+
     return {
-        'scene_id': [b['scene_id'] for b in batch],
-        'room_id': [b['room_id'] for b in batch],
-        'pov_type': [b['pov_type'] for b in batch],
-        'pov': torch.stack(pov_list) if pov_list else None,
-        'graph': torch.stack([b['graph'] for b in batch]),
-        'layout': torch.stack([b['layout'] for b in batch]),
+        "scene_id": [b["scene_id"] for b in batch],
+        "room_id": [b["room_id"] for b in batch],
+        "pov_type": [b["pov_type"] for b in batch],
+        "pov": torch.stack(pov_batch),
+        "graph": torch.stack(graph_batch),
+        "layout": torch.stack(layout_batch),
     }

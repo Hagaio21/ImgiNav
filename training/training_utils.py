@@ -292,8 +292,26 @@ def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, devic
         noisy_latents, _ = scheduler.add_noise(latents, t, noise)
         
         # Build conditioning
-        conds = [c for c in [cond_pov, cond_graph] if c is not None]
+        # conds = [c for c in [cond_pov, cond_graph] if c is not None]
+        # cond = mixer(conds)
+        conds = [cond_pov, cond_graph]
         cond = mixer(conds)
+        # condition testing
+
+        if epoch == 0 and torch.randint(0, 200, (1,)).item() == 0:
+            pov_mean = cond_pov.mean().item() if cond_pov is not None else 0.0
+            pov_std  = cond_pov.std().item() if cond_pov is not None else 0.0
+            graph_mean = cond_graph.mean().item()
+            graph_std  = cond_graph.std().item()
+            cond_mean = cond.mean().item()
+            cond_std  = cond.std().item()
+            print(
+                f"[cond check] pov μ={pov_mean:.3f} σ={pov_std:.3f} | "
+                f"graph μ={graph_mean:.3f} σ={graph_std:.3f} | "
+                f"mixed μ={cond_mean:.3f} σ={cond_std:.3f}",
+                flush=True
+                )
+
         
         # Predict noise with conditioning
         noise_pred = unet(noisy_latents, t, cond=cond)

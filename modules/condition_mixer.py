@@ -26,14 +26,22 @@ class ConditionMixer(nn.Module):
             'conv': nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         })
 
-    def project_condition(self, x: torch.Tensor, proj_module: nn.ModuleDict, out_channels: int) -> torch.Tensor:
+    def project_condition(self, x, proj_module, out_channels):
         B, H, W = x.shape[0], *self.target_size
+        x = x.to(proj_module['linear'].weight.dtype)
+
         if x.ndim == 2:
-            return proj_module['linear'](x).view(B, out_channels, H, W)
+            # latent or embedding vector
+            x = proj_module['linear'](x).view(B, out_channels, H, W)
         elif x.ndim == 4:
+            # feature map or embedding map
             x = proj_module['conv'](x)
-            return F.interpolate(x, size=(H, W), mode="bilinear", align_corners=False) if x.shape[2:] != (H, W) else x
-        raise ValueError(f"Unsupported condition shape: {x.shape}")
+            # force resize even if already close
+            x = F.interpolate(x, size=(H, W), mode="bilinear", align_corners=False)
+        else:
+            raise ValueError(f"Unsupported condition shape: {x.shape}")
+        return x
+
 
     def forward(self, conds: list[torch.Tensor | None], weights: torch.Tensor | None = None) -> torch.Tensor:
         raise NotImplementedError
@@ -68,6 +76,7 @@ class ConcatMixer(ConditionMixer):
         
         pov_out = self.project_condition(pov, self.pov_proj, self.pov_out_channels) if pov is not None else torch.zeros(B, self.pov_out_channels, H, W, device=device)
         graph_out = self.project_condition(graph, self.graph_proj, self.graph_out_channels) if graph is not None else torch.zeros(B, self.graph_out_channels, H, W, device=device)
+        # print("pov_out", pov_out.shape, "graph_out", graph_out.shape, "target", self.target_size, flush=True)
         return torch.cat([pov_out, graph_out], dim=1)
 
     
@@ -85,3 +94,7 @@ class WeightedMixer(ConditionMixer):
         pov_out = self.project_condition(pov, self.pov_proj, self.out_channels) * weights[0] if pov is not None else torch.zeros(B, self.out_channels, H, W, device=device)
         graph_out = self.project_condition(graph, self.graph_proj, self.out_channels) * weights[1] if graph is not None else torch.zeros(B, self.out_channels, H, W, device=device)
         return pov_out + graph_out
+
+class LearnedWeightedMixer(ConcatMixer):
+
+    pass

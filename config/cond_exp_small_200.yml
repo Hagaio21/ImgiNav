@@ -8,12 +8,12 @@ experiment:
 
 # U-Net Configuration
 unet:
-  config_path: /work3/s233249/ImgiNav/ImgiNav/config/base_unet_medium_cond.yml
+  config_path: /work3/s233249/ImgiNav/ImgiNav/config/cond_unet_small.yml
 
 # Noise Scheduler
 scheduler:
   type: CosineScheduler  # LinearScheduler, CosineScheduler, SquaredCosineScheduler
-  num_steps: 500
+  num_steps: 200
 
 # Autoencoder (for generating samples during training)
 autoencoder:
@@ -37,7 +37,7 @@ mixer:
 # Training Parameters
 training:
   batch_size: 32
-  num_epochs: 200
+  num_epochs: 100
   learning_rate: 0.00001
   sample_every: 5      # Generate samples every N epochs
   num_samples: 8       # Number of samples to generate (fixed for comparison)

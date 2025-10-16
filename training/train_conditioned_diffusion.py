@@ -2,7 +2,8 @@
 Training script for conditioned latent diffusion model.
 Refactored version using modular utilities.
 """
-
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import argparse
 import random
 from pathlib import Path
@@ -15,7 +16,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from modules.unet import UNet
 from modules.scheduler import *
 from modules.autoencoder import AutoEncoder
-from modules.unified_dataset import UnifiedLayoutDataset
+from modules.unified_dataset import UnifiedLayoutDataset, collate_fn
 from modules.condition_mixer import ConcatMixer, WeightedMixer, LearnedWeightedMixer
 from modules.diffusion import LatentDiffusion
 
@@ -28,16 +29,6 @@ from training_utils import (
 )
 from sampling_utils import generate_samples_conditioned
 
-
-def collate_fn(batch):
-    """Handle batches where some samples have None POV"""
-    return {
-        'scene_id': [b['scene_id'] for b in batch],
-        'room_id': [b['room_id'] for b in batch],
-        'pov': torch.stack([b['pov'] for b in batch if b['pov'] is not None]) if any(b['pov'] is not None for b in batch) else None,
-        'graph': torch.stack([b['graph'] for b in batch]),
-        'layout': torch.stack([b['layout'] for b in batch]),
-    }
 
 
 def main():
