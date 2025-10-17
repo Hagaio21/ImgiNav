@@ -380,6 +380,33 @@ def validate_conditioned(unet, scheduler, mixer, dataloader, device):
     unet.train()
     return total_loss / len(dataloader)
 
+@torch.no_grad()
+def validate_generation_quality(diffusion_model, mixer, dataloader, device, num_samples=10):
+    """Validate by generating from scratch and comparing to ground truth"""
+    diffusion_model.eval()
+    total_metric = 0
+    
+    for i, batch in enumerate(dataloader):
+        if i >= num_samples:
+            break
+            
+        # Get conditions
+        cond_pov = batch["pov"].to(device) if batch["pov"] is not None else None
+        cond_graph = batch["graph"].to(device)
+        ground_truth = batch["layout"].to(device)
+        
+        # Generate from pure noise
+        conds = [c for c in [cond_pov, cond_graph] if c is not None]
+        cond = mixer(conds)
+        
+        # Sample (this should use your sampling function)
+        generated = diffusion_model.sample(cond=cond, batch_size=ground_truth.shape[0])
+        
+        # Compute generation metric (e.g., MSE, SSIM, etc.)
+        metric = compute_generation_metric(generated, ground_truth)
+        total_metric += metric
+    
+    return total_metric / min(num_samples, len(dataloader))
 
 # ============================================================================
 # Dataset Utilities
