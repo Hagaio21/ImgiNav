@@ -36,9 +36,12 @@ class LatentDiffusion(nn.Module):
         image: bool = False,
         cond: Optional[torch.Tensor] = None,
         num_steps: Optional[int] = None,
-        return_latents = False,
+        return_latents: bool = False,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        guidance_scale: float = 1.0,
+        uncond_cond: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+
         """
         Generate samples from pure noise in latent space using the same DDPM
         update rule as training.
@@ -68,7 +71,13 @@ class LatentDiffusion(nn.Module):
         print("Generating...")
         for t in tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)): # for each step in reverse
             t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
-            noise_pred = self.unet(x_t, t_batch, cond)
+            if guidance_scale == 1.0 or uncond_cond is None:
+                noise_pred = self.unet(x_t, t_batch, cond)
+            else:
+                noise_pred_cond = self.unet(x_t, t_batch, cond)
+                noise_pred_uncond = self.unet(x_t, t_batch, uncond_cond)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+
             if return_latents:
                 noise_history.append(noise_pred)
 

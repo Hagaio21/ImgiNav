@@ -210,7 +210,10 @@ def main():
 
     for epoch in range(start_epoch, config["training"]["num_epochs"]):
         # Train and validate
-        train_loss = train_epoch_conditioned(unet, scheduler, mixer, train_loader, optimizer, device, epoch)
+        train_loss = train_epoch_conditioned(
+            unet, scheduler, mixer, train_loader, optimizer, device, epoch,
+            cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"]
+        )
         val_loss = validate_conditioned(unet, scheduler, mixer, val_loader, device)
         
         # Update learning rate

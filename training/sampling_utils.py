@@ -86,13 +86,20 @@ def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch
     # Target latents
     target_latents = torch.stack([s["layout"] for s in samples]).to(device)
 
+    # CFG setup
+    uncond_cond = torch.zeros_like(cond)
+    guidance_scale = samples[0].get("guidance_scale", 5.0) if isinstance(samples, list) else 5.0
+
     # Generate latents using LatentDiffusion
     latents = diffusion_model.sample(
         batch_size=num_samples,
         image=False,
         cond=cond,
+        uncond_cond=uncond_cond,
+        guidance_scale=guidance_scale,
         device=device
     )
+
 
     print(f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, "
           f"mean: {latents.mean():.4f}, std: {latents.std():.4f}", flush=True)

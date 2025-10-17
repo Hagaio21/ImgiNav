@@ -275,7 +275,7 @@ def train_epoch_unconditioned(unet, scheduler, dataloader, optimizer, device, ep
     return total_loss / len(dataloader)
 
 
-def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, device, epoch):
+def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, device, epoch, cfg_dropout_prob=0.1):
     """Train for one epoch with conditioning"""
     unet.train()
     total_loss = 0
@@ -294,6 +294,9 @@ def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, devic
         # Build conditioning
         # conds = [c for c in [cond_pov, cond_graph] if c is not None]
         # cond = mixer(conds)
+        if torch.rand(1).item() < cfg_dropout_prob:
+            cond_pov = torch.zeros_like(cond_pov) if cond_pov is not None else None
+            cond_graph = torch.zeros_like(cond_graph)
         conds = [cond_pov, cond_graph]
         cond = mixer(conds)
         # condition testing
@@ -403,6 +406,10 @@ def validate_generation_quality(diffusion_model, mixer, dataloader, device, num_
         generated = diffusion_model.sample(cond=cond, batch_size=ground_truth.shape[0])
         
         # Compute generation metric (e.g., MSE, SSIM, etc.)
+        def compute_generation_metric(pred, target):
+            """Simple placeholder metric (MSE)."""
+            return torch.mean((pred - target) ** 2).item()
+
         metric = compute_generation_metric(generated, ground_truth)
         total_metric += metric
     
