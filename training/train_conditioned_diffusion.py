@@ -256,7 +256,7 @@ def main():
         if (epoch + 1) % config["training"]["sample_every"] == 0:
             print(f"Generating samples at epoch {epoch+1}...")
             generate_samples_conditioned(
-                diffusion_model, mixer, fixed_samples, exp_dir, epoch, device
+                diffusion_model, mixer, fixed_samples, exp_dir, epoch, device, config
             )
 
     print(f"\nTraining complete! Best validation loss: {best_loss:.6f}")

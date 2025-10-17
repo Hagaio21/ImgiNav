@@ -55,9 +55,9 @@ def generate_samples_unconditioned(diffusion_model, exp_dir, epoch, num_samples,
 
 
 @torch.no_grad()
-def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch, device):
+def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch, device, config=None):
     """
-    Generate conditioned samples and compare with targets using LatentDiffusion.
+    Generate conditioned samples and compare with targets using LatentDiffusion + CFG.
     """
     diffusion_model.eval()
     diffusion_model.autoencoder.eval()
@@ -83,14 +83,18 @@ def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch
     cond = mixer(conds)
     # --------------------------------------------------------
 
+    # Classifier-free guidance setup
+    uncond_cond = torch.zeros_like(cond)
+    guidance_scale = (
+        config["training"]["cfg"]["guidance_scale"]
+        if config and "training" in config and "cfg" in config["training"]
+        else 5.0
+    )
+
     # Target latents
     target_latents = torch.stack([s["layout"] for s in samples]).to(device)
 
-    # CFG setup
-    uncond_cond = torch.zeros_like(cond)
-    guidance_scale = samples[0].get("guidance_scale", 5.0) if isinstance(samples, list) else 5.0
-
-    # Generate latents using LatentDiffusion
+    # Generate latents using LatentDiffusion + CFG
     latents = diffusion_model.sample(
         batch_size=num_samples,
         image=False,
@@ -100,9 +104,11 @@ def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch
         device=device
     )
 
-
-    print(f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, "
-          f"mean: {latents.mean():.4f}, std: {latents.std():.4f}", flush=True)
+    print(
+        f"Sampled latent stats - min: {latents.min():.4f}, max: {latents.max():.4f}, "
+        f"mean: {latents.mean():.4f}, std: {latents.std():.4f}",
+        flush=True
+    )
 
     mse = F.mse_loss(latents, target_latents).item()
     print(f"MSE between generated and target latents: {mse:.6f}", flush=True)
