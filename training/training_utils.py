@@ -11,6 +11,7 @@ from datetime import datetime
 import torch
 from tqdm import tqdm
 import torch.nn.functional as F
+import numpy as np
 
 
 # ============================================================================
@@ -168,54 +169,6 @@ def load_checkpoint(checkpoint_path, models_dict, optimizer=None, scheduler_lr=N
 # Training Statistics
 # ============================================================================
 
-def save_training_stats(exp_dir, training_stats):
-    """Save training statistics to JSON and generate plots"""
-    exp_dir = Path(exp_dir)
-    stats_path = exp_dir / 'logs' / 'training_stats.json'
-    
-    # Save JSON
-    with open(stats_path, 'w') as f:
-        json.dump(training_stats, f, indent=2)
-    
-    # Generate plots if matplotlib available
-    try:
-        import matplotlib.pyplot as plt
-        
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-        
-        # Loss plot
-        if 'train_loss' in training_stats and training_stats['train_loss']:
-            axes[0].plot(training_stats['epochs'], training_stats['train_loss'], 
-                        label='Train Loss', marker='o', markersize=3)
-        if 'val_loss' in training_stats and training_stats['val_loss']:
-            axes[0].plot(training_stats['epochs'], training_stats['val_loss'], 
-                        label='Val Loss', marker='s', markersize=3)
-        axes[0].set_xlabel('Epoch')
-        axes[0].set_ylabel('Loss')
-        axes[0].set_title('Training and Validation Loss')
-        axes[0].legend()
-        axes[0].grid(True, alpha=0.3)
-        
-        # Learning rate plot
-        if 'learning_rate' in training_stats and training_stats['learning_rate']:
-            axes[1].plot(training_stats['epochs'], training_stats['learning_rate'], 
-                        label='Learning Rate', color='orange', marker='o', markersize=3)
-            axes[1].set_xlabel('Epoch')
-            axes[1].set_ylabel('Learning Rate')
-            axes[1].set_title('Learning Rate Schedule')
-            axes[1].legend()
-            axes[1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plot_path = exp_dir / 'logs' / 'training_curves.png'
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"Saved training plots to {plot_path}", flush=True)
-    except ImportError:
-        print("Matplotlib not available, skipping plots", flush=True)
-
-
 def init_training_stats():
     """Initialize empty training statistics dictionary"""
     return {
@@ -223,23 +176,134 @@ def init_training_stats():
         'train_loss': [],
         'val_loss': [],
         'learning_rate': [],
-        'timestamps': []
+        'timestamps': [],
+        'corr_pov': [],
+        'corr_graph': [],
+        'corr_mix': []
     }
 
 
-def update_training_stats(training_stats, epoch, train_loss, val_loss, learning_rate):
+def update_training_stats(training_stats, epoch, train_loss, val_loss, learning_rate,
+                          corr_pov=None, corr_graph=None, corr_mix=None):
     """Update training statistics with current epoch data"""
     training_stats['epochs'].append(epoch + 1)
     training_stats['train_loss'].append(train_loss)
     training_stats['val_loss'].append(val_loss)
     training_stats['learning_rate'].append(learning_rate)
     training_stats['timestamps'].append(datetime.now().isoformat())
+
+    # Optional correlation logging
+    training_stats['corr_pov'].append(corr_pov if corr_pov is not None else None)
+    training_stats['corr_graph'].append(corr_graph if corr_graph is not None else None)
+    training_stats['corr_mix'].append(corr_mix if corr_mix is not None else None)
+
     return training_stats
+
+
+def save_training_stats(exp_dir, training_stats):
+    """Save training statistics to JSON and generate plots"""
+    exp_dir = Path(exp_dir)
+    stats_path = exp_dir / 'logs' / 'training_stats.json'
+
+    # Save JSON
+    with open(stats_path, 'w') as f:
+        json.dump(training_stats, f, indent=2)
+
+    try:
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+
+        # --- Loss Plot ---
+        if training_stats.get('train_loss'):
+            axes[0].plot(training_stats['epochs'], training_stats['train_loss'],
+                         label='Train', marker='o', ms=3)
+        if training_stats.get('val_loss'):
+            axes[0].plot(training_stats['epochs'], training_stats['val_loss'],
+                         label='Val', marker='s', ms=3)
+        axes[0].set_xlabel('Epoch')
+        axes[0].set_ylabel('Loss')
+        axes[0].set_title('Train / Val Loss')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+
+        # --- Learning Rate Plot ---
+        if training_stats.get('learning_rate'):
+            axes[1].plot(training_stats['epochs'], training_stats['learning_rate'],
+                         color='orange', marker='o', ms=3)
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel('Learning Rate')
+        axes[1].set_title('Learning Rate Schedule')
+        axes[1].grid(True, alpha=0.3)
+
+        # --- Correlation Plot ---
+        has_corr = any(len(training_stats.get(k, [])) for k in ['corr_pov', 'corr_graph', 'corr_mix'])
+        if has_corr:
+            if training_stats.get('corr_pov'):
+                axes[2].plot(training_stats['epochs'], training_stats['corr_pov'],
+                             label='POV Corr', marker='o', ms=3)
+            if training_stats.get('corr_graph'):
+                axes[2].plot(training_stats['epochs'], training_stats['corr_graph'],
+                             label='Graph Corr', marker='s', ms=3)
+            if training_stats.get('corr_mix'):
+                axes[2].plot(training_stats['epochs'], training_stats['corr_mix'],
+                             label='Mix Corr', marker='^', ms=3)
+            axes[2].set_xlabel('Epoch')
+            axes[2].set_ylabel('Correlation')
+            axes[2].set_title('Condition Correlation')
+            axes[2].legend()
+            axes[2].grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plot_path = exp_dir / 'logs' / 'training_curves.png'
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"Saved training plots to {plot_path}", flush=True)
+
+    except ImportError:
+        print("Matplotlib not available, skipping plots", flush=True)
 
 
 # ============================================================================
 # Training Loop Helpers
 # ============================================================================
+
+def compute_condition_correlations(cond_pov, cond_graph, cond, noisy_latents):
+    """Compute cosine correlations between latent and each conditioning source."""
+    corr_pov_vals, corr_graph_vals, corr_mix_vals = [], [], []
+    with torch.no_grad():
+        l = noisy_latents.mean(dim=[2, 3])       # [B, C_lat]
+        c_mix = cond.mean(dim=[2, 3])            # [B, C_cond]
+
+        # POV
+        if cond_pov is not None:
+            c_pov = cond_pov.mean(dim=[2, 3]) if cond_pov.ndim == 4 else cond_pov
+            min_ch = min(c_pov.size(1), l.size(1))
+            corr = torch.cosine_similarity(
+                c_pov[:, :min_ch], l[:, :min_ch], dim=1
+            )
+            corr = torch.nan_to_num(corr, nan=0.0)
+            corr_pov_vals.append(corr.mean().item())
+
+        # Graph
+        c_graph = cond_graph.mean(dim=[2, 3]) if cond_graph.ndim == 4 else cond_graph
+        min_ch = min(c_graph.size(1), l.size(1))
+        corr_graph_vals.append(
+            torch.cosine_similarity(c_graph[:, :min_ch], l[:, :min_ch], dim=1).mean().item()
+        )
+
+        # Mixed
+        min_ch = min(c_mix.size(1), l.size(1))
+        corr_mix_vals.append(
+            torch.cosine_similarity(c_mix[:, :min_ch], l[:, :min_ch], dim=1).mean().item()
+        )
+
+    return (
+        np.mean(corr_pov_vals) if corr_pov_vals else 0.0,
+        np.mean(corr_graph_vals) if corr_graph_vals else 0.0,
+        np.mean(corr_mix_vals) if corr_mix_vals else 0.0,
+    )
+
 
 def train_epoch_unconditioned(unet, scheduler, dataloader, optimizer, device, epoch):
     """Train for one epoch without conditioning"""
@@ -275,60 +339,85 @@ def train_epoch_unconditioned(unet, scheduler, dataloader, optimizer, device, ep
     return total_loss / len(dataloader)
 
 
-def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, device, epoch, cfg_dropout_prob=0.1):
-    """Train for one epoch with conditioning"""
+def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, device, epoch,
+                            cfg_dropout_prob=0.1):
     unet.train()
     total_loss = 0
-    
+    corr_pov_vals, corr_graph_vals, corr_mix_vals = [], [], []
+
     pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
-    for batch in pbar:
+    for i, batch in enumerate(pbar):
         latents = batch["layout"].to(device)
         cond_pov = batch["pov"].to(device) if batch["pov"] is not None else None
         cond_graph = batch["graph"].to(device)
-        
+
         B = latents.size(0)
         t = torch.randint(0, scheduler.num_steps, (B,), device=device)
         noise = torch.randn_like(latents)
         noisy_latents, _ = scheduler.add_noise(latents, t, noise)
-        
-        # Build conditioning
-        # conds = [c for c in [cond_pov, cond_graph] if c is not None]
-        # cond = mixer(conds)
+
         if torch.rand(1).item() < cfg_dropout_prob:
             cond_pov = torch.zeros_like(cond_pov) if cond_pov is not None else None
             cond_graph = torch.zeros_like(cond_graph)
-        conds = [cond_pov, cond_graph]
-        cond = mixer(conds)
-        # condition testing
+        # conds = [cond_pov, cond_graph]
+        # cond = mixer(conds)
+        # cond = cond * 3.0
+        # normalize each condition source before fusion
+        if cond_pov is not None:
+            cond_pov = cond_pov  # keep raw scale for images
+        if cond_graph is not None:
+            mean, std = cond_graph.mean(), cond_graph.std()
+            cond_graph = (cond_graph - mean) / (std + 1e-5)
+            cond_graph = cond_graph * 5.0  # apply scale and reassign
 
-        if epoch == 0 and torch.randint(0, 200, (1,)).item() == 0:
-            pov_mean = cond_pov.mean().item() if cond_pov is not None else 0.0
-            pov_std  = cond_pov.std().item() if cond_pov is not None else 0.0
-            graph_mean = cond_graph.mean().item()
-            graph_std  = cond_graph.std().item()
-            cond_mean = cond.mean().item()
-            cond_std  = cond.std().item()
-            print(
-                f"[cond check] pov μ={pov_mean:.3f} σ={pov_std:.3f} | "
-                f"graph μ={graph_mean:.3f} σ={graph_std:.3f} | "
-                f"mixed μ={cond_mean:.3f} σ={cond_std:.3f}",
-                flush=True
-                )
+        cond = mixer([cond_pov, cond_graph])
+        cond = cond * 1.0
 
-        
-        # Predict noise with conditioning
+        # Correlation checks
+        corr_pov, corr_graph, corr_mix = compute_condition_correlations(
+                                            cond_pov, cond_graph, cond, noisy_latents
+                                         )
+        corr_pov_vals.append(corr_pov)
+        corr_graph_vals.append(corr_graph)
+        corr_mix_vals.append(corr_mix)
+
+
         noise_pred = unet(noisy_latents, t, cond=cond)
         loss = F.mse_loss(noise_pred, noise)
-        
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
         optimizer.step()
-        
+
         total_loss += loss.item()
+        if i % 300 == 0:
+            cond_mean = cond.mean().item()
+            cond_std = cond.std().item()
+            lat_mean = noisy_latents.mean().item()
+            lat_std = noisy_latents.std().item()
+
+            c = cond.mean(dim=[2, 3]) if cond.ndim == 4 else cond
+            l_avg = noisy_latents.mean(dim=[2, 3])
+            min_ch = min(c.size(1), l_avg.size(1))
+            corr = torch.cosine_similarity(c[:, :min_ch], l_avg[:, :min_ch], dim=1)
+            corr = torch.nan_to_num(corr, nan=0.0).mean().item()
+
+            print(
+                f"[epoch {epoch+1} | batch {i}] "
+                f"latent μ={lat_mean:.3f} σ={lat_std:.3f} | "
+                f"cond μ={cond_mean:.3f} σ={cond_std:.3f} | "
+                f"corr={corr:.3f}",
+                flush=True
+            )
+
         pbar.set_postfix({'loss': loss.item()})
-    
-    return total_loss / len(dataloader)
+
+    avg_loss = total_loss / len(dataloader)
+    avg_corr_pov = np.mean(corr_pov_vals) if corr_pov_vals else 0.0
+    avg_corr_graph = np.mean(corr_graph_vals) if corr_graph_vals else 0.0
+    avg_corr_mix = np.mean(corr_mix_vals) if corr_mix_vals else 0.0
+    return avg_loss, avg_corr_pov, avg_corr_graph, avg_corr_mix
+
 
 
 @torch.no_grad()

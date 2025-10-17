@@ -2,8 +2,8 @@
 # This file contains all parameters for conditional training with POV + Graph
 
 experiment:
-  exp_dir: /work3/s233249/ImgiNav/experiments/conditioned_diffusion_cfg_002
-  name: "Conditioned Diffusion - POV + Graph - Run 003"
+  exp_dir: /work3/s233249/ImgiNav/experiments/conditioned_diffusion_small_cfg_002
+  name: "Conditioned Diffusion (small) - POV + Graph - Run 002"
   description: "Training conditional diffusion with room POV and scene graphs"
 
 # U-Net Configuration
@@ -13,7 +13,7 @@ unet:
 # Noise Scheduler
 scheduler:
   type: CosineScheduler  # LinearScheduler, CosineScheduler, SquaredCosineScheduler
-  num_steps: 200
+  num_steps: 400
 
 
 # Autoencoder (for generating samples during training)
@@ -35,15 +35,13 @@ mixer:
   graph_dim: 384
 
 
-# Training Parameters
 training:
-  batch_size: 32
-  num_epochs: 20
+  batch_size: 128
+  num_epochs: 10
   learning_rate: 0.00001
-  sample_every: 2     # Generate samples every N epochs
-  num_samples: 8       # Number of samples to generate (fixed for comparison)
-  periodic_checkpoint_every: 5  # Save lightweight checkpoint every N epochs
+  sample_every: 1
+  num_samples: 8
+  periodic_checkpoint_every: 5
   cfg:
-    dropout_prob: 0.1      # probability to drop conditioning during training
-    guidance_scale: 5.0    # strength during sampling
-
+    dropout_prob: 0.05        # reduce dropout for stronger conditioning signal
+    guidance_scale: 7.0       # stronger guidance at sampling

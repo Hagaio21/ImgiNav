@@ -6,7 +6,7 @@
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
 #BSUB -W 24:00
-#BSUB -q gpua10
+#BSUB -q gpul40s
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_conditioned_diffusion.py"
 # =============================================================================
 # CONFIG 
 # =============================================================================
-EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/cond_exp_small_200_2.yml
+EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/cond_exp_medium_400_1.yml
 ROOM_MANIFEST=/work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
 SCENE_MANIFEST=/work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
 
@@ -37,7 +37,7 @@ POV_MODE="seg"  # Set to "seg", "tex", or "" for all POV types
 # RESUME FLAG 
 # =============================================================================
 # RESUME_FLAG="--resume"
-RESUME_FLAG="--resume"
+RESUME_FLAG=""
 
 # =============================================================================
 # MODULE LOADS

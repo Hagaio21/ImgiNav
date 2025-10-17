@@ -207,22 +207,19 @@ def main():
     print(f"Batch size: {config['training']['batch_size']}, Learning rate: {config['training']['learning_rate']}")
     print(f"Batches per epoch: {len(train_loader)}")
     print("="*60)
-
+    
     for epoch in range(start_epoch, config["training"]["num_epochs"]):
-        # Train and validate
-        train_loss = train_epoch_conditioned(
+        train_loss, corr_pov, corr_graph, corr_mix = train_epoch_conditioned(
             unet, scheduler, mixer, train_loader, optimizer, device, epoch,
             cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"]
         )
         val_loss = validate_conditioned(unet, scheduler, mixer, val_loader, device)
-        
-        # Update learning rate
         scheduler_lr.step()
         current_lr = optimizer.param_groups[0]['lr']
-        
-        # Update training stats
+
         training_stats = update_training_stats(
-            training_stats, epoch, train_loss, val_loss, current_lr
+            training_stats, epoch, train_loss, val_loss, current_lr,
+            corr_pov=corr_pov, corr_graph=corr_graph, corr_mix=corr_mix
         )
 
         print(f"Epoch {epoch+1}/{config['training']['num_epochs']} - "
