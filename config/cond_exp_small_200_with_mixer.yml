@@ -1,0 +1,58 @@
+# =========================================================
+# Conditioned Diffusion Experiment Configuration
+# =========================================================
+experiment:
+  exp_dir: /work3/s233249/ImgiNav/experiments/conditioned_diffusion_cfg_008
+  name: "Conditioned Diffusion – POV + Graph – Run 008"
+  description: "Medium-capacity UNet with learned fusion; training on 64×64×4 latents using room POV + scene graphs."
+
+# ---------------------------------------------------------
+# U-Net
+# ---------------------------------------------------------
+unet:
+  config_path: /work3/s233249/ImgiNav/ImgiNav/config/cond_unet_small_condc16.yml
+
+# ---------------------------------------------------------
+# Noise Scheduler
+# ---------------------------------------------------------
+scheduler:
+  type: CosineScheduler
+  num_steps: 1000        # keep high for smoother diffusion noise curve
+
+# ---------------------------------------------------------
+# Autoencoder (for decoding during sampling)
+# ---------------------------------------------------------
+autoencoder:
+  config_path: /work3/s233249/ImgiNav/experiments/ae_configs/config_diff_4ch_64x64_vanilla.yml
+  checkpoint_path: /work3/s233249/ImgiNav/experiments/autoencoder_final_64x64x4_vanila/20251004-082051_ae_final/best.pt
+
+# ---------------------------------------------------------
+# Latent space shape (C, H, W)
+# ---------------------------------------------------------
+latent_shape: [4, 64, 64]
+
+# ---------------------------------------------------------
+# Conditioning Mixer
+# ---------------------------------------------------------
+mixer:
+  type: concat        # start simple; fusion inside UNet now handles learned weighting
+  pov_dim: 512        # output dimension of POV encoder
+  graph_dim: 384      # output dimension of graph encoder
+
+# ---------------------------------------------------------
+# Training Parameters
+# ---------------------------------------------------------
+training:
+  batch_size: 64                 # 16 for stability, fits typical 24GB GPU
+  num_epochs: 20                 # enough for convergence tracking
+  learning_rate: 0.0001            # empirically stable for conditioned UNet
+  sample_every: 1                # generate samples every 5 epochs
+  num_samples: 8                 # number of visual samples
+  periodic_checkpoint_every: 5  # save lightweight checkpoint every 10 epochs
+
+  cfg:
+    dropout_prob: 0.1
+    guidance_scale: 5.0
+    cond_scale_graph: 5.0    # <— new
+    cond_scale_pov: 1.0      # <— new
+    cond_scale_mix: 1.0      # <— optional post-mix scaling

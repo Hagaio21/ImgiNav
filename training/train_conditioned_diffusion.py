@@ -209,27 +209,34 @@ def main():
     print("="*60)
     
     for epoch in range(start_epoch, config["training"]["num_epochs"]):
-        train_loss, corr_pov, corr_graph, corr_mix = train_epoch_conditioned(
-            unet, scheduler, mixer, train_loader, optimizer, device, epoch,
-            cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"]
-        )
+        train_loss, corr_pov, corr_graph, corr_mix, cond_std_pov, cond_std_graph, dropout_pov, dropout_graph = train_epoch_conditioned(
+                                                                                                                unet, scheduler, mixer, train_loader, optimizer, device, epoch,
+                                                                                                                config=config,
+                                                                                                                cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"]
+                                                                                                            )
+
+
         val_loss = validate_conditioned(unet, scheduler, mixer, val_loader, device)
         scheduler_lr.step()
         current_lr = optimizer.param_groups[0]['lr']
 
         training_stats = update_training_stats(
-            training_stats, epoch, train_loss, val_loss, current_lr,
-            corr_pov=corr_pov, corr_graph=corr_graph, corr_mix=corr_mix
-        )
+                        training_stats, epoch, train_loss, val_loss, current_lr,
+                        corr_pov=corr_pov, corr_graph=corr_graph, corr_mix=corr_mix,
+                        cond_std_pov=cond_std_pov, cond_std_graph=cond_std_graph,
+                        dropout_ratio_pov=dropout_pov, dropout_ratio_graph=dropout_graph
+                    )
+
 
         print(f"Epoch {epoch+1}/{config['training']['num_epochs']} - "
-              f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | LR: {current_lr:.6f}", flush=True)
-        
+            f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | LR: {current_lr:.6f}",
+            flush=True)
+
         # Save checkpoint
         is_best = val_loss < best_loss
         if is_best:
             best_loss = val_loss
-        
+
         save_periodic = (epoch + 1) % config["training"].get("periodic_checkpoint_every", 10) == 0
         save_checkpoint(
             exp_dir, epoch,
@@ -245,7 +252,7 @@ def main():
             is_best=is_best,
             save_periodic=save_periodic
         )
-        
+
         # Save training stats
         save_training_stats(exp_dir, training_stats)
 

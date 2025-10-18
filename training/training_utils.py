@@ -170,21 +170,19 @@ def load_checkpoint(checkpoint_path, models_dict, optimizer=None, scheduler_lr=N
 # ============================================================================
 
 def init_training_stats():
-    """Initialize empty training statistics dictionary"""
     return {
-        'epochs': [],
-        'train_loss': [],
-        'val_loss': [],
-        'learning_rate': [],
-        'timestamps': [],
-        'corr_pov': [],
-        'corr_graph': [],
-        'corr_mix': []
+        'epochs': [], 'train_loss': [], 'val_loss': [],
+        'learning_rate': [], 'timestamps': [],
+        'corr_pov': [], 'corr_graph': [], 'corr_mix': [],
+        'cond_std_pov': [], 'cond_std_graph': [],
+        'dropout_ratio_pov': [], 'dropout_ratio_graph': []
     }
 
 
 def update_training_stats(training_stats, epoch, train_loss, val_loss, learning_rate,
-                          corr_pov=None, corr_graph=None, corr_mix=None):
+                          corr_pov=None, corr_graph=None, corr_mix=None,
+                          cond_std_pov=None, cond_std_graph=None,
+                          dropout_ratio_pov=None, dropout_ratio_graph=None):
     """Update training statistics with current epoch data"""
     training_stats['epochs'].append(epoch + 1)
     training_stats['train_loss'].append(train_loss)
@@ -197,6 +195,10 @@ def update_training_stats(training_stats, epoch, train_loss, val_loss, learning_
     training_stats['corr_graph'].append(corr_graph if corr_graph is not None else None)
     training_stats['corr_mix'].append(corr_mix if corr_mix is not None else None)
 
+    training_stats['cond_std_pov'].append(cond_std_pov)
+    training_stats['cond_std_graph'].append(cond_std_graph)
+    training_stats['dropout_ratio_pov'].append(dropout_ratio_pov)
+    training_stats['dropout_ratio_graph'].append(dropout_ratio_graph)
     return training_stats
 
 
@@ -212,6 +214,9 @@ def save_training_stats(exp_dir, training_stats):
     try:
         import matplotlib.pyplot as plt
 
+        # ---------------------------------------------------------
+        # Main training curves (Loss, LR, Correlation)
+        # ---------------------------------------------------------
         fig, axes = plt.subplots(1, 3, figsize=(18, 4))
 
         # --- Loss Plot ---
@@ -260,8 +265,53 @@ def save_training_stats(exp_dir, training_stats):
         plt.close()
         print(f"Saved training plots to {plot_path}", flush=True)
 
+        # ---------------------------------------------------------
+        # Additional visual diagnostics
+        # ---------------------------------------------------------
+
+        # --- Condition Signal Strength ---
+        if training_stats.get('cond_std_pov') or training_stats.get('cond_std_graph'):
+            fig, ax = plt.subplots(figsize=(6, 4))
+            if training_stats.get('cond_std_pov'):
+                ax.plot(training_stats['epochs'], training_stats['cond_std_pov'],
+                        label='POV σ', marker='o', ms=3)
+            if training_stats.get('cond_std_graph'):
+                ax.plot(training_stats['epochs'], training_stats['cond_std_graph'],
+                        label='Graph σ', marker='s', ms=3)
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Std')
+            ax.set_title('Condition Signal Strength')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            sig_path = exp_dir / 'logs' / 'cond_signal_strength.png'
+            plt.savefig(sig_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"Saved condition signal plot to {sig_path}", flush=True)
+
+        # --- Dropout Ratio Plot ---
+        if training_stats.get('dropout_ratio_pov') or training_stats.get('dropout_ratio_graph'):
+            fig, ax = plt.subplots(figsize=(6, 4))
+            if training_stats.get('dropout_ratio_pov'):
+                ax.plot(training_stats['epochs'], training_stats['dropout_ratio_pov'],
+                        label='POV Dropout', marker='o', ms=3)
+            if training_stats.get('dropout_ratio_graph'):
+                ax.plot(training_stats['epochs'], training_stats['dropout_ratio_graph'],
+                        label='Graph Dropout', marker='s', ms=3)
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Dropout Ratio')
+            ax.set_title('Condition Dropout Frequency')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            drop_path = exp_dir / 'logs' / 'cond_dropout.png'
+            plt.savefig(drop_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"Saved condition dropout plot to {drop_path}", flush=True)
+
     except ImportError:
         print("Matplotlib not available, skipping plots", flush=True)
+
 
 
 # ============================================================================
@@ -340,48 +390,76 @@ def train_epoch_unconditioned(unet, scheduler, dataloader, optimizer, device, ep
 
 
 def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, device, epoch,
-                            cfg_dropout_prob=0.1):
+                            config, cfg_dropout_prob=0.1):
+    """Train one epoch with conditional inputs, extended to log dropout and condition strength."""
     unet.train()
     total_loss = 0
     corr_pov_vals, corr_graph_vals, corr_mix_vals = [], [], []
+    cond_std_pov_vals, cond_std_graph_vals = [], []
+    dropout_pov_events, dropout_graph_events, total_batches = 0, 0, 0
+
+    cfg_train = config["training"]["cfg"]
+    cfg_normalize_graph = cfg_train.get("normalize_graph", True)
+    cfg_normalize_pov = cfg_train.get("normalize_pov", False)
+    cfg_scale_graph = cfg_train.get("cond_scale_graph", 5.0)
+    cfg_scale_pov = cfg_train.get("cond_scale_pov", 1.0)
+    cfg_scale_mix = cfg_train.get("cond_scale_mix", 1.0)
+    cfg_clip_value = cfg_train.get("cond_clip_value", None)
+    cfg_log_condition_stats = cfg_train.get("log_condition_stats", True)
+    cfg_compute_corr_every = cfg_train.get("compute_corr_every", 300)
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
     for i, batch in enumerate(pbar):
         latents = batch["layout"].to(device)
         cond_pov = batch["pov"].to(device) if batch["pov"] is not None else None
         cond_graph = batch["graph"].to(device)
+        total_batches += 1
 
         B = latents.size(0)
         t = torch.randint(0, scheduler.num_steps, (B,), device=device)
         noise = torch.randn_like(latents)
         noisy_latents, _ = scheduler.add_noise(latents, t, noise)
 
+        # --- Classifier-free dropout ---
         if torch.rand(1).item() < cfg_dropout_prob:
-            cond_pov = torch.zeros_like(cond_pov) if cond_pov is not None else None
+            if cond_pov is not None:
+                cond_pov = torch.zeros_like(cond_pov)
+                dropout_pov_events += 1
             cond_graph = torch.zeros_like(cond_graph)
-        # conds = [cond_pov, cond_graph]
-        # cond = mixer(conds)
-        # cond = cond * 3.0
-        # normalize each condition source before fusion
+            dropout_graph_events += 1
+
+        # --- Normalize and scale ---
+        if cond_pov is not None and cfg_normalize_pov:
+            mean, std = cond_pov.mean(), cond_pov.std()
+            cond_pov = (cond_pov - mean) / (std + 1e-5)
         if cond_pov is not None:
-            cond_pov = cond_pov  # keep raw scale for images
-        if cond_graph is not None:
+            cond_pov = cond_pov * cfg_scale_pov
+            cond_std_pov_vals.append(cond_pov.std().item())
+
+        if cond_graph is not None and cfg_normalize_graph:
             mean, std = cond_graph.mean(), cond_graph.std()
             cond_graph = (cond_graph - mean) / (std + 1e-5)
-            cond_graph = cond_graph * 5.0  # apply scale and reassign
+        if cond_graph is not None:
+            cond_graph = cond_graph * cfg_scale_graph
+            cond_std_graph_vals.append(cond_graph.std().item())
 
-        cond = mixer([cond_pov, cond_graph])
-        cond = cond * 1.0
+        if cfg_clip_value is not None:
+            if cond_pov is not None:
+                cond_pov = torch.clamp(cond_pov, -cfg_clip_value, cfg_clip_value)
+            if cond_graph is not None:
+                cond_graph = torch.clamp(cond_graph, -cfg_clip_value, cfg_clip_value)
 
-        # Correlation checks
+        cond = mixer([cond_pov, cond_graph]) * cfg_scale_mix
+
+        # --- Correlation checks ---
         corr_pov, corr_graph, corr_mix = compute_condition_correlations(
-                                            cond_pov, cond_graph, cond, noisy_latents
-                                         )
+            cond_pov, cond_graph, cond, noisy_latents
+        )
         corr_pov_vals.append(corr_pov)
         corr_graph_vals.append(corr_graph)
         corr_mix_vals.append(corr_mix)
 
-
+        # --- Forward / backward ---
         noise_pred = unet(noisy_latents, t, cond=cond)
         loss = F.mse_loss(noise_pred, noise)
         optimizer.zero_grad()
@@ -390,33 +468,31 @@ def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, devic
         optimizer.step()
 
         total_loss += loss.item()
-        if i % 300 == 0:
+
+        if cfg_log_condition_stats and (i % cfg_compute_corr_every == 0):
             cond_mean = cond.mean().item()
             cond_std = cond.std().item()
             lat_mean = noisy_latents.mean().item()
             lat_std = noisy_latents.std().item()
-
-            c = cond.mean(dim=[2, 3]) if cond.ndim == 4 else cond
-            l_avg = noisy_latents.mean(dim=[2, 3])
-            min_ch = min(c.size(1), l_avg.size(1))
-            corr = torch.cosine_similarity(c[:, :min_ch], l_avg[:, :min_ch], dim=1)
-            corr = torch.nan_to_num(corr, nan=0.0).mean().item()
-
-            print(
-                f"[epoch {epoch+1} | batch {i}] "
-                f"latent μ={lat_mean:.3f} σ={lat_std:.3f} | "
-                f"cond μ={cond_mean:.3f} σ={cond_std:.3f} | "
-                f"corr={corr:.3f}",
-                flush=True
-            )
+            print(f"[epoch {epoch+1} | batch {i}] "
+                  f"latent μ={lat_mean:.3f} σ={lat_std:.3f} | "
+                  f"cond μ={cond_mean:.3f} σ={cond_std:.3f}", flush=True)
 
         pbar.set_postfix({'loss': loss.item()})
 
     avg_loss = total_loss / len(dataloader)
-    avg_corr_pov = np.mean(corr_pov_vals) if corr_pov_vals else 0.0
-    avg_corr_graph = np.mean(corr_graph_vals) if corr_graph_vals else 0.0
-    avg_corr_mix = np.mean(corr_mix_vals) if corr_mix_vals else 0.0
-    return avg_loss, avg_corr_pov, avg_corr_graph, avg_corr_mix
+    return (
+        avg_loss,
+        np.mean(corr_pov_vals) if corr_pov_vals else 0.0,
+        np.mean(corr_graph_vals) if corr_graph_vals else 0.0,
+        np.mean(corr_mix_vals) if corr_mix_vals else 0.0,
+        np.mean(cond_std_pov_vals) if cond_std_pov_vals else 0.0,
+        np.mean(cond_std_graph_vals) if cond_std_graph_vals else 0.0,
+        dropout_pov_events / total_batches,
+        dropout_graph_events / total_batches,
+    )
+
+
 
 
 

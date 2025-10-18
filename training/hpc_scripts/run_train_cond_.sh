@@ -1,7 +1,7 @@
 #!/bin/bash
 #BSUB -J cond_diffusion
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/cond_diffusion.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/cond_diffusion.%J.err
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/cond_diffusion_with_mixerlayer.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/cond_diffusion_with_mixerlayer.%J.err
 #BSUB -n 4
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
@@ -19,7 +19,7 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_conditioned_diffusion.py"
 # =============================================================================
 # CONFIG 
 # =============================================================================
-EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/cond_exp_medium_400_1.yml
+EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/cond_exp_small_200_with_mixer.yml
 ROOM_MANIFEST=/work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
 SCENE_MANIFEST=/work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
 
