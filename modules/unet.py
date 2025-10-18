@@ -147,9 +147,15 @@ class UNet(nn.Module):
 
         total_in = in_channels + cond_channels
 
+        # learned fusion for latent + condition
+        if cond_channels > 0:
+            self.fusion = nn.Conv2d(total_in, in_channels, kernel_size=1)
+        else:
+            self.fusion = nn.Identity()
+
         # encoder
         self.downs = nn.ModuleList()
-        prev_ch = total_in
+        prev_ch = in_channels
         feats = []
         for i in range(depth):
             ch = base_channels * (2 ** i)
@@ -172,6 +178,7 @@ class UNet(nn.Module):
     def forward(self, x_t, t, cond=None):
         if cond is not None:
             x_t = torch.cat([x_t, cond], dim=1)
+        x_t = self.fusion(x_t)
 
         t_emb = self.time_mlp(t)  # [B, time_dim]
 
