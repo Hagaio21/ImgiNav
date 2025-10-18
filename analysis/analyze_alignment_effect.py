@@ -40,24 +40,43 @@ def safe_load_embedding(path):
     return None
 
 
-def load_embeddings(df, emb_col, group_by_scene_only=False):
+def load_embeddings(df, emb_col, group_by_scene_only=False, deduplicate=True):
     grouped = {}
+    seen_per_group = {}  # Track unique embeddings per group
+    
     for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Loading {emb_col}"):
-        emb = safe_load_embedding(row.get(emb_col))
-        if emb is None:
+        path = row.get(emb_col)
+        if not path or not os.path.exists(path):
             continue
-
+            
         scene_id = row.get("SCENE_ID")
         room_id = row.get("ROOM_ID") if not group_by_scene_only else None
         if scene_id is None:
             continue
-
-        # correct grouping: scene+room for room-level, scene only for scene-level
+            
         key = f"{scene_id}_{room_id}" if room_id is not None else scene_id
+        
+        # For graph embeddings, deduplicate since they're shared across POVs
+        if deduplicate and "GRAPH" in emb_col:
+            if key not in seen_per_group:
+                seen_per_group[key] = set()
+            if path in seen_per_group[key]:
+                continue  # Skip duplicate graph embeddings
+            seen_per_group[key].add(path)
+        
+        emb = safe_load_embedding(path)
+        if emb is None:
+            continue
+            
         grouped.setdefault(key, []).append(emb.numpy())
 
+    # Debug output
+    print(f"  Loaded {sum(len(v) for v in grouped.values())} embeddings in {len(grouped)} groups")
+    if grouped:
+        sizes = [len(v) for v in grouped.values()]
+        print(f"  Group sizes: min={min(sizes)}, max={max(sizes)}, avg={np.mean(sizes):.1f}")
+        
     return grouped
-
 
 def compute_stats(grouped_embs, subsample=5000):
     cos_all, euc_all = [], []
@@ -181,9 +200,10 @@ def main():
 
     # ============ 1. LOAD EMBEDDINGS ============ #
     print("\n[1] Loading embeddings grouped by (scene, room)...")
-    pov_raw = load_embeddings(room_df, "POV_EMBEDDING_PATH", group_by_scene_only=False)
-    graph_raw = load_embeddings(room_df, "ROOM_GRAPH_EMBEDDING_PATH", group_by_scene_only=False)
-    scene_graph_raw = load_embeddings(scene_df, "SCENE_GRAPH_EMBEDDING_PATH", group_by_scene_only=True)
+    # Load with deduplication for graph embeddings
+    pov_raw = load_embeddings(room_df, "POV_EMBEDDING_PATH", group_by_scene_only=False, deduplicate=False)
+    graph_raw = load_embeddings(room_df, "ROOM_GRAPH_EMBEDDING_PATH", group_by_scene_only=False, deduplicate=True)
+    scene_graph_raw = load_embeddings(scene_df, "SCENE_GRAPH_EMBEDDING_PATH", group_by_scene_only=True, deduplicate=True)
 
 
     # ============ 2. COMPUTE BEFORE ============ #

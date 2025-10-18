@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--room_manifest", required=True, help="Path to room manifest")
     parser.add_argument("--scene_manifest", required=True, help="Path to scene manifest")
     parser.add_argument("--pov_type", default=None, help="POV type (e.g., 'rendered', 'semantic')")
-    parser.add_argument("--mixer_type", choices=["concat", "weighted", "learned"], 
+    parser.add_argument("--mixer_type", choices=["concat", "weighted"], 
                         default=None, help="Override mixer type from config")
     parser.add_argument("--resume", action="store_true", help="Resume training")
     args = parser.parse_args()
@@ -61,7 +61,14 @@ def main():
     # Load Models
     
     print(f"Loading U-Net from {config['unet']['config_path']}", flush=True)
-    unet = UNet.from_config(config["unet"]["config_path"]).to(device)
+    # Get C from the [C, H, W] shape in your main config
+    latent_channels = config["latent_shape"][0] 
+    
+    # Pass it to the from_config method
+    unet = UNet.from_config(
+        config["unet"]["config_path"],
+        latent_channels=latent_channels
+    ).to(device)
     
     print(f"Loading {config['scheduler']['type']} with {config['scheduler']['num_steps']} steps", flush=True)
     scheduler_class = globals()[config["scheduler"]["type"]]
@@ -163,37 +170,35 @@ def main():
 
     print(f"Creating {mixer_type} mixer (out_channels={cond_channels}, target_size={latent_hw})...", flush=True)
 
-    if mixer_type == "concat":
-        mixer = ConcatMixer(
-            out_channels=cond_channels, 
-            target_size=latent_hw,
-            pov_channels=pov_dim,
-            graph_channels=graph_dim
-        ).to(device)
-    elif mixer_type == "weighted":
+    if mixer_type == "weighted":
         mixer = WeightedMixer(
             out_channels=cond_channels, 
             target_size=latent_hw,
             pov_channels=pov_dim,
             graph_channels=graph_dim
         ).to(device)
-    else:  # learned
-        mixer = LearnedWeightedMixer(
+            
+    else:  # Default to "concat"
+        if mixer_type != "concat":
+            print(f"Warning: Unknown mixer type '{mixer_type}'. Defaulting to 'concat'.", flush=True)
+            mixer_type = "concat"
+            
+        mixer = ConcatMixer(
             out_channels=cond_channels, 
             target_size=latent_hw,
             pov_channels=pov_dim,
             graph_channels=graph_dim
         ).to(device)
 
-    # Freeze mixer weights (if not learned)
-    if mixer_type != "learned":
-        for param in mixer.parameters():
-            param.requires_grad = False
+    print(f"Mixer parameters are trainable for '{mixer_type}' mixer.", flush=True)
 
     # Optimizer and Scheduler
     
-    optimizer = Adam(unet.parameters(), lr=config["training"]["learning_rate"])
+    # Combine parameters from both models to train them jointly
+    params_to_train = list(unet.parameters()) + list(mixer.parameters())
+    optimizer = Adam(params_to_train, lr=config["training"]["learning_rate"])
     scheduler_lr = CosineAnnealingLR(optimizer, T_max=config["training"]["num_epochs"])
+    print(f"Optimizer training {len(params_to_train)} parameters (UNet + Mixer).", flush=True)
 
     # Fixed samples for visual tracking
     
@@ -202,9 +207,7 @@ def main():
     fixed_samples = [val_dataset[i] for i in fixed_indices]
     torch.save(fixed_indices, exp_dir / "fixed_indices.pt")
 
-    # ========================================================================
     # Resume from checkpoint
-    # ========================================================================
     
     start_epoch = 0
     best_loss = float("inf")
@@ -212,17 +215,15 @@ def main():
     
     latest_checkpoint = exp_dir / 'checkpoints' / 'latest.pt'
     if args.resume and latest_checkpoint.exists():
-        start_epoch, best_loss, training_stats = load_checkpoint(
-            latest_checkpoint,
-            models_dict={'unet': unet, 'mixer': mixer},
-            optimizer=optimizer,
-            scheduler_lr=scheduler_lr
-        )
-        start_epoch += 1
+            start_epoch, best_loss, training_stats = load_checkpoint(
+                latest_checkpoint,
+                models_dict={'unet': unet, 'mixer': mixer}
+                optimizer=optimizer,
+                scheduler_lr=scheduler_lr
+            )
+            start_epoch += 1
 
-    # ========================================================================
     # Training Loop
-    # ========================================================================
     
     print(f"\nStarting training from epoch {start_epoch+1} to {config['training']['num_epochs']}")
     print(f"Batch size: {config['training']['batch_size']}, Learning rate: {config['training']['learning_rate']}")

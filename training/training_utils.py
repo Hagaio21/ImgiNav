@@ -106,16 +106,25 @@ def save_checkpoint(exp_dir, epoch, state_dict, training_stats,
         torch.save(checkpoint, best_path)
         print(f"Saved best checkpoint with loss: {val_loss:.6f}", flush=True)
     
-    # Save periodic lightweight checkpoint (model only)
+    # Save periodic lightweight AND SEPARATE checkpoints (model only)
     if save_periodic:
+        # --- 1. Save the lightweight combined checkpoint (as before) ---
         periodic_checkpoint = {
             'epoch': epoch,
             'val_loss': val_loss,
-            **{k: v for k, v in state_dict.items() if 'state_dict' in k or k in ['unet', 'mixer']}
+            **{k: v for k, v in state_dict.items() if k in ['unet', 'mixer']}
         }
         periodic_path = ckpt_dir / f'epoch_{epoch+1}.pt'
         torch.save(periodic_checkpoint, periodic_path)
-        print(f"Saved periodic checkpoint at epoch {epoch+1}", flush=True)
+        print(f"Saved periodic combined checkpoint to {periodic_path}", flush=True)
+
+        # --- 2. Save separate model-only files (your new request) ---
+        unet_path = ckpt_dir / f'unet_epoch_{epoch+1}.pt'
+        mixer_path = ckpt_dir / f'mixer_epoch_{epoch+1}.pt'
+        
+        torch.save({'epoch': epoch, 'val_loss': val_loss, 'unet': state_dict['unet']}, unet_path)
+        torch.save({'epoch': epoch, 'val_loss': val_loss, 'mixer': state_dict['mixer']}, mixer_path)
+        print(f"Saved periodic separate models to {unet_path} and {mixer_path}", flush=True)
 
 
 def load_checkpoint(checkpoint_path, models_dict, optimizer=None, scheduler_lr=None):
@@ -318,42 +327,49 @@ def save_training_stats(exp_dir, training_stats):
 # Training Loop Helpers
 # ============================================================================
 
-def compute_condition_correlations(cond_pov, cond_graph, cond, noisy_latents):
-    """Compute cosine correlations between latent and each conditioning source."""
+def compute_condition_correlations(mixer, cond_pov_raw, cond_graph_raw, cond_mixed_final, noisy_latents):
+    """
+    Compute cosine correlations between the noisy latent and each conditioning source
+    AFTER the conditioning sources have been projected by the mixer.
+    """
     corr_pov_vals, corr_graph_vals, corr_mix_vals = [], [], []
     with torch.no_grad():
-        l = noisy_latents.mean(dim=[2, 3])       # [B, C_lat]
-        c_mix = cond.mean(dim=[2, 3])            # [B, C_cond]
+        # Global average of the noisy latent tensor
+        l = noisy_latents.mean(dim=[2, 3])  # Shape: [B, C_lat]
 
-        # POV
-        if cond_pov is not None:
-            c_pov = cond_pov.mean(dim=[2, 3]) if cond_pov.ndim == 4 else cond_pov
-            min_ch = min(c_pov.size(1), l.size(1))
-            corr = torch.cosine_similarity(
-                c_pov[:, :min_ch], l[:, :min_ch], dim=1
-            )
-            corr = torch.nan_to_num(corr, nan=0.0)
-            corr_pov_vals.append(corr.mean().item())
+        # --- POV Correlation ---
+        if cond_pov_raw is not None and mixer.pov_proj is not None:
+            # Project POV embedding through the mixer's pov_proj layer
+            proj_pov = mixer.project_condition(cond_pov_raw, mixer.pov_proj, mixer.pov_out_channels)
+            c_pov = proj_pov.mean(dim=[2, 3])  # Shape: [B, C_pov_out]
+            
+            # Compare projected POV channels with latent channels
+            min_ch_pov = min(c_pov.size(1), l.size(1))
+            corr_p = torch.cosine_similarity(c_pov[:, :min_ch_pov], l[:, :min_ch_pov], dim=1)
+            corr_pov_vals.append(torch.nan_to_num(corr_p, nan=0.0).mean().item())
 
-        # Graph
-        c_graph = cond_graph.mean(dim=[2, 3]) if cond_graph.ndim == 4 else cond_graph
-        min_ch = min(c_graph.size(1), l.size(1))
-        corr_graph_vals.append(
-            torch.cosine_similarity(c_graph[:, :min_ch], l[:, :min_ch], dim=1).mean().item()
-        )
+        # --- Graph Correlation ---
+        if cond_graph_raw is not None and mixer.graph_proj is not None:
+            # Project Graph embedding through the mixer's graph_proj layer
+            proj_graph = mixer.project_condition(cond_graph_raw, mixer.graph_proj, mixer.graph_out_channels)
+            c_graph = proj_graph.mean(dim=[2, 3])  # Shape: [B, C_graph_out]
 
-        # Mixed
-        min_ch = min(c_mix.size(1), l.size(1))
-        corr_mix_vals.append(
-            torch.cosine_similarity(c_mix[:, :min_ch], l[:, :min_ch], dim=1).mean().item()
-        )
+            # Compare projected Graph channels with latent channels
+            min_ch_graph = min(c_graph.size(1), l.size(1))
+            corr_g = torch.cosine_similarity(c_graph[:, :min_ch_graph], l[:, :min_ch_graph], dim=1)
+            corr_graph_vals.append(torch.nan_to_num(corr_g, nan=0.0).mean().item())
+
+        # --- Mixed Condition Correlation ---
+        c_mix = cond_mixed_final.mean(dim=[2, 3]) # Shape: [B, C_cond]
+        min_ch_mix = min(c_mix.size(1), l.size(1))
+        corr_m = torch.cosine_similarity(c_mix[:, :min_ch_mix], l[:, :min_ch_mix], dim=1)
+        corr_mix_vals.append(torch.nan_to_num(corr_m, nan=0.0).mean().item())
 
     return (
         np.mean(corr_pov_vals) if corr_pov_vals else 0.0,
         np.mean(corr_graph_vals) if corr_graph_vals else 0.0,
         np.mean(corr_mix_vals) if corr_mix_vals else 0.0,
     )
-
 
 def train_epoch_unconditioned(unet, scheduler, dataloader, optimizer, device, epoch):
     """Train for one epoch without conditioning"""
@@ -483,8 +499,9 @@ def train_epoch_conditioned(
         cond = mixer([cond_pov, cond_graph]) * scale_mix
 
         # --- Correlation diagnostics ---
+        # Pass the mixer and raw conditions to get a meaningful correlation
         corr_pov, corr_graph, corr_mix = compute_condition_correlations(
-            cond_pov, cond_graph, cond, noisy_latents
+            mixer, cond_pov, cond_graph, cond, noisy_latents
         )
         corr_pov_vals.append(corr_pov)
         corr_graph_vals.append(corr_graph)

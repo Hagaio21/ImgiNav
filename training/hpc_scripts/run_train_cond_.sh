@@ -19,7 +19,7 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_conditioned_diffusion.py"
 # =============================================================================
 # CONFIG 
 # =============================================================================
-EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/cond_exp_small_200_with_mixer.yml
+EXP_CONFIG=/work3/s233249/ImgiNav/ImgiNav/config/experiments/cond_exp_small_200_2.yml
 ROOM_MANIFEST=/work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
 SCENE_MANIFEST=/work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
 
