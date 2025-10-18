@@ -19,6 +19,8 @@ from modules.autoencoder import AutoEncoder
 from modules.unified_dataset import UnifiedLayoutDataset, collate_fn
 from modules.condition_mixer import ConcatMixer, WeightedMixer, LearnedWeightedMixer
 from modules.diffusion import LatentDiffusion
+from modules.alignment import AlignmentMLP
+
 
 # Import utilities
 from training_utils import (
@@ -97,6 +99,25 @@ def main():
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}", flush=True)
+
+    # ========================================================================
+    # Load Alignment Models (project condition embeddings into layout space)
+    # ========================================================================
+    alignment_ckpt = config["alignment"].get("checkpoint_path", None)
+    if alignment_ckpt and os.path.exists(alignment_ckpt):
+        print(f"Loading alignment models from {alignment_ckpt}", flush=True)
+        ckpt = torch.load(alignment_ckpt, map_location=device)
+
+        align_pov = AlignmentMLP(512, 512).to(device)
+        align_graph = AlignmentMLP(384, 512).to(device)
+        align_pov.load_state_dict(ckpt["align_pov"])
+        align_graph.load_state_dict(ckpt["align_graph"])
+        align_pov.eval()
+        align_graph.eval()
+    else:
+        align_pov, align_graph = None, None
+        print("No alignment checkpoint found — using raw condition embeddings.", flush=True)
+
     
     train_loader = DataLoader(
         train_dataset, 
@@ -210,13 +231,21 @@ def main():
     
     for epoch in range(start_epoch, config["training"]["num_epochs"]):
         train_loss, corr_pov, corr_graph, corr_mix, cond_std_pov, cond_std_graph, dropout_pov, dropout_graph = train_epoch_conditioned(
-                                                                                                                unet, scheduler, mixer, train_loader, optimizer, device, epoch,
-                                                                                                                config=config,
-                                                                                                                cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"]
-                                                                                                            )
+            unet, scheduler, mixer, train_loader, optimizer, device, epoch,
+            config=config,
+            cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"],
+            align_pov=align_pov,
+            align_graph=align_graph
+        )
 
 
-        val_loss = validate_conditioned(unet, scheduler, mixer, val_loader, device)
+
+        val_loss = validate_conditioned(
+            unet, scheduler, mixer, val_loader, device,
+            align_pov=align_pov,
+            align_graph=align_graph
+        )
+
         scheduler_lr.step()
         current_lr = optimizer.param_groups[0]['lr']
 

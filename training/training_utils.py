@@ -389,69 +389,100 @@ def train_epoch_unconditioned(unet, scheduler, dataloader, optimizer, device, ep
     return total_loss / len(dataloader)
 
 
-def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, device, epoch,
-                            config, cfg_dropout_prob=0.1):
-    """Train one epoch with conditional inputs, extended to log dropout and condition strength."""
+def train_epoch_conditioned(
+    unet,
+    scheduler,
+    mixer,
+    dataloader,
+    optimizer,
+    device,
+    epoch,
+    config,
+    cfg_dropout_prob=0.1,
+    align_pov=None,
+    align_graph=None):
+    """
+    Train one epoch with conditional inputs and optional alignment projection.
+    Integrates alignment, dropout, normalization, scaling, and correlation logging.
+    """
+
     unet.train()
     total_loss = 0
     corr_pov_vals, corr_graph_vals, corr_mix_vals = [], [], []
     cond_std_pov_vals, cond_std_graph_vals = [], []
     dropout_pov_events, dropout_graph_events, total_batches = 0, 0, 0
 
+    # ---------------- Config ----------------
     cfg_train = config["training"]["cfg"]
-    cfg_normalize_graph = cfg_train.get("normalize_graph", True)
-    cfg_normalize_pov = cfg_train.get("normalize_pov", False)
-    cfg_scale_graph = cfg_train.get("cond_scale_graph", 5.0)
-    cfg_scale_pov = cfg_train.get("cond_scale_pov", 1.0)
-    cfg_scale_mix = cfg_train.get("cond_scale_mix", 1.0)
-    cfg_clip_value = cfg_train.get("cond_clip_value", None)
-    cfg_log_condition_stats = cfg_train.get("log_condition_stats", True)
-    cfg_compute_corr_every = cfg_train.get("compute_corr_every", 300)
+    norm_graph = cfg_train.get("normalize_graph", True)
+    norm_pov = cfg_train.get("normalize_pov", False)
+    scale_graph = cfg_train.get("cond_scale_graph", 5.0)
+    scale_pov = cfg_train.get("cond_scale_pov", 1.0)
+    scale_mix = cfg_train.get("cond_scale_mix", 1.0)
+    clip_value = cfg_train.get("cond_clip_value", None)
+    log_cond_stats = cfg_train.get("log_condition_stats", True)
+    corr_every = cfg_train.get("compute_corr_every", 300)
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
     for i, batch in enumerate(pbar):
-        latents = batch["layout"].to(device)
-        cond_pov = batch["pov"].to(device) if batch["pov"] is not None else None
-        cond_graph = batch["graph"].to(device)
         total_batches += 1
+
+        # --- Load and move tensors ---
+        latents = batch["layout"].to(device)
+        cond_pov = batch.get("pov")
+        cond_graph = batch.get("graph")
+        if cond_pov is not None:
+            cond_pov = cond_pov.to(device)
+        if cond_graph is not None:
+            cond_graph = cond_graph.to(device)
 
         B = latents.size(0)
         t = torch.randint(0, scheduler.num_steps, (B,), device=device)
         noise = torch.randn_like(latents)
         noisy_latents, _ = scheduler.add_noise(latents, t, noise)
 
+        # --- Apply pretrained alignment (optional) ---
+        with torch.no_grad():
+            if align_pov is not None and cond_pov is not None:
+                cond_pov = align_pov(cond_pov).detach()
+            if align_graph is not None and cond_graph is not None:
+                cond_graph = align_graph(cond_graph).detach()
+
         # --- Classifier-free dropout ---
         if torch.rand(1).item() < cfg_dropout_prob:
             if cond_pov is not None:
                 cond_pov = torch.zeros_like(cond_pov)
                 dropout_pov_events += 1
-            cond_graph = torch.zeros_like(cond_graph)
-            dropout_graph_events += 1
+            if cond_graph is not None:
+                cond_graph = torch.zeros_like(cond_graph)
+                dropout_graph_events += 1
 
         # --- Normalize and scale ---
-        if cond_pov is not None and cfg_normalize_pov:
-            mean, std = cond_pov.mean(), cond_pov.std()
-            cond_pov = (cond_pov - mean) / (std + 1e-5)
         if cond_pov is not None:
-            cond_pov = cond_pov * cfg_scale_pov
+            if norm_pov:
+                mean, std = cond_pov.mean(), cond_pov.std()
+                cond_pov = (cond_pov - mean) / (std + 1e-5)
+            cond_pov = cond_pov * scale_pov
             cond_std_pov_vals.append(cond_pov.std().item())
 
-        if cond_graph is not None and cfg_normalize_graph:
-            mean, std = cond_graph.mean(), cond_graph.std()
-            cond_graph = (cond_graph - mean) / (std + 1e-5)
         if cond_graph is not None:
-            cond_graph = cond_graph * cfg_scale_graph
+            if norm_graph:
+                mean, std = cond_graph.mean(), cond_graph.std()
+                cond_graph = (cond_graph - mean) / (std + 1e-5)
+            cond_graph = cond_graph * scale_graph
             cond_std_graph_vals.append(cond_graph.std().item())
 
-        if cfg_clip_value is not None:
+        # --- Optional clipping ---
+        if clip_value is not None:
             if cond_pov is not None:
-                cond_pov = torch.clamp(cond_pov, -cfg_clip_value, cfg_clip_value)
+                cond_pov = torch.clamp(cond_pov, -clip_value, clip_value)
             if cond_graph is not None:
-                cond_graph = torch.clamp(cond_graph, -cfg_clip_value, cfg_clip_value)
+                cond_graph = torch.clamp(cond_graph, -clip_value, clip_value)
 
-        cond = mixer([cond_pov, cond_graph]) * cfg_scale_mix
+        # --- Fuse conditions ---
+        cond = mixer([cond_pov, cond_graph]) * scale_mix
 
-        # --- Correlation checks ---
+        # --- Correlation diagnostics ---
         corr_pov, corr_graph, corr_mix = compute_condition_correlations(
             cond_pov, cond_graph, cond, noisy_latents
         )
@@ -459,7 +490,7 @@ def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, devic
         corr_graph_vals.append(corr_graph)
         corr_mix_vals.append(corr_mix)
 
-        # --- Forward / backward ---
+        # --- Forward + Backward ---
         noise_pred = unet(noisy_latents, t, cond=cond)
         loss = F.mse_loss(noise_pred, noise)
         optimizer.zero_grad()
@@ -469,17 +500,16 @@ def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, devic
 
         total_loss += loss.item()
 
-        if cfg_log_condition_stats and (i % cfg_compute_corr_every == 0):
-            cond_mean = cond.mean().item()
-            cond_std = cond.std().item()
-            lat_mean = noisy_latents.mean().item()
-            lat_std = noisy_latents.std().item()
+        if log_cond_stats and (i % corr_every == 0):
+            cond_mean, cond_std = cond.mean().item(), cond.std().item()
+            lat_mean, lat_std = noisy_latents.mean().item(), noisy_latents.std().item()
             print(f"[epoch {epoch+1} | batch {i}] "
                   f"latent μ={lat_mean:.3f} σ={lat_std:.3f} | "
                   f"cond μ={cond_mean:.3f} σ={cond_std:.3f}", flush=True)
 
         pbar.set_postfix({'loss': loss.item()})
 
+    # ---------------- Epoch metrics ----------------
     avg_loss = total_loss / len(dataloader)
     return (
         avg_loss,
@@ -491,7 +521,6 @@ def train_epoch_conditioned(unet, scheduler, mixer, dataloader, optimizer, devic
         dropout_pov_events / total_batches,
         dropout_graph_events / total_batches,
     )
-
 
 
 
@@ -522,31 +551,94 @@ def validate_unconditioned(unet, scheduler, dataloader, device):
 
 
 @torch.no_grad()
-def validate_conditioned(unet, scheduler, mixer, dataloader, device):
-    """Compute validation loss with conditioning"""
+def validate_conditioned(
+    unet,
+    scheduler,
+    mixer,
+    dataloader,
+    device,
+    config,
+    align_pov=None,
+    align_graph=None
+):
+    """
+    Validation pass for conditioned latent diffusion with optional alignment.
+    Mirrors train_epoch_conditioned but without optimization.
+    """
+
     unet.eval()
     total_loss = 0
-    
-    for batch in dataloader:
+    corr_pov_vals, corr_graph_vals, corr_mix_vals = [], [], []
+
+    # ---------------- Config ----------------
+    cfg_train = config["training"]["cfg"]
+    norm_graph = cfg_train.get("normalize_graph", True)
+    norm_pov = cfg_train.get("normalize_pov", False)
+    scale_graph = cfg_train.get("cond_scale_graph", 5.0)
+    scale_pov = cfg_train.get("cond_scale_pov", 1.0)
+    scale_mix = cfg_train.get("cond_scale_mix", 1.0)
+    clip_value = cfg_train.get("cond_clip_value", None)
+
+    pbar = tqdm(dataloader, desc="Validating")
+    for batch in pbar:
         latents = batch["layout"].to(device)
-        cond_pov = batch["pov"].to(device) if batch["pov"] is not None else None
-        cond_graph = batch["graph"].to(device)
-        
+        cond_pov = batch.get("pov")
+        cond_graph = batch.get("graph")
+        if cond_pov is not None:
+            cond_pov = cond_pov.to(device)
+        if cond_graph is not None:
+            cond_graph = cond_graph.to(device)
+
         B = latents.size(0)
         t = torch.randint(0, scheduler.num_steps, (B,), device=device)
         noise = torch.randn_like(latents)
         noisy_latents, _ = scheduler.add_noise(latents, t, noise)
-        
-        # Build conditioning
-        conds = [c for c in [cond_pov, cond_graph] if c is not None]
-        cond = mixer(conds)
-        
+
+        # --- Apply pretrained alignment (optional) ---
+        if align_pov is not None and cond_pov is not None:
+            cond_pov = align_pov(cond_pov).detach()
+        if align_graph is not None and cond_graph is not None:
+            cond_graph = align_graph(cond_graph).detach()
+
+        # --- Normalize and scale ---
+        if cond_pov is not None:
+            if norm_pov:
+                mean, std = cond_pov.mean(), cond_pov.std()
+                cond_pov = (cond_pov - mean) / (std + 1e-5)
+            cond_pov = cond_pov * scale_pov
+
+        if cond_graph is not None:
+            if norm_graph:
+                mean, std = cond_graph.mean(), cond_graph.std()
+                cond_graph = (cond_graph - mean) / (std + 1e-5)
+            cond_graph = cond_graph * scale_graph
+
+        # --- Optional clipping ---
+        if clip_value is not None:
+            if cond_pov is not None:
+                cond_pov = torch.clamp(cond_pov, -clip_value, clip_value)
+            if cond_graph is not None:
+                cond_graph = torch.clamp(cond_graph, -clip_value, clip_value)
+
+        # --- Fuse conditions ---
+        cond = mixer([cond_pov, cond_graph]) * scale_mix
+
+        # --- Correlation diagnostics ---
+        corr_pov, corr_graph, corr_mix = compute_condition_correlations(
+            cond_pov, cond_graph, cond, noisy_latents
+        )
+        corr_pov_vals.append(corr_pov)
+        corr_graph_vals.append(corr_graph)
+        corr_mix_vals.append(corr_mix)
+
+        # --- Forward ---
         noise_pred = unet(noisy_latents, t, cond=cond)
         loss = F.mse_loss(noise_pred, noise)
         total_loss += loss.item()
-    
-    unet.train()
-    return total_loss / len(dataloader)
+        pbar.set_postfix({'val_loss': loss.item()})
+
+    avg_loss = total_loss / len(dataloader)
+    return avg_loss, np.mean(corr_pov_vals), np.mean(corr_graph_vals), np.mean(corr_mix_vals)
 
 @torch.no_grad()
 def validate_generation_quality(diffusion_model, mixer, dataloader, device, num_samples=10):

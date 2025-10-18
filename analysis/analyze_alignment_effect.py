@@ -2,19 +2,12 @@
 """
 analyze_alignment_effect_refactored.py
 --------------------------------------
-Evaluate embedding diversity and alignment quality before and after alignment.
+Evaluate embedding diversity before and after alignment
+with correct scene-room pairing.
 
-Adds:
-- Early subsampling before loading any embeddings
-- Combined plots showing before/after/optimal curves
-
-Usage:
-    python analysis/analyze_alignment_effect_refactored.py \
-        --room_manifest /path/to/room_dataset_with_emb.csv \
-        --scene_manifest /path/to/scene_dataset_with_emb.csv \
-        --checkpoint /path/to/best.pt \
-        --out_dir /path/to/output \
-        --subsample 5000
+Groups embeddings by (scene_id, room_id), computes intra-group cosine and
+Euclidean similarities, and compares pre/post alignment distributions
+against a desired reference diversity curve.
 """
 
 import os
@@ -27,6 +20,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
+from scipy.stats import norm
 
 from modules.alignment import AlignmentMLP
 
@@ -46,41 +40,75 @@ def safe_load_embedding(path):
     return None
 
 
-def load_embeddings(df, emb_col, key_col):
+def load_embeddings(df, emb_col, group_by_scene_only=False):
     grouped = {}
     for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Loading {emb_col}"):
         emb = safe_load_embedding(row.get(emb_col))
         if emb is None:
             continue
-        grouped.setdefault(row[key_col], []).append(emb.numpy())
+
+        scene_id = row.get("SCENE_ID")
+        room_id = row.get("ROOM_ID") if not group_by_scene_only else None
+        if scene_id is None:
+            continue
+
+        # correct grouping: scene+room for room-level, scene only for scene-level
+        key = f"{scene_id}_{room_id}" if room_id is not None else scene_id
+        grouped.setdefault(key, []).append(emb.numpy())
+
     return grouped
 
 
-def compute_stats(embs, subsample=5000):
-    all_embs = np.stack(embs)
-    if len(all_embs) > subsample:
-        idx = np.random.choice(len(all_embs), subsample, replace=False)
-        all_embs = all_embs[idx]
-    cos_sim = cosine_similarity(all_embs)
-    euc_dist = euclidean_distances(all_embs)
-    triu = np.triu_indices_from(cos_sim, k=1)
+def compute_stats(grouped_embs, subsample=5000):
+    cos_all, euc_all = [], []
+    for embs in grouped_embs.values():
+        if len(embs) < 2:
+            continue  # skip single-embedding groups
+        arr = np.stack(embs)
+        if len(arr) > subsample:
+            idx = np.random.choice(len(arr), subsample, replace=False)
+            arr = arr[idx]
+        cos = cosine_similarity(arr)
+        euc = euclidean_distances(arr)
+        triu = np.triu_indices_from(cos, k=1)
+        cos_all.extend(cos[triu])
+        euc_all.extend(euc[triu])
+
+    if len(cos_all) == 0 or len(euc_all) == 0:
+        return {
+            "cos_hist": np.array([]),
+            "euc_hist": np.array([]),
+            "mean_cos": 0.0,
+            "std_cos": 0.0,
+            "mean_euc": 0.0,
+            "std_euc": 0.0,
+        }
+
+    cos_all, euc_all = np.array(cos_all), np.array(euc_all)
     return {
-        "var": float(np.var(all_embs)),
-        "mean_cos": float(np.mean(cos_sim[triu])),
-        "std_cos": float(np.std(cos_sim[triu])),
-        "mean_euc": float(np.mean(euc_dist[triu])),
-        "std_euc": float(np.std(euc_dist[triu])),
-        "cos_hist": cos_sim[triu],
-        "euc_hist": euc_dist[triu],
+        "cos_hist": cos_all,
+        "euc_hist": euc_all,
+        "mean_cos": float(np.mean(cos_all)),
+        "std_cos": float(np.std(cos_all)),
+        "mean_euc": float(np.mean(euc_all)),
+        "std_euc": float(np.std(euc_all)),
     }
 
 
 def plot_comparison(before, after, name, out_dir):
+    bins_cos = np.linspace(0, 1, 60)
+    bins_euc = 60
+
+    # desired diversity reference (empirical, adjustable)
+    desired_cos_x = np.linspace(0, 1, 200)
+    desired_cos_y = norm.pdf(desired_cos_x, 0.85, 0.05)
+    desired_cos_y /= desired_cos_y.max()
+
     # Cosine similarity
     plt.figure(figsize=(6, 4))
-    plt.hist(before["cos_hist"], bins=50, alpha=0.5, color="blue", label="Before alignment", density=True)
-    plt.hist(after["cos_hist"], bins=50, alpha=0.5, color="orange", label="After alignment", density=True)
-    plt.axvline(1.0, color="red", linestyle="--", label="Optimal")
+    plt.hist(before["cos_hist"], bins=bins_cos, alpha=0.5, color="blue", label="Before alignment", density=True)
+    plt.hist(after["cos_hist"], bins=bins_cos, alpha=0.5, color="orange", label="After alignment", density=True)
+    plt.plot(desired_cos_x, desired_cos_y * plt.ylim()[1], "k-", linewidth=1.8, label="Desired diversity")
     plt.xlabel("Cosine similarity")
     plt.ylabel("Density")
     plt.title(f"{name} – Cosine similarity comparison")
@@ -90,11 +118,16 @@ def plot_comparison(before, after, name, out_dir):
     plt.savefig(out_dir / f"{name.lower()}_cosine_comparison.png", dpi=150)
     plt.close()
 
+    # Desired Euclidean distance
+    desired_euc_x = np.linspace(0, 20, 200)
+    desired_euc_y = norm.pdf(desired_euc_x, 8, 2)
+    desired_euc_y /= desired_euc_y.max()
+
     # Euclidean distance
     plt.figure(figsize=(6, 4))
-    plt.hist(before["euc_hist"], bins=50, alpha=0.5, color="blue", label="Before alignment", density=True)
-    plt.hist(after["euc_hist"], bins=50, alpha=0.5, color="orange", label="After alignment", density=True)
-    plt.axvline(0.0, color="red", linestyle="--", label="Optimal")
+    plt.hist(before["euc_hist"], bins=bins_euc, alpha=0.5, color="blue", label="Before alignment", density=True)
+    plt.hist(after["euc_hist"], bins=bins_euc, alpha=0.5, color="orange", label="After alignment", density=True)
+    plt.plot(desired_euc_x, desired_euc_y * plt.ylim()[1], "k-", linewidth=1.8, label="Desired diversity")
     plt.xlabel("Euclidean distance")
     plt.ylabel("Density")
     plt.title(f"{name} – Euclidean distance comparison")
@@ -125,9 +158,7 @@ def main():
     room_df = pd.read_csv(args.room_manifest)
     scene_df = pd.read_csv(args.scene_manifest)
 
-    # ---------------------------------------------------------
-    # Early subsampling by unique ID before loading embeddings
-    # ---------------------------------------------------------
+    # Subsample
     def subsample_rows(df, n):
         if len(df) > n:
             df = df.sample(n, random_state=42)
@@ -142,92 +173,64 @@ def main():
     print("Loading alignment checkpoint...")
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     align_pov = AlignmentMLP(512, 512)
-    align_graph = AlignmentMLP(384, 512)
+    align_graph = AlignmentMLP(384, 384)
     align_pov.load_state_dict(ckpt["align_pov"])
     align_graph.load_state_dict(ckpt["align_graph"])
     align_pov.eval()
     align_graph.eval()
 
-    results = {}
+    # ============ 1. LOAD EMBEDDINGS ============ #
+    print("\n[1] Loading embeddings grouped by (scene, room)...")
+    pov_raw = load_embeddings(room_df, "POV_EMBEDDING_PATH", group_by_scene_only=False)
+    graph_raw = load_embeddings(room_df, "ROOM_GRAPH_EMBEDDING_PATH", group_by_scene_only=False)
+    scene_graph_raw = load_embeddings(scene_df, "SCENE_GRAPH_EMBEDDING_PATH", group_by_scene_only=True)
 
-    # ============ 1. RAW POV / GRAPH / SCENE GRAPH ============
-    print("\n[1] Analyzing raw embedding diversity...")
-    pov_raw = load_embeddings(room_df, "POV_EMBEDDING_PATH", "ROOM_ID")
-    graph_raw = load_embeddings(room_df, "ROOM_GRAPH_EMBEDDING_PATH", "ROOM_ID")
-    scene_graph_raw = load_embeddings(scene_df, "SCENE_GRAPH_EMBEDDING_PATH", "SCENE_ID")
 
-    pov_embs = [x for v in pov_raw.values() for x in v]
-    graph_embs = [x for v in graph_raw.values() for x in v]
-    scene_graph_embs = [x for v in scene_graph_raw.values() for x in v]
+    # ============ 2. COMPUTE BEFORE ============ #
+    print("\n[2] Computing before-alignment diversity stats...")
+    pov_before = compute_stats(pov_raw, args.subsample)
+    graph_before = compute_stats(graph_raw, args.subsample)
+    scene_before = compute_stats(scene_graph_raw, args.subsample)
 
-    pov_before = compute_stats(pov_embs, args.subsample)
-    graph_before = compute_stats(graph_embs, args.subsample)
-    scene_before = compute_stats(scene_graph_embs, args.subsample)
+    # ============ 3. APPLY ALIGNMENT ============ #
+    print("\n[3] Applying alignment to each embedding...")
+    pov_aligned = {}
+    graph_aligned = {}
+    scene_graph_aligned = {}
 
-    # ============ 2. APPLY ALIGNMENT ============
-    print("\n[2] Applying alignment projections...")
+    for key, embs in tqdm(pov_raw.items(), desc="Aligning POVs"):
+        pov_aligned[key] = [align_pov(torch.tensor(e).unsqueeze(0)).detach().numpy().flatten() for e in embs]
 
-    pov_aligned = [align_pov(torch.tensor(e).unsqueeze(0)).detach().numpy().flatten() for e in tqdm(pov_embs, desc="Aligning POVs")]
-    graph_aligned = [align_graph(torch.tensor(e).unsqueeze(0)).detach().numpy().flatten() for e in tqdm(graph_embs, desc="Aligning Room Graphs")]
-    scene_graph_aligned = [align_graph(torch.tensor(e).unsqueeze(0)).detach().numpy().flatten() for e in tqdm(scene_graph_embs, desc="Aligning Scene Graphs")]
+    for key, embs in tqdm(graph_raw.items(), desc="Aligning Room Graphs"):
+        graph_aligned[key] = [align_graph(torch.tensor(e).unsqueeze(0)).detach().numpy().flatten() for e in embs]
+
+    for key, embs in tqdm(scene_graph_raw.items(), desc="Aligning Scene Graphs"):
+        scene_graph_aligned[key] = [align_graph(torch.tensor(e).unsqueeze(0)).detach().numpy().flatten() for e in embs]
 
     pov_after = compute_stats(pov_aligned, args.subsample)
     graph_after = compute_stats(graph_aligned, args.subsample)
     scene_after = compute_stats(scene_graph_aligned, args.subsample)
 
-    # ============ 3. PLOT COMPARISONS ============
-    print("\n[3] Plotting before/after/optimal comparisons...")
+    # ============ 4. PLOT ============ #
+    print("\n[4] Plotting before/after vs desired diversity...")
     plot_comparison(pov_before, pov_after, "POV", out_dir)
     plot_comparison(graph_before, graph_after, "RoomGraph", out_dir)
     plot_comparison(scene_before, scene_after, "SceneGraph", out_dir)
 
-    results["raw_pov"] = {k: v for k, v in pov_before.items() if not isinstance(v, np.ndarray)}
-    results["raw_graph"] = {k: v for k, v in graph_before.items() if not isinstance(v, np.ndarray)}
-    results["raw_scenegraph"] = {k: v for k, v in scene_before.items() if not isinstance(v, np.ndarray)}
-    results["aligned_pov"] = {k: v for k, v in pov_after.items() if not isinstance(v, np.ndarray)}
-    results["aligned_graph"] = {k: v for k, v in graph_after.items() if not isinstance(v, np.ndarray)}
-    results["aligned_scenegraph"] = {k: v for k, v in scene_after.items() if not isinstance(v, np.ndarray)}
-
-    # ============ 4. ALIGNMENT WITH LAYOUT ============
-    print("\n[4] Measuring alignment correlation with layouts...")
-
-    layout_raw = load_embeddings(room_df, "ROOM_LAYOUT_EMBEDDING_PATH", "ROOM_ID")
-    layout_embs = [x.flatten() for v in layout_raw.values() for x in v]
-    layout_flat = np.stack(layout_embs)
-    layout_flat = layout_flat.reshape(len(layout_flat), -1)
-
-    align_layout = AlignmentMLP(64 * 64 * 4, 512)
-    align_layout.eval()
-    layout_proj = []
-    for e in tqdm(layout_flat, desc="Projecting layouts"):
-        with torch.no_grad():
-            proj = align_layout(torch.tensor(e).unsqueeze(0)).numpy().flatten()
-        layout_proj.append(proj)
-    layout_proj = np.stack(layout_proj)
-
-    def mean_cosine(a, b):
-        sim = cosine_similarity(a, b)
-        diag = np.diag(sim)
-        return float(np.mean(diag)), float(np.std(diag))
-
-    pov_mean_cos, pov_std_cos = mean_cosine(np.stack(pov_aligned[:len(layout_proj)]),
-                                            layout_proj[:len(pov_aligned)])
-    graph_mean_cos, graph_std_cos = mean_cosine(np.stack(graph_aligned[:len(layout_proj)]),
-                                                layout_proj[:len(graph_aligned)])
-
-    results["alignment_quality"] = {
-        "pov_to_layout_mean_cos": pov_mean_cos,
-        "pov_to_layout_std_cos": pov_std_cos,
-        "graph_to_layout_mean_cos": graph_mean_cos,
-        "graph_to_layout_std_cos": graph_std_cos,
+    # ============ 5. SAVE SUMMARY ============ #
+    summary = {
+        "pov_before": {k: v for k, v in pov_before.items() if not isinstance(v, np.ndarray)},
+        "pov_after": {k: v for k, v in pov_after.items() if not isinstance(v, np.ndarray)},
+        "graph_before": {k: v for k, v in graph_before.items() if not isinstance(v, np.ndarray)},
+        "graph_after": {k: v for k, v in graph_after.items() if not isinstance(v, np.ndarray)},
+        "scene_before": {k: v for k, v in scene_before.items() if not isinstance(v, np.ndarray)},
+        "scene_after": {k: v for k, v in scene_after.items() if not isinstance(v, np.ndarray)},
     }
 
-    # ============ 5. SAVE ============
-    summary_path = out_dir / "alignment_analysis_summary.json"
-    with open(summary_path, "w") as f:
-        json.dump(results, f, indent=2)
+    with open(out_dir / "alignment_analysis_summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
 
-    print(f"\nSaved full analysis to: {summary_path}")
+    print(f"\nSaved results to: {out_dir}")
 
 
 if __name__ == "__main__":

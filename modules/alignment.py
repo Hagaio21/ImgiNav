@@ -48,26 +48,36 @@ class AlignmentLoss(nn.Module):
         return loss.mean()
 
 class InfoNCELoss(nn.Module):
-    """Contrastive InfoNCE loss for embedding alignment."""
-    def __init__(self, temperature: float = 0.07):
+    """InfoNCE that allows mismatched input dims by projecting to shared length."""
+    def __init__(self, temperature: float = 0.07, proj_dim: int = 512):
         super().__init__()
         self.temperature = temperature
+        self.proj_dim = proj_dim
 
     def forward(self, cond_emb, layout_emb):
-        # flatten spatial dims if needed
-        if cond_emb.ndim > 2:
-            cond_emb = cond_emb.view(cond_emb.size(0), -1)
-        if layout_emb.ndim > 2:
-            layout_emb = layout_emb.view(layout_emb.size(0), -1)
+        B = cond_emb.size(0)
 
+        # Flatten any spatial dims
+        cond_emb = cond_emb.view(B, -1)
+        layout_emb = layout_emb.view(B, -1)
+
+        # Project both to the same temporary dimension
+        if cond_emb.size(1) != layout_emb.size(1):
+            # choose smaller dimension for both
+            target_dim = min(cond_emb.size(1), layout_emb.size(1), self.proj_dim)
+            cond_emb = F.adaptive_avg_pool1d(cond_emb.unsqueeze(1), target_dim).squeeze(1)
+            layout_emb = F.adaptive_avg_pool1d(layout_emb.unsqueeze(1), target_dim).squeeze(1)
+
+        # Normalize and compute logits
         cond_emb = F.normalize(cond_emb, dim=-1)
         layout_emb = F.normalize(layout_emb, dim=-1)
-
         logits = torch.mm(cond_emb, layout_emb.t()) / self.temperature
-        labels = torch.arange(cond_emb.size(0), device=cond_emb.device)
+
+        labels = torch.arange(B, device=cond_emb.device)
         loss_i2t = F.cross_entropy(logits, labels)
         loss_t2i = F.cross_entropy(logits.t(), labels)
         return 0.5 * (loss_i2t + loss_t2i)
+
 
 # ---------------------------
 # Example usage

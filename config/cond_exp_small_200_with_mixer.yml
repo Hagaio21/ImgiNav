@@ -39,6 +39,10 @@ mixer:
   pov_dim: 512        # output dimension of POV encoder
   graph_dim: 384      # output dimension of graph encoder
 
+alignment:
+  checkpoint_path: /path/to/best_alignment.pt
+
+
 # ---------------------------------------------------------
 # Training Parameters
 # ---------------------------------------------------------
