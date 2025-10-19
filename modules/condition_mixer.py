@@ -134,3 +134,5 @@ class NonLinearConcatMixer(BaseMixer):
         graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels)
 
         return torch.cat([pov_out, graph_out], dim=1)
+
+        

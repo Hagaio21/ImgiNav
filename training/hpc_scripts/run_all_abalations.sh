@@ -1,9 +1,9 @@
 #!/bin/bash
-#BSUB -J cond_diff_job
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/cond_diff_job.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/cond_diff_job.%J.err
+#BSUB -J "ablation[1-6]"
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ablation_job_%J_task_%I.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ablation_job_%J_task_%I.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=32000]"
+#BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
 #BSUB -W 24:00
 #BSUB -q gpul40s
@@ -18,30 +18,39 @@ set -euo pipefail
 readonly BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 readonly PYTHON_SCRIPT="${BASE_DIR}/training/train_cond_diffusion.py"
 
-## --- Experiment Setup ---
-# *** MODIFIED: Read config path from the first command-line argument ***
-if [ -z "${1:-}" ]; then
-    echo "ERROR: No config file path provided." >&2
-    echo "Usage: bsub < $0 /path/to/config.yml" >&2
-    exit 1
-fi
-readonly EXP_CONFIG="${1}"
+## --- Job Array Setup ---
+# This bash array holds all 7 of your config files.
+# Make sure the paths are correct.
+readonly CONFIG_DIR="${BASE_DIR}/config/experiments/ablations"
+readonly CONFIGS=(
+    "${CONFIG_DIR}/rooms_pov_graph.yml"
+    "${CONFIG_DIR}/rooms_pov_only.yml"
+    "${CONFIG_DIR}/rooms_graph_only.yml"
+    "${CONFIG_DIR}/scenes_graph_only.yml"
+    "${CONFIG_DIR}/all_pov_graph.yml"
+    "${CONFIG_DIR}/all_graph_only.yml"
+)
+
+# --- Select the config file for THIS job task ---
+# LSF provides the $LSB_JOBINDEX variable, which will be 1, 2, 3... up to 7.
+# Bash arrays are 0-indexed, so we subtract 1.
+INDEX=$((LSB_JOBINDEX - 1))
+readonly EXP_CONFIG="${CONFIGS[${INDEX}]}"
 readonly JOB_NAME=$(basename "${EXP_CONFIG}" .yml)
 
-# *** MODIFIED: Set Job Name and Log Files Dynamically ***
-# (You must change the -J, -o, -e lines at the top to use this, e.g., #BSUB -J ${JOB_NAME})
-# For simplicity, we'll just print it for now. LSF directives are read before this runs.
-# To make this robust, you'd set -J, -o, -e in the `bsub` command itself.
-
 ## --- Model & Training Options ---
-readonly RESUME_JOB="false" 
+readonly RESUME_JOB="false"
 
 # =============================================================================
 # Environment Setup
 # =============================================================================
 echo "--- Loading Modules ---"
 module load cuda/11.8
-# ... (rest of your environment setup) ...
+module load cudnn/v8.6.0.163-prod-cuda-11.X
+export MKL_INTERFACE_LAYER=LP64
+echo "Modules loaded."
+
+echo "--- Activating Conda Environment ---"
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     source "$HOME/miniconda3/etc/profile.d/conda.sh"
     if conda activate imginav; then
@@ -60,7 +69,7 @@ fi
 # Run Training Script
 # =============================================================================
 echo "=========================================="
-echo "Starting Conditioned Diffusion Training"
+echo "Starting LSF Job Array Task ${LSB_JOBINDEX}"
 echo "  Job Name:      ${JOB_NAME}"
 echo "  Config:        ${EXP_CONFIG}"
 echo "  Resume:        ${RESUME_JOB}"
@@ -80,17 +89,18 @@ fi
 
 echo "--- Running Python Script ---"
 python "${PYTHON_SCRIPT}" "${CMD_ARGS[@]}"
-EXIT_CODE=$? 
+EXIT_CODE=$?
 
 # =============================================================================
 # Final Output & Cleanup
 # =============================================================================
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "✅ Training COMPLETE"
+    echo "✅ Task ${LSB_JOBINDEX} (${JOB_NAME}) COMPLETE"
 else
-    echo "❌ Training FAILED with exit code $EXIT_CODE"
+    echo "❌ Task ${LSB_JOBINDEX} (${JOB_NAME}) FAILED with exit code $EXIT_CODE"
 fi
 echo "  End Time:      $(date)"
 echo "=========================================="
+
 exit $EXIT_CODE

@@ -159,24 +159,35 @@ def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch
         except Exception as e:
             print(f"Error saving fixed noise: {e}")
 
-    # --- 2. Prepare Conditioning Tensors & Targets ---
-    cond_povs = [s.get("pov") for s in samples]
-    cond_graphs = [s.get("graph") for s in samples]
+# --- 2. Prepare Conditioning Tensors & Targets ---
+    
+    # --- Get enabled flags from config ---
+    use_pov = config.get("mixer", {}).get("use_pov", True)
+    use_graph = config.get("mixer", {}).get("use_graph", True)
+
+    cond_povs, cond_graphs = [], []
+    
+    # --- Load POV data ONLY if use_pov is True ---
+    if use_pov:
+        cond_povs = [s.get("pov") for s in samples]
+        # Handle any None POVs in the fixed batch (e.g., scene-only samples)
+        valid_pov = next((p for p in cond_povs if p is not None), None)
+        if any(p is None for p in cond_povs) and valid_pov is not None:
+            zero_pov = torch.zeros_like(valid_pov)
+            cond_povs = [p if p is not None else zero_pov for p in cond_povs]
+        
+    # --- Load Graph data ONLY if use_graph is True ---
+    if use_graph:
+        cond_graphs = [s.get("graph") for s in samples]
+        # (Assuming graph is never None for a valid sample)
+
     target_latents = torch.stack([s["layout"] for s in samples]).to(device)
 
-    # --- (Robust None POV Handling - simplified assuming valid_pov exists if needed) ---
-    valid_pov = next((p for p in cond_povs if p is not None), None)
-    if any(p is None for p in cond_povs) and valid_pov is not None:
-         zero_pov = torch.zeros_like(valid_pov)
-         cond_povs = [p if p is not None else zero_pov for p in cond_povs]
-    # Note: Assumes pov_dim > 0 implies at least one valid_pov exists in fixed samples
-    # More robust check might be needed if fixed_samples could *all* have None POV.
-
-    cond_pov = torch.stack(cond_povs).to(device) if cond_povs and config["mixer"].get("pov_dim", 0) > 0 else None
-    cond_graph = torch.stack(cond_graphs).to(device) if cond_graphs and config["mixer"].get("graph_dim", 0) > 0 else None
+    # --- Stack tensors if they exist, otherwise pass None ---
+    cond_pov = torch.stack(cond_povs).to(device) if use_pov and cond_povs else None
+    cond_graph = torch.stack(cond_graphs).to(device) if use_graph and cond_graphs else None
 
     cond_list = [cond_pov, cond_graph] # Mixer expects list
-
     cond = mixer(cond_list)
     uncond_cond = torch.zeros_like(cond)
 

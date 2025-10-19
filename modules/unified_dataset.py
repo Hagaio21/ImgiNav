@@ -61,7 +61,8 @@ class UnifiedLayoutDataset(Dataset):
         self.use_embeddings = use_embeddings
         self.pov_type = pov_type
         self.data_mode = data_mode
-s
+        self.transform = transform 
+        self.device = device
         # Load both manifests
         room_df = pd.read_csv(room_manifest)
         scene_df = pd.read_csv(scene_manifest)
@@ -118,7 +119,7 @@ s
 
         # --- Merge manifests ---
         df = pd.concat(dfs_to_concat, ignore_index=True)
-        
+
         # --- Filter invalid paths ---
         mask = (
             df["GRAPH_PATH"].apply(valid_path)
