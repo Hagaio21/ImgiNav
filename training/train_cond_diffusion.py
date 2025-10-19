@@ -10,12 +10,12 @@ from training_utils import (
     load_experiment_config, save_experiment_config, setup_experiment_dir,
     save_checkpoint, load_checkpoint, save_training_stats, init_training_stats,
     update_training_stats, train_epoch_conditioned, validate_conditioned,
-    save_split_files, # Assuming this exists
+    save_split_files,
     # New imports:
     setup_experiment, load_core_models, load_data, create_mixer,
     create_optimizer_scheduler, prepare_fixed_samples, resume_training
 )
-from sampling_utils import generate_samples_conditioned # If sampling_utils exists
+from sampling_utils import generate_samples_conditioned 
 
 
 def parse_arguments():
@@ -58,7 +58,7 @@ def main():
     print("=" * 60)
 
     for epoch in range(start_epoch, config["training"]["num_epochs"]):
-        train_loss, corr_pov, corr_graph, _, cond_std_pov, cond_std_graph, dropout_pov, dropout_graph = train_epoch_conditioned(
+        train_loss, corr_pov, corr_graph, cond_std_pov, cond_std_graph, dropout_pov, dropout_graph = train_epoch_conditioned(
             unet, scheduler, mixer, train_loader, optimizer, device, epoch,
             config=config,
             cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"]

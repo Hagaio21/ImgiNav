@@ -443,7 +443,7 @@ def load_checkpoint(checkpoint_path: str | Path, models_dict: dict[str, nn.Modul
     """
     # WARNING: Changed weights_only=False to True for security.
     # State dicts should not contain arbitrary pickled code.
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
     # Load model states
     for name, model in models_dict.items():

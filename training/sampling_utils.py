@@ -4,6 +4,15 @@ from pathlib import Path
 from torchvision.utils import save_image, make_grid
 import os
 
+def normalize_diff_map(diff_map):
+    """Normalizes a difference map globally to [0, 1] for visualization."""
+    vmin = diff_map.min()
+    vmax = diff_map.max()
+    scale = vmax - vmin
+    if scale < 1e-6:
+        scale = 1.0  # Prevent division by zero
+    return (diff_map - vmin) / scale
+    
 # --- Helper functions (ensure these are present) ---
 def normalize_latents_for_viz(latents):
     """Normalizes latents channel-wise to [0, 1] for visualization."""
