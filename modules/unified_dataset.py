@@ -18,7 +18,7 @@ def load_image(path, transform=None):
 
 def load_embedding(path):
     if path.endswith(".pt"):
-        return torch.load(path)
+        return torch.load(path, weights_only=False)
     elif path.endswith(".npy"):
         return torch.from_numpy(np.load(path))
     else:

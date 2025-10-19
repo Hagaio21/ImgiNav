@@ -2,7 +2,7 @@
 # This file contains all parameters for conditional training with POV + Graph
 
 experiment:
-  exp_dir: /work3/s233249/ImgiNav/experiments/conditioned_diffusion_cfg_learned_mixer_001
+  exp_dir: /work3/s233249/ImgiNav/experiments/conditioned_diffusion_cfg_learned_mixer_NonLinear_002
   name: "Conditioned Diffusion - POV + Graph + mixer- Run 001"
   description: "Training conditional diffusion with room POV and scene graphs and learned mixer"
 
@@ -32,15 +32,18 @@ latent_shape: [4, 64, 64]
 
 
 mixer:
-  type: concat  # or 'weighted' or 'learned'
+  type: NonLinearConcatMixer # Or LinearConcatMixer
   pov_dim: 512
   graph_dim: 384
+  # Add specific settings here
+  mlp_hidden_dim: 1024 # Example: Set hidden dim for NonLinear version
+  # Add other settings if needed for future mixers
 
 
 # Training Parameters
 training:
-  batch_size: 32
-  num_epochs: 30
+  batch_size: 64
+  num_epochs: 100
   learning_rate: 0.00001
   sample_every: 1
   periodic_checkpoint_every: 10
@@ -49,10 +52,11 @@ training:
     dropout_prob: 0.1
     normalize_graph: False
     normalize_pov: False
-    cond_scale_graph: 5.0
-    cond_scale_pov: 5.0
-    cond_scale_mix: 1.0
+    cond_scale_graph: 12.0
+    cond_scale_pov: 1.0
+    cond_scale_mix: 5.0
     
     log_condition_stats: True
     compute_corr_every: 300
     cond_clip_value: null
+    guidance_scale: 7.5
