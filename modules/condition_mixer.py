@@ -73,6 +73,16 @@ class BaseMixer(nn.Module):
     def forward(self, conds: list[Optional[torch.Tensor]], weights=None) -> torch.Tensor:
 
         raise NotImplementedError("Subclasses must implement the forward method.")
+    
+    def get_projected_conditions(self, cond_pov: Optional[torch.Tensor], cond_graph: Optional[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Projects pov and graph conditions individually using their respective projectors.
+        This is used for diagnostic purposes (e.g., correlations) in the training loop.
+        Handles None inputs by returning appropriate zero tensors via _project_and_reshape.
+        """
+        pov_out = self._project_and_reshape(cond_pov, self.pov_projector, self.pov_out_channels)
+        graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels)
+        return pov_out, graph_out
 
 class LinearConcatMixer(BaseMixer):
 

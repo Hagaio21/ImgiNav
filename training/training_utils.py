@@ -617,10 +617,30 @@ def save_training_stats(exp_dir: str | Path, training_stats: dict):
         print("Matplotlib not available, skipping plots", flush=True)
 
 
-def compute_condition_correlations(mixer: nn.Module, cond_pov_raw: torch.Tensor | None, cond_graph_raw: torch.Tensor | None,
-                                   cond_mixed_final: torch.Tensor, noisy_latents: torch.Tensor) -> tuple[float, float]:
+@torch.no_grad()
+You are exactly right. My apologies for the confusion. I was describing the solution in pieces, but you are correct: the final step is to replace the old, problematic compute_condition_correlations function with the new one that works with the helper.
+
+Here are the final, consolidated changes for training_utils.py.
+
+This assumes you have already made the changes to condition_mixer.py (reverting forward to return one tensor and adding the new get_projected_conditions helper method).
+
+1. Replace compute_condition_correlations
+First, replace the entire compute_condition_correlations function (lines 625-654) with this new "ablation-aware" version. This new version is mixer-agnostic; it doesn't call the mixer at all, it just receives the already-projected tensors.
+
+Python
+
+# In training_utils.py
+
+# --- REPLACE THIS ENTIRE FUNCTION (lines 625-654) ---
+@torch.no_grad()
+def compute_condition_correlations(proj_pov: torch.Tensor, proj_graph: torch.Tensor, noisy_latents: torch.Tensor) -> tuple[float | None, float | None]:
     """
-    Compute cosine correlations between the noisy latent and each projected conditioning source.
+    Compute cosine correlations between the noisy latent and each *already projected* conditioning source.
+    
+    This version is mixer-agnostic and "ablation-aware".
+    If a projected tensor is all zeros (std dev is ~0), it means the condition was
+    None (ablated). In this case, we return None for the metric, rather than
+    computing and getting a NaN (which would be incorrectly logged as 0.0).
     """
     corr_pov_vals, corr_graph_vals = [], []
     with torch.no_grad():
@@ -628,31 +648,34 @@ def compute_condition_correlations(mixer: nn.Module, cond_pov_raw: torch.Tensor 
         l = noisy_latents.mean(dim=[2, 3])  # Shape: [B, C_lat]
 
         # --- POV Correlation ---
-        if cond_pov_raw is not None and mixer.pov_proj is not None:
-            # Project POV embedding
-            proj_pov = mixer.project_condition(cond_pov_raw, mixer.pov_proj, mixer.pov_out_channels)
+        # Check if channels > 0 AND if the tensor is not all zeros (std > 1e-6)
+        if proj_pov.shape[1] > 0 and proj_pov.std() > 1e-6:
             c_pov = proj_pov.mean(dim=[2, 3])  # Shape: [B, C_pov_out]
             
-            # Compare projected POV channels with latent channels
             min_ch_pov = min(c_pov.size(1), l.size(1))
-            corr_p = torch.cosine_similarity(c_pov[:, :min_ch_pov], l[:, :min_ch_pov], dim=1)
-            corr_pov_vals.append(torch.nan_to_num(corr_p, nan=0.0).mean().item())
+            if min_ch_pov > 0:
+                corr_p = torch.cosine_similarity(c_pov[:, :min_ch_pov], l[:, :min_ch_pov], dim=1)
+                # We can safely use nan_to_num here, as any remaining NaNs 
+                # would be from the latent, not from a zero-norm condition.
+                corr_pov_vals.append(torch.nan_to_num(corr_p, nan=0.0).mean().item())
 
         # --- Graph Correlation ---
-        if cond_graph_raw is not None and mixer.graph_proj is not None:
-            # Project Graph embedding
-            proj_graph = mixer.project_condition(cond_graph_raw, mixer.graph_proj, mixer.graph_out_channels)
+        # Check if channels > 0 AND if the tensor is not all zeros (std > 1e-6)
+        if proj_graph.shape[1] > 0 and proj_graph.std() > 1e-6:
             c_graph = proj_graph.mean(dim=[2, 3])  # Shape: [B, C_graph_out]
 
-            # Compare projected Graph channels with latent channels
             min_ch_graph = min(c_graph.size(1), l.size(1))
-            corr_g = torch.cosine_similarity(c_graph[:, :min_ch_graph], l[:, :min_ch_graph], dim=1)
-            corr_graph_vals.append(torch.nan_to_num(corr_g, nan=0.0).mean().item())
+            if min_ch_graph > 0:
+                corr_g = torch.cosine_similarity(c_graph[:, :min_ch_graph], l[:, :min_ch_graph], dim=1)
+                corr_graph_vals.append(torch.nan_to_num(corr_g, nan=0.0).mean().item())
 
+    # If the list is empty (because the condition was ablated), return None.
+    # This will be logged as 'null' and create a gap in the plot.
     return (
-        np.mean(corr_pov_vals) if corr_pov_vals else 0.0,
-        np.mean(corr_graph_vals) if corr_graph_vals else 0.0,
+        np.mean(corr_pov_vals) if corr_pov_vals else None,
+        np.mean(corr_graph_vals) if corr_graph_vals else None,
     )
+
 
 def train_epoch_unconditioned(unet: nn.Module, scheduler, dataloader: DataLoader,
                             optimizer: Adam, device: torch.device, epoch: int) -> float:
