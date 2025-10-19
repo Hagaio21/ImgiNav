@@ -40,6 +40,7 @@ class LatentDiffusion(nn.Module):
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         guidance_scale: float = 1.0,
         uncond_cond: Optional[torch.Tensor] = None,
+        start_noise: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
 
         """
@@ -61,7 +62,10 @@ class LatentDiffusion(nn.Module):
         self.unet.eval()
 
         C, H, W = self.latent_shape
-        x_t = torch.randn(batch_size, C, H, W, device=device) # create initial noise
+        if start_noise is None:
+            x_t = torch.randn(batch_size, C, H, W, device=device)
+        else:
+            x_t = start_noise.to(device)
 
         steps = num_steps or self.scheduler.num_steps # set number of steps 
         timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device) # set actual steps vector

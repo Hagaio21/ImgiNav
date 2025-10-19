@@ -617,22 +617,9 @@ def save_training_stats(exp_dir: str | Path, training_stats: dict):
         print("Matplotlib not available, skipping plots", flush=True)
 
 
+
 @torch.no_grad()
-You are exactly right. My apologies for the confusion. I was describing the solution in pieces, but you are correct: the final step is to replace the old, problematic compute_condition_correlations function with the new one that works with the helper.
 
-Here are the final, consolidated changes for training_utils.py.
-
-This assumes you have already made the changes to condition_mixer.py (reverting forward to return one tensor and adding the new get_projected_conditions helper method).
-
-1. Replace compute_condition_correlations
-First, replace the entire compute_condition_correlations function (lines 625-654) with this new "ablation-aware" version. This new version is mixer-agnostic; it doesn't call the mixer at all, it just receives the already-projected tensors.
-
-Python
-
-# In training_utils.py
-
-# --- REPLACE THIS ENTIRE FUNCTION (lines 625-654) ---
-@torch.no_grad()
 def compute_condition_correlations(proj_pov: torch.Tensor, proj_graph: torch.Tensor, noisy_latents: torch.Tensor) -> tuple[float | None, float | None]:
     """
     Compute cosine correlations between the noisy latent and each *already projected* conditioning source.
@@ -809,10 +796,11 @@ def train_epoch_conditioned(
 
         # --- Fuse conditions ---
         cond = mixer([cond_pov, cond_graph]) * scale_mix
+        cond_proj_pov, cond_proj_graph = mixer.get_projected_conditions(cond_pov_raw, cond_graph_raw)
 
         # --- Correlation diagnostics ---
         corr_pov, corr_graph = compute_condition_correlations(
-            mixer, cond_pov, cond_graph, cond, noisy_latents
+            cond_proj_pov, cond_proj_graph, noisy_latents
         )
         corr_pov_vals.append(corr_pov)
         corr_graph_vals.append(corr_graph)
@@ -837,11 +825,15 @@ def train_epoch_conditioned(
         pbar.set_postfix({'loss': loss.item()})
 
     # ---------------- Epoch metrics ----------------
+    valid_corr_pov = [v for v in corr_pov_vals if v is not None]
+    valid_corr_graph = [v for v in corr_graph_vals if v is not None]
+
     avg_loss = total_loss / len(dataloader)
+
     return (
         avg_loss,
-        np.mean(corr_pov_vals) if corr_pov_vals else 0.0,
-        np.mean(corr_graph_vals) if corr_graph_vals else 0.0,
+        np.mean(valid_corr_pov) if valid_corr_pov else 0.0,
+        np.mean(valid_corr_graph) if valid_corr_graph else 0.0,
         np.mean(cond_std_pov_vals) if cond_std_pov_vals else 0.0,
         np.mean(cond_std_graph_vals) if cond_std_graph_vals else 0.0,
         (dropout_pov_events / total_batches) if total_batches > 0 else 0.0,
@@ -918,10 +910,11 @@ def validate_conditioned(
 
         # --- Fuse conditions ---
         cond = mixer([cond_pov, cond_graph]) * scale_mix
-
+        
+        cond_proj_pov, cond_proj_graph = mixer.get_projected_conditions(cond_pov, cond_graph)
         # --- Correlation diagnostics ---
         corr_pov, corr_graph = compute_condition_correlations(
-            mixer, cond_pov, cond_graph, cond, noisy_latents
+            cond_proj_pov, cond_proj_graph, noisy_latents
         )
         corr_pov_vals.append(corr_pov)
         corr_graph_vals.append(corr_graph)
@@ -934,7 +927,14 @@ def validate_conditioned(
 
     unet.train()
     avg_loss = total_loss / len(dataloader)
-    return avg_loss, np.mean(corr_pov_vals), np.mean(corr_graph_vals)
+    valid_corr_pov = [v for v in corr_pov_vals if v is not None]
+    valid_corr_graph = [v for v in corr_graph_vals if v is not None]
+
+    return (
+        avg_loss, 
+        np.mean(valid_corr_pov) if valid_corr_pov else 0.0, 
+        np.mean(valid_corr_graph) if valid_corr_graph else 0.0
+    )
 
 
 def _compute_generation_mse(pred: torch.Tensor, target: torch.Tensor) -> float:

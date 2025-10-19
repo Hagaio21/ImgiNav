@@ -5,7 +5,7 @@
 #BSUB -n 4
 #BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
-#BSUB -W 24:00
+#BSUB -W 8:00
 #BSUB -q gpul40s
 
 # --- Strict Mode ---
@@ -23,10 +23,10 @@ readonly PYTHON_SCRIPT="${BASE_DIR}/training/train_cond_diffusion.py"
 # Make sure the paths are correct.
 readonly CONFIG_DIR="${BASE_DIR}/config/experiments/ablations"
 readonly CONFIGS=(
+    "${CONFIG_DIR}/scenes_graph_only.yml"
     "${CONFIG_DIR}/rooms_pov_graph.yml"
     "${CONFIG_DIR}/rooms_pov_only.yml"
     "${CONFIG_DIR}/rooms_graph_only.yml"
-    "${CONFIG_DIR}/scenes_graph_only.yml"
     "${CONFIG_DIR}/all_pov_graph.yml"
     "${CONFIG_DIR}/all_graph_only.yml"
 )
@@ -39,7 +39,7 @@ readonly EXP_CONFIG="${CONFIGS[${INDEX}]}"
 readonly JOB_NAME=$(basename "${EXP_CONFIG}" .yml)
 
 ## --- Model & Training Options ---
-readonly RESUME_JOB="false"
+readonly RESUME_JOB="true"
 
 # =============================================================================
 # Environment Setup

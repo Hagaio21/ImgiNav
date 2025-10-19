@@ -40,49 +40,74 @@ class BaseMixer(nn.Module):
         self.pov_projector: nn.Module = nn.Identity()
         self.graph_projector: nn.Module = nn.Identity()
 
-    def _project_and_reshape(self, x: Optional[torch.Tensor], projector: nn.Module, out_channels_branch: int) -> torch.Tensor:
-
-        B = 1 
-        device = 'cpu' # Default device
-        H, W = self.target_size
+    def _get_batch_size_and_device(self, *conds) -> tuple[int, torch.device]:
+        """Determines batch size and device from the first available tensor."""
+        for c in conds:
+            if c is not None:
+                return c.shape[0], c.device
         
-        if x is not None:
-             B = x.shape[0]
-             device = x.device
+        # Fallback if all conditions are None (e.g. full dropout)
+        try:
+            device = next(self.parameters()).device
+        except StopIteration:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
-        if x is None or isinstance(projector, nn.Identity):
-             return torch.zeros(B, out_channels_branch, H, W, device=device)
-
-        if x.ndim == 2: # Embedding vector [B, C_in]
-            # Ensure correct dtype
-            dtype = next(projector.parameters()).dtype if list(projector.parameters()) else torch.float32
-            x = x.to(dtype)
-
-            projected = projector(x) # Apply the specific projector (Linear or MLP)
+        # If we *still* have no tensor, we can't know the batch size.
+        # This should ideally not be hit if data is always present.
+        print("Warning: Mixer could not determine batch size from inputs. Defaulting to B=1.")
+        return 1, device
+    
+    def _project_and_reshape(self, x: Optional[torch.Tensor], projector: nn.Module, 
+                                out_channels_branch: int, B: int, device: torch.device) -> torch.Tensor:
+            """
+            Projects a tensor (if not None) or returns zeros, using a *provided*
+            batch size and device.
+            """
+            H, W = self.target_size
             
-            expected_flat_dim = out_channels_branch * H * W
-            if projected.shape[-1] != expected_flat_dim:
-                 raise ValueError(f"Projector output dimension mismatch. Expected {expected_flat_dim}, got {projected.shape[-1]}")
-                 
-            output = projected.view(B, out_channels_branch, H, W)
-        else:
-            raise ValueError(f"This mixer only supports 2D embedding inputs (shape [B, C_in]), got {x.shape}")
+            if x is None or isinstance(projector, nn.Identity):
+                # Use B and device passed in
+                return torch.zeros(B, out_channels_branch, H, W, device=device)
 
-        return output
+            # Handle the placeholder tensor [B, 1] from collate_fn
+            if x.ndim == 2 and x.shape[1] == 1 and x.std() < 1e-6:
+                return torch.zeros(B, out_channels_branch, H, W, device=device)
 
+            if x.ndim == 2: # Embedding vector [B, C_in]
+                if x.shape[0] != B:
+                    print(f"Warning: Mixer input tensor batch size {x.shape[0]} != determined batch size {B}. Using {x.shape[0]}.")
+                    B = x.shape[0] # Trust the tensor
+                try:
+                    # Get the dtype (e.g., float32) from the projector's parameters
+                    projector_dtype = next(projector.parameters()).dtype
+                    x = x.to(projector_dtype)
+                except StopIteration:
+                    # Projector has no parameters (e.g., nn.Identity), do nothing
+                    pass
+
+                projected = projector(x) # Apply the specific projector (Linear or MLP)
+                
+                expected_flat_dim = out_channels_branch * H * W
+                if projected.shape[-1] != expected_flat_dim:
+                    raise ValueError(f"Projector output dimension mismatch. Expected {expected_flat_dim}, got {projected.shape[-1]}")
+                    
+                output = projected.view(B, out_channels_branch, H, W)
+            else:
+                raise ValueError(f"This mixer only supports 2D embedding inputs (shape [B, C_in]), got {x.shape}")
+
+            return output
+            
     def forward(self, conds: list[Optional[torch.Tensor]], weights=None) -> torch.Tensor:
 
         raise NotImplementedError("Subclasses must implement the forward method.")
     
     def get_projected_conditions(self, cond_pov: Optional[torch.Tensor], cond_graph: Optional[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Projects pov and graph conditions individually using their respective projectors.
-        This is used for diagnostic purposes (e.g., correlations) in the training loop.
-        Handles None inputs by returning appropriate zero tensors via _project_and_reshape.
-        """
-        pov_out = self._project_and_reshape(cond_pov, self.pov_projector, self.pov_out_channels)
-        graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels)
-        return pov_out, graph_out
+            
+            B, device = self._get_batch_size_and_device(cond_pov, cond_graph)
+            
+            pov_out = self._project_and_reshape(cond_pov, self.pov_projector, self.pov_out_channels, B, device)
+            graph_out = self._project_and_reshape(cond_graph, self.graph_projector, self.graph_out_channels, B, device)
+            return pov_out, graph_out
 
 class LinearConcatMixer(BaseMixer):
 
@@ -103,16 +128,15 @@ class LinearConcatMixer(BaseMixer):
              print(f"LinearConcatMixer: Creating Linear Graph projector ({self.graph_channels} -> {graph_target_dim})", flush=True)
              self.graph_projector = nn.Linear(self.graph_channels, graph_target_dim, bias=False)
 
-        torch.set_rng_state(rng_state)
-
     def forward(self, conds: list[Optional[torch.Tensor]], weights=None) -> torch.Tensor:
-        pov, graph = conds
+            pov, graph = conds
+            
+            B, device = self._get_batch_size_and_device(pov, graph)
 
-        pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels)
+            pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels, B, device)
+            graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels, B, device)
 
-        graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels)
-
-        return torch.cat([pov_out, graph_out], dim=1)
+            return torch.cat([pov_out, graph_out], dim=1)
 
 class NonLinearConcatMixer(BaseMixer):
 
@@ -136,12 +160,13 @@ class NonLinearConcatMixer(BaseMixer):
 
 
     def forward(self, conds: list[Optional[torch.Tensor]], weights=None) -> torch.Tensor:
-        """Projects conditions using ProjectionMLP and concatenates."""
+       
         pov, graph = conds
+        
+        B, device = self._get_batch_size_and_device(pov, graph)
 
-        pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels)
-
-        graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels)
+        pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels, B, device)
+        graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels, B, device)
 
         return torch.cat([pov_out, graph_out], dim=1)
 
