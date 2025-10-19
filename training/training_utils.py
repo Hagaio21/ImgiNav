@@ -482,14 +482,16 @@ def init_training_stats() -> dict:
     return {
         'epochs': [], 'train_loss': [], 'val_loss': [],
         'learning_rate': [], 'timestamps': [],
-        'corr_pov': [], 'corr_graph': [],
+        'train_corr_pov': [], 'train_corr_graph': [], # Train (RENAMED)
+        'val_corr_pov': [], 'val_corr_graph': [], # Val
         'cond_std_pov': [], 'cond_std_graph': [],
         'dropout_ratio_pov': [], 'dropout_ratio_graph': []
     }
 
 
 def update_training_stats(training_stats: dict, epoch: int, train_loss: float, val_loss: float, learning_rate: float,
-                          corr_pov: float | None = None, corr_graph: float | None = None,
+                          train_corr_pov: float | None = None, train_corr_graph: float | None = None,
+                          val_corr_pov: float | None = None, val_corr_graph: float | None = None,
                           cond_std_pov: float | None = None, cond_std_graph: float | None = None,
                           dropout_ratio_pov: float | None = None, dropout_ratio_graph: float | None = None):
     """Update training statistics with current epoch data"""
@@ -498,12 +500,11 @@ def update_training_stats(training_stats: dict, epoch: int, train_loss: float, v
     training_stats['val_loss'].append(val_loss)
     training_stats['learning_rate'].append(learning_rate)
     training_stats['timestamps'].append(datetime.now().isoformat())
-    training_stats['corr_pov'].append(corr_pov)
-    training_stats['corr_graph'].append(corr_graph)
+    training_stats['train_corr_pov'].append(train_corr_pov)
+    training_stats['train_corr_graph'].append(train_corr_graph)
+    training_stats['val_corr_pov'].append(val_corr_pov)
+    training_stats['val_corr_graph'].append(val_corr_graph)
     training_stats['cond_std_pov'].append(cond_std_pov)
-    training_stats['cond_std_graph'].append(cond_std_graph)
-    training_stats['dropout_ratio_pov'].append(dropout_ratio_pov)
-    training_stats['dropout_ratio_graph'].append(dropout_ratio_graph)
     return training_stats
 
 
@@ -542,17 +543,15 @@ def save_training_stats(exp_dir: str | Path, training_stats: dict):
         axes[1].grid(True, alpha=0.3)
 
         # Correlation Plot
-        has_corr = any(v for k in ['corr_pov', 'corr_graph'] for v in training_stats.get(k, []) if v is not None)
+        has_corr = any(v for k in ['train_corr_pov', 'train_corr_graph', 'val_corr_pov', 'val_corr_graph'] # (RENAMED)
+                       for v in training_stats.get(k, []) if v is not None)
         if has_corr:
-            if training_stats.get('corr_pov'):
-                axes[2].plot(training_stats['epochs'], training_stats['corr_pov'], label='POV Corr', marker='o', ms=3)
-            if training_stats.get('corr_graph'):
-                axes[2].plot(training_stats['epochs'], training_stats['corr_graph'], label='Graph Corr', marker='s', ms=3)
-            axes[2].set_xlabel('Epoch')
-            axes[2].set_ylabel('Correlation')
-            axes[2].set_title('Condition Correlation')
-            axes[2].legend()
-            axes[2].grid(True, alpha=0.3)
+            if training_stats.get('train_corr_pov'): # (RENAMED)
+                axes[2].plot(training_stats['epochs'], training_stats['train_corr_pov'], label='Train POV', marker='o', ms=3, linestyle='-', alpha=0.8) # (RENAMED)
+            if training_stats.get('train_corr_graph'): # (RENAMED)
+                axes[2].plot(training_stats['epochs'], training_stats['train_corr_graph'], label='Train Graph', marker='s', ms=3, linestyle='-', alpha=0.8) # (RENAMED)
+            
+            if training_stats.get('val_corr_pov'):
 
         plt.tight_layout()
         plot_path = exp_dir / 'logs' / 'training_curves.png'

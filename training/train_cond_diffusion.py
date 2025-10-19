@@ -73,10 +73,10 @@ def main():
         current_lr = optimizer.param_groups[0]['lr']
 
         # Update stats
-        # [FIXED] Removed `corr_mix=None`, which caused a TypeError.
         training_stats = update_training_stats(
             training_stats, epoch, train_loss, val_loss, current_lr,
-            corr_pov=corr_pov, corr_graph=corr_graph,
+            train_corr_pov=corr_pov, train_corr_graph=corr_graph, # (RENAMED)
+            val_corr_pov=val_corr_pov, val_corr_graph=val_corr_graph,
             cond_std_pov=cond_std_pov, cond_std_graph=cond_std_graph,
             dropout_ratio_pov=dropout_pov, dropout_ratio_graph=dropout_graph
         )

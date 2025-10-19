@@ -23,7 +23,7 @@ readonly PYTHON_SCRIPT="${BASE_DIR}/training/train_conditioned_diffusion.py"
 
 ## --- Experiment Setup ---
 # All experiment settings are now defined in this config file
-readonly EXP_CONFIG="${BASE_DIR}/config/experiments/cond_exp_small_200_2.yml"
+readonly EXP_CONFIG="${BASE_DIR}/config/experiments/cond_small_nonlinear.yml"
 
 ## --- Model & Training Options ---
 # Resume training: "true" or "false"
