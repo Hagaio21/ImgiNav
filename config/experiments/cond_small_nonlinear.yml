@@ -33,6 +33,8 @@ mixer:
   type: NonLinearConcatMixer # Or LinearConcatMixer
   pov_dim: 512
   graph_dim: 384
+  use_pov: true      
+  use_graph: true    
   # Add specific settings here
   mlp_hidden_dim: 1024 # Example: Set hidden dim for NonLinear version
 

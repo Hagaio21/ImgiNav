@@ -56,53 +56,69 @@ class UnifiedLayoutDataset(Dataset):
     """
 
     def __init__(self, room_manifest, scene_manifest, use_embeddings=False, 
-                 pov_type=None, transform=None, device=None):
+             pov_type=None, data_mode="rooms_and_scenes",
+             transform=None, device=None):
         self.use_embeddings = use_embeddings
-        self.pov_type = pov_type  # 'seg', 'tex', or None
-        self.transform = transform
-        self.device = device
-
+        self.pov_type = pov_type
+        self.data_mode = data_mode
+s
         # Load both manifests
         room_df = pd.read_csv(room_manifest)
         scene_df = pd.read_csv(scene_manifest)
 
-        # --- Standardize schemas ---
-        room_df = room_df.rename(columns={
-            "ROOM_GRAPH_PATH": "GRAPH_PATH",
-            "ROOM_GRAPH_EMBEDDING_PATH": "GRAPH_EMBEDDING_PATH",
-            "ROOM_LAYOUT_PATH": "LAYOUT_PATH",
-            "ROOM_LAYOUT_EMBEDDING_PATH": "LAYOUT_EMBEDDING_PATH"
-        })
+    # --- Load and combine manifests based on data_mode ---
+        dfs_to_concat = []
 
-        scene_df["ROOM_ID"] = ""
-        scene_df["POV_TYPE"] = ""
-        scene_df["POV_PATH"] = ""
-        scene_df["POV_EMBEDDING_PATH"] = ""
-        scene_df = scene_df.rename(columns={
-                    "SCENE_GRAPH_PATH": "GRAPH_PATH",
-                    "SCENE_GRAPH_EMBEDDING_PATH": "GRAPH_EMBEDDING_PATH",
-                    "SCENE_LAYOUT_PATH": "LAYOUT_PATH",
-                    "SCENE_LAYOUT_EMBEDDING_PATH": "LAYOUT_EMBEDDING_PATH"
-                })
+        if self.data_mode in ["rooms_only", "rooms_and_scenes"]:
+            room_df = pd.read_csv(room_manifest)
+            # --- Standardize room schema ---
+            room_df = room_df.rename(columns={
+                "ROOM_GRAPH_PATH": "GRAPH_PATH",
+                "ROOM_GRAPH_EMBEDDING_PATH": "GRAPH_EMBEDDING_PATH",
+                "ROOM_LAYOUT_PATH": "LAYOUT_PATH",
+                "ROOM_LAYOUT_EMBEDDING_PATH": "LAYOUT_EMBEDDING_PATH"
+            })
+            # --- Common column order ---
+            cols = [
+                "SCENE_ID", "ROOM_ID", "POV_TYPE", "POV_PATH", "POV_EMBEDDING_PATH",
+                "GRAPH_PATH", "GRAPH_EMBEDDING_PATH", "LAYOUT_PATH", "LAYOUT_EMBEDDING_PATH"
+            ]
+            room_df = room_df[cols]
 
+            # --- Filter by POV mode if specified ---
+            if pov_type is not None:
+                room_df = room_df[room_df["POV_TYPE"] == pov_type].reset_index(drop=True)
+                print(f"Filtered to POV mode '{pov_type}': {len(room_df)} room samples", flush=True)
 
-        # --- Common column order ---
-        cols = [
-            "SCENE_ID", "ROOM_ID", "POV_TYPE", "POV_PATH", "POV_EMBEDDING_PATH",
-            "GRAPH_PATH", "GRAPH_EMBEDDING_PATH", "LAYOUT_PATH", "LAYOUT_EMBEDDING_PATH"
-        ]
-        room_df = room_df[cols]
-        scene_df = scene_df[cols]
+            dfs_to_concat.append(room_df)
 
-        # --- Filter by POV mode if specified ---
-        if pov_type is not None:
-            # Only keep room samples with matching POV type
-            room_df = room_df[room_df["POV_TYPE"] == pov_type].reset_index(drop=True)
-            print(f"Filtered to POV mode '{pov_type}': {len(room_df)} room samples", flush=True)
+        if self.data_mode in ["scenes_only", "rooms_and_scenes"]:
+            scene_df = pd.read_csv(scene_manifest)
+            # --- Standardize scene schema ---
+            scene_df["ROOM_ID"] = ""
+            scene_df["POV_TYPE"] = ""
+            scene_df["POV_PATH"] = ""
+            scene_df["POV_EMBEDDING_PATH"] = ""
+            scene_df = scene_df.rename(columns={
+                        "SCENE_GRAPH_PATH": "GRAPH_PATH",
+                        "SCENE_GRAPH_EMBEDDING_PATH": "GRAPH_EMBEDDING_PATH",
+                        "SCENE_LAYOUT_PATH": "LAYOUT_PATH",
+                        "SCENE_LAYOUT_EMBEDDING_PATH": "LAYOUT_EMBEDDING_PATH"
+                    })
+            # --- Common column order ---
+            cols = [
+                "SCENE_ID", "ROOM_ID", "POV_TYPE", "POV_PATH", "POV_EMBEDDING_PATH",
+                "GRAPH_PATH", "GRAPH_EMBEDDING_PATH", "LAYOUT_PATH", "LAYOUT_EMBEDDING_PATH"
+            ]
+            scene_df = scene_df[cols]
+            dfs_to_concat.append(scene_df)
+
+        if not dfs_to_concat:
+            raise ValueError(f"Invalid data_mode '{self.data_mode}' or no data loaded.")
 
         # --- Merge manifests ---
-        df = pd.concat([room_df, scene_df], ignore_index=True)
-
+        df = pd.concat(dfs_to_concat, ignore_index=True)
+        
         # --- Filter invalid paths ---
         mask = (
             df["GRAPH_PATH"].apply(valid_path)

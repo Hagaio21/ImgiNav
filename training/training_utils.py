@@ -194,16 +194,18 @@ def load_data(config: dict, exp_dir: Path) -> tuple[DataLoader, DataLoader, Unif
     """Loads dataset, performs split, creates dataloaders, and saves split info."""
     print("Loading unified dataset...", flush=True)
     
-    # [CHANGED] Read paths from config dict instead of args
     room_manifest = config["dataset"]["room_manifest"]
     scene_manifest = config["dataset"]["scene_manifest"]
-    pov_type = config["dataset"].get("pov_type") # Use .get for optional keys
+    pov_type = config["dataset"].get("pov_type")
+    data_mode = config["dataset"].get("data_mode", "rooms_and_scenes")
+    print(f"Loading dataset in mode: {data_mode}", flush=True)
 
     dataset = UnifiedLayoutDataset(
         room_manifest,
         scene_manifest,
-        use_embeddings=True,  # Assuming always True
-        pov_type=pov_type
+        use_embeddings=True,
+        pov_type=pov_type,
+        data_mode=data_mode
     )
 
     # Perform Train/Val Split
@@ -254,12 +256,15 @@ def create_mixer(config: dict, device: torch.device) -> nn.Module:
 
     # Get embedding input dimensions from config
     mixer_config = config.get("mixer", {})
-    pov_dim = mixer_config.get("pov_dim")
-    graph_dim = mixer_config.get("graph_dim")
-    print(f"Input dimensions - POV: {pov_dim}, Graph: {graph_dim}", flush=True)
+    # Get enabled flags
+    use_pov = mixer_config.get("use_pov", True)
+    use_graph = mixer_config.get("use_graph", True)
+
+    pov_dim = mixer_config.get("pov_dim") if use_pov else None
+    graph_dim = mixer_config.get("graph_dim") if use_graph else None
+    print(f"Input dimensions - POV: {pov_dim} (Enabled: {use_pov}), Graph: {graph_dim} (Enabled: {use_graph})", flush=True)
 
     # Determine mixer type name
-    # [CHANGED] Read mixer type from config dict *only*
     mixer_type_name = mixer_config.get("type", "LinearConcatMixer")
     
     print(f"Creating {mixer_type_name} (out_channels={cond_channels}, target_size={latent_hw})...", flush=True)
@@ -550,8 +555,17 @@ def save_training_stats(exp_dir: str | Path, training_stats: dict):
                 axes[2].plot(training_stats['epochs'], training_stats['train_corr_pov'], label='Train POV', marker='o', ms=3, linestyle='-', alpha=0.8) # (RENAMED)
             if training_stats.get('train_corr_graph'): # (RENAMED)
                 axes[2].plot(training_stats['epochs'], training_stats['train_corr_graph'], label='Train Graph', marker='s', ms=3, linestyle='-', alpha=0.8) # (RENAMED)
-            
+        
             if training_stats.get('val_corr_pov'):
+                axes[2].plot(training_stats['epochs'], training_stats['val_corr_pov'], label='Val POV', marker='o', ms=3, linestyle='--')
+            if training_stats.get('val_corr_graph'):
+                axes[2].plot(training_stats['epochs'], training_stats['val_corr_graph'], label='Val Graph', marker='s', ms=3, linestyle='--')
+
+            axes[2].set_xlabel('Epoch')
+            axes[2].set_ylabel('Correlation')
+            axes[2].set_title('Conditioning Correlation')
+            axes[2].legend()
+            axes[2].grid(True, alpha=0.3)
 
         plt.tight_layout()
         plot_path = exp_dir / 'logs' / 'training_curves.png'
@@ -732,14 +746,17 @@ def train_epoch_conditioned(
     log_cond_stats = cfg_train.get("log_condition_stats", True)
     corr_every = cfg_train.get("compute_corr_every", 300)
 
+    use_pov = config.get("mixer", {}).get("use_pov", True)
+    use_graph = config.get("mixer", {}).get("use_graph", True)
+
     pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}")
     for i, batch in enumerate(pbar):
         total_batches += 1
 
         # --- Load and move tensors ---
         latents = batch["layout"].to(device)
-        cond_pov_raw = batch.get("pov")
-        cond_graph_raw = batch.get("graph")
+        cond_pov_raw = batch.get("pov") if use_pov else None 
+        cond_graph_raw = batch.get("graph") if use_graph else None
         if cond_pov_raw is not None:
             cond_pov_raw = cond_pov_raw.to(device)
         if cond_graph_raw is not None:
@@ -852,12 +869,15 @@ def validate_conditioned(
     # ---------------- Config ----------------
     cfg_train = config["training"]["cfg"]
     scale_mix = cfg_train.get("cond_scale_mix", 1.0)
+    # Get enabled flags ONCE
+    use_pov = config.get("mixer", {}).get("use_pov", True)
+    use_graph = config.get("mixer", {}).get("use_graph", True)
 
     pbar = tqdm(dataloader, desc="Validating", leave=False)
     for batch in pbar:
         latents = batch["layout"].to(device)
-        cond_pov = batch.get("pov")
-        cond_graph = batch.get("graph")
+        cond_pov = batch.get("pov") if use_pov else None 
+        cond_graph = batch.get("graph") if use_graph else None
         if cond_pov is not None:
             cond_pov = cond_pov.to(device)
         if cond_graph is not None:

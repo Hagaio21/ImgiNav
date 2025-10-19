@@ -8,7 +8,11 @@ experiment:
 
 # Dataset - NOTE: Not used in conditioned version, uses manifests from CLI args instead
 dataset:
-  manifest_path: null  # Placeholder - room_manifest and scene_manifest passed via CLI
+  room_manifest: /work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
+  scene_manifest: /work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
+  pov_type: "seg"
+  data_mode: "rooms_and_scenes" # <-- NEW: Options: "rooms_and_scenes", "rooms_only", "scenes_only"
+  
 # Autoencoder (for generating samples during training)
 
 autoencoder:
