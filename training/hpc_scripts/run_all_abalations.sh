@@ -39,7 +39,7 @@ readonly EXP_CONFIG="${CONFIGS[${INDEX}]}"
 readonly JOB_NAME=$(basename "${EXP_CONFIG}" .yml)
 
 ## --- Model & Training Options ---
-readonly RESUME_JOB="true"
+readonly RESUME_JOB="false"
 
 # =============================================================================
 # Environment Setup

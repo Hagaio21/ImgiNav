@@ -49,12 +49,12 @@ except ImportError:
     print("Warning: Could not import schedulers from 'modules.scheduler'.")
     SCHEDULER_MAP = {}
 
-# [FIXED] Corrected malformed import block
 from modules.unet import UNet
 from modules.autoencoder import AutoEncoder
 from modules.unified_dataset import UnifiedLayoutDataset, collate_fn
 from modules.condition_mixer import LinearConcatMixer, NonLinearConcatMixer
 from modules.diffusion import LatentDiffusion
+from modules.loss_diffusion import ConstructiveDiffusionLoss
 
 
 def _copy_arch_configs(config: dict, exp_dir: Path):
@@ -266,6 +266,7 @@ def create_mixer(config: dict, device: torch.device) -> nn.Module:
 
     # Determine mixer type name
     mixer_type_name = mixer_config.get("type", "LinearConcatMixer")
+    norm_type = mixer_config.get("norm_type", None)
     
     print(f"Creating {mixer_type_name} (out_channels={cond_channels}, target_size={latent_hw})...", flush=True)
 
@@ -286,7 +287,8 @@ def create_mixer(config: dict, device: torch.device) -> nn.Module:
         "out_channels": cond_channels,
         "target_size": latent_hw,
         "pov_channels": pov_dim,
-        "graph_channels": graph_dim
+        "graph_channels": graph_dim,
+        "norm_type": norm_type
     }
 
     # Add specific arguments conditionally
@@ -354,7 +356,6 @@ def load_experiment_config(config_path: str | Path) -> dict:
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-
 def save_experiment_config(config: dict, exp_dir: str | Path):
     """Save experiment config to experiment directory"""
     exp_dir = Path(exp_dir)
@@ -362,7 +363,6 @@ def save_experiment_config(config: dict, exp_dir: str | Path):
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     print(f"Saved experiment config to {config_path}", flush=True)
-
 
 def setup_experiment_dir(exp_dir: str | Path, resume: bool = False) -> Path:
     """
@@ -391,7 +391,6 @@ def setup_experiment_dir(exp_dir: str | Path, resume: bool = False) -> Path:
 
     print(f"Created experiment directory: {exp_dir}", flush=True)
     return exp_dir
-
 
 def save_checkpoint(exp_dir: str | Path, epoch: int, state_dict: dict, training_stats: dict,
                     val_loss: float, best_loss: float, is_best: bool = False, save_periodic: bool = False):
@@ -440,7 +439,6 @@ def save_checkpoint(exp_dir: str | Path, epoch: int, state_dict: dict, training_
         torch.save({'epoch': epoch, 'val_loss': val_loss, 'mixer': state_dict['mixer']}, mixer_path)
         print(f"Saved periodic separate models to {unet_path} and {mixer_path}", flush=True)
 
-
 def load_checkpoint(checkpoint_path: str | Path, models_dict: dict[str, nn.Module],
                     optimizer: Adam | None = None, scheduler_lr: CosineAnnealingLR | None = None) -> tuple[int, float, dict]:
     """
@@ -481,7 +479,6 @@ def load_checkpoint(checkpoint_path: str | Path, models_dict: dict[str, nn.Modul
     print(f"Loaded checkpoint from epoch {epoch}, best_loss: {best_loss:.6f}", flush=True)
     return epoch, best_loss, training_stats
 
-
 def init_training_stats() -> dict:
     """Initialize an empty training statistics dictionary."""
     return {
@@ -490,28 +487,62 @@ def init_training_stats() -> dict:
         'train_corr_pov': [], 'train_corr_graph': [], # Train (RENAMED)
         'val_corr_pov': [], 'val_corr_graph': [], # Val
         'cond_std_pov': [], 'cond_std_graph': [],
-        'dropout_ratio_pov': [], 'dropout_ratio_graph': []
+        'dropout_ratio_pov': [], 'dropout_ratio_graph': [],
+        'val_corr_pov_zero': [], 'val_corr_graph_zero': [],
+        'val_corr_pov_shuffle': [], 'val_corr_graph_shuffle': [],
+        'val_mse_pov_zero': [], 'val_mse_graph_zero': [],
+        'val_mse_pov_shuffle': [], 'val_mse_graph_shuffle': []
     }
 
-
-def update_training_stats(training_stats: dict, epoch: int, train_loss: float, val_loss: float, learning_rate: float,
-                          train_corr_pov: float | None = None, train_corr_graph: float | None = None,
-                          val_corr_pov: float | None = None, val_corr_graph: float | None = None,
-                          cond_std_pov: float | None = None, cond_std_graph: float | None = None,
-                          dropout_ratio_pov: float | None = None, dropout_ratio_graph: float | None = None):
-    """Update training statistics with current epoch data"""
+def update_training_stats(
+    training_stats: dict,
+    epoch: int,
+    train_loss: float,
+    val_loss: float,
+    learning_rate: float,
+    train_corr_pov: float | None = None,
+    train_corr_graph: float | None = None,
+    val_corr_pov: float | None = None,
+    val_corr_graph: float | None = None,
+    cond_std_pov: float | None = None,
+    cond_std_graph: float | None = None,
+    dropout_ratio_pov: float | None = None,
+    dropout_ratio_graph: float | None = None,
+    val_corr_pov_zero: float | None = None,
+    val_corr_graph_zero: float | None = None,
+    val_corr_pov_shuffle: float | None = None,
+    val_corr_graph_shuffle: float | None = None,
+    val_mse_pov_zero: float | None = None,
+    val_mse_graph_zero: float | None = None,
+    val_mse_pov_shuffle: float | None = None,
+    val_mse_graph_shuffle: float | None = None,):
+    """Update training statistics with current epoch data and diagnostics."""
     training_stats['epochs'].append(epoch + 1)
     training_stats['train_loss'].append(train_loss)
     training_stats['val_loss'].append(val_loss)
     training_stats['learning_rate'].append(learning_rate)
     training_stats['timestamps'].append(datetime.now().isoformat())
+
     training_stats['train_corr_pov'].append(train_corr_pov)
     training_stats['train_corr_graph'].append(train_corr_graph)
     training_stats['val_corr_pov'].append(val_corr_pov)
     training_stats['val_corr_graph'].append(val_corr_graph)
     training_stats['cond_std_pov'].append(cond_std_pov)
-    return training_stats
+    training_stats['cond_std_graph'].append(cond_std_graph)
+    training_stats['dropout_ratio_pov'].append(dropout_ratio_pov)
+    training_stats['dropout_ratio_graph'].append(dropout_ratio_graph)
 
+    # --- Diagnostic metrics ---
+    training_stats['val_corr_pov_zero'].append(val_corr_pov_zero)
+    training_stats['val_corr_graph_zero'].append(val_corr_graph_zero)
+    training_stats['val_corr_pov_shuffle'].append(val_corr_pov_shuffle)
+    training_stats['val_corr_graph_shuffle'].append(val_corr_graph_shuffle)
+    training_stats['val_mse_pov_zero'].append(val_mse_pov_zero)
+    training_stats['val_mse_graph_zero'].append(val_mse_graph_zero)
+    training_stats['val_mse_pov_shuffle'].append(val_mse_pov_shuffle)
+    training_stats['val_mse_graph_shuffle'].append(val_mse_graph_shuffle)
+
+    return training_stats
 
 def save_training_stats(exp_dir: str | Path, training_stats: dict):
     """Save training statistics to JSON and generate plots"""
@@ -613,13 +644,27 @@ def save_training_stats(exp_dir: str | Path, training_stats: dict):
             plt.close(fig_drop)
             print(f"Saved condition dropout plot to {drop_path}", flush=True)
 
+        if 'val_corr_graph_zero' in training_stats:
+            fig_d, ax_d = plt.subplots(figsize=(8,4))
+            ax_d.plot(training_stats['epochs'], training_stats['val_corr_graph_zero'], label='Graph Zero', marker='o')
+            ax_d.plot(training_stats['epochs'], training_stats['val_corr_graph_shuffle'], label='Graph Shuffle', marker='s')
+            ax_d.plot(training_stats['epochs'], training_stats['val_corr_pov_zero'], label='POV Zero', marker='^')
+            ax_d.plot(training_stats['epochs'], training_stats['val_corr_pov_shuffle'], label='POV Shuffle', marker='v')
+            ax_d.set_xlabel('Epoch')
+            ax_d.set_ylabel('Correlation')
+            ax_d.set_title('Conditioning Diagnostic Correlations')
+            ax_d.legend()
+            ax_d.grid(True, alpha=0.3)
+            plt.tight_layout()
+            diag_path = exp_dir / 'logs' / 'diagnostic_correlations.png'
+            plt.savefig(diag_path, dpi=150, bbox_inches='tight')
+            plt.close(fig_d)
+
+
     except ImportError:
         print("Matplotlib not available, skipping plots", flush=True)
-
-
-
+        
 @torch.no_grad()
-
 def compute_condition_correlations(proj_pov: torch.Tensor, proj_graph: torch.Tensor, noisy_latents: torch.Tensor) -> tuple[float | None, float | None]:
     """
     Compute cosine correlations between the noisy latent and each *already projected* conditioning source.
@@ -741,8 +786,9 @@ def train_epoch_conditioned(
     device: torch.device,
     epoch: int,
     config: dict,
-    cfg_dropout_prob: float = 0.1
-) -> tuple[float, float, float, float, float, float, float]:
+    cfg_dropout_prob: float = 0.1,
+    loss_fn: nn.Module = None) -> tuple[float, float, float, float, float, float, float]:
+
     """Train for one epoch with conditioning."""
     unet.train()
     total_loss = 0
@@ -807,7 +853,14 @@ def train_epoch_conditioned(
 
         # --- Forward + Backward ---
         noise_pred = unet(noisy_latents, t, cond=cond)
-        loss = F.mse_loss(noise_pred, noise)
+        alpha_bar_t = scheduler.alpha_bars[t].view(-1, 1, 1, 1)
+        x0_hat = (noisy_latents - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+
+        if loss_fn is not None:
+            loss, loss_logs = loss_fn(noise_pred, noise, x0_hat, cond)
+        else:
+            loss = F.mse_loss(noise_pred, noise)
+
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
@@ -874,8 +927,7 @@ def validate_conditioned(
     mixer: nn.Module,
     dataloader: DataLoader,
     device: torch.device,
-    config: dict
-) -> tuple[float, float, float]:
+    config: dict) -> tuple[float, float, float]:
     """Compute validation loss with conditioning."""
     unet.eval()
     total_loss = 0
@@ -973,6 +1025,95 @@ def validate_generation_quality(diffusion_model: LatentDiffusion, mixer: nn.Modu
     diffusion_model.train()
     return total_metric / max(1, samples_processed)
 
+@torch.no_grad()
+def diagnostic_condition_tests(
+    unet: nn.Module,
+    scheduler,
+    mixer: nn.Module,
+    diffusion_model: LatentDiffusion,
+    dataloader: DataLoader,
+    device: torch.device,
+    config: dict) -> dict:
+    """
+    Run per-epoch diagnostics for conditioning integrity:
+      1. Zero-conditioning test.
+      2. Cross-pair (shuffled) conditioning test.
+    Logs correlation and MSE for POV and graph conditions.
+    """
+    results = {
+        'val_corr_pov_zero': 0.0, 'val_corr_graph_zero': 0.0,
+        'val_corr_pov_shuffle': 0.0, 'val_corr_graph_shuffle': 0.0,
+        'val_mse_pov_zero': 0.0, 'val_mse_graph_zero': 0.0,
+        'val_mse_pov_shuffle': 0.0, 'val_mse_graph_shuffle': 0.0,
+    }
+
+    cfg_train = config['training']['cfg']
+    scale_mix = cfg_train.get('cond_scale_mix', 1.0)
+    use_pov = config.get('mixer', {}).get('use_pov', True)
+    use_graph = config.get('mixer', {}).get('use_graph', True)
+
+    corr_zero_pov, corr_zero_graph, corr_shuf_pov, corr_shuf_graph = [], [], [], []
+    mse_zero_pov, mse_zero_graph, mse_shuf_pov, mse_shuf_graph = [], [], [], []
+
+    for batch in tqdm(dataloader, desc="Diagnostics", leave=False):
+        gt = batch["layout"].to(device)
+        cond_pov = batch.get("pov").to(device) if use_pov and batch.get("pov") is not None else None
+        cond_graph = batch.get("graph").to(device) if use_graph and batch.get("graph") is not None else None
+
+        B = gt.size(0)
+        t = torch.randint(0, scheduler.num_steps, (B,), device=device)
+        noise = torch.randn_like(gt)
+        noisy_latents, _ = scheduler.add_noise(gt, t, noise)
+
+        # --- Zero-conditioning test ---
+        pov_zero = torch.zeros_like(cond_pov) if cond_pov is not None else None
+        graph_zero = torch.zeros_like(cond_graph) if cond_graph is not None else None
+        cond_zero = mixer([pov_zero, graph_zero]) * scale_mix
+        noise_pred_zero = unet(noisy_latents, t, cond=cond_zero)
+        mse_zero = F.mse_loss(noise_pred_zero, noise).item()
+        cond_proj_pov, cond_proj_graph = mixer.get_projected_conditions(pov_zero, graph_zero)
+        corr_zp, corr_zg = compute_condition_correlations(cond_proj_pov, cond_proj_graph, noisy_latents)
+        if corr_zp is not None: corr_zero_pov.append(corr_zp)
+        if corr_zg is not None: corr_zero_graph.append(corr_zg)
+        mse_zero_pov.append(mse_zero)
+        mse_zero_graph.append(mse_zero)
+
+        # --- Cross-pair shuffle test ---
+        if cond_pov is not None:
+            idx_shuf = torch.randperm(B, device=device)
+            cond_pov_shuf = cond_pov[idx_shuf]
+        else:
+            cond_pov_shuf = None
+        if cond_graph is not None:
+            idx_shuf = torch.randperm(B, device=device)
+            cond_graph_shuf = cond_graph[idx_shuf]
+        else:
+            cond_graph_shuf = None
+
+        cond_shuf = mixer([cond_pov_shuf, cond_graph_shuf]) * scale_mix
+        noise_pred_shuf = unet(noisy_latents, t, cond=cond_shuf)
+        mse_shuf = F.mse_loss(noise_pred_shuf, noise).item()
+        cond_proj_pov, cond_proj_graph = mixer.get_projected_conditions(cond_pov_shuf, cond_graph_shuf)
+        corr_sp, corr_sg = compute_condition_correlations(cond_proj_pov, cond_proj_graph, noisy_latents)
+        if corr_sp is not None: corr_shuf_pov.append(corr_sp)
+        if corr_sg is not None: corr_shuf_graph.append(corr_sg)
+        mse_shuf_pov.append(mse_shuf)
+        mse_shuf_graph.append(mse_shuf)
+
+    # Aggregate
+    results['val_corr_pov_zero'] = float(np.mean(corr_zero_pov)) if corr_zero_pov else 0.0
+    results['val_corr_graph_zero'] = float(np.mean(corr_zero_graph)) if corr_zero_graph else 0.0
+    results['val_corr_pov_shuffle'] = float(np.mean(corr_shuf_pov)) if corr_shuf_pov else 0.0
+    results['val_corr_graph_shuffle'] = float(np.mean(corr_shuf_graph)) if corr_shuf_graph else 0.0
+    results['val_mse_pov_zero'] = float(np.mean(mse_zero_pov)) if mse_zero_pov else 0.0
+    results['val_mse_graph_zero'] = float(np.mean(mse_zero_graph)) if mse_zero_graph else 0.0
+    results['val_mse_pov_shuffle'] = float(np.mean(mse_shuf_pov)) if mse_shuf_pov else 0.0
+    results['val_mse_graph_shuffle'] = float(np.mean(mse_shuf_graph)) if mse_shuf_graph else 0.0
+
+    print(f"[Diagnostics] Zero corr POV={results['val_corr_pov_zero']:.3f}, Graph={results['val_corr_graph_zero']:.3f} | "
+          f"Shuf corr POV={results['val_corr_pov_shuffle']:.3f}, Graph={results['val_corr_graph_shuffle']:.3f}", flush=True)
+
+    return results
 
 def save_split_files(exp_dir: str | Path, train_df, val_df):
     """Save train/val split information to CSV files"""

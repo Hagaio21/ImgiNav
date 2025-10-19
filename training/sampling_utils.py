@@ -3,8 +3,20 @@ import torch.nn.functional as F
 from pathlib import Path
 import os
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Set backend before importing pyplot
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+
+# ===== VISUALIZATION PARAMETERS - ADJUST THESE =====
+VIZ_TITLE_COL_WIDTH = 2
+VIZ_FONTSIZE = 5
+VIZ_SCALE_FACTOR = 0.7
+VIZ_HEIGHT_MULTIPLIER = 1.1
+VIZ_WSPACE = 0.05
+VIZ_HSPACE = 0.05
+VIZ_DPI = 200
+# ====================================================
 
 def normalize_diff_map(diff_map):
     """Normalizes a difference map globally to [0, 1] for visualization."""
@@ -35,6 +47,7 @@ def _save_grid_with_titles_matplotlib(rows_of_tensors: list[list[torch.Tensor]],
     """
     Saves a grid of images using Matplotlib with titles for each row.
     This version explicitly sets a white background.
+    Uses global VIZ_* parameters defined at the top of the file.
     """
     num_rows = len(rows_of_tensors)
     if num_rows == 0:
@@ -50,19 +63,21 @@ def _save_grid_with_titles_matplotlib(rows_of_tensors: list[list[torch.Tensor]],
     C, H, W = first_tensor.shape
     
     # --- 2. Create Figure and GridSpec ---
-    title_col_width = 1.5
     image_col_width = W / H
-    width_ratios = [title_col_width] + [image_col_width] * num_cols
+    width_ratios = [VIZ_TITLE_COL_WIDTH] + [image_col_width] * num_cols
     
     scale = H / 100
-    fig_width_inches = sum(width_ratios) * scale * 0.7
-    fig_height_inches = num_rows * scale * 1.1
+    fig_width_inches = sum(width_ratios) * scale * VIZ_SCALE_FACTOR
+    fig_height_inches = num_rows * scale * VIZ_HEIGHT_MULTIPLIER
+    
+    # Scale font size with image height
+    fontsize = VIZ_FONTSIZE * (H / 64)  # Assuming 64 as base size
     
     # Explicitly set figure background color to white
     fig = plt.figure(figsize=(fig_width_inches, fig_height_inches), facecolor='white')
     
     gs = GridSpec(num_rows, num_cols + 1, width_ratios=width_ratios, 
-                  wspace=0.05, hspace=0.05)
+                  wspace=VIZ_WSPACE, hspace=VIZ_HSPACE)
 
     # --- 3. Plot Titles and Images ---
     for i in range(num_rows):
@@ -72,7 +87,7 @@ def _save_grid_with_titles_matplotlib(rows_of_tensors: list[list[torch.Tensor]],
         ax_title.text(0.5, 0.5, row_titles[i], 
                       horizontalalignment='center', 
                       verticalalignment='center', 
-                      fontsize=16, # Font size control
+                      fontsize=fontsize,
                       rotation='horizontal')
         ax_title.axis('off')
         
@@ -94,7 +109,7 @@ def _save_grid_with_titles_matplotlib(rows_of_tensors: list[list[torch.Tensor]],
     # --- 4. Save Figure ---
     try:
         # Set facecolor in savefig as well
-        plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0.1, facecolor='white')
+        plt.savefig(save_path, dpi=VIZ_DPI, bbox_inches='tight', pad_inches=0.1, facecolor='white')
     except Exception as e:
         print(f"Error saving matplotlib figure: {e}")
     finally:
@@ -159,7 +174,6 @@ def generate_samples_unconditioned(diffusion_model, exp_dir, epoch, num_samples,
 
     # --- 3. Decode Images ---
     images = diffusion_model.autoencoder.decoder(latents)
-    # --- NO CLAMPING OR NORMALIZING ---
 
     # --- 4. Save Decoded Images (Matplotlib) ---
     img_save_path = samples_dir / f"epoch_{epoch+1:04d}_uncond_images.png"
@@ -278,10 +292,15 @@ def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch
     print(f"  MSE (Unconditioned vs Target): {mse_unconditioned:.6f}", flush=True)
 
     # --- 6. Decode Images ---
-    # Decoder output is assumed to be [0, 1] and not processed further
     unconditioned_images = diffusion_model.autoencoder.decoder(unconditioned_latents)
     conditioned_images = diffusion_model.autoencoder.decoder(conditioned_latents)
     target_images = diffusion_model.autoencoder.decoder(target_latents)
+    
+    # Resize decoded images to match latent resolution for consistent visualization
+    _, _, lat_h, lat_w = unconditioned_latents.shape
+    unconditioned_images = F.interpolate(unconditioned_images, size=(lat_h, lat_w), mode='bilinear', align_corners=False)
+    conditioned_images = F.interpolate(conditioned_images, size=(lat_h, lat_w), mode='bilinear', align_corners=False)
+    target_images = F.interpolate(target_images, size=(lat_h, lat_w), mode='bilinear', align_corners=False)
 
     # --- 7. Save Image Comparison Grid (Matplotlib) ---
     img_save_path = samples_dir / f"epoch_{epoch+1:04d}_comparison_images.png"
@@ -293,7 +312,7 @@ def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch
         ],
         row_titles=["Unconditioned", "Conditioned", "Target"],
         save_path=img_save_path,
-        is_grayscale=False # Decoded images are RGB
+        is_grayscale=False
     )
     print(f"Saved image comparison grid to {img_save_path}", flush=True)
 

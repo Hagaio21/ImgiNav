@@ -17,7 +17,7 @@ autoencoder:
 
 # U-Net Configuration
 unet:
-  config_path: /work3/s233249/ImgiNav/ImgiNav/config/architecture/cond_unet_small_condc8.yml
+  config_path: /work3/s233249/ImgiNav/ImgiNav/config/architecture/cond_unet_small_condc4.yml
 
 # Noise Scheduler
 scheduler:
@@ -31,17 +31,26 @@ mixer:
   type: NonLinearConcatMixer # Or LinearConcatMixer
   pov_dim: 512
   graph_dim: 384
-  use_pov: true
-  use_graph: false
-  mlp_hidden_dim: 1024 
+  use_pov: false
+  use_graph: true
+  mlp_hidden_dim: 2048
+  norm_type: group
 
 # Training Parameters
 training:
-  batch_size: 32
+  batch_size: 64
   num_epochs: 100
   learning_rate: 0.00001
   sample_every: 1
   periodic_checkpoint_every: 10
+  loss:
+    in_channels: 4
+    height: 64
+    width: 64
+    alpha: 0.5
+    gamma: 0.1
+    dropout_p: 0.3
+
   
   cfg:
     dropout_prob: 0.1

@@ -11,7 +11,7 @@ config file format:
 
 unet:
   in_channels: 8        <- set equal to latent_channels (C)
-  cond_channels: 16     <- condition channels to concat (0 if none)
+  cond_channels: 4     <- condition channels to concat (0 if none)
   out_channels: 8       <- must equal latent_channels (predict noise)
   base_channels: 64     <- internal width, scales capacity (not tied to latent)
   depth: 4              <- how many downsamples. must satisfy H/2^depth >= 1.
@@ -149,7 +149,11 @@ class UNet(nn.Module):
 
         # learned fusion for latent + condition
         if cond_channels > 0:
-            self.fusion = nn.Conv2d(total_in, in_channels, kernel_size=1)
+            self.fusion = nn.Sequential(
+                            nn.Conv2d(total_in, base_channels, 1),
+                            nn.SiLU(),
+                            nn.Conv2d(base_channels, in_channels, 1)
+                         )
         else:
             self.fusion = nn.Identity()
 

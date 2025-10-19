@@ -3,6 +3,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+def create_norm(norm_type: str, num_channels: int, target_size: tuple[int, int]) -> nn.Module:
+    """Factory for normalization layers used in mixers."""
+    H, W = target_size
+    if norm_type == "group":
+        return nn.GroupNorm(1, num_channels)
+    elif norm_type == "layer":
+        return nn.LayerNorm([num_channels, H, W])
+    elif norm_type == "batch":
+        return nn.BatchNorm2d(num_channels)
+    elif norm_type == "instance":
+        return nn.InstanceNorm2d(num_channels)
+    elif norm_type in ("none", "identity", None):
+        return nn.Identity()
+    else:
+        raise ValueError(f"Unsupported norm_type: {norm_type}")
+
+
 class ProjectionMLP(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden_dim: Optional[int] = None):
         super().__init__()
@@ -112,8 +129,10 @@ class BaseMixer(nn.Module):
 class LinearConcatMixer(BaseMixer):
 
     def __init__(self, out_channels: int, target_size: tuple[int, int],
-                 pov_channels: Optional[int] = None, graph_channels: Optional[int] = None):
+                 pov_channels: Optional[int] = None, graph_channels: Optional[int] = None, norm_type=None):
         super().__init__(out_channels, target_size, pov_channels, graph_channels)
+
+        self.norm = create_norm(norm_type, out_channels, target_size)
 
         H, W = target_size
 
@@ -136,14 +155,18 @@ class LinearConcatMixer(BaseMixer):
             pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels, B, device)
             graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels, B, device)
 
-            return torch.cat([pov_out, graph_out], dim=1)
+            out = torch.cat([pov_out, graph_out], dim=1)
+            out = self.norm(out)
+            return out
 
 class NonLinearConcatMixer(BaseMixer):
 
     def __init__(self, out_channels: int, target_size: tuple[int, int],
                  pov_channels: Optional[int] = None, graph_channels: Optional[int] = None,
-                 hidden_dim_mlp: Optional[int] = None):
+                 hidden_dim_mlp: Optional[int] = None, norm_type=None):
         super().__init__(out_channels, target_size, pov_channels, graph_channels)
+
+        self.norm = create_norm(norm_type, out_channels, target_size)
 
         H, W = target_size
         pov_target_dim = self.pov_out_channels * H * W
@@ -168,6 +191,7 @@ class NonLinearConcatMixer(BaseMixer):
         pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels, B, device)
         graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels, B, device)
 
-        return torch.cat([pov_out, graph_out], dim=1)
-
+        out = torch.cat([pov_out, graph_out], dim=1)
+        out = self.norm(out)
+        return out
         
