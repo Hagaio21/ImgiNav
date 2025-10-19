@@ -49,25 +49,90 @@ except ImportError:
     print("Warning: Could not import schedulers from 'modules.scheduler'.")
     SCHEDULER_MAP = {}
 
+# [FIXED] Corrected malformed import block
 from modules.unet import UNet
-from modules.autoencoder import AutoEncoderfrom modules.unet import UNet
 from modules.autoencoder import AutoEncoder
 from modules.unified_dataset import UnifiedLayoutDataset, collate_fn
 from modules.condition_mixer import LinearConcatMixer, NonLinearConcatMixer
 from modules.diffusion import LatentDiffusion
 
 
+def _copy_arch_configs(config: dict, exp_dir: Path):
+    """Copies architecture configs (U-Net, AE) to the experiment config dir."""
+    configs_save_dir = exp_dir / 'configs'
+    configs_save_dir.mkdir(exist_ok=True) # Already created by setup_experiment_dir, but good to be safe
+
+    # Copy U-Net config
+    unet_config_path_str = config.get("unet", {}).get("config_path")
+    if unet_config_path_str:
+        unet_config_path = Path(unet_config_path_str)
+        if unet_config_path.exists():
+            shutil.copy(unet_config_path, configs_save_dir / unet_config_path.name)
+        else:
+            print(f"Warning: U-Net config not found at {unet_config_path_str}")
+
+    # Copy Autoencoder config
+    ae_config_path_str = config.get("autoencoder", {}).get("config_path")
+    if ae_config_path_str:
+        ae_config_path = Path(ae_config_path_str)
+        if ae_config_path.exists():
+            shutil.copy(ae_config_path, configs_save_dir / ae_config_path.name)
+        else:
+            print(f"Warning: Autoencoder config not found at {ae_config_path_str}")
+
+def _create_experiment_readme(config: dict, main_config_path: str | Path, exp_dir: Path):
+    """Creates a README.md file summarizing the experiment."""
+    readme_path = exp_dir / "exp_readme.md"
+    main_config_path = Path(main_config_path)
+
+    def read_file_content(file_path_str: str | None) -> tuple[str, str]:
+        """Reads config file content, returns name and content."""
+        if not file_path_str:
+            return "File not specified", "# Config path not found in experiment.yml\n"
+        
+        file_path = Path(file_path_str)
+        if not file_path.exists():
+            return file_path.name, f"# File not found at: {file_path_str}\n"
+        
+        with open(file_path, 'r') as f:
+            return file_path.name, f.read()
+
+    main_config_name, main_config_content = read_file_content(str(main_config_path))
+    unet_config_name, unet_config_content = read_file_content(config.get("unet", {}).get("config_path"))
+    ae_config_name, ae_config_content = read_file_content(config.get("autoencoder", {}).get("config_path"))
+
+    with open(readme_path, 'w') as f:
+        f.write(f"# {config.get('experiment', {}).get('name', 'Experiment')}\n\n")
+        f.write(f"**Description:** {config.get('experiment', {}).get('description', 'No description.')}\n\n")
+        f.write(f"**Experiment Directory:** `{exp_dir}`\n")
+        f.write(f"**Start Time:** {datetime.now().isoformat()}\n\n")
+        f.write("---\n\n")
+        
+        f.write(f"## Main Experiment Config (`{main_config_name}`)\n\n")
+        f.write(f"```yaml\n{main_config_content}\n```\n\n")
+        
+        f.write(f"## U-Net Config (`{unet_config_name}`)\n\n")
+        f.write(f"```yaml\n{unet_config_content}\n```\n\n")
+        
+        f.write(f"## Autoencoder Config (`{ae_config_name}`)\n\n")
+        f.write(f"```yaml\n{ae_config_content}\n```\n\n")
+
+    print(f"Saved experiment README to {readme_path}", flush=True)
+
+
 def setup_experiment(exp_config_path: str, resume_flag: bool) -> tuple[dict, Path, torch.device]:
-    """Loads config, sets up directories, saves config, sets device."""
+    """Loads config, sets up directories, saves configs, sets device."""
     config = load_experiment_config(exp_config_path)
-    unet_config_path = config.get("unet", {}).get("config_path")
     exp_dir = setup_experiment_dir(
         config["experiment"]["exp_dir"],
-        unet_config_path,
         resume_flag
     )
+    
     if not resume_flag:
-        save_experiment_config(config, exp_dir)
+        # Save all config files to the experiment directory for reproducibility
+        save_experiment_config(config, exp_dir) # Saves main config as 'experiment_config.yaml'
+        _copy_arch_configs(config, exp_dir) # Copies AE and U-Net configs
+        _create_experiment_readme(config, exp_config_path, exp_dir) # Creates README.md
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}", flush=True)
@@ -125,14 +190,20 @@ def load_core_models(config: dict, device: torch.device) -> tuple[UNet, nn.Modul
 
     return unet, scheduler, autoencoder, diffusion_model
 
-def load_data(config: dict, args: argparse.Namespace, exp_dir: Path) -> tuple[DataLoader, DataLoader, UnifiedLayoutDataset]:
+def load_data(config: dict, exp_dir: Path) -> tuple[DataLoader, DataLoader, UnifiedLayoutDataset]:
     """Loads dataset, performs split, creates dataloaders, and saves split info."""
     print("Loading unified dataset...", flush=True)
+    
+    # [CHANGED] Read paths from config dict instead of args
+    room_manifest = config["dataset"]["room_manifest"]
+    scene_manifest = config["dataset"]["scene_manifest"]
+    pov_type = config["dataset"].get("pov_type") # Use .get for optional keys
+
     dataset = UnifiedLayoutDataset(
-        args.room_manifest,
-        args.scene_manifest,
+        room_manifest,
+        scene_manifest,
         use_embeddings=True,  # Assuming always True
-        pov_type=args.pov_type
+        pov_type=pov_type
     )
 
     # Perform Train/Val Split
@@ -172,7 +243,7 @@ def load_data(config: dict, args: argparse.Namespace, exp_dir: Path) -> tuple[Da
 
     return train_loader, val_loader, val_dataset
 
-def create_mixer(config: dict, args: argparse.Namespace, device: torch.device) -> nn.Module:
+def create_mixer(config: dict, device: torch.device) -> nn.Module:
     """Creates the appropriate mixer based on config and args."""
     latent_hw = tuple(config["latent_shape"][-2:])
 
@@ -188,10 +259,9 @@ def create_mixer(config: dict, args: argparse.Namespace, device: torch.device) -
     print(f"Input dimensions - POV: {pov_dim}, Graph: {graph_dim}", flush=True)
 
     # Determine mixer type name
+    # [CHANGED] Read mixer type from config dict *only*
     mixer_type_name = mixer_config.get("type", "LinearConcatMixer")
-    if args.mixer_type is not None:
-        mixer_type_name = args.mixer_type
-
+    
     print(f"Creating {mixer_type_name} (out_channels={cond_channels}, target_size={latent_hw})...", flush=True)
 
     # Map type name string to class
@@ -289,11 +359,11 @@ def save_experiment_config(config: dict, exp_dir: str | Path):
     print(f"Saved experiment config to {config_path}", flush=True)
 
 
-def setup_experiment_dir(exp_dir: str | Path, unet_config: str | Path | None = None, resume: bool = False) -> Path:
+def setup_experiment_dir(exp_dir: str | Path, resume: bool = False) -> Path:
     """
     Setup experiment directory structure.
     If resuming and dir exists, use existing.
-    Otherwise, create new structure and copy configs.
+    Otherwise, create new structure.
     """
     exp_dir = Path(exp_dir)
 
@@ -311,11 +381,8 @@ def setup_experiment_dir(exp_dir: str | Path, unet_config: str | Path | None = N
     exp_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ['checkpoints', 'samples', 'configs', 'logs']:
         (exp_dir / subdir).mkdir(exist_ok=True)
-
-    # Copy U-Net config to experiment directory
-    if unet_config:
-        unet_config_path = Path(unet_config)
-        shutil.copy(unet_config_path, exp_dir / 'configs' / unet_config_path.name)
+    
+    # [CHANGED] Removed config copying, as it's now handled in setup_experiment
 
     print(f"Created experiment directory: {exp_dir}", flush=True)
     return exp_dir

@@ -22,11 +22,6 @@ def parse_arguments():
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(description='Train Conditioned Latent Diffusion Model')
     parser.add_argument("--exp_config", required=True, help="Path to experiment config YAML")
-    parser.add_argument("--room_manifest", required=True, help="Path to room manifest")
-    parser.add_argument("--scene_manifest", required=True, help="Path to scene manifest")
-    parser.add_argument("--pov_type", default=None, help="POV type (e.g., 'rendered', 'semantic')")
-    parser.add_argument("--mixer_type", choices=["LinearConcatMixer", "NonLinearConcatMixer"], # Updated choices
-                        default=None, help="Override mixer type from config")
     parser.add_argument("--resume", action="store_true", help="Resume training")
     return parser.parse_args()
 
@@ -40,10 +35,10 @@ def main():
     unet, scheduler, autoencoder, diffusion_model = load_core_models(config, device)
 
     # --- Load Data ---
-    train_loader, val_loader, val_dataset = load_data(config, args, exp_dir)
+    train_loader, val_loader, val_dataset = load_data(config, exp_dir)
 
     # --- Create Mixer ---
-    mixer = create_mixer(config, args, device)
+    mixer = create_mixer(config, device)
 
     # --- Optimizer & Scheduler ---
     optimizer, scheduler_lr = create_optimizer_scheduler(config, unet, mixer)
@@ -77,10 +72,11 @@ def main():
         scheduler_lr.step()
         current_lr = optimizer.param_groups[0]['lr']
 
-        # Update stats (ensure update_training_stats handles corr_mix=None correctly)
+        # Update stats
+        # [FIXED] Removed `corr_mix=None`, which caused a TypeError.
         training_stats = update_training_stats(
             training_stats, epoch, train_loss, val_loss, current_lr,
-            corr_pov=corr_pov, corr_graph=corr_graph, corr_mix=None, # Pass None for corr_mix
+            corr_pov=corr_pov, corr_graph=corr_graph,
             cond_std_pov=cond_std_pov, cond_std_graph=cond_std_graph,
             dropout_ratio_pov=dropout_pov, dropout_ratio_graph=dropout_graph
         )

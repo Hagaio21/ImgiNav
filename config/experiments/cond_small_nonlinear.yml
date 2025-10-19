@@ -2,15 +2,17 @@
 # This file contains all parameters for conditional training with POV + Graph
 
 experiment:
-  exp_dir: /work3/s233249/ImgiNav/experiments/conditioned_diffusion_cfg_learned_mixer_NonLinear_003
-  name: "Conditioned Diffusion - POV + Graph + mixer- Run 003"
+  exp_dir: /work3/s233249/ImgiNav/experiments/conditioned_diffusion_cfg_learned_mixer_NonLinear_002
+  name: "Conditioned Diffusion - POV + Graph + mixer- Run 001"
   description: "Training conditional diffusion with room POV and scene graphs and learned mixer"
 
-# Dataset - NOTE: Not used in conditioned version, uses manifests from CLI args instead
+# Dataset
 dataset:
-  manifest_path: null  # Placeholder - room_manifest and scene_manifest passed via CLI
-# Autoencoder (for generating samples during training)
+  room_manifest: /work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
+  scene_manifest: /work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
+  pov_type: "seg" # "seg", "tex", or "" (empty string) for all types
 
+# Autoencoder (for generating samples during training)
 autoencoder:
   config_path: /work3/s233249/ImgiNav/experiments/ae_configs/config_diff_4ch_64x64_vanilla.yml
   checkpoint_path: /work3/s233249/ImgiNav/experiments/autoencoder_final_64x64x4_vanila/20251004-082051_ae_final/best.pt
@@ -18,9 +20,6 @@ autoencoder:
 # U-Net Configuration
 unet:
   config_path: /work3/s233249/ImgiNav/ImgiNav/config/architecture/cond_unet_small_condc8.yml
-
-
-
 
 # Noise Scheduler
 scheduler:
@@ -30,15 +29,12 @@ scheduler:
 # Latent shape (C, H, W)
 latent_shape: [4, 64, 64]
 
-
 mixer:
   type: NonLinearConcatMixer # Or LinearConcatMixer
   pov_dim: 512
   graph_dim: 384
   # Add specific settings here
   mlp_hidden_dim: 1024 # Example: Set hidden dim for NonLinear version
-  # Add other settings if needed for future mixers
-
 
 # Training Parameters
 training:
