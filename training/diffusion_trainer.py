@@ -153,6 +153,18 @@ class DiffusionTrainer:
             if self.ckpt_dir:
                 self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
 
+
+        # --- save unified LatentDiffusion config at the end ---
+        latent_shape = (
+            self.autoencoder.encoder.latent_channels,
+            self.autoencoder.encoder.latent_base,
+            self.autoencoder.encoder.latent_base,
+        )
+        latent_diffusion = LatentDiffusion(self.unet, self.scheduler, self.autoencoder, latent_shape=latent_shape)
+
+        master_cfg_path = os.path.join(self.ckpt_dir, "latent_diffusion.yaml")
+        latent_diffusion.to_config(master_cfg_path)
+
     # ============================================================
     # Validation loss computation
     # ============================================================
@@ -209,12 +221,31 @@ class DiffusionTrainer:
         print(f"[Step {step}] Saved sample grid → {save_path}")
 
     def save_checkpoint(self, path):
-        state = {
+        torch.save({
             "unet": self.unet.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "step": self.global_step,
-        }
-        torch.save(state, path)
+        }, path)
+        latest_path = os.path.join(self.ckpt_dir, "unet_latest.pt")
+        torch.save(self.unet.state_dict(), latest_path)
+        print(f"[Checkpoint] Saved: {path} and updated unet_latest.pt")
+
+
+        # --- save configs once for consistency ---
+        import yaml
+        unet_cfg_path = os.path.join(self.ckpt_dir, "unet_config.yaml")
+        ae_cfg_path = os.path.join(self.ckpt_dir, "autoencoder_config.yaml")
+
+        if not os.path.exists(unet_cfg_path):
+            with open(unet_cfg_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(self.unet.to_config(), f)
+            print(f"[Config] Saved UNet config → {unet_cfg_path}")
+
+        if not os.path.exists(ae_cfg_path):
+            with open(ae_cfg_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(self.autoencoder.to_config(), f)
+            print(f"[Config] Saved AutoEncoder config → {ae_cfg_path}")
+
 
     def load_checkpoint(self, path):
         state = torch.load(path, map_location=self.device)

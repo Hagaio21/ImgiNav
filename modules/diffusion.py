@@ -127,78 +127,27 @@ class LatentDiffusion(nn.Module):
         else:
             return x_t 
 
+    def to_config(self, save_path: Union[str, Path]):
+        ckpt_dir = Path(save_path).parent
+        config = {
+            "latent": {
+                "channels": self.latent_shape[0],
+                "base": self.latent_shape[1],
+            },
+            "scheduler": {
+                "type": type(self.scheduler).__name__,
+                "num_steps": self.scheduler.num_steps,
+            },
+            "autoencoder": {
+                "config": str((ckpt_dir / "autoencoder_config.yaml").as_posix()),
+                "checkpoint": str((ckpt_dir / "ae_latest.pt").as_posix()),
+            },
+            "unet": {
+                "config": str((ckpt_dir / "unet_config.yaml").as_posix()),
+                "checkpoint": str((ckpt_dir / "unet_latest.pt").as_posix()),
+            },
+        }
+        with open(save_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f)
+        print(f"[Config] LatentDiffusion saved → {save_path}")
 
-    @classmethod
-    def from_config(
-        cls,
-        config_path: Union[str, Path],
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    ):
-        """
-        Build inference model from master YAML config:
-        ---
-        latent:
-          base: 64
-          channels: 4
-
-        scheduler:
-          type: LinearScheduler
-          num_steps: 1000
-
-        autoencoder:
-          config: configs/ae.yaml
-          checkpoint: checkpoints/ae.pt
-
-        unet:
-          config: configs/unet.yaml
-          checkpoint: checkpoints/unet.pt
-        """
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-
-        # Scheduler
-        sched_cfg = config["scheduler"]
-        sched_class = globals()[sched_cfg["type"]]
-        scheduler = sched_class(num_steps=sched_cfg["num_steps"]).to(device)
-
-        # Autoencoder
-        ae_cfg_path = config["autoencoder"]["config"]
-        ae_ckpt_path = config["autoencoder"].get("checkpoint", None)
-        autoencoder = AutoEncoder.from_config(ae_cfg_path).to(device)
-        if ae_ckpt_path:
-            autoencoder.load_state_dict(torch.load(ae_ckpt_path, map_location=device))
-        autoencoder.eval()
-
-        # UNet
-        unet_cfg_path = config["unet"]["config"]
-        unet_ckpt_path = config["unet"].get("checkpoint", None)
-        with open(unet_cfg_path, "r", encoding="utf-8") as f:
-            unet_cfg = yaml.safe_load(f)
-            if "unet" in unet_cfg:
-                unet_cfg = unet_cfg["unet"]
-
-        unet = UNet(**unet_cfg).to(device)
-        if unet_ckpt_path:
-            ckpt = torch.load(unet_ckpt_path, map_location=device)
-            # handle both plain and wrapped checkpoints
-            if "state_dict" in ckpt:
-                state = ckpt["state_dict"]
-            elif "unet_state_dict" in ckpt:
-                state = ckpt["unet_state_dict"]
-            else:
-                state = ckpt
-            unet.load_state_dict(state, strict=False)
-        unet.eval()
-
-
-        # Latent shape from config (preferred) or AE config
-        if "latent" in config:
-            C = config["latent"]["channels"]
-            H = W = config["latent"]["base"]
-        else:
-            with open(ae_cfg_path, "r", encoding="utf-8") as f:
-                ae_cfg = yaml.safe_load(f)
-            C = ae_cfg["encoder"]["latent_channels"]
-            H = W = ae_cfg["encoder"]["latent_base"]
-
-        return cls(unet=unet, scheduler=scheduler, autoencoder=autoencoder, latent_shape=(C, H, W)).to(device)

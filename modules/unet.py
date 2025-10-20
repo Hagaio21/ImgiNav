@@ -267,7 +267,6 @@ class UNet(nn.Module):
         }
         return cls.from_config(cfg)
 
-
     @classmethod
     def from_config(cls, cfg: dict | str, latent_channels: Optional[int] = None, latent_base: Optional[int] = None):
         """
