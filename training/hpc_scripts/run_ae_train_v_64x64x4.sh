@@ -21,14 +21,14 @@ OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/autoencoder_final_64x64x4_vanila"
 # =============================================================================
 # CONFIG (fill this in)
 # =============================================================================
-CONFIG_FILE="/work3/s233249/ImgiNav/experiments/ae_configs/config_diff_4ch_64x64_vanilla.yml"   # <--- replace with your config path
-JOB_NAME="ae_final"
+CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/architecture/autoencoders/config_diff_4ch_64x64_vanilla.yml"   # <--- replace with your config path
+JOB_NAME="ae_final_32"
 
 # =============================================================================
 # TRAINING PARAMETERS
 # =============================================================================
-BATCH_SIZE=64
-EPOCHS=100
+BATCH_SIZE=32
+EPOCHS=200
 LEARNING_RATE=0.001
 RESIZE=512
 LAYOUT_MODE="all"

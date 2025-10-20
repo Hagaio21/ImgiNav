@@ -16,19 +16,19 @@ set -euo pipefail
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav/"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_autoencoder.py"
 LAYOUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
-OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/autoencoder_final_32x32x4_vanila"
+OUTPUT_DIR="/work3/s233249/ImgiNav/experiments/autoencoder_final_32x32x16_vanila"
 
 # =============================================================================
 # CONFIG (fill this in)
 # =============================================================================
-CONFIG_FILE="/work3/s233249/ImgiNav/experiments/ae_configs/config_diff_4ch_32x32_vanilla.yml"   # <--- replace with your config path
-JOB_NAME="ae_final"
+CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/architecture/autoencoders/config_diff_16ch_32x32_vanilla.yml"  # <--- replace with your config path
+JOB_NAME="ae_final_32"
 
 # =============================================================================
 # TRAINING PARAMETERS
 # =============================================================================
 BATCH_SIZE=64
-EPOCHS=100
+EPOCHS=200
 LEARNING_RATE=0.001
 RESIZE=512
 LAYOUT_MODE="all"

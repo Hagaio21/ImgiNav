@@ -15,6 +15,7 @@ from training_utils import (
     create_optimizer_scheduler, prepare_fixed_samples, resume_training, diagnostic_condition_tests
 )
 from sampling_utils import generate_samples_conditioned 
+from modules.loss_diffusion import ConstructiveDiffusionLoss
 
 def parse_arguments():
     """Parses command line arguments."""
@@ -40,6 +41,17 @@ def main():
 
     # --- Optimizer & Scheduler ---
     optimizer, scheduler_lr = create_optimizer_scheduler(config, unet, mixer)
+
+    # --- Loss ---
+    loss_cfg = config["training"].get("loss", {})
+    loss_fn = ConstructiveDiffusionLoss(
+        in_channels=loss_cfg.get("in_channels", 4),
+        height=loss_cfg.get("height", 64),
+        width=loss_cfg.get("width", 64),
+        alpha=loss_cfg.get("alpha", 0.5),
+        gamma=loss_cfg.get("gamma", 0.1),
+        dropout_p=loss_cfg.get("dropout_p", 0.3)
+    ).to(device)
 
     # --- Fixed Samples ---
     fixed_samples = prepare_fixed_samples(config, val_dataset, exp_dir)

@@ -96,6 +96,7 @@ class ConvEncoder(nn.Module):
     def forward(self, x):
         x = self.conv(x)
         z = self.to_latent(x)
+        z = z / (z.flatten(1).norm(dim=1, keepdim=True).unsqueeze(-1).unsqueeze(-1) + 1e-8) # normalization added
         return z
 
 

@@ -854,7 +854,20 @@ def train_epoch_conditioned(
         # --- Forward + Backward ---
         noise_pred = unet(noisy_latents, t, cond=cond)
         alpha_bar_t = scheduler.alpha_bars[t].view(-1, 1, 1, 1)
+        alpha_bar_t = torch.clamp(alpha_bar_t, min=1e-5, max=0.999)
         x0_hat = (noisy_latents - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+        x0_hat = torch.nan_to_num(x0_hat, nan=0.0, posinf=1.0, neginf=-1.0)
+
+
+        if torch.isnan(noisy_latents).any():
+            print(f"[epoch {epoch+1} | batch {i}] NaN in noisy_latents")
+        if torch.isnan(cond).any():
+            print(f"[epoch {epoch+1} | batch {i}] NaN in cond (mixer output)")
+        if torch.isnan(noise_pred).any():
+            print(f"[epoch {epoch+1} | batch {i}] NaN in noise_pred before loss")
+        if torch.isnan(cond).any():
+            print(f"[epoch {epoch+1} | batch {i}] NaN in noise target")
+
 
         if loss_fn is not None:
             loss, loss_logs = loss_fn(noise_pred, noise, x0_hat, cond)

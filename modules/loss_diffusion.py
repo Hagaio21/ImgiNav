@@ -21,40 +21,44 @@ class ConstructiveDiffusionLoss(nn.Module):
         # small projection head h
         self.h = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=1, bias=False),
-            nn.LayerNorm([in_channels, height, width]),
+            nn.GroupNorm(1, in_channels),
             nn.ReLU(inplace=True)
         )
 
+
     def forward(self, pred_noise, true_noise, x0_hat, z_c):
-        # diffusion loss
         L_d = F.mse_loss(pred_noise, true_noise)
 
-        # stochastic dropout for L_c
-        if random.random() < self.dropout_p:
+        # Either mixer dropout (zero tensor) OR stochastic dropout for loss
+        if (
+            z_c is None
+            or torch.all(z_c == 0)
+            or random.random() < self.dropout_p
+        ):
             return L_d, {
                 "L_d": L_d.detach(),
                 "L_c": torch.tensor(0.0, device=L_d.device),
                 "L_mse": torch.tensor(0.0, device=L_d.device),
-                "L_cos": torch.tensor(0.0, device=L_d.device)
+                "L_cos": torch.tensor(0.0, device=L_d.device),
             }
 
-        # project both tensors
-        x_proj = self.h(x0_hat)
-        z_proj = self.h(z_c)
+        x_proj = self.h(torch.nan_to_num(x0_hat, nan=0.0))
+        z_proj = self.h(torch.nan_to_num(z_c, nan=0.0))
 
-        # L2 and cosine terms
+        x_proj = x_proj / (x_proj.norm(dim=1, keepdim=True) + 1e-8)
+        z_proj = z_proj / (z_proj.norm(dim=1, keepdim=True) + 1e-8)
+
         L_mse = F.mse_loss(x_proj, z_proj)
-        L_cos = 1 - F.cosine_similarity(x_proj, z_proj, dim=1).mean()
+        L_cos = 1 - (x_proj * z_proj).sum(dim=1).mean()
 
-        # combined constructive loss
         L_c = self.alpha * L_mse + (1 - self.alpha) * L_cos
-
-        # total loss
         total_loss = L_d + self.gamma * L_c
 
         return total_loss, {
             "L_d": L_d.detach(),
             "L_c": L_c.detach(),
             "L_mse": L_mse.detach(),
-            "L_cos": L_cos.detach()
+            "L_cos": L_cos.detach(),
         }
+
+

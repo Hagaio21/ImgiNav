@@ -33,11 +33,11 @@ mixer:
   graph_dim: 384
   use_pov: false
   use_graph: true
-  mlp_hidden_dim: 2048
+  mlp_hidden_dim: 4096
   norm_type: group
 
 training:
-  batch_size: 64
+  batch_size: 128
   num_epochs: 100
   learning_rate: 0.00001
   sample_every: 1
@@ -57,7 +57,7 @@ training:
     normalize_pov: False
     cond_scale_graph: 12.0
     cond_scale_pov: 1.0
-    cond_scale_mix: 5.0
+    cond_scale_mix: 1.0
     
     log_condition_stats: True
     compute_corr_every: 300
