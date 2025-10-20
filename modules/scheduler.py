@@ -18,11 +18,18 @@ class NoiseScheduler(ABC):
         self.alpha_bars = self.alpha_bars.to(device)
         return self
 
-    def add_noise(self, x0, t, noise):
-        # Reshape for broadcasting: [B] -> [B, 1, 1, 1]
-        sqrt_alpha_bar = self.alpha_bars[t].sqrt().view(-1, 1, 1, 1)
-        sqrt_one_minus = (1 - self.alpha_bars[t]).sqrt().view(-1, 1, 1, 1)
-        return sqrt_alpha_bar * x0 + sqrt_one_minus * noise, noise
+    def add_noise(self, x0, noise, t):
+        """Add noise according to timestep t, broadcasting over batch."""
+        t = t.long().view(-1)  # ensure [B]
+        sqrt_alpha_bar = self.alpha_bars[t].sqrt().to(x0.device)       # [B]
+        sqrt_one_minus = (1 - self.alpha_bars[t]).sqrt().to(x0.device) # [B]
+        # reshape for broadcasting across [B,C,H,W]
+        while sqrt_alpha_bar.dim() < x0.dim():
+            sqrt_alpha_bar = sqrt_alpha_bar.unsqueeze(-1)
+            sqrt_one_minus = sqrt_one_minus.unsqueeze(-1)
+        return sqrt_alpha_bar * x0 + sqrt_one_minus * noise
+
+
 
 class LinearScheduler(NoiseScheduler):
     def build_schedule(self, num_steps):

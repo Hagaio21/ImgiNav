@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 # --- helpers ---
 def make_layer(in_channels, out_channels, kernel_size=3, stride=1, padding=1,
                norm=None, act=None, dropout=0.0, transpose=False):
-    """Create a single conv/deconv layer with optional norm, activation, dropout"""
     if transpose:
         output_padding = 0 if stride <= 1 else stride - 1
         conv = nn.ConvTranspose2d(
@@ -60,7 +59,7 @@ class ConvEncoder(nn.Module):
         prev = in_channels
         current_size = image_size
 
-        for i, cfg in enumerate(layers_cfg):
+        for cfg in layers_cfg:
             in_ch = prev
             out_ch = cfg["out_channels"]
             k = cfg.get("kernel_size", 3)
@@ -73,31 +72,28 @@ class ConvEncoder(nn.Module):
             layers.append(make_layer(prev, out_ch, k, s, p, norm, act, drop))
             prev = out_ch
             current_size //= s
-            print(f"[Encoder] Layer {i}: in={in_ch}, out={out_ch}, size={current_size}x{current_size}")
 
         self.conv = nn.Sequential(*layers)
-        
-        # Final layer maps conv output to target latent cube shape
-        # Input: prev channels at current_size x current_size
-        # Output: latent_channels at latent_base x latent_base
+
         self.to_latent = nn.Sequential(
             nn.Conv2d(prev, latent_channels, kernel_size=1),
             nn.AdaptiveAvgPool2d((latent_base, latent_base))
         )
-        
+
         self.latent_channels = latent_channels
         self.latent_base = latent_base
         self.conv_output_channels = prev
         self.conv_output_size = current_size
-        
-        print(f"[Encoder] Conv output: {prev}x{current_size}x{current_size}")
-        print(f"[Encoder] Latent output: {latent_channels}x{latent_base}x{latent_base}")
 
     def forward(self, x):
         x = self.conv(x)
         z = self.to_latent(x)
-        z = z / (z.flatten(1).norm(dim=1, keepdim=True).unsqueeze(-1).unsqueeze(-1) + 1e-8) # normalization added
+        z = z / (z.flatten(1).norm(dim=1, keepdim=True).unsqueeze(-1).unsqueeze(-1) + 1e-8)
         return z
+
+    def print_summary(self):
+        print(f"[Encoder] Conv output: {self.conv_output_channels}x{self.conv_output_size}x{self.conv_output_size}")
+        print(f"[Encoder] Latent output: {self.latent_channels}x{self.latent_base}x{self.latent_base}")
 
 
 # --- Decoder ---
@@ -116,30 +112,24 @@ class ConvDecoder(nn.Module):
 
         self.latent_channels = latent_channels
         self.latent_base = latent_base
-        
-        # Calculate what the encoder's final conv output size would be
+
         start_size = image_size
         for cfg in encoder_layers_cfg:
             start_size //= cfg.get("stride", 1)
-        
+
         start_channels = encoder_layers_cfg[-1]["out_channels"]
-        
-        print(f"[Decoder] Latent input: {latent_channels}x{latent_base}x{latent_base}")
-        print(f"[Decoder] Decoder start: {start_channels}x{start_size}x{start_size}")
-        
-        # Map from latent cube to decoder starting point
+
         self.from_latent = nn.Sequential(
             nn.Upsample(size=(start_size, start_size), mode='bilinear', align_corners=False),
             nn.Conv2d(latent_channels, start_channels, kernel_size=1)
         )
-        
-        # Build deconv layers (mirror of encoder)
+
         layers = []
         prev_ch = start_channels
         current_size = start_size
         reversed_configs = list(reversed(encoder_layers_cfg))
 
-        for i, cfg in enumerate(reversed_configs):
+        for cfg in reversed_configs:
             in_ch = prev_ch
             out_ch = cfg["out_channels"]
             k = cfg.get("kernel_size", 3)
@@ -151,18 +141,21 @@ class ConvDecoder(nn.Module):
 
             layers.append(make_layer(in_ch, out_ch, k, s, p, norm, act, drop, transpose=True))
             current_size *= s
-            print(f"[Decoder] Layer {i}: in={in_ch}, out={out_ch}, size={current_size}x{current_size}")
             prev_ch = out_ch
 
         self.deconv = nn.Sequential(*layers)
         self.final = nn.Conv2d(prev_ch, out_channels, kernel_size=3, padding=1)
-        print(f"[Decoder] Final output: {out_channels}x{current_size}x{current_size}")
+        self.output_size = current_size
+        self.output_channels = out_channels
 
     def forward(self, z):
         x = self.from_latent(z)
         x = self.deconv(x)
         x = self.final(x)
         return torch.sigmoid(x)
+
+    def print_summary(self):
+        print(f"[Decoder] Final output: {self.output_channels}x{self.output_size}x{self.output_size}")
 
 
 # --- AutoEncoder wrapper ---
@@ -209,6 +202,65 @@ class AutoEncoder(nn.Module):
             global_norm=dec_cfg.get("global_norm"),
             global_act=dec_cfg.get("global_act"),
             global_dropout=dec_cfg.get("global_dropout", 0.0),
+        )
+
+        return cls(encoder, decoder)
+
+    @classmethod
+    def from_shape(cls,
+                   in_channels: int,
+                   out_channels: int,
+                   base_channels: int,
+                   latent_channels: int,
+                   image_size: int,
+                   latent_base: int,
+                   norm: Optional[str] = None,
+                   act: Optional[str] = "relu",
+                   dropout: float = 0.0,
+                   kernel_size: int = 3,
+                   stride: int = 2,
+                   padding: int = 1):
+        ratio = image_size // latent_base
+        depth = int(torch.log2(torch.tensor(ratio)).item())
+        if 2 ** depth != ratio:
+            raise ValueError("image_size / latent_base must be a power of 2")
+
+        layers_cfg = []
+        ch = base_channels
+        for _ in range(depth):
+            layers_cfg.append({
+                "out_channels": ch,
+                "kernel_size": kernel_size,
+                "stride": stride,
+                "padding": padding,
+                "norm": norm,
+                "act": act,
+                "dropout": dropout,
+            })
+            ch *= 2
+
+        encoder = ConvEncoder(
+            in_channels=in_channels,
+            layers_cfg=layers_cfg,
+            latent_dim=0,
+            image_size=image_size,
+            latent_channels=latent_channels,
+            latent_base=latent_base,
+            global_norm=norm,
+            global_act=act,
+            global_dropout=dropout,
+        )
+
+        decoder = ConvDecoder(
+            out_channels=out_channels,
+            latent_dim=0,
+            encoder_layers_cfg=layers_cfg,
+            image_size=image_size,
+            latent_channels=latent_channels,
+            latent_base=latent_base,
+            global_norm=norm,
+            global_act=act,
+            global_dropout=dropout,
         )
 
         return cls(encoder, decoder)
