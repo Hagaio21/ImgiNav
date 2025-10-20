@@ -3,6 +3,8 @@ import torch.nn.functional as F
 from pathlib import Path
 import os
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Set backend before importing pyplot
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg') 
@@ -67,8 +69,8 @@ def _save_grid_with_titles_matplotlib(rows_of_tensors: list[list[torch.Tensor]],
     width_ratios = [VIZ_TITLE_COL_WIDTH] + [image_col_width] * num_cols
     
     scale = H / 100
-    fig_width_inches = sum(width_ratios) * scale * VIZ_SCALE_FACTOR
-    fig_height_inches = num_rows * scale * VIZ_HEIGHT_MULTIPLIER
+    fig_width_inches = sum(width_ratios) * scale * 0.7
+    fig_height_inches = num_rows * scale * 1.1
     
     # Explicitly set figure background color to white
     fig = plt.figure(figsize=(fig_width_inches, fig_height_inches), facecolor='white')
@@ -84,7 +86,7 @@ def _save_grid_with_titles_matplotlib(rows_of_tensors: list[list[torch.Tensor]],
         ax_title.text(0.5, 0.5, row_titles[i], 
                       horizontalalignment='center', 
                       verticalalignment='center', 
-                      fontsize=VIZ_FONTSIZE,
+                      fontsize=16, # Font size control
                       rotation='horizontal')
         ax_title.axis('off')
         
@@ -292,6 +294,12 @@ def generate_samples_conditioned(diffusion_model, mixer, samples, exp_dir, epoch
     unconditioned_images = diffusion_model.autoencoder.decoder(unconditioned_latents)
     conditioned_images = diffusion_model.autoencoder.decoder(conditioned_latents)
     target_images = diffusion_model.autoencoder.decoder(target_latents)
+    
+    # Resize decoded images to match latent resolution for consistent visualization
+    _, _, lat_h, lat_w = unconditioned_latents.shape
+    unconditioned_images = F.interpolate(unconditioned_images, size=(lat_h, lat_w), mode='bilinear', align_corners=False)
+    conditioned_images = F.interpolate(conditioned_images, size=(lat_h, lat_w), mode='bilinear', align_corners=False)
+    target_images = F.interpolate(target_images, size=(lat_h, lat_w), mode='bilinear', align_corners=False)
 
     # --- 7. Save Image Comparison Grid (Matplotlib) ---
     img_save_path = samples_dir / f"epoch_{epoch+1:04d}_comparison_images.png"

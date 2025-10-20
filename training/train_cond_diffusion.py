@@ -11,12 +11,11 @@ from training_utils import (
     save_checkpoint, load_checkpoint, save_training_stats, init_training_stats,
     update_training_stats, train_epoch_conditioned, validate_conditioned,
     save_split_files,
-    # New imports:
     setup_experiment, load_core_models, load_data, create_mixer,
-    create_optimizer_scheduler, prepare_fixed_samples, resume_training
+    create_optimizer_scheduler, prepare_fixed_samples, resume_training, diagnostic_condition_tests
 )
 from sampling_utils import generate_samples_conditioned 
-
+from modules.loss_diffusion import ConstructiveDiffusionLoss
 
 def parse_arguments():
     """Parses command line arguments."""
@@ -43,6 +42,17 @@ def main():
     # --- Optimizer & Scheduler ---
     optimizer, scheduler_lr = create_optimizer_scheduler(config, unet, mixer)
 
+    # --- Loss ---
+    loss_cfg = config["training"].get("loss", {})
+    loss_fn = ConstructiveDiffusionLoss(
+        in_channels=loss_cfg.get("in_channels", 4),
+        height=loss_cfg.get("height", 64),
+        width=loss_cfg.get("width", 64),
+        alpha=loss_cfg.get("alpha", 0.5),
+        gamma=loss_cfg.get("gamma", 0.1),
+        dropout_p=loss_cfg.get("dropout_p", 0.3)
+    ).to(device)
+
     # --- Fixed Samples ---
     fixed_samples = prepare_fixed_samples(config, val_dataset, exp_dir)
 
@@ -58,32 +68,45 @@ def main():
     print("=" * 60)
 
     for epoch in range(start_epoch, config["training"]["num_epochs"]):
+        # --- Train ---
         train_loss, corr_pov, corr_graph, cond_std_pov, cond_std_graph, dropout_pov, dropout_graph = train_epoch_conditioned(
-            unet, scheduler, mixer, train_loader, optimizer, device, epoch,
-            config=config,
-            cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"]
-        )
+        unet, scheduler, mixer, train_loader, optimizer, device, epoch,
+        config=config,
+        cfg_dropout_prob=config["training"]["cfg"]["dropout_prob"],
+        loss_fn=loss_fn
+    )
 
-        # Ensure validate_conditioned also returns only necessary values (adjust if needed)
+
+        # --- Validate ---
         val_loss, val_corr_pov, val_corr_graph = validate_conditioned(
             unet, scheduler, mixer, val_loader, device, config=config
         )
 
+        # --- Step LR ---
         scheduler_lr.step()
-        current_lr = optimizer.param_groups[0]['lr']
+        current_lr = optimizer.param_groups[0]["lr"]
 
-        # Update stats
-        training_stats = update_training_stats(
-            training_stats, epoch, train_loss, val_loss, current_lr,
-            train_corr_pov=corr_pov, train_corr_graph=corr_graph, # (RENAMED)
-            val_corr_pov=val_corr_pov, val_corr_graph=val_corr_graph,
-            cond_std_pov=cond_std_pov, cond_std_graph=cond_std_graph,
-            dropout_ratio_pov=dropout_pov, dropout_ratio_graph=dropout_graph
+        # --- Diagnostics ---
+        diag_results = diagnostic_condition_tests(
+            unet, scheduler, mixer, diffusion_model, val_loader, device, config
         )
 
+        # --- Update Stats ---
+        training_stats = update_training_stats(
+            training_stats, epoch, train_loss, val_loss, current_lr,
+            train_corr_pov=corr_pov, train_corr_graph=corr_graph,
+            val_corr_pov=val_corr_pov, val_corr_graph=val_corr_graph,
+            cond_std_pov=cond_std_pov, cond_std_graph=cond_std_graph,
+            dropout_ratio_pov=dropout_pov, dropout_ratio_graph=dropout_graph,
+            **diag_results
+        )
+
+        # --- Logging ---
         print(f"Epoch {epoch + 1}/{config['training']['num_epochs']} - "
-              f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | LR: {current_lr:.6f}",
-              flush=True)
+            f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | "
+            f"Corr POV: {corr_pov:.3f}/{val_corr_pov:.3f} | "
+            f"Corr Graph: {corr_graph:.3f}/{val_corr_graph:.3f} | "
+            f"LR: {current_lr:.6f}", flush=True)
 
         # --- Checkpointing ---
         is_best = val_loss < best_loss
@@ -105,12 +128,10 @@ def main():
             save_periodic=save_periodic
         )
 
-        # --- Save Stats & Generate Samples ---
         save_training_stats(exp_dir, training_stats)
 
         if (epoch + 1) % config["training"]["sample_every"] == 0:
-            print(f"Generating samples at epoch {epoch + 1}...")
-            # Ensure generate_samples_conditioned exists and works
+            print(f"Generating samples at epoch {epoch + 1}...", flush=True)
             generate_samples_conditioned(
                 diffusion_model, mixer, fixed_samples, exp_dir, epoch, device, config
             )
