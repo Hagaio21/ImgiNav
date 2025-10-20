@@ -5,6 +5,7 @@ import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
+import yaml
 
 
 class AutoEncoderTrainer:
@@ -43,7 +44,11 @@ class AutoEncoderTrainer:
         self.autoencoder.train()
         self.autoencoder.to(self.device)
         step = 0
-
+        cfg_path = os.path.join(self.output_dir, "autoencoder_config.yaml")
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(self.autoencoder.to_config(), f)
+        print(f"[Config] Saved: {cfg_path}")
+        
         print(f"Training autoencoder for {self.epochs} epochs on {self.device}")
 
         for epoch in range(1, self.epochs + 1):

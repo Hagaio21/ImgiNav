@@ -198,6 +198,76 @@ class UNet(nn.Module):
 
         return self.final(x_t)
 
+    def print_summary(self):
+        print("\n=== UNet Summary ===")
+        print(f"in_channels     : {self.downs[0].res[0].conv1.in_channels}")
+        print(f"out_channels    : {self.final.out_channels}")
+        print(f"base_channels   : {self.downs[0].res[0].conv1.out_channels}")
+        print(f"depth           : {len(self.downs)}")
+        print(f"time_dim        : {self.time_mlp.fc1.in_features}")
+        print(f"num_res_blocks  : {len(self.downs[0].res)}")
+        print(f"norm            : {type(self.downs[0].res[0].norm1).__name__}")
+        print(f"act             : {type(self.downs[0].res[0].act).__name__}")
+        print("encoder channels:",
+              [b.res[0].conv1.out_channels for b in self.downs])
+        print("decoder channels:",
+              [b.res[0].conv1.out_channels for b in self.ups])
+        print("====================\n")
+
+    def to_config(self):
+        """Return YAML-compatible config matching from_config() schema."""
+        cfg = {
+            "unet": {
+                "in_channels": self.downs[0].res[0].conv1.in_channels,
+                "cond_channels": 0
+                    if isinstance(self.fusion, torch.nn.Identity)
+                    else self.fusion[0].in_channels - self.downs[0].res[0].conv1.in_channels,
+                "out_channels": self.final.out_channels,
+                "base_channels": self.downs[0].res[0].conv1.out_channels,
+                "depth": len(self.downs),
+                "num_res_blocks": len(self.downs[0].res),
+                "time_dim": self.time_mlp.fc1.in_features,
+                "norm": "batch" if isinstance(self.downs[0].res[0].norm1, torch.nn.BatchNorm2d)
+                        else "group" if isinstance(self.downs[0].res[0].norm1, torch.nn.GroupNorm)
+                        else None,
+                "act": "relu" if isinstance(self.downs[0].res[0].act, torch.nn.ReLU)
+                        else "leakyrelu" if isinstance(self.downs[0].res[0].act, torch.nn.LeakyReLU)
+                        else "silu",
+            }
+        }
+        return cfg
+
+    @classmethod
+    def from_shape(cls,
+                   in_channels: int,
+                   out_channels: int,
+                   base_channels: int,
+                   depth: int,
+                   num_res_blocks: int = 2,
+                   time_dim: int = 256,
+                   cond_channels: int = 0,
+                   norm: str = "batch",
+                   act: str = "relu"):
+        """
+        Construct a UNet directly from shape parameters.
+        Mirrors 'from_config' but does not require a YAML config.
+        """
+        cfg = {
+            "unet": {
+                "in_channels": in_channels,
+                "cond_channels": cond_channels,
+                "out_channels": out_channels,
+                "base_channels": base_channels,
+                "depth": depth,
+                "num_res_blocks": num_res_blocks,
+                "time_dim": time_dim,
+                "norm": norm,
+                "act": act,
+            }
+        }
+        return cls.from_config(cfg)
+
+
     @classmethod
     def from_config(cls, cfg: dict | str, latent_channels: Optional[int] = None, latent_base: Optional[int] = None):
         """

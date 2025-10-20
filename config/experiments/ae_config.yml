@@ -1,0 +1,27 @@
+dataset:
+  manifest: C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\indexes\layouts.csv
+  batch_size: 16
+  split_ratio: 0.9
+  num_workers: 4
+  shuffle: true
+  seed: 42
+
+model:
+  in_channels: 3          # RGB inputs
+  out_channels: 3         # RGB reconstruction
+  base_channels: 32       # starting conv channels
+  latent_channels: 8      # channels in latent space
+  image_size: 512         # input image size
+  latent_base: 16         # spatial size of latent feature map
+  norm: batch             # normalization type (batch, instance, or null)
+  act: relu               # activation function
+  dropout: 0.0            # dropout probability
+
+training:
+  epochs: 2
+  lr: 0.0001
+  log_interval: 10
+  sample_interval: 10
+  eval_interval: 1
+  output_dir: experiments/autoencoder_512
+  ckpt_dir: experiments/autoencoder_512/checkpoints

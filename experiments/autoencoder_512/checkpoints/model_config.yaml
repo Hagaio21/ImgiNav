@@ -1,0 +1,9 @@
+act: relu
+base_channels: 32
+dropout: 0.0
+image_size: 512
+in_channels: 3
+latent_base: 16
+latent_channels: 8
+norm: batch
+out_channels: 3

@@ -169,6 +169,44 @@ class AutoEncoder(nn.Module):
         z = self.encoder(x)
         x_recon = self.decoder(z)
         return x_recon
+    
+    def to_config(self):
+        """Return YAML-compatible config matching from_config() schema."""
+        enc = self.encoder
+        dec = self.decoder
+        cfg = {
+            "encoder": {
+                "in_channels": enc.conv[0][0].in_channels if hasattr(enc.conv[0][0], "in_channels") else None,
+                "layers": [
+                    {
+                        "out_channels": layer[0].out_channels,
+                        "kernel_size": layer[0].kernel_size[0],
+                        "stride": layer[0].stride[0],
+                        "padding": layer[0].padding[0],
+                    }
+                    for layer in enc.conv
+                    if hasattr(layer[0], "out_channels")
+                ],
+                "latent_dim": 0,
+                "image_size": enc.conv_output_size * (2 ** len(enc.conv)),
+                "latent_channels": enc.latent_channels,
+                "latent_base": enc.latent_base,
+                "global_norm": None,
+                "global_act": None,
+                "global_dropout": 0.0,
+            },
+            "decoder": {
+                "out_channels": dec.output_channels,
+                "latent_dim": 0,
+                "image_size": dec.output_size,
+                "latent_channels": dec.latent_channels,
+                "latent_base": dec.latent_base,
+                "global_norm": None,
+                "global_act": None,
+                "global_dropout": 0.0,
+            },
+        }
+        return cfg
 
     @classmethod
     def from_config(cls, cfg: dict | str):
