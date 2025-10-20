@@ -92,6 +92,11 @@ class DiffusionTrainer:
 
         self.dataset_div = self._compute_dataset_diversity(train_loader)
         print(f"Dataset diversity baseline: {self.dataset_div:.4f}")
+        # save dataset diversity baseline
+        div_path = os.path.join(self.output_dir, "dataset_diversity.txt")
+        with open(div_path, "w", encoding="utf-8") as f:
+            f.write(f"{self.dataset_div:.6f}\n")
+
 
         losses = []
         best_val_loss = float("inf")
@@ -321,14 +326,18 @@ class DiffusionTrainer:
             divs = [x["diversity"] for x in self.metric_log]
             steps = [x["step"] for x in self.metric_log]
             plt.figure()
-            plt.plot(steps, divs)
+            plt.plot(steps, divs, label="Model Diversity")
+            if hasattr(self, "dataset_div"):
+                plt.axhline(self.dataset_div, color="red", linestyle="--", label="Dataset Diversity")
             plt.xlabel("Step")
             plt.ylabel("Diversity")
             plt.title("Diversity over Training")
+            plt.legend()
             plt.grid(True)
             plt.tight_layout()
             plt.savefig(os.path.join(output_dir, "diversity_curve.png"))
             plt.close()
+
 
         decoded = samples if samples.shape[1] != autoencoder.encoder.latent_channels else autoencoder.decoder(samples)
         save_image(decoded, os.path.join(output_dir, f"samples_step_{step}.png"),
