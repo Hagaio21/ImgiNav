@@ -40,9 +40,7 @@ class LatentDiffusion(nn.Module):
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         guidance_scale: float = 1.0,
         uncond_cond: Optional[torch.Tensor] = None,
-        start_noise: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-
+        start_noise: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Generate samples from pure noise in latent space using the same DDPM
         update rule as training.
@@ -129,6 +127,7 @@ class LatentDiffusion(nn.Module):
 
     def to_config(self, save_path: Union[str, Path]):
         ckpt_dir = Path(save_path).parent
+
         config = {
             "latent": {
                 "channels": self.latent_shape[0],
@@ -136,7 +135,7 @@ class LatentDiffusion(nn.Module):
             },
             "scheduler": {
                 "type": type(self.scheduler).__name__,
-                "num_steps": self.scheduler.num_steps,
+                "num_steps": getattr(self.scheduler, "num_steps", None),
             },
             "autoencoder": {
                 "config": str((ckpt_dir / "autoencoder_config.yaml").as_posix()),
@@ -147,7 +146,108 @@ class LatentDiffusion(nn.Module):
                 "checkpoint": str((ckpt_dir / "unet_latest.pt").as_posix()),
             },
         }
+
         with open(save_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(config, f)
         print(f"[Config] LatentDiffusion saved → {save_path}")
+
+    @classmethod
+    def from_config(
+        cls,
+        config_path: Union[str, Path],
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    ):
+        import yaml
+        from modules.autoencoder import AutoEncoder
+        from modules.unet import UNet
+        from modules.scheduler import LinearScheduler, CosineScheduler
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+
+        # --- normalize config ---
+        if "autoencoder_config" in cfg:
+            # flat format
+            cfg = {
+                "latent": {
+                    "channels": cfg["latent_channels"],
+                    "base": cfg.get("latent_base", 16),
+                },
+                "scheduler": {
+                    "type": "CosineScheduler" if cfg["scheduler"].lower() == "cosine" else "LinearScheduler",
+                    "num_steps": cfg["num_steps"],
+                },
+                "autoencoder": {
+                    "config": cfg["autoencoder_config"],
+                    "checkpoint": cfg["autoencoder_ckpt"],
+                },
+                "unet": {
+                    "config": None,
+                    "checkpoint": None,
+                },
+            }
+
+        elif "autoencoder" in cfg and "encoder" in cfg["autoencoder"]:
+            # already fully nested inline format
+            cfg = {
+                "latent": {
+                    "channels": cfg["unet"]["in_channels"],
+                    "base": cfg["autoencoder"]["encoder"]["latent_base"],
+                },
+                "scheduler": {
+                    "type": "CosineScheduler" if cfg.get("scheduler", "cosine").lower() == "cosine" else "LinearScheduler",
+                    "num_steps": cfg.get("num_steps", 1000),
+                },
+                "autoencoder": {
+                    "config": cfg["autoencoder"],  # direct dict for construction
+                    "checkpoint": None,
+                },
+                "unet": {
+                    "config": {"unet": cfg["unet"]},  # wrap to match UNet.from_config
+                    "checkpoint": None,
+                },
+            }
+
+        # --- Scheduler ---
+        sched_cfg = cfg["scheduler"]
+        sched_class = {"LinearScheduler": LinearScheduler, "CosineScheduler": CosineScheduler}[sched_cfg["type"]]
+        scheduler = sched_class(num_steps=sched_cfg["num_steps"]).to(device)
+
+        # --- Autoencoder ---
+        ae_cfg = cfg["autoencoder"]["config"]
+        ae_ckpt = cfg["autoencoder"].get("checkpoint")
+        if isinstance(ae_cfg, (str, Path)):
+            autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
+        else:
+            autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
+        if ae_ckpt and Path(ae_ckpt).exists():
+            ae_state = torch.load(ae_ckpt, map_location=device)
+            autoencoder.load_state_dict(ae_state["model"] if "model" in ae_state else ae_state)
+        autoencoder.eval()
+
+        # --- UNet ---
+        unet_cfg = cfg["unet"]["config"]
+        unet_ckpt = cfg["unet"].get("checkpoint")
+        if isinstance(unet_cfg, (str, Path)) and Path(unet_cfg).exists():
+            with open(unet_cfg, "r", encoding="utf-8") as f:
+                unet_cfg = yaml.safe_load(f)
+                if "unet" in unet_cfg:
+                    unet_cfg = unet_cfg["unet"]
+            unet = UNet(**unet_cfg).to(device)
+        else:
+            unet = UNet.from_config(unet_cfg).to(device)
+        if unet_ckpt and Path(unet_ckpt).exists():
+            state = torch.load(unet_ckpt, map_location=device)
+            if "state_dict" in state:
+                state = state["state_dict"]
+            unet.load_state_dict(state, strict=False)
+        unet.eval()
+
+        # --- Latent shape ---
+        C = cfg["latent"]["channels"]
+        H = W = cfg["latent"]["base"]
+
+        return cls(unet=unet, scheduler=scheduler, autoencoder=autoencoder, latent_shape=(C, H, W)).to(device)
+
+
 

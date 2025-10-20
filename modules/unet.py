@@ -270,24 +270,33 @@ class UNet(nn.Module):
     @classmethod
     def from_config(cls, cfg: dict | str, latent_channels: Optional[int] = None, latent_base: Optional[int] = None):
         """
-        Build U-Net from config file and latent shape.
-        latent_channels: C from autoencoder
-        latent_base: H=W from autoencoder (used to validate depth)
+        Build U-Net from config file or dict.
+        Handles both flat and nested configs ({'unet': {...}}).
         """
-        import yaml
+        import yaml, math
+
+        # Load YAML if path
         if isinstance(cfg, str):
             with open(cfg, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
+
+        # unwrap if nested
+        if "unet" in cfg:
             cfg = cfg["unet"]
 
+        # Override input/output channels if given
         if latent_channels is not None:
             cfg["in_channels"] = latent_channels
             cfg["out_channels"] = latent_channels
 
+        # Validate depth vs. latent base
         if latent_base is not None:
             max_depth = int(math.log2(latent_base))
-            if cfg["depth"] > max_depth:
-                raise ValueError(f"Depth {cfg['depth']} too large for latent_base {latent_base}. "
-                                 f"Max allowed = {max_depth}")
+            if cfg.get("depth", 0) > max_depth:
+                raise ValueError(
+                    f"Depth {cfg['depth']} too large for latent_base {latent_base}. "
+                    f"Max allowed = {max_depth}"
+                )
 
         return cls(**cfg)
+

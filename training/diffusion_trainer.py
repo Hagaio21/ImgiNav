@@ -71,6 +71,20 @@ class DiffusionTrainer:
         return self
 
     # ============================================================
+    # Unified batch extractor
+    # ============================================================
+    @staticmethod
+    def _get_layout_from_batch(batch, device):
+        """Extract layout tensor from dataset batch (dict, tuple, or tensor)."""
+        if isinstance(batch, dict):
+            return batch["layout"].to(device)
+        if isinstance(batch, (list, tuple)):
+            return batch[0].to(device)
+        if torch.is_tensor(batch):
+            return batch.to(device)
+        raise TypeError(f"Unexpected batch type: {type(batch)}")
+
+    # ============================================================
     # Main training loop with validation logging
     # ============================================================
     def fit(self, train_loader, val_loader=None):
@@ -87,7 +101,7 @@ class DiffusionTrainer:
             for batch in pbar:
                 self.optimizer.zero_grad(set_to_none=True)
 
-                layout = batch[0].to(self.device)
+                layout = self._get_layout_from_batch(batch, self.device)
                 z = self.autoencoder.encoder(layout)
                 t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
                 noise = torch.randn_like(z)
@@ -153,7 +167,6 @@ class DiffusionTrainer:
             if self.ckpt_dir:
                 self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
 
-
         # --- save unified LatentDiffusion config at the end ---
         latent_shape = (
             self.autoencoder.encoder.latent_channels,
@@ -161,7 +174,6 @@ class DiffusionTrainer:
             self.autoencoder.encoder.latent_base,
         )
         latent_diffusion = LatentDiffusion(self.unet, self.scheduler, self.autoencoder, latent_shape=latent_shape)
-
         master_cfg_path = os.path.join(self.ckpt_dir, "latent_diffusion.yaml")
         latent_diffusion.to_config(master_cfg_path)
 
@@ -176,7 +188,7 @@ class DiffusionTrainer:
         count = 0
 
         for batch in val_loader:
-            layout = batch[0].to(self.device)
+            layout = self._get_layout_from_batch(batch, self.device)
             z = self.autoencoder.encoder(layout)
             t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
             noise = torch.randn_like(z)
@@ -196,7 +208,7 @@ class DiffusionTrainer:
     @torch.no_grad()
     def evaluate(self, val_loader, step=None):
         self.train(False)
-        layout = next(iter(val_loader))[0].to(self.device)
+        layout = self._get_layout_from_batch(next(iter(val_loader)), self.device)
         z = self.autoencoder.encoder(layout)
         t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
         noise = torch.randn_like(z)
@@ -220,6 +232,9 @@ class DiffusionTrainer:
             self.logger.log({"samples": samples, "step": step})
         print(f"[Step {step}] Saved sample grid → {save_path}")
 
+    # ============================================================
+    # Checkpoint saving and config persistence
+    # ============================================================
     def save_checkpoint(self, path):
         torch.save({
             "unet": self.unet.state_dict(),
@@ -229,7 +244,6 @@ class DiffusionTrainer:
         latest_path = os.path.join(self.ckpt_dir, "unet_latest.pt")
         torch.save(self.unet.state_dict(), latest_path)
         print(f"[Checkpoint] Saved: {path} and updated unet_latest.pt")
-
 
         # --- save configs once for consistency ---
         import yaml
@@ -246,7 +260,6 @@ class DiffusionTrainer:
                 yaml.safe_dump(self.autoencoder.to_config(), f)
             print(f"[Config] Saved AutoEncoder config → {ae_cfg_path}")
 
-
     def load_checkpoint(self, path):
         state = torch.load(path, map_location=self.device)
         self.unet.load_state_dict(state["unet"])
@@ -259,45 +272,38 @@ class DiffusionTrainer:
     # ============================================================
     @torch.no_grad()
     def log_metrics(self, loss, z_noisy, noise_pred, noise, step, autoencoder=None, dataset_div=None):
-        """Compute and log lightweight metrics every N steps."""
-        log = {}
-        log["step"] = step
-        log["loss"] = loss.item()
-
+        log = {"step": step, "loss": loss.item()}
         snr = (z_noisy.var(dim=(1, 2, 3)) / (noise_pred - noise).var(dim=(1, 2, 3))).mean().item()
         log["snr"] = snr
-
         cos = F.cosine_similarity(noise_pred.flatten(1), noise.flatten(1)).mean().item()
         log["cosine"] = cos
-
         norms = [p.grad.norm()**2 for p in self.unet.parameters() if p.grad is not None]
         grad_norm = torch.sqrt(sum(norms)).item() if norms else 0.0
         log["grad_norm"] = grad_norm
+        samples = self.diffusion.sample(batch_size=self.num_samples, image=True)
+        if samples.shape[1] == self.autoencoder.encoder.latent_channels:
+            decoded = self.autoencoder.decoder(samples)
+        else:
+            decoded = samples
+        flat = decoded.flatten(1)
 
-        samples = self.diffusion.sample(batch_size=4, image=True)
-        decoded = autoencoder.decoder(samples) if autoencoder else samples
         flat = decoded.flatten(1)
         div = torch.cdist(flat, flat).mean().item()
         log["diversity"] = div
-
         if dataset_div:
             log["div_ratio"] = div / dataset_div
 
         if not hasattr(self, "metric_log"):
             self.metric_log = []
         self.metric_log.append(log)
-
         metrics_path = os.path.join(self.output_dir, "metrics.json")
         with open(metrics_path, "w", encoding="utf-8") as f:
             json.dump(self.metric_log, f, indent=2)
-
-        msg = f"[{step}] loss={log['loss']:.4f}, snr={log['snr']:.3f}, cos={log['cosine']:.3f}, div={log['diversity']:.3f}"
-        print(msg)
+        print(f"[{step}] loss={log['loss']:.4f}, snr={log['snr']:.3f}, cos={log['cosine']:.3f}, div={log['diversity']:.3f}")
         return log
 
     @torch.no_grad()
     def create_viz_artifacts(self, autoencoder, samples, step, losses, output_dir):
-        """Create plots and sample grids every M steps."""
         os.makedirs(output_dir, exist_ok=True)
 
         if losses:
@@ -308,7 +314,7 @@ class DiffusionTrainer:
             plt.title("Training Loss")
             plt.grid(True)
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, f"loss_curve.png"))
+            plt.savefig(os.path.join(output_dir, "loss_curve.png"))
             plt.close()
 
         if hasattr(self, "metric_log"):
@@ -321,10 +327,10 @@ class DiffusionTrainer:
             plt.title("Diversity over Training")
             plt.grid(True)
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, f"diversity_curve.png"))
+            plt.savefig(os.path.join(output_dir, "diversity_curve.png"))
             plt.close()
 
-        decoded = autoencoder.decoder(samples)
+        decoded = samples if samples.shape[1] != autoencoder.encoder.latent_channels else autoencoder.decoder(samples)
         save_image(decoded, os.path.join(output_dir, f"samples_step_{step}.png"),
                    nrow=2, normalize=True, value_range=(0, 1))
 
@@ -337,7 +343,7 @@ class DiffusionTrainer:
         for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break
-            x = batch[0].to(self.device)
+            x = self._get_layout_from_batch(batch, self.device)
             decoded = self.autoencoder.decoder(self.autoencoder.encoder(x))
             flat = decoded.flatten(1)
             diversities.append(torch.cdist(flat, flat).mean().item())

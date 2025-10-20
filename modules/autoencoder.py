@@ -214,6 +214,10 @@ class AutoEncoder(nn.Module):
         if isinstance(cfg, str):
             with open(cfg, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
+            
+        if "encoder" not in cfg and "decoder" not in cfg:
+            # flat config from train_ae.py
+            return cls.from_shape(**cfg)
 
         enc_cfg = cfg["encoder"]
         dec_cfg = cfg["decoder"]
