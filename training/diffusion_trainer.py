@@ -45,7 +45,7 @@ class DiffusionTrainer:
         self.grad_clip = grad_clip
         self.ckpt_dir = ckpt_dir
         self.num_samples = num_samples
-        self.output_dir = output_dir or "samples"
+        self.output_dir = output_dir
         self.global_step = 0
 
         os.makedirs(self.output_dir, exist_ok=True)
@@ -344,7 +344,7 @@ class DiffusionTrainer:
 
 
         decoded = samples if samples.shape[1] != autoencoder.encoder.latent_channels else autoencoder.decoder(samples)
-        save_image(decoded, os.path.join(output_dir, f"samples_step_{step}.png"),
+        save_image(decoded, os.path.join(output_dir, f"samples/samples_step_{step}.png"),
                    nrow=2, normalize=True, value_range=(0, 1))
 
     # ============================================================
