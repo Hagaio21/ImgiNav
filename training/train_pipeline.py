@@ -14,9 +14,7 @@ from pipeline_trainer import PipelineTrainer
 from modules.scheduler import LinearScheduler, CosineScheduler
 from utils.utlis import graph2text, load_taxonomy
 import torch.nn as nn
-
-TAXONOMY_PATH = r"C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\config\taxonomy.json"
-TAXONOMY = load_taxonomy(TAXONOMY_PATH)
+from pathlib import Path
 
 def load_scheduler(name: str, num_steps: int):
     name = name.lower()
@@ -93,13 +91,14 @@ def build_pipeline(cfg, device, embedder_manager):
 
 
 class EmbedderManager:
-    def __init__(self, pov_name: str, graph_name: str, device):
+    def __init__(self, pov_name: str, graph_name: str,taxonomy_path: Path, device):
         self.device = device
         self.resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
         self.resnet.fc = nn.Identity()
         self.resnet.eval().to(device)
         self.graph_encoder = SentenceTransformer(graph_name).to(device)
         self.graph_encoder.eval()
+        self.taxonomy = load_taxonomy(taxonomy_path)
         self.cache = {}
         self.pov_transform = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -116,7 +115,7 @@ class EmbedderManager:
         if graph_path in self.cache:
             text = self.cache[graph_path]
         else:
-            text = graph2text(graph_path, TAXONOMY)
+            text = graph2text(graph_path, self.taxonomy)
             self.cache[graph_path] = text
         emb = self.graph_encoder.encode([text], convert_to_tensor=True, device=self.device)
         return emb.squeeze(0)
@@ -145,7 +144,7 @@ def main():
     
     # Build pipeline
     pipeline = build_pipeline(cfg, device, embed)
-
+    taxonomy_path = cfg["dataset"]["taxonomy_path"]
     trainer_cfg = cfg["training"]
     trainer = PipelineTrainer(
         pipeline=pipeline,
@@ -159,6 +158,7 @@ def main():
         log_interval=trainer_cfg.get("log_interval", 100),
         eval_interval=trainer_cfg.get("eval_interval", 1000),
         sample_interval=trainer_cfg.get("sample_interval", 2000),
+        eval_num_samples=trainer_cfg.get("eval_sample_num",8),
         ckpt_dir=trainer_cfg["ckpt_dir"],
         output_dir=trainer_cfg["output_dir"],
         mixed_precision=trainer_cfg.get("mixed_precision", False),
@@ -166,7 +166,7 @@ def main():
         cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
         cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
         cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
-        taxonomy=TAXONOMY,
+        taxonomy=taxonomy_path,
         use_modalities=trainer_cfg.get("use_modalities", "both")
     )
 

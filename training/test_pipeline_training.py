@@ -141,7 +141,8 @@ def create_fake_config(temp_dir):
             "pov_type": "image",
             "batch_size": 4,
             "num_workers": 0,
-            "seed": 42
+            "seed": 42,
+            "taxonomy_path": "C:/Users/Hagai.LAPTOP-QAG9263N/Desktop/Thesis/repositories/ImagiNav/config/taxonomy.json"
         },
         "model": {
             "autoencoder": {
@@ -193,6 +194,7 @@ def create_fake_config(temp_dir):
             "log_interval": 2,
             "eval_interval": 4,
             "sample_interval": 8,
+            "eval_sample_num": 8,
             "ckpt_dir": os.path.join(temp_dir, "checkpoints"),
             "output_dir": os.path.join(temp_dir, "output"),
             "mixed_precision": False,

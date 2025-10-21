@@ -43,6 +43,7 @@ class PipelineTrainer:
                  log_interval=100,
                  eval_interval=1000,
                  sample_interval=2000,
+                 eval_num_samples = 4,
                  ckpt_dir=None,
                  output_dir=None,
                  logger=None,
@@ -58,7 +59,7 @@ class PipelineTrainer:
         self.device = pipeline.device
         self.logger = logger
         self.sample_loader = sample_loader
-        self.taxonomy = taxonomy
+        self.taxonomy = load_taxonomy(taxonomy)
 
         self.loss_fn = loss_fn or torch.nn.MSELoss()
         self.epochs = epochs
@@ -68,6 +69,8 @@ class PipelineTrainer:
         self.sample_interval = sample_interval
         self.mixed_precision = mixed_precision
         self.ema_decay = ema_decay
+
+        self.eval_num_samples = eval_num_samples
 
         self.cond_dropout_pov = cond_dropout_pov
         self.cond_dropout_graph = cond_dropout_graph
@@ -293,7 +296,7 @@ class PipelineTrainer:
     def evaluate(self, val_loader, step=None):
         self.train(False)
         batch = next(iter(val_loader))
-        
+        num_eval_samples = self.eval_num_samples
         # Compute validation loss
         layout = batch["layout"]
         cond_pov_emb = batch["pov"]
@@ -307,12 +310,15 @@ class PipelineTrainer:
         noise_pred = self.pipeline.unet(z_noisy, t, cond)
         val_loss = self.loss_fn(noise_pred, noise)
         
-        metrics = self.pipeline.evaluate(batch, step=step)
+        metrics = self.pipeline.evaluate(batch, num_samples=num_eval_samples, step=step) 
         metrics["loss"] = val_loss.item()
         
         if self.logger and step is not None:
             self.logger.log({"val_step": step, **metrics}, step=step)
         return metrics
+
+
+
 
     @torch.no_grad()
     def sample_and_save(self, step, sample_num=4):

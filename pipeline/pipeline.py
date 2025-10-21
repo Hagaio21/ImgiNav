@@ -248,12 +248,39 @@ class DiffusionPipeline(nn.Module):
         cond_pov_emb = val_batch["pov"]
         cond_graph_emb = val_batch["graph"]
         
+        # --- FIX: Resize input batch to match num_samples ---
+        B_in = layout.size(0)
+        
+        if B_in != num_samples:
+            if B_in < num_samples:
+                # Repeat conditions to match num_samples
+                ratio = (num_samples + B_in - 1) // B_in
+                layout = layout.repeat(ratio, 1, 1, 1)[:num_samples]
+                if cond_pov_emb is not None:
+                    # Handle 2D embedding tensor [B, C]
+                    repeat_dims = [ratio] + [1] * (cond_pov_emb.dim() - 1)
+                    cond_pov_emb = cond_pov_emb.repeat(*repeat_dims)[:num_samples]
+                if cond_graph_emb is not None:
+                    # Handle 2D embedding tensor [B, C]
+                    repeat_dims = [ratio] + [1] * (cond_graph_emb.dim() - 1)
+                    cond_graph_emb = cond_graph_emb.repeat(*repeat_dims)[:num_samples]
+            else: # B_in > num_samples
+                # Truncate conditions
+                layout = layout[:num_samples]
+                if cond_pov_emb is not None:
+                    cond_pov_emb = cond_pov_emb[:num_samples]
+                if cond_graph_emb is not None:
+                    cond_graph_emb = cond_graph_emb[:num_samples]
+        # --- End Fix ---
+
         samples = self.sample(num_samples, cond_pov_emb=cond_pov_emb, 
                             cond_graph_emb=cond_graph_emb, image=True)
+        
+        # Use the (potentially resized) layout tensor for recon and FID
         recon = self.autoencoder(layout.to(self.device))
 
         metrics = {
-            "psnr": compute_psnr(recon, layout),
+            "psnr": compute_psnr(recon, layout.to(self.device)), # ensure layout is on device
             "diversity": compute_diversity(samples),
             "latent_fid": compute_fid(
                 self.encode_layout(layout), self.encode_layout(samples)

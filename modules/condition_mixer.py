@@ -154,9 +154,9 @@ class LinearConcatMixer(BaseMixer):
              self.graph_projector = nn.Linear(self.graph_channels, graph_target_dim, bias=False)
 
 
-    def forward(self, conds: list[Optional[torch.Tensor]], weights=None) -> torch.Tensor:
+    def forward(self, conds: list[Optional[torch.Tensor]], B_hint=None, device_hint=None, weights=None) -> torch.Tensor:
         pov, graph = conds
-        B, device = self._get_batch_size_and_device(pov, graph)
+        B, device = self._get_batch_size_and_device(pov, graph, B_hint=B_hint, device_hint=device_hint)
 
         pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels, B, device)
         graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels, B, device)
