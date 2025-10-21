@@ -1,0 +1,49 @@
+# experiment_config.yaml
+dataset:
+  room_manifest: "data/manifests/rooms.csv"
+  scene_manifest: "data/manifests/scenes.csv"
+  data_mode: "rooms_only"     # "rooms_only" | "scenes_only" | "rooms_and_scenes"
+  pov_type: "seg"          # "seg" | "tex" | null
+  taxonomy_path: "data/taxonomy.json"
+  batch_size: 8
+  num_workers: 4
+  seed: 42
+
+model:
+  latent_base: 32
+  mixer: "mlp"                      # "linear" or "mlp"
+  mixer_hidden_dim: 512
+
+  embedders:
+    pov: "resnet18"
+    graph: "sentence-transformers/all-MiniLM-L6-v2"
+
+  autoencoder:
+    config: "configs/autoencoder.yaml"
+    ckpt: "checkpoints/autoencoder_latest.pt"
+
+  diffusion:
+    scheduler: "cosine"             # "linear" or "cosine"
+    num_steps: 1000
+    latent_channels: 4
+    unet_config: "configs/unet_small.yaml"
+
+training:
+  epochs: 50
+  lr: 1e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  mixed_precision: true
+  ema_decay: 0.999
+  cond_dropout_pov: 0.1
+  cond_dropout_graph: 0.1
+  cond_dropout_both: 0.0
+  use_modalities: "pov_only"            # "both" | "pov_only" | "graph_only" | "none"
+
+  log_interval: 100
+  eval_interval: 1000
+  sample_interval: 2000
+  eval_sample_num: 8
+
+  ckpt_dir: "checkpoints/exp1"
+  output_dir: "outputs/exp1"
