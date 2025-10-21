@@ -10,6 +10,7 @@ from stage8_create_graph_embeddings import graph2text
 class PipelineTrainer:
     def __init__(self,
                  pipeline,
+                 sample_loader=None,
                  optimizer=None,
                  loss_fn=None,
                  epochs=10,
@@ -26,10 +27,12 @@ class PipelineTrainer:
                  ema_decay=None,
                  cond_dropout_pov=0.1,
                  cond_dropout_graph=0.1,
-                 cond_dropout_both=0.0):
+                 cond_dropout_both=0.0,
+                 use_modalities="both"):
         self.pipeline = pipeline.to(pipeline.device)
         self.device = pipeline.device
         self.logger = logger
+        self.sample_loader = sample_loader
 
         self.loss_fn = loss_fn or torch.nn.MSELoss()
         self.epochs = epochs
@@ -43,6 +46,7 @@ class PipelineTrainer:
         self.cond_dropout_pov = cond_dropout_pov
         self.cond_dropout_graph = cond_dropout_graph
         self.cond_dropout_both = cond_dropout_both
+        self.use_modalities = use_modalities
 
         self.optimizer = optimizer or AdamW(
             list(pipeline.unet.parameters()) + list(pipeline.mixer.parameters()),
@@ -81,19 +85,22 @@ class PipelineTrainer:
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.epochs}", leave=False)
             for batch in pbar:
                 self.optimizer.zero_grad(set_to_none=True)
-                layout, cond_pov, cond_graph = batch
+                
+                # Unpack dict batch
+                layout = batch["layout"]
+                cond_pov = batch["pov"]
+                cond_graph = batch["graph"]
 
-                # ---- modality control (from config) ----
-                modality = getattr(self, "use_modalities", "both")
-                if modality == "pov_only":
+                # Modality control (from config)
+                if self.use_modalities == "pov_only":
                     cond_graph = None
-                elif modality == "graph_only":
+                elif self.use_modalities == "graph_only":
                     cond_pov = None
-                elif modality == "none":
+                elif self.use_modalities == "none":
                     cond_pov = None
                     cond_graph = None
 
-                # ---- stochastic dropout within selected modalities ----
+                # Stochastic dropout within selected modalities
                 if torch.rand(1).item() < self.cond_dropout_both:
                     cond_pov = None
                     cond_graph = None
@@ -103,9 +110,15 @@ class PipelineTrainer:
                     if torch.rand(1).item() < self.cond_dropout_graph:
                         cond_graph = None
 
-                batch = (layout, cond_pov, cond_graph)
+                # Reconstruct batch dict for training_step
+                batch_dict = {
+                    "layout": layout,
+                    "pov": cond_pov,
+                    "graph": cond_graph
+                }
+                
                 with torch.cuda.amp.autocast(enabled=self.mixed_precision):
-                    loss = self.pipeline.training_step(batch, self.loss_fn, step=self.global_step)
+                    loss = self.pipeline.training_step(batch_dict, self.loss_fn, step=self.global_step)
 
                 self.scaler.scale(loss).backward()
                 if self.grad_clip:
@@ -130,8 +143,7 @@ class PipelineTrainer:
                     self.train(True)
 
                 if self.global_step % self.sample_interval == 0:
-                    example_batch = next(iter(train_loader))
-                    self.sample_and_save(self.global_step, example_batch)
+                    self.sample_and_save(self.global_step)
 
             if self.ckpt_dir:
                 self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
@@ -146,17 +158,27 @@ class PipelineTrainer:
         return metrics
 
     @torch.no_grad()
-    def sample_and_save(self, step, batch, sample_num=4):
+    def sample_and_save(self, step, sample_num=4):
+        if self.sample_loader is None:
+            print(f"[Warning] No sample_loader provided, skipping sampling at step {step}")
+            return
+            
         self.pipeline.eval()
-        layout, pov_img, graph_path = batch
+        
+        # Get batch from sample loader (raw data, not embeddings)
+        batch = next(iter(self.sample_loader))
+        layout = batch["layout"]
+        pov_img = batch["pov"]
+        graph_path = batch["graph"]
 
+        # Initialize fixed noise once
         if self.fixed_noise is None:
             latent_shape = (sample_num, self.pipeline.scheduler.latent_channels,
                             self.pipeline.scheduler.latent_base,
                             self.pipeline.scheduler.latent_base)
             self.fixed_noise = torch.randn(latent_shape, device=self.device)
 
-        # ✓ Use step in directory name to avoid overwriting
+        # Use step in directory name to avoid overwriting
         cond_dir = os.path.join(self.output_dir, "samples", "conditioned", f"step_{step}")
         os.makedirs(cond_dir, exist_ok=True)
 
@@ -169,7 +191,7 @@ class PipelineTrainer:
             graph_txt = os.path.join(item_dir, "graph.txt")
             generated_path = os.path.join(item_dir, "generated.png")
 
-            # Save inputs (only need to save once, but small overhead)
+            # Save inputs
             if isinstance(pov_img, torch.Tensor):
                 save_image(pov_img[i], pov_path, normalize=True, value_range=(0, 1))
             elif isinstance(pov_img[i], Image.Image):
@@ -177,13 +199,16 @@ class PipelineTrainer:
 
             save_image(layout[i], target_path, normalize=True, value_range=(0, 1))
             with open(graph_txt, "w", encoding="utf-8") as f:
-                f.write(graph2text(graph_path[i]))
+                if isinstance(graph_path[i], str):
+                    f.write(graph2text(graph_path[i]))
+                else:
+                    f.write(str(graph_path[i]))
 
             # Generate and save
             cond_sample = self.pipeline.sample(
                 batch_size=1,
-                pov_raw=pov_img[i],
-                graph_raw=graph_path[i],
+                pov_raw=pov_img[i] if not isinstance(pov_img, torch.Tensor) else pov_img[i].cpu(),
+                graph_raw=graph_path[i] if isinstance(graph_path[i], str) else None,
                 image=True,
                 noise=self.fixed_noise[i].unsqueeze(0)
             )
@@ -196,8 +221,8 @@ class PipelineTrainer:
             batch_size=sample_num, image=True, noise=self.fixed_noise
         )
         save_image(uncond_samples,
-                os.path.join(uncond_dir, f"step_{step}.png"),  # ✓ Include step
-                nrow=2, normalize=True, value_range=(0, 1))
+                   os.path.join(uncond_dir, f"step_{step}.png"),
+                   nrow=2, normalize=True, value_range=(0, 1))
         print(f"[Step {step}] Saved conditioned and unconditioned samples.")
 
     def save_checkpoint(self, path):

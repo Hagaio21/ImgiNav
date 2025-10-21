@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import models, transforms
 from sentence_transformers import SentenceTransformer
-from unified_dataset import UnifiedLayoutDataset
+from unified_dataset import UnifiedLayoutDataset, collate_fn
 from autoencoder import AutoEncoder
 from unet import UNet
 from condition_mixer import LinearConcatMixer, NonLinearConcatMixer
@@ -35,23 +35,25 @@ def select_mixer(name: str, out_channels: int, latent_base: int,
     return LinearConcatMixer(out_channels, size, pov_dim, graph_dim)
 
 
-def build_dataloader(cfg):
+def build_dataloader(cfg, use_embeddings=True):
     ds = UnifiedLayoutDataset(
         room_manifest=cfg["room_manifest"],
         scene_manifest=cfg["scene_manifest"],
         data_mode=cfg["data_mode"],
-        pov_type=cfg["pov_type"]
+        pov_type=cfg["pov_type"],
+        use_embeddings=use_embeddings
     )
     return DataLoader(
         ds,
         batch_size=cfg["batch_size"],
         num_workers=cfg["num_workers"],
         shuffle=True,
-        drop_last=True
+        drop_last=True,
+        collate_fn=collate_fn
     )
 
 
-def build_pipeline(cfg, device, embedder_manager):  # ✓ Accept embedder
+def build_pipeline(cfg, device, embedder_manager):
     model_cfg = cfg["model"]
     ae_cfg = model_cfg["autoencoder"]
     autoencoder = AutoEncoder.from_config(ae_cfg["config"]).to(device)
@@ -82,10 +84,11 @@ def build_pipeline(cfg, device, embedder_manager):  # ✓ Accept embedder
         unet=unet,
         mixer=mixer,
         scheduler=scheduler,
-        embedder_manager=embedder_manager,  # ✓ Pass embedder
+        embedder_manager=embedder_manager,
         device=device
     )
     return pipeline
+
 
 class EmbedderManager:
     def __init__(self, pov_name: str, graph_name: str, device):
@@ -128,42 +131,55 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(cfg["dataset"].get("seed", 42))
 
-    train_loader = build_dataloader(cfg["dataset"])
-    pipeline = build_pipeline(cfg, device, embed)
+    # Create embedder first
     embed = EmbedderManager(cfg["model"]["embedders"]["pov"],
                             cfg["model"]["embedders"]["graph"],
                             device)
+    
+    # Build dataloaders
+    train_loader = build_dataloader(cfg["dataset"], use_embeddings=True)
+    sample_loader = build_dataloader(cfg["dataset"], use_embeddings=False)
+    
+    # Build pipeline
+    pipeline = build_pipeline(cfg, device, embed)
 
     trainer_cfg = cfg["training"]
     trainer = PipelineTrainer(
-    pipeline=pipeline,
-    optimizer=None,
-    loss_fn=None,
-    epochs=trainer_cfg["epochs"],
-    lr=trainer_cfg["lr"],
-    weight_decay=trainer_cfg.get("weight_decay", 0.0),
-    grad_clip=trainer_cfg.get("grad_clip"),
-    log_interval=trainer_cfg.get("log_interval", 100),
-    eval_interval=trainer_cfg.get("eval_interval", 1000),
-    sample_interval=trainer_cfg.get("sample_interval", 2000),
-    ckpt_dir=trainer_cfg["ckpt_dir"],
-    output_dir=trainer_cfg["output_dir"],
-    mixed_precision=trainer_cfg.get("mixed_precision", False),
-    ema_decay=trainer_cfg.get("ema_decay"),
-    cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
-    cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
-    cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0)
+        pipeline=pipeline,
+        sample_loader=sample_loader,
+        optimizer=None,
+        loss_fn=None,
+        epochs=trainer_cfg["epochs"],
+        lr=trainer_cfg["lr"],
+        weight_decay=trainer_cfg.get("weight_decay", 0.0),
+        grad_clip=trainer_cfg.get("grad_clip"),
+        log_interval=trainer_cfg.get("log_interval", 100),
+        eval_interval=trainer_cfg.get("eval_interval", 1000),
+        sample_interval=trainer_cfg.get("sample_interval", 2000),
+        ckpt_dir=trainer_cfg["ckpt_dir"],
+        output_dir=trainer_cfg["output_dir"],
+        mixed_precision=trainer_cfg.get("mixed_precision", False),
+        ema_decay=trainer_cfg.get("ema_decay"),
+        cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
+        cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
+        cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
+        use_modalities=trainer_cfg.get("use_modalities", "both")
     )
 
-    # ---- new line: modality control ----
-    trainer.use_modalities = trainer_cfg.get("use_modalities", "both")
-
-    # ---- run training ----
+    # Run training
     trainer.fit(train_loader)
 
-
+    # Save final weights and config
     save_dir = trainer_cfg["ckpt_dir"]
     os.makedirs(save_dir, exist_ok=True)
+    
+    torch.save(pipeline.autoencoder.state_dict(), 
+               os.path.join(save_dir, "ae_latest.pt"))
+    torch.save(pipeline.unet.state_dict(), 
+               os.path.join(save_dir, "unet_latest.pt"))
+    torch.save(pipeline.mixer.state_dict(), 
+               os.path.join(save_dir, "mixer_latest.pt"))
+    
     pipeline_config = {
         "autoencoder": {
             "config": cfg["model"]["autoencoder"]["config"],

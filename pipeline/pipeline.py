@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL import Image
 
 from autoencoder import AutoEncoder
 from diffusion import LatentDiffusion
@@ -59,7 +60,7 @@ class DiffusionPipeline(nn.Module):
                  unet: UNet,
                  mixer: BaseMixer,
                  scheduler,
-                 embedder_manager=None,  # ✓ Add embedder
+                 embedder_manager=None,
                  device: str = "cuda" if torch.cuda.is_available() else "cpu",
                  logger=None):
         super().__init__()
@@ -68,7 +69,7 @@ class DiffusionPipeline(nn.Module):
         self.unet = unet.to(device)
         self.mixer = mixer.to(device)
         self.scheduler = scheduler
-        self.embedder_manager = embedder_manager  # ✓ Store embedder
+        self.embedder_manager = embedder_manager
         self.logger = logger
         self.diffusion = None
         self._build_diffusion()
@@ -88,7 +89,7 @@ class DiffusionPipeline(nn.Module):
             return self.autoencoder.encode_latent(layout.to(self.device))
 
     def _prepare_conditions(self, pov_raw=None, graph_raw=None, 
-                        cond_pov_emb=None, cond_graph_emb=None):
+                           cond_pov_emb=None, cond_graph_emb=None):
         """
         Convert raw inputs to embeddings if needed.
         """
@@ -139,7 +140,8 @@ class DiffusionPipeline(nn.Module):
         if graph_emb is not None:
             graph_emb = graph_emb.to(self.device)
         
-    return pov_emb, graph_emb
+        return pov_emb, graph_emb
+
     def forward(self, latents: torch.Tensor,
                 cond_pov: torch.Tensor | None,
                 cond_graph: torch.Tensor | None,
@@ -152,7 +154,10 @@ class DiffusionPipeline(nn.Module):
         """
         Training expects pre-computed embeddings for efficiency.
         """
-        layout, cond_pov_emb, cond_graph_emb = batch
+        layout = batch["layout"]
+        cond_pov_emb = batch["pov"]
+        cond_graph_emb = batch["graph"]
+        
         z = self.encode_layout(layout)
         t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device)
         noise = torch.randn_like(z)
@@ -185,11 +190,11 @@ class DiffusionPipeline(nn.Module):
         return loss
 
     def sample(self, batch_size: int, 
-            pov_raw=None, graph_raw=None,           
-            cond_pov_emb=None, cond_graph_emb=None, 
-            image=True, step=None, noise=None,
-            guidance_scale=1.0,                      # ✓ Add guidance support
-            num_steps=None):                         # ✓ Allow step override
+               pov_raw=None, graph_raw=None,           
+               cond_pov_emb=None, cond_graph_emb=None, 
+               image=True, step=None, noise=None,
+               guidance_scale=1.0,
+               num_steps=None):
         """
         Sample from the model.
         
@@ -226,12 +231,12 @@ class DiffusionPipeline(nn.Module):
         samples = self.diffusion.sample(
             batch_size=batch_size, 
             image=image,
-            cond=cond,                    # ✓ Mixed conditioning
-            num_steps=num_steps,          # ✓ Optional step override
-            device=self.device,           # ✓ Pass device
-            guidance_scale=guidance_scale,# ✓ Guidance scale
-            uncond_cond=uncond_cond,      # ✓ Unconditional for CFG
-            start_noise=noise             # ✓ Correct parameter name
+            cond=cond,
+            num_steps=num_steps,
+            device=self.device,
+            guidance_scale=guidance_scale,
+            uncond_cond=uncond_cond,
+            start_noise=noise
         )
 
         if self.logger is not None and step is not None:
@@ -278,7 +283,10 @@ class DiffusionPipeline(nn.Module):
         """
         Evaluation expects pre-computed embeddings.
         """
-        layout, cond_pov_emb, cond_graph_emb = val_batch
+        layout = val_batch["layout"]
+        cond_pov_emb = val_batch["pov"]
+        cond_graph_emb = val_batch["graph"]
+        
         samples = self.sample(num_samples, cond_pov_emb=cond_pov_emb, 
                             cond_graph_emb=cond_graph_emb, image=True)
         recon = self.autoencoder(layout.to(self.device))
