@@ -1,0 +1,46 @@
+
+dataset:
+  room_manifest: /work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
+  scene_manifest: /work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
+  data_mode: rooms_only     # one of: rooms_only, scenes_only, rooms_and_scenes
+  pov_type: seg                      # valid: seg, tex, or null
+  batch_size: 8
+  num_workers: 4
+  seed: 42
+
+model:
+  latent_base: 32                    # must match AE latent spatial size
+  mixer: mlp                         # linear or mlp
+  mixer_hidden_dim: 8192
+  embedders:
+    pov: resnet18                    # handled inside EmbedderManager
+    graph: sentence-transformers/all-MiniLM-L12-v2
+
+  autoencoder:
+    config: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8/autoencoder_config.yaml
+    ckpt: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8/checkpoints/ae_latest.pt
+
+  diffusion:
+    scheduler: cosine                # cosine or linear
+    num_steps: 400
+    latent_channels: 8               # must match AE latent channels
+    unet_config: /work3/s233249/ImgiNav/experiments/diffusion/diff_32x32x8_d3/checkpoints/unet_config.yaml
+
+training:
+  use_modalities: pov
+  epochs: 20
+  lr: 1e-4
+  grad_clip: 1.0
+  ema_decay: 0.999
+  mixed_precision: true
+
+  ckpt_dir: /work3/s233249/ImgiNav/experiments/Pipeline/LS32x32x8_RO/checkpoints
+  output_dir: /work3/s233249/ImgiNav/experiments/Pipeline/LS32x32x8_RO/outputs
+
+  eval_interval: 1000
+  sample_interval: 2000
+  log_interval: 100
+
+  cond_dropout_pov: 0.1
+  cond_dropout_graph: 0.1
+  cond_dropout_both: 0.05

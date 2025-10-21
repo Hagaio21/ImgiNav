@@ -83,6 +83,17 @@ class PipelineTrainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 layout, cond_pov, cond_graph = batch
 
+                # ---- modality control (from config) ----
+                modality = getattr(self, "use_modalities", "both")
+                if modality == "pov_only":
+                    cond_graph = None
+                elif modality == "graph_only":
+                    cond_pov = None
+                elif modality == "none":
+                    cond_pov = None
+                    cond_graph = None
+
+                # ---- stochastic dropout within selected modalities ----
                 if torch.rand(1).item() < self.cond_dropout_both:
                     cond_pov = None
                     cond_graph = None

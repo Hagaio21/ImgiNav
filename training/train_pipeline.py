@@ -25,11 +25,13 @@ def load_scheduler(name: str, num_steps: int):
     raise ValueError(f"Unknown scheduler type: {name}")
 
 
-def select_mixer(name: str, out_channels: int, latent_base: int, pov_dim: int, graph_dim: int):
+def select_mixer(name: str, out_channels: int, latent_base: int,
+                 pov_dim: int, graph_dim: int, hidden_dim_mlp: int | None = None):
     size = (latent_base, latent_base)
     name = name.lower()
     if name == "mlp":
-        return NonLinearConcatMixer(out_channels, size, pov_dim, graph_dim)
+        return NonLinearConcatMixer(out_channels, size, pov_dim, graph_dim,
+                                    hidden_dim_mlp=hidden_dim_mlp)
     return LinearConcatMixer(out_channels, size, pov_dim, graph_dim)
 
 
@@ -67,11 +69,13 @@ def build_pipeline(cfg, device):
 
     pov_dim = 512
     graph_dim = 384
+    hidden_dim_mlp = model_cfg.get("mixer_hidden_dim")
     mixer = select_mixer(model_cfg["mixer"],
-                         out_channels=diff_cfg["latent_channels"],
-                         latent_base=model_cfg.get("latent_base", 32),
-                         pov_dim=pov_dim,
-                         graph_dim=graph_dim).to(device)
+                        out_channels=diff_cfg["latent_channels"],
+                        latent_base=model_cfg.get("latent_base", 32),
+                        pov_dim=pov_dim,
+                        graph_dim=graph_dim,
+                        hidden_dim_mlp=hidden_dim_mlp).to(device)
 
     pipeline = DiffusionPipeline(
         autoencoder=autoencoder,
@@ -132,17 +136,31 @@ def main():
 
     trainer_cfg = cfg["training"]
     trainer = PipelineTrainer(
-        pipeline=pipeline,
-        output_dir=trainer_cfg["output_dir"],
-        ckpt_dir=trainer_cfg["ckpt_dir"],
-        lr=trainer_cfg["lr"],
-        grad_clip=trainer_cfg["grad_clip"],
-        ema_decay=trainer_cfg["ema_decay"],
-        mixed_precision=trainer_cfg["mixed_precision"]
+    pipeline=pipeline,
+    optimizer=None,
+    loss_fn=None,
+    epochs=trainer_cfg["epochs"],
+    lr=trainer_cfg["lr"],
+    weight_decay=trainer_cfg.get("weight_decay", 0.0),
+    grad_clip=trainer_cfg.get("grad_clip"),
+    log_interval=trainer_cfg.get("log_interval", 100),
+    eval_interval=trainer_cfg.get("eval_interval", 1000),
+    sample_interval=trainer_cfg.get("sample_interval", 2000),
+    ckpt_dir=trainer_cfg["ckpt_dir"],
+    output_dir=trainer_cfg["output_dir"],
+    mixed_precision=trainer_cfg.get("mixed_precision", False),
+    ema_decay=trainer_cfg.get("ema_decay"),
+    cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
+    cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
+    cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0)
     )
 
-    # training loop remains same, sampling handled in trainer
+    # ---- new line: modality control ----
+    trainer.use_modalities = trainer_cfg.get("use_modalities", "both")
+
+    # ---- run training ----
     trainer.fit(train_loader)
+
 
     save_dir = trainer_cfg["ckpt_dir"]
     os.makedirs(save_dir, exist_ok=True)
