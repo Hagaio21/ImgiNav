@@ -1,11 +1,13 @@
 # training/autoencoder_trainer.py
 import os
+import sys
 import json
 import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 import yaml
+from tqdm import tqdm
 
 
 class AutoEncoderTrainer:
@@ -44,61 +46,72 @@ class AutoEncoderTrainer:
         self.autoencoder.train()
         self.autoencoder.to(self.device)
         step = 0
+
         cfg_path = os.path.join(self.output_dir, "autoencoder_config.yaml")
         with open(cfg_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(self.autoencoder.to_config(), f)
-        print(f"[Config] Saved: {cfg_path}")
-        
-        print(f"Training autoencoder for {self.epochs} epochs on {self.device}")
+        print(f"[Config] Saved: {cfg_path}", flush=True)
+
+        print(f"Training autoencoder for {self.epochs} epochs on {self.device}", flush=True)
 
         for epoch in range(1, self.epochs + 1):
             epoch_loss = 0.0
 
-            for batch_idx, batch in enumerate(train_loader):
-                if isinstance(batch, dict):
-                    x = batch["layout"].to(self.device)
-                elif isinstance(batch, (list, tuple)):
-                    x = batch[0].to(self.device)
-                else:
-                    x = batch.to(self.device)
+            with tqdm(train_loader,
+                    desc=f"Epoch {epoch}/{self.epochs}",
+                    unit="batch",
+                    file=sys.stdout,
+                    ncols=100,
+                    dynamic_ncols=True,
+                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
 
-                recon = self.autoencoder(x)
-                loss = self.loss_fn(recon, x)
+                for batch_idx, batch in enumerate(pbar):
+                    if isinstance(batch, dict):
+                        x = batch["layout"].to(self.device)
+                    elif isinstance(batch, (list, tuple)):
+                        x = batch[0].to(self.device)
+                    else:
+                        x = batch.to(self.device)
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                    recon = self.autoencoder(x)
+                    loss = self.loss_fn(recon, x)
 
-                epoch_loss += loss.item()
-                step += 1
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    self.optimizer.step()
 
-                if step % self.log_interval == 0:
-                    print(f"[Epoch {epoch}] Step {step} | Loss: {loss.item():.6f}")
-                    self.metric_log.append({
-                        "epoch": epoch,
-                        "step": step,
-                        "train_loss": loss.item(),
-                    })
+                    epoch_loss += loss.item()
+                    step += 1
 
-                if self.sample_interval and step % self.sample_interval == 0:
-                    self._save_sample(x, recon, step)
+                    if step % self.log_interval == 0:
+                        pbar.write(f"[Epoch {epoch}] Step {step} | Loss: {loss.item():.6f}")
+                        self.metric_log.append({
+                            "epoch": epoch,
+                            "step": step,
+                            "train_loss": loss.item(),
+                        })
+
+                    if self.sample_interval and step % self.sample_interval == 0:
+                        self._save_sample(x, recon, step)
+
+                    pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
             avg_epoch_loss = epoch_loss / len(train_loader)
-            print(f"[Epoch {epoch}] Average training loss: {avg_epoch_loss:.6f}")
+            print(f"[Epoch {epoch}] Average training loss: {avg_epoch_loss:.6f}", flush=True)
 
             val_loss = None
             if val_loader is not None and (self.eval_interval and epoch % self.eval_interval == 0):
-                val_loss = self.evaluate(val_loader)
-                print(f"[Epoch {epoch}] Validation loss: {val_loss:.6f}")
+                val_loss = self.evaluate(val_loader, epoch)
+                print(f"[Epoch {epoch}] Validation loss: {val_loss:.6f}", flush=True)
 
             self._save_checkpoint(epoch)
             self._update_loss_plot()
             self._save_metrics()
 
-        print("Autoencoder training complete.")
+        print("Autoencoder training complete.", flush=True)
 
     @torch.no_grad()
-    def evaluate(self, val_loader: DataLoader):
+    def evaluate(self, val_loader: DataLoader, epoch: int):
         self.autoencoder.eval()
         total_loss = 0.0
         n = 0
@@ -117,7 +130,7 @@ class AutoEncoderTrainer:
             n += 1
 
         avg_val = total_loss / max(n, 1)
-        self.metric_log.append({"epoch": len(self.metric_log), "val_loss": avg_val})
+        self.metric_log.append({"epoch": epoch, "val_loss": avg_val})
         self.autoencoder.train()
         return avg_val
 

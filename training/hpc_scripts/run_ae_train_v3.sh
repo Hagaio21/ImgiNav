@@ -14,8 +14,8 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/train_ae.py"
-CONFIG_FILE="${BASE_DIR}/config/architecture/autoencoders/ae_config.yml"
+PYTHON_SCRIPT="${BASE_DIR}/training/train_ae.py"
+CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/ae_config_64x64x4.yml"
 
 # =============================================================================
 # MODULES
