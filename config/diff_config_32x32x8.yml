@@ -12,6 +12,7 @@ model:
   latent_channels: 8         # must match autoencoder latent_channels
   base_channels: 32          # UNet width
   depth: 3                   # UNet depth (ensure 2^depth <= latent_base)
+  time_dim: 256
   scheduler: cosine          # cosine or linear
   num_steps: 400
   norm: batch

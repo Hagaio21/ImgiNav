@@ -164,12 +164,20 @@ class LatentDiffusion(nn.Module):
         from modules.unet import UNet
         from modules.scheduler import LinearScheduler, CosineScheduler
 
+        # --- Load YAML ---
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
-        # --- normalize config ---
+        # --- unwrap 'model' wrapper if present ---
+        if "model" in cfg:
+            model_cfg = cfg["model"]
+            if "encoder" in model_cfg:
+                cfg["autoencoder"] = model_cfg["encoder"]
+            if "unet" in model_cfg:
+                cfg["unet"] = model_cfg["unet"]
+
+        # --- normalize flat format ---
         if "autoencoder_config" in cfg:
-            # flat format
             cfg = {
                 "latent": {
                     "channels": cfg["latent_channels"],
@@ -189,23 +197,25 @@ class LatentDiffusion(nn.Module):
                 },
             }
 
+        # --- normalize inline nested format ---
         elif "autoencoder" in cfg and "encoder" in cfg["autoencoder"]:
-            # already fully nested inline format
             cfg = {
                 "latent": {
-                    "channels": cfg["unet"]["in_channels"],
-                    "base": cfg["autoencoder"]["encoder"]["latent_base"],
+                    "channels": cfg["unet"]["latent_channels"],
+                    "base": 64,  # safe default latent_base; adjust if needed
                 },
                 "scheduler": {
-                    "type": "CosineScheduler" if cfg.get("scheduler", "cosine").lower() == "cosine" else "LinearScheduler",
-                    "num_steps": cfg.get("num_steps", 1000),
+                    "type": "CosineScheduler"
+                    if cfg["unet"].get("scheduler", "cosine").lower() == "cosine"
+                    else "LinearScheduler",
+                    "num_steps": cfg["unet"].get("num_steps", 400),
                 },
                 "autoencoder": {
-                    "config": cfg["autoencoder"],  # direct dict for construction
-                    "checkpoint": None,
+                    "config": cfg["autoencoder"]["autoencoder_config"],
+                    "checkpoint": cfg["autoencoder"]["autoencoder_ckpt"],
                 },
                 "unet": {
-                    "config": {"unet": cfg["unet"]},  # wrap to match UNet.from_config
+                    "config": {"unet": cfg["unet"]},
                     "checkpoint": None,
                 },
             }
@@ -218,10 +228,7 @@ class LatentDiffusion(nn.Module):
         # --- Autoencoder ---
         ae_cfg = cfg["autoencoder"]["config"]
         ae_ckpt = cfg["autoencoder"].get("checkpoint")
-        if isinstance(ae_cfg, (str, Path)):
-            autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
-        else:
-            autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
+        autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
         if ae_ckpt and Path(ae_ckpt).exists():
             ae_state = torch.load(ae_ckpt, map_location=device)
             autoencoder.load_state_dict(ae_state["model"] if "model" in ae_state else ae_state)
@@ -230,6 +237,7 @@ class LatentDiffusion(nn.Module):
         # --- UNet ---
         unet_cfg = cfg["unet"]["config"]
         unet_ckpt = cfg["unet"].get("checkpoint")
+
         if isinstance(unet_cfg, (str, Path)) and Path(unet_cfg).exists():
             with open(unet_cfg, "r", encoding="utf-8") as f:
                 unet_cfg = yaml.safe_load(f)
@@ -238,6 +246,7 @@ class LatentDiffusion(nn.Module):
             unet = UNet(**unet_cfg).to(device)
         else:
             unet = UNet.from_config(unet_cfg).to(device)
+
         if unet_ckpt and Path(unet_ckpt).exists():
             state = torch.load(unet_ckpt, map_location=device)
             if "state_dict" in state:
@@ -250,6 +259,5 @@ class LatentDiffusion(nn.Module):
         H = W = cfg["latent"]["base"]
 
         return cls(unet=unet, scheduler=scheduler, autoencoder=autoencoder, latent_shape=(C, H, W)).to(device)
-
 
 
