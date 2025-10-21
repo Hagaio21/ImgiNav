@@ -59,6 +59,7 @@ class DiffusionPipeline(nn.Module):
                  unet: UNet,
                  mixer: BaseMixer,
                  scheduler,
+                 embedder_manager=None,  # ✓ Add embedder
                  device: str = "cuda" if torch.cuda.is_available() else "cpu",
                  logger=None):
         super().__init__()
@@ -67,6 +68,7 @@ class DiffusionPipeline(nn.Module):
         self.unet = unet.to(device)
         self.mixer = mixer.to(device)
         self.scheduler = scheduler
+        self.embedder_manager = embedder_manager  # ✓ Store embedder
         self.logger = logger
         self.diffusion = None
         self._build_diffusion()
@@ -85,8 +87,59 @@ class DiffusionPipeline(nn.Module):
         with torch.no_grad():
             return self.autoencoder.encode_latent(layout.to(self.device))
 
-
-
+    def _prepare_conditions(self, pov_raw=None, graph_raw=None, 
+                        cond_pov_emb=None, cond_graph_emb=None):
+        """
+        Convert raw inputs to embeddings if needed.
+        """
+        # If embeddings already provided, use them directly:
+        if cond_pov_emb is not None or cond_graph_emb is not None:
+            return cond_pov_emb, cond_graph_emb
+        
+        pov_emb = None
+        graph_emb = None
+        
+        if pov_raw is not None and self.embedder_manager is not None:
+            # Handle single image
+            if isinstance(pov_raw, Image.Image):
+                pov_emb = self.embedder_manager.embed_pov(pov_raw).unsqueeze(0)
+            # Handle tensor (single or batch)
+            elif isinstance(pov_raw, torch.Tensor):
+                if len(pov_raw.shape) == 3:  # Single [C,H,W]
+                    # Convert to PIL for embedder
+                    from torchvision.transforms import ToPILImage
+                    pov_pil = ToPILImage()(pov_raw.cpu())
+                    pov_emb = self.embedder_manager.embed_pov(pov_pil).unsqueeze(0)
+                else:  # Batch [B,C,H,W]
+                    pov_embs = []
+                    from torchvision.transforms import ToPILImage
+                    to_pil = ToPILImage()
+                    for i in range(pov_raw.size(0)):
+                        pov_pil = to_pil(pov_raw[i].cpu())
+                        pov_embs.append(self.embedder_manager.embed_pov(pov_pil))
+                    pov_emb = torch.stack(pov_embs)
+            # Handle list of images
+            elif isinstance(pov_raw, (list, tuple)):
+                pov_emb = torch.stack([
+                    self.embedder_manager.embed_pov(img) for img in pov_raw
+                ])
+        
+        if graph_raw is not None and self.embedder_manager is not None:
+            if isinstance(graph_raw, str):
+                # Single path
+                graph_emb = self.embedder_manager.embed_graph(graph_raw).unsqueeze(0)
+            elif isinstance(graph_raw, (list, tuple)):
+                # Batch of paths
+                graph_emb = torch.stack([
+                    self.embedder_manager.embed_graph(path) for path in graph_raw
+                ])
+        
+        if pov_emb is not None:
+            pov_emb = pov_emb.to(self.device)
+        if graph_emb is not None:
+            graph_emb = graph_emb.to(self.device)
+        
+    return pov_emb, graph_emb
     def forward(self, latents: torch.Tensor,
                 cond_pov: torch.Tensor | None,
                 cond_graph: torch.Tensor | None,
@@ -96,13 +149,16 @@ class DiffusionPipeline(nn.Module):
         return noise_pred
 
     def training_step(self, batch, loss_fn, step=None):
-        layout, cond_pov, cond_graph = batch
+        """
+        Training expects pre-computed embeddings for efficiency.
+        """
+        layout, cond_pov_emb, cond_graph_emb = batch
         z = self.encode_layout(layout)
         t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device)
         noise = torch.randn_like(z)
         z_noisy = self.scheduler.add_noise(z, noise, t)
 
-        cond = self.mixer([cond_pov, cond_graph])
+        cond = self.mixer([cond_pov_emb, cond_graph_emb])
         noise_pred = self.unet(z_noisy, t, cond)
 
         loss = loss_fn(noise_pred, noise)
@@ -111,7 +167,7 @@ class DiffusionPipeline(nn.Module):
             log = {"loss": loss.item(), "timestep": t.float().mean().item()}
 
             # correlation and cosine
-            corr = compute_condition_correlation(noise_pred.detach(), [cond_pov, cond_graph])
+            corr = compute_condition_correlation(noise_pred.detach(), [cond_pov_emb, cond_graph_emb])
             for k, v in corr.items():
                 log[f"corr_{k}"] = v
             cos = F.cosine_similarity(noise_pred.flatten(1), noise.flatten(1)).mean().item()
@@ -128,24 +184,74 @@ class DiffusionPipeline(nn.Module):
 
         return loss
 
-    def sample(self, batch_size: int, cond_pov=None, cond_graph=None, image=True, step=None):
+    def sample(self, batch_size: int, 
+            pov_raw=None, graph_raw=None,           
+            cond_pov_emb=None, cond_graph_emb=None, 
+            image=True, step=None, noise=None,
+            guidance_scale=1.0,                      # ✓ Add guidance support
+            num_steps=None):                         # ✓ Allow step override
+        """
+        Sample from the model.
+        
+        Args:
+            batch_size: Number of samples to generate
+            pov_raw: Raw POV image(s) - PIL Image, tensor, or list
+            graph_raw: Raw graph path(s) - string or list of strings
+            cond_pov_emb: Pre-computed POV embedding (for efficiency during training)
+            cond_graph_emb: Pre-computed graph embedding (for efficiency during training)
+            image: If True, decode latents to images
+            step: Current training step (for logging)
+            noise: Optional fixed noise for reproducibility
+            guidance_scale: Classifier-free guidance scale (1.0 = no guidance)
+            num_steps: Optional override for number of diffusion steps
+        """
         if self.diffusion is None:
             self._build_diffusion()
 
+        # Step 1: Embed raw inputs if provided
+        cond_pov, cond_graph = self._prepare_conditions(
+            pov_raw, graph_raw, cond_pov_emb, cond_graph_emb
+        )
+        
+        # Step 2: Mix conditions into the format expected by UNet
         cond = self.mixer([cond_pov, cond_graph]) if (cond_pov is not None or cond_graph is not None) else None
-        samples = self.diffusion.sample(batch_size=batch_size, cond=cond, image=image)
+        
+        # Step 3: Prepare unconditional embedding for classifier-free guidance
+        uncond_cond = None
+        if guidance_scale != 1.0 and cond is not None:
+            # Create unconditional embedding (all zeros or null conditions)
+            uncond_cond = self.mixer([None, None])
+        
+        # Step 4: Pass to diffusion denoising loop
+        samples = self.diffusion.sample(
+            batch_size=batch_size, 
+            image=image,
+            cond=cond,                    # ✓ Mixed conditioning
+            num_steps=num_steps,          # ✓ Optional step override
+            device=self.device,           # ✓ Pass device
+            guidance_scale=guidance_scale,# ✓ Guidance scale
+            uncond_cond=uncond_cond,      # ✓ Unconditional for CFG
+            start_noise=noise             # ✓ Correct parameter name
+        )
 
         if self.logger is not None and step is not None:
             self.logger.log({"sample_preview": samples}, step=step)
 
         return samples
-    
+
     def to(self, device):
         """Move all submodules to target device."""
         self.device = device
         self.autoencoder.to(device)
         self.unet.to(device)
         self.mixer.to(device)
+        if self.embedder_manager is not None:
+            # Move embedder models if needed
+            if hasattr(self.embedder_manager, 'resnet'):
+                self.embedder_manager.resnet.to(device)
+            if hasattr(self.embedder_manager, 'graph_encoder'):
+                self.embedder_manager.graph_encoder.to(device)
+            self.embedder_manager.device = device
         if self.diffusion is not None:
             self.diffusion.to(device)
         return self
@@ -155,6 +261,12 @@ class DiffusionPipeline(nn.Module):
         self.unet.train(mode)
         self.mixer.train(mode)
         self.autoencoder.eval()  # always frozen
+        if self.embedder_manager is not None:
+            # Embedders always in eval mode
+            if hasattr(self.embedder_manager, 'resnet'):
+                self.embedder_manager.resnet.eval()
+            if hasattr(self.embedder_manager, 'graph_encoder'):
+                self.embedder_manager.graph_encoder.eval()
         return self
 
     def eval(self):
@@ -163,8 +275,12 @@ class DiffusionPipeline(nn.Module):
         
     @torch.no_grad()
     def evaluate(self, val_batch, num_samples=8, step=None):
-        layout, cond_pov, cond_graph = val_batch
-        samples = self.sample(num_samples, cond_pov, cond_graph, image=True)
+        """
+        Evaluation expects pre-computed embeddings.
+        """
+        layout, cond_pov_emb, cond_graph_emb = val_batch
+        samples = self.sample(num_samples, cond_pov_emb=cond_pov_emb, 
+                            cond_graph_emb=cond_graph_emb, image=True)
         recon = self.autoencoder(layout.to(self.device))
 
         metrics = {

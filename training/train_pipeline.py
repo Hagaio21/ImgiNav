@@ -51,7 +51,7 @@ def build_dataloader(cfg):
     )
 
 
-def build_pipeline(cfg, device):
+def build_pipeline(cfg, device, embedder_manager):  # ✓ Accept embedder
     model_cfg = cfg["model"]
     ae_cfg = model_cfg["autoencoder"]
     autoencoder = AutoEncoder.from_config(ae_cfg["config"]).to(device)
@@ -82,10 +82,10 @@ def build_pipeline(cfg, device):
         unet=unet,
         mixer=mixer,
         scheduler=scheduler,
+        embedder_manager=embedder_manager,  # ✓ Pass embedder
         device=device
     )
     return pipeline
-
 
 class EmbedderManager:
     def __init__(self, pov_name: str, graph_name: str, device):
@@ -129,7 +129,7 @@ def main():
     torch.manual_seed(cfg["dataset"].get("seed", 42))
 
     train_loader = build_dataloader(cfg["dataset"])
-    pipeline = build_pipeline(cfg, device)
+    pipeline = build_pipeline(cfg, device, embed)
     embed = EmbedderManager(cfg["model"]["embedders"]["pov"],
                             cfg["model"]["embedders"]["graph"],
                             device)

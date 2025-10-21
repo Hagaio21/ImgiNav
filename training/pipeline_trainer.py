@@ -150,25 +150,26 @@ class PipelineTrainer:
         self.pipeline.eval()
         layout, pov_img, graph_path = batch
 
-        # initialize fixed noise once
         if self.fixed_noise is None:
             latent_shape = (sample_num, self.pipeline.scheduler.latent_channels,
                             self.pipeline.scheduler.latent_base,
                             self.pipeline.scheduler.latent_base)
             self.fixed_noise = torch.randn(latent_shape, device=self.device)
 
-        # conditioned samples
-        cond_dir = os.path.join(self.output_dir, "samples", "condition", str(sample_num))
+        # ✓ Use step in directory name to avoid overwriting
+        cond_dir = os.path.join(self.output_dir, "samples", "conditioned", f"step_{step}")
         os.makedirs(cond_dir, exist_ok=True)
 
         for i in range(min(sample_num, len(layout))):
-            item_dir = os.path.join(cond_dir, f"{i}")
+            item_dir = os.path.join(cond_dir, f"sample_{i}")
             os.makedirs(item_dir, exist_ok=True)
 
             pov_path = os.path.join(item_dir, "pov.png")
             target_path = os.path.join(item_dir, "target.png")
             graph_txt = os.path.join(item_dir, "graph.txt")
+            generated_path = os.path.join(item_dir, "generated.png")
 
+            # Save inputs (only need to save once, but small overhead)
             if isinstance(pov_img, torch.Tensor):
                 save_image(pov_img[i], pov_path, normalize=True, value_range=(0, 1))
             elif isinstance(pov_img[i], Image.Image):
@@ -178,25 +179,25 @@ class PipelineTrainer:
             with open(graph_txt, "w", encoding="utf-8") as f:
                 f.write(graph2text(graph_path[i]))
 
+            # Generate and save
             cond_sample = self.pipeline.sample(
                 batch_size=1,
+                pov_raw=pov_img[i],
+                graph_raw=graph_path[i],
                 image=True,
-                noise=self.fixed_noise[i].unsqueeze(0),
-                pov=pov_img[i:i+1],
-                graph_path=graph_path[i]
+                noise=self.fixed_noise[i].unsqueeze(0)
             )
-            save_image(cond_sample, os.path.join(item_dir, f"generated_sample_{step}.png"),
-                       normalize=True, value_range=(0, 1))
+            save_image(cond_sample, generated_path, normalize=True, value_range=(0, 1))
 
-        # unconditioned samples
+        # Unconditioned samples
         uncond_dir = os.path.join(self.output_dir, "samples", "unconditioned")
         os.makedirs(uncond_dir, exist_ok=True)
         uncond_samples = self.pipeline.sample(
             batch_size=sample_num, image=True, noise=self.fixed_noise
         )
         save_image(uncond_samples,
-                   os.path.join(uncond_dir, f"generated_sample_{step}.png"),
-                   nrow=2, normalize=True, value_range=(0, 1))
+                os.path.join(uncond_dir, f"step_{step}.png"),  # ✓ Include step
+                nrow=2, normalize=True, value_range=(0, 1))
         print(f"[Step {step}] Saved conditioned and unconditioned samples.")
 
     def save_checkpoint(self, path):
