@@ -5,16 +5,18 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import models, transforms
 from sentence_transformers import SentenceTransformer
-from unified_dataset import UnifiedLayoutDataset, collate_fn
-from autoencoder import AutoEncoder
-from unet import UNet
-from condition_mixer import LinearConcatMixer, NonLinearConcatMixer
+from modules.unified_dataset import UnifiedLayoutDataset, collate_fn
+from modules.autoencoder import AutoEncoder
+from modules.unet import UNet
+from modules.condition_mixer import LinearConcatMixer, NonLinearConcatMixer
 from pipeline import DiffusionPipeline
 from pipeline_trainer import PipelineTrainer
 from modules.scheduler import LinearScheduler, CosineScheduler
-from stage8_create_graph_embeddings import graph2text
+from utils.utlis import graph2text, load_taxonomy
 import torch.nn as nn
 
+TAXONOMY_PATH = r"C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\config\taxonomy.json"
+TAXONOMY = load_taxonomy(TAXONOMY_PATH)
 
 def load_scheduler(name: str, num_steps: int):
     name = name.lower()
@@ -114,7 +116,7 @@ class EmbedderManager:
         if graph_path in self.cache:
             text = self.cache[graph_path]
         else:
-            text = graph2text(graph_path)
+            text = graph2text(graph_path, TAXONOMY)
             self.cache[graph_path] = text
         emb = self.graph_encoder.encode([text], convert_to_tensor=True, device=self.device)
         return emb.squeeze(0)
@@ -164,6 +166,7 @@ def main():
         cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
         cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
         cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
+        taxonomy=TAXONOMY,
         use_modalities=trainer_cfg.get("use_modalities", "both")
     )
 

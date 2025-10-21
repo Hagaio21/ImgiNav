@@ -4,10 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 
-from autoencoder import AutoEncoder
-from diffusion import LatentDiffusion
-from unet import UNet
-from condition_mixer import BaseMixer
+from modules.autoencoder import AutoEncoder
+from modules.diffusion import LatentDiffusion
+from modules.unet import UNet
+from modules.condition_mixer import BaseMixer
 
 
 # --- metrics helpers ---
@@ -146,7 +146,7 @@ class DiffusionPipeline(nn.Module):
                 cond_pov: torch.Tensor | None,
                 cond_graph: torch.Tensor | None,
                 timesteps: torch.Tensor):
-        cond = self.mixer([cond_pov, cond_graph])
+        cond = self.mixer([cond_pov, cond_graph], B_hint=latents.shape[0], device_hint=latents.device)
         noise_pred = self.unet(latents, timesteps, cond)
         return noise_pred
 
@@ -180,13 +180,13 @@ class DiffusionPipeline(nn.Module):
         )
         
         # Step 2: Mix conditions into the format expected by UNet
-        cond = self.mixer([cond_pov, cond_graph]) if (cond_pov is not None or cond_graph is not None) else None
+        cond = self.mixer([cond_pov, cond_graph], B_hint=batch_size, device_hint=self.device) if (cond_pov is not None or cond_graph is not None) else None
         
         # Step 3: Prepare unconditional embedding for classifier-free guidance
         uncond_cond = None
         if guidance_scale != 1.0 and cond is not None:
             # Create unconditional embedding (all zeros or null conditions)
-            uncond_cond = self.mixer([None, None])
+            uncond_cond = self.mixer([None, None], B_hint=batch_size, device_hint=self.device)
         
         # Step 4: Pass to diffusion denoising loop
         samples = self.diffusion.sample(

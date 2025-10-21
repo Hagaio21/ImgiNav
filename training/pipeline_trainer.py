@@ -4,10 +4,9 @@ from tqdm import tqdm
 from torchvision.utils import save_image
 import os
 from PIL import Image
-from stage8_create_graph_embeddings import graph2text
+from utils.utlis import graph2text, load_taxonomy
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-
 
 def compute_condition_correlation(pred, conds):
     result = {}
@@ -52,11 +51,14 @@ class PipelineTrainer:
                  cond_dropout_pov=0.1,
                  cond_dropout_graph=0.1,
                  cond_dropout_both=0.0,
+                 taxonomy = None,
                  use_modalities="both"):
+        
         self.pipeline = pipeline.to(pipeline.device)
         self.device = pipeline.device
         self.logger = logger
         self.sample_loader = sample_loader
+        self.taxonomy = taxonomy
 
         self.loss_fn = loss_fn or torch.nn.MSELoss()
         self.epochs = epochs
@@ -125,7 +127,7 @@ class PipelineTrainer:
         noise = torch.randn_like(z)
         z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
 
-        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb])
+        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb], B_hint=z_noisy.shape[0], device_hint=z_noisy.device)
         noise_pred = self.pipeline.unet(z_noisy, t, cond)
 
         loss = self.loss_fn(noise_pred, noise)
@@ -301,7 +303,7 @@ class PipelineTrainer:
         t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device=self.device)
         noise = torch.randn_like(z)
         z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
-        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb])
+        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb], B_hint=z_noisy.shape[0], device_hint=z_noisy.device)
         noise_pred = self.pipeline.unet(z_noisy, t, cond)
         val_loss = self.loss_fn(noise_pred, noise)
         
@@ -355,7 +357,7 @@ class PipelineTrainer:
             save_image(layout[i], target_path, normalize=True, value_range=(0, 1))
             with open(graph_txt, "w", encoding="utf-8") as f:
                 if isinstance(graph_path[i], str):
-                    f.write(graph2text(graph_path[i]))
+                    f.write(graph2text(graph_path[i]),self.taxonomy)
                 else:
                     f.write(str(graph_path[i]))
 

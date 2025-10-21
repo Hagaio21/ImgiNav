@@ -58,23 +58,28 @@ class BaseMixer(nn.Module):
         self.pov_projector: nn.Module = nn.Identity()
         self.graph_projector: nn.Module = nn.Identity()
 
-    def _get_batch_size_and_device(self, *conds) -> tuple[int, torch.device]:
+    def _get_batch_size_and_device(self, *conds, B_hint=None, device_hint=None) -> tuple[int, torch.device]:
         """Determines batch size and device from the first available tensor."""
         for c in conds:
             if c is not None:
                 return c.shape[0], c.device
-        
+
         # Fallback if all conditions are None (e.g. full dropout)
+        if B_hint is not None and device_hint is not None:
+            return B_hint, device_hint
+
         try:
-            device = next(self.parameters()).device
+            device = device_hint or next(self.parameters()).device
         except StopIteration:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        # If we *still* have no tensor, we can't know the batch size.
-        # This should ideally not be hit if data is always present.
+            device = device_hint or ('cuda' if torch.cuda.is_available() else 'cpu')
+
+        if B_hint is not None:
+            return B_hint, device
+
         print("Warning: Mixer could not determine batch size from inputs. Defaulting to B=1.")
         return 1, device
-    
+
+
     def _project_and_reshape(self, x: Optional[torch.Tensor], projector: nn.Module, 
                                 out_channels_branch: int, B: int, device: torch.device) -> torch.Tensor:
             """
@@ -148,6 +153,7 @@ class LinearConcatMixer(BaseMixer):
              print(f"LinearConcatMixer: Creating Linear Graph projector ({self.graph_channels} -> {graph_target_dim})", flush=True)
              self.graph_projector = nn.Linear(self.graph_channels, graph_target_dim, bias=False)
 
+
     def forward(self, conds: list[Optional[torch.Tensor]], weights=None) -> torch.Tensor:
         pov, graph = conds
         B, device = self._get_batch_size_and_device(pov, graph)
@@ -162,7 +168,7 @@ class LinearConcatMixer(BaseMixer):
         out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=-1.0)
         std = out.std(dim=(1, 2, 3), keepdim=True)
         std = torch.clamp(std, min=1e-5, max=1e5)
-        out = (out / std) * 3.0
+        out = (out / std) 
         out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=-1.0)
 
         return out
@@ -191,9 +197,9 @@ class NonLinearConcatMixer(BaseMixer):
              self.graph_projector = ProjectionMLP(self.graph_channels, graph_target_dim, hidden_dim=hidden_dim_mlp)
 
 
-    def forward(self, conds: list[Optional[torch.Tensor]], weights=None) -> torch.Tensor:
+    def forward(self, conds: list[Optional[torch.Tensor]], B_hint=None, device_hint=None, weights=None) -> torch.Tensor:
         pov, graph = conds
-        B, device = self._get_batch_size_and_device(pov, graph)
+        B, device = self._get_batch_size_and_device(pov, graph, B_hint=B_hint, device_hint=device_hint)
 
         pov_out = self._project_and_reshape(pov, self.pov_projector, self.pov_out_channels, B, device)
         graph_out = self._project_and_reshape(graph, self.graph_projector, self.graph_out_channels, B, device)
@@ -205,7 +211,7 @@ class NonLinearConcatMixer(BaseMixer):
         out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=-1.0)
         std = out.std(dim=(1, 2, 3), keepdim=True)
         std = torch.clamp(std, min=1e-5, max=1e5)
-        out = (out / std) * 3.0
+        out = (out / std)
         out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=-1.0)
 
         return out
