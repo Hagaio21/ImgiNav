@@ -336,9 +336,8 @@ class PipelineTrainer:
 
         # Initialize fixed noise once
         if self.fixed_noise is None:
-            latent_shape = (sample_num, self.pipeline.scheduler.latent_channels,
-                            self.pipeline.scheduler.latent_base,
-                            self.pipeline.scheduler.latent_base)
+            C, H, W = self.pipeline.diffusion.latent_shape
+            latent_shape = (sample_num, C, H, W)
             self.fixed_noise = torch.randn(latent_shape, device=self.device)
 
         # Use step in directory name to avoid overwriting
@@ -363,9 +362,10 @@ class PipelineTrainer:
             save_image(layout[i], target_path, normalize=True, value_range=(0, 1))
             with open(graph_txt, "w", encoding="utf-8") as f:
                 if isinstance(graph_path[i], str):
-                    f.write(graph2text(graph_path[i]),self.taxonomy)
+                    f.write(graph2text(graph_path[i], taxonomy=self.taxonomy))
                 else:
                     f.write(str(graph_path[i]))
+
 
             # Generate and save
             cond_sample = self.pipeline.sample(

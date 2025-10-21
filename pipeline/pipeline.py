@@ -8,7 +8,7 @@ from modules.autoencoder import AutoEncoder
 from modules.diffusion import LatentDiffusion
 from modules.unet import UNet
 from modules.condition_mixer import BaseMixer
-
+from torch.linalg import matrix_power
 
 # --- metrics helpers ---
 def compute_condition_correlation(pred, conds):
@@ -44,12 +44,35 @@ def compute_diversity(samples):
     return dist.mean().item()
 
 
-# placeholder FID proxy
 def compute_fid(a, b):
-    mu1, mu2 = a.mean(0), b.mean(0)
-    cov1, cov2 = torch.cov(a.T), torch.cov(b.T)
-    diff = (mu1 - mu2).pow(2).sum().sqrt()
-    cov_diff = torch.trace(cov1 + cov2 - 2 * (cov1 @ cov2).sqrt())
+    # --- FIX: Flatten from [B, C, H, W] to [B, D_flat] ---
+    a_flat = a.flatten(1)
+    b_flat = b.flatten(1)
+    
+    # Calculate means (shape [D_flat])
+    mu1 = a_flat.mean(dim=0)
+    mu2 = b_flat.mean(dim=0)
+    
+    # Calculate covariance matrices (shape [D_flat, D_flat])
+    # torch.cov expects [D, N], so we transpose [B, D] -> [D, B]
+    cov1 = torch.cov(a_flat.T)
+    cov2 = torch.cov(b_flat.T)
+    
+    # L2 norm of mean difference
+    diff = (mu1 - mu2).pow(2).sum().sqrt() 
+    
+    try:
+        # --- FIX: Use proper matrix square root ---
+        # Calculate the trace term: Tr(cov1 + cov2 - 2 * (cov1 @ cov2)^(1/2))
+        cov_prod_sqrt = matrix_power(cov1 @ cov2, 0.5)
+        
+        # The result can be complex, we need the real part of the trace
+        cov_diff = torch.trace(cov1 + cov2 - 2 * cov_prod_sqrt).real
+    except Exception as e:
+        # Fallback if linalg fails (e.g., singular matrix)
+        print(f"Warning: FID covariance calculation failed: {e}. Returning mean diff only.")
+        cov_diff = torch.tensor(0.0, device=a.device)
+
     return (diff + cov_diff).item()
 
 
@@ -156,21 +179,7 @@ class DiffusionPipeline(nn.Module):
                image=True, step=None, noise=None,
                guidance_scale=1.0,
                num_steps=None):
-        """
-        Sample from the model.
-        
-        Args:
-            batch_size: Number of samples to generate
-            pov_raw: Raw POV image(s) - PIL Image, tensor, or list
-            graph_raw: Raw graph path(s) - string or list of strings
-            cond_pov_emb: Pre-computed POV embedding (for efficiency during training)
-            cond_graph_emb: Pre-computed graph embedding (for efficiency during training)
-            image: If True, decode latents to images
-            step: Current training step (for logging)
-            noise: Optional fixed noise for reproducibility
-            guidance_scale: Classifier-free guidance scale (1.0 = no guidance)
-            num_steps: Optional override for number of diffusion steps
-        """
+
         if self.diffusion is None:
             self._build_diffusion()
 
@@ -180,7 +189,7 @@ class DiffusionPipeline(nn.Module):
         )
         
         # Step 2: Mix conditions into the format expected by UNet
-        cond = self.mixer([cond_pov, cond_graph], B_hint=batch_size, device_hint=self.device) if (cond_pov is not None or cond_graph is not None) else None
+        cond = self.mixer([cond_pov, cond_graph], B_hint=batch_size, device_hint=self.device)
         
         # Step 3: Prepare unconditional embedding for classifier-free guidance
         uncond_cond = None
@@ -277,7 +286,8 @@ class DiffusionPipeline(nn.Module):
                             cond_graph_emb=cond_graph_emb, image=True)
         
         # Use the (potentially resized) layout tensor for recon and FID
-        recon = self.autoencoder(layout.to(self.device))
+        recon_output = self.autoencoder(layout.to(self.device))
+        recon = recon_output[0] if isinstance(recon_output, tuple) else recon_output
 
         metrics = {
             "psnr": compute_psnr(recon, layout.to(self.device)), # ensure layout is on device

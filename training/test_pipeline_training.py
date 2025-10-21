@@ -295,13 +295,13 @@ def test_training():
         
         # Build mixer
         mixer = LinearConcatMixer(
-            out_channels=diff_cfg["latent_channels"],
-            target_size=(config["model"]["latent_base"], config["model"]["latent_base"]),
-            pov_channels=512,
-            graph_channels=384
-        ).to(device)
-        print("[Test] Created mixer")
+                out_channels=diff_cfg["latent_channels"],  # 4
+                target_size=(config["model"]["latent_base"], config["model"]["latent_base"]),  # (32, 32)
+                pov_channels=512,
+                graph_channels=384).to(device)
         
+        print("[Test] Created mixer")
+        print(f"[INFO]: mixer target size ->  {mixer.target_size}")
         # Build pipeline
         pipeline = DiffusionPipeline(
             autoencoder=autoencoder,
@@ -312,7 +312,8 @@ def test_training():
             device=device
         )
         print("[Test] Created pipeline")
-        
+        dataset_cfg = config["dataset"]
+        taxonomy_path = dataset_cfg["taxonomy_path"]
         # Build trainer
         trainer_cfg = config["training"]
         trainer = PipelineTrainer(
@@ -334,7 +335,8 @@ def test_training():
             cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
             cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
             cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
-            use_modalities=trainer_cfg.get("use_modalities", "both")
+            use_modalities=trainer_cfg.get("use_modalities", "both"),
+            taxonomy=taxonomy_path,
         )
         print("[Test] Created trainer")
         
