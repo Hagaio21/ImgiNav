@@ -7,8 +7,8 @@ dataset:
   seed: 42
 
 model:
-  autoencoder_config: "/work3/s233249/ImgiNav/experiments/autoencoder_512_32x32x8/checkpoints/model_config.yaml"
-  autoencoder_ckpt: "/work3/s233249/ImgiNav/experiments/autoencoder_512_32x32x8/checkpoints/ae_epoch_50.pt"
+  autoencoder_config: "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8/autoencoder_config.yaml"
+  autoencoder_ckpt: "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8/checkpoints/ae_epoch_28.pt"
   latent_channels: 8         # must match autoencoder latent_channels
   base_channels: 32          # UNet width
   depth: 3                   # UNet depth (ensure 2^depth <= latent_base)

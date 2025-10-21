@@ -354,7 +354,7 @@ class DiffusionTrainer:
             if i >= num_batches:
                 break
             x = self._get_layout_from_batch(batch, self.device)
-            decoded = self.autoencoder.decoder(self.autoencoder.encoder(x))
+            decoded = self.autoencoder.decode(x)
             flat = decoded.flatten(1)
             diversities.append(torch.cdist(flat, flat).mean().item())
         return sum(diversities) / len(diversities)

@@ -189,6 +189,17 @@ class AutoEncoder(nn.Module):
         return x_recon, mu, logvar
     
     @torch.no_grad()
+    def decode(self, x):
+        """
+        Encode input x and return its reconstruction.
+        Keeps logic self-contained for downstream modules.
+        """
+        mu, logvar = self.encoder(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decoder(z)
+
+
+    @torch.no_grad()
     def sample(self, z):
         """
         Generate image from a given latent vector z (for inference).
@@ -207,41 +218,62 @@ class AutoEncoder(nn.Module):
 
     
     def to_config(self):
-        """Return YAML-compatible config matching from_config() schema."""
+        """Return YAML-compatible config that fully reproduces architecture."""
         enc = self.encoder
         dec = self.decoder
-        
+
+        # --- infer global settings ---
+        def infer_norm_act(seq):
+            norm = None
+            act = None
+            for m in seq.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    norm = "batch"
+                elif isinstance(m, nn.InstanceNorm2d):
+                    norm = "instance"
+                elif isinstance(m, nn.ReLU):
+                    act = "relu"
+                elif isinstance(m, nn.LeakyReLU):
+                    act = "leakyrelu"
+                elif isinstance(m, nn.Tanh):
+                    act = "tanh"
+                elif isinstance(m, nn.Sigmoid):
+                    act = "sigmoid"
+            return norm, act
+
+        enc_norm, enc_act = infer_norm_act(enc.conv)
+        dec_norm, dec_act = infer_norm_act(dec.deconv)
+
+        # --- encode layer list ---
         layers_cfg = []
         for layer in enc.conv:
-            if isinstance(layer, nn.Sequential) and hasattr(layer[0], "out_channels"):
-                conv_layer = layer[0]
+            if isinstance(layer, nn.Sequential) and isinstance(layer[0], nn.Conv2d):
+                conv = layer[0]
                 layers_cfg.append({
-                    "out_channels": conv_layer.out_channels,
-                    "kernel_size": conv_layer.kernel_size[0],
-                    "stride": conv_layer.stride[0],
-                    "padding": conv_layer.padding[0],
+                    "out_channels": conv.out_channels,
+                    "kernel_size": conv.kernel_size[0],
+                    "stride": conv.stride[0],
+                    "padding": conv.padding[0],
                 })
 
         cfg = {
             "encoder": {
                 "in_channels": enc.conv[0][0].in_channels if hasattr(enc.conv[0][0], "in_channels") else None,
                 "layers": layers_cfg,
-                "latent_dim": 0, 
-                "image_size": enc.image_size, 
+                "image_size": enc.image_size,
                 "latent_channels": enc.latent_channels,
                 "latent_base": enc.latent_base,
-                "global_norm": None, 
-                "global_act": None,  
+                "global_norm": enc_norm,
+                "global_act": enc_act,
                 "global_dropout": 0.0,
             },
             "decoder": {
                 "out_channels": dec.output_channels,
-                "latent_dim": 0,
-                "image_size": dec.output_size, 
+                "image_size": dec.output_size,
                 "latent_channels": dec.latent_channels,
                 "latent_base": dec.latent_base,
-                "global_norm": None,
-                "global_act": None,
+                "global_norm": dec_norm,
+                "global_act": dec_act,
                 "global_dropout": 0.0,
             },
         }
