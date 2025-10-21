@@ -16,7 +16,7 @@ class AutoEncoderTrainer:
         self,
         autoencoder,
         recon_loss_fn,
-        kl_weight=1e-6, 
+        kl_weight=1e-6,
         epochs=10,
         log_interval=10,
         sample_interval=100,
@@ -28,7 +28,7 @@ class AutoEncoderTrainer:
     ):
         self.autoencoder = autoencoder
         self.recon_loss_fn = recon_loss_fn
-        self.kl_weight = kl_weight
+        self.kl_weight = float(kl_weight)
         self.epochs = epochs
         self.log_interval = log_interval
         self.sample_interval = sample_interval
@@ -56,15 +56,15 @@ class AutoEncoderTrainer:
         raise TypeError(f"Unexpected batch type: {type(batch)}")
 
     def _compute_loss(self, x, recon, mu, logvar):
-        """Computes VAE loss (Reconstruction + KL Divergence)."""
-        recon_loss = self.recon_loss_fn(recon, x)
-        
-        kl_div = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp(), dim=[1, 2, 3])
-        kl_loss = torch.mean(kl_div) # Mean over batch
-        
-        total_loss = recon_loss + self.kl_weight * kl_loss
-        
-        return total_loss, recon_loss, kl_loss
+            """Computes VAE loss (Reconstruction + KL Divergence)."""
+            recon_loss = self.recon_loss_fn(recon, x)
+
+            kl_div = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp(), dim=[1, 2, 3])
+            kl_loss = torch.mean(kl_div)  # Mean over batch
+
+            total_loss = recon_loss + self.kl_weight * kl_loss
+
+            return total_loss, recon_loss, kl_loss
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader = None):
         self.autoencoder.train()
@@ -79,7 +79,6 @@ class AutoEncoderTrainer:
         except Exception as e:
             print(f"[Config] ERROR: Could not save config: {e}", flush=True)
 
-
         print(f"Training VAE for {self.epochs} epochs on {self.device} (KL weight: {self.kl_weight})", flush=True)
 
         for epoch in range(1, self.epochs + 1):
@@ -88,18 +87,18 @@ class AutoEncoderTrainer:
             epoch_kl_loss = 0.0
 
             with tqdm(train_loader,
-                    desc=f"Epoch {epoch}/{self.epochs}",
-                    unit="batch",
-                    file=sys.stdout,
-                    ncols=100,
-                    dynamic_ncols=True,
-                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+                      desc=f"Epoch {epoch}/{self.epochs}",
+                      unit="batch",
+                      file=sys.stdout,
+                      ncols=100,
+                      dynamic_ncols=True,
+                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
 
                 for batch_idx, batch in enumerate(pbar):
                     x = self._get_batch(batch)
 
                     recon, mu, logvar = self.autoencoder(x)
-                    
+
                     loss, recon_loss, kl_loss = self._compute_loss(x, recon, mu, logvar)
 
                     self.optimizer.zero_grad()
@@ -122,7 +121,6 @@ class AutoEncoderTrainer:
                         self.metric_log.append(log_entry)
                         pbar.write(f"[Epoch {epoch}] Step {step} | Loss: {loss.item():.6f} (Recon: {recon_loss.item():.6f}, KL: {kl_loss.item():.6f})")
 
-
                     if self.sample_interval and step % self.sample_interval == 0:
                         self._save_sample(x, recon, step)
 
@@ -131,14 +129,14 @@ class AutoEncoderTrainer:
             avg_epoch_loss = epoch_loss / len(train_loader)
             avg_recon_loss = epoch_recon_loss / len(train_loader)
             avg_kl_loss = epoch_kl_loss / len(train_loader)
-            
+
             print(f"[Epoch {epoch}] Avg Train Loss: {avg_epoch_loss:.6f} (Recon: {avg_recon_loss:.6f}, KL: {avg_kl_loss:.6f})", flush=True)
 
             val_loss = None
             if val_loader is not None and (self.eval_interval and epoch % self.eval_interval == 0):
                 val_loss, val_recon, val_kl = self.evaluate(val_loader)
                 print(f"[Epoch {epoch}] Validation Loss: {val_loss:.6f} (Recon: {val_recon:.6f}, KL: {val_kl:.6f})", flush=True)
-                
+
                 for entry in reversed(self.metric_log):
                     if entry["epoch"] == epoch:
                         entry["val_loss"] = val_loss
@@ -151,18 +149,16 @@ class AutoEncoderTrainer:
                         "val_loss": val_loss, "val_recon_loss": val_recon, "val_kl_loss": val_kl
                     })
 
-
             self._save_checkpoint(epoch)
-            self._update_loss_plot() 
-            self._update_loss_components_plot() 
+            self._update_loss_plot()
+            self._update_loss_components_plot()
             self._save_metrics()
 
         print("Autoencoder training complete.", flush=True)
-        
+
         final_path = os.path.join(self.ckpt_dir, "ae_latest.pt")
         torch.save(self.autoencoder.state_dict(), final_path)
         print(f"[Checkpoint] Saved final model: {final_path}")
-
 
     @torch.no_grad()
     def evaluate(self, val_loader: DataLoader):
@@ -175,9 +171,13 @@ class AutoEncoderTrainer:
         for batch in val_loader:
             x = self._get_batch(batch)
 
+            # --- THIS IS THE FIX ---
+            # Call the VAE to get all three outputs
             recon, mu, logvar = self.autoencoder(x)
+            # Compute loss using the same helper as in training
             loss, recon_loss, kl_loss = self._compute_loss(x, recon, mu, logvar)
-            
+            # --- END FIX ---
+
             total_loss += loss.item()
             total_recon_loss += recon_loss.item()
             total_kl_loss += kl_loss.item()
@@ -186,13 +186,13 @@ class AutoEncoderTrainer:
         avg_val = total_loss / max(n, 1)
         avg_recon = total_recon_loss / max(n, 1)
         avg_kl = total_kl_loss / max(n, 1)
-        
+
         self.autoencoder.train()
         return avg_val, avg_recon, avg_kl
 
     def _save_sample(self, x, recon, step):
         samples_dir = os.path.join(self.output_dir, "samples")
-        
+
         top = x[:4].detach().cpu()
         bottom = recon[:4].detach().cpu()
         comparison = torch.cat([top, bottom], dim=0)
@@ -216,7 +216,7 @@ class AutoEncoderTrainer:
         """Plots the total combined (Train vs Val) loss."""
         train_steps = [m["step"] for m in self.metric_log if "train_loss" in m]
         train_losses = [m["train_loss"] for m in self.metric_log if "train_loss" in m]
-        
+
         val_steps = [m["step"] for m in self.metric_log if "val_loss" in m]
         val_losses = [m["val_loss"] for m in self.metric_log if "val_loss" in m]
 
@@ -252,7 +252,7 @@ class AutoEncoderTrainer:
 
         if not train_steps:
             return
-            
+
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
         ax1.plot(train_steps, train_recon, label="Train Recon Loss", color="green", alpha=0.7)
@@ -262,7 +262,7 @@ class AutoEncoderTrainer:
         ax1.legend()
         ax1.set_title("Loss Components")
         ax1.grid(True)
-        
+
         ax2.plot(train_steps, train_kl, label="Train KL Loss", color="purple", alpha=0.7)
         if val_steps:
             ax2.plot(val_steps, val_kl, label="Val KL Loss", color="magenta", marker='o', linestyle='--')

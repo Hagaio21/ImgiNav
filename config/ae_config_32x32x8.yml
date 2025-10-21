@@ -24,5 +24,5 @@ training:
   log_interval: 10
   sample_interval: 200
   eval_interval: 1
-  output_dir: /work3/s233249/ImgiNav/experiments/autoencoder_512_32x32x8
-  ckpt_dir: /work3/s233249/ImgiNav/experiments/autoencoder_512_32x32x8/checkpoints
+  output_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8
+  ckpt_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8/checkpoints
