@@ -1,5 +1,7 @@
 # train_diffusion.py
-import os
+from __future__ import annotations
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import yaml
 import random
 import torch

@@ -1,1 +1,28 @@
+dataset:
+  manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
+  batch_size: 32
+  split_ratio: 0.9
+  num_workers: 4
+  shuffle: true
+  seed: 42
 
+model:
+  autoencoder_config: "/work3/s233249/ImgiNav/experiments/autoencoder_512_32x32x8/checkpoints/model_config.yaml"
+  autoencoder_ckpt: "/work3/s233249/ImgiNav/experiments/autoencoder_512_32x32x8/checkpoints/ae_epoch_50.pt"
+  latent_channels: 8         # must match autoencoder latent_channels
+  base_channels: 32          # UNet width
+  depth: 3                   # UNet depth (ensure 2^depth <= latent_base)
+  scheduler: cosine          # cosine or linear
+  num_steps: 400
+  norm: batch
+  act: relu
+
+training:
+  epochs: 100
+  log_interval: 100
+  eval_interval: 100
+  sample_interval: 200
+  num_samples: 8
+  grad_clip: 1.0
+  output_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_32x32x8_d3"
+  ckpt_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_32x32x8_d3/checkpoints"

@@ -1,15 +1,21 @@
-# run_autoencoder_experiment.py
 from __future__ import annotations
-import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
+import sys
+import os
 import yaml
 import random
+import argparse
+import pandas as pd
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
+import torchvision.transforms as T
+
+# Add project root to path
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from modules.datasets import LayoutDataset, collate_skip_none
 from modules.autoencoder import AutoEncoder
 from training.autoencoder_trainer import AutoEncoderTrainer
-import pandas as pd
 
 
 def build_datasets(manifest_path, split_ratio, seed, transform):
@@ -35,10 +41,10 @@ def save_split_csvs(train_ds, val_ds, output_dir):
     val_df.to_csv(os.path.join(output_dir, "evaluated_on.csv"), index=False)
 
 
-
 def main():
-    import argparse
-
+    """
+    Main training script for the Variational Autoencoder.
+    """
     parser = argparse.ArgumentParser(description="Run AutoEncoder experiment")
     parser.add_argument("--config", required=True, help="Path to experiment config YAML")
     args = parser.parse_args()
@@ -50,15 +56,16 @@ def main():
     model_cfg = cfg["model"]
     training_cfg = cfg["training"]
 
-    # --- Save model config for reproducibility ---
+    # --- Experiment setup ---
     out_dir = training_cfg.get("output_dir", "ae_outputs")
     ckpt_dir = training_cfg.get("ckpt_dir", os.path.join(out_dir, "checkpoints"))
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    model_cfg_path = os.path.join(ckpt_dir, "model_config.yaml")
+    # Save the experiment config for reproducibility
+    model_cfg_path = os.path.join(out_dir, "experiment_config.yaml")
     with open(model_cfg_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(model_cfg, f)
-    print(f"[Config] Saved model architecture config to {model_cfg_path}")
+        yaml.safe_dump(cfg, f)
+    print(f"[Config] Saved experiment config to {model_cfg_path}")
 
     # --- Dataset config ---
     manifest = dataset_cfg["manifest"]
@@ -70,7 +77,6 @@ def main():
 
     random.seed(seed)
     torch.manual_seed(seed)
-    import torchvision.transforms as T
     transform = T.ToTensor()
 
     train_ds, val_ds = build_datasets(manifest, split_ratio, seed, transform=transform)
@@ -110,9 +116,13 @@ def main():
     ae.decoder.print_summary()
 
     # --- Trainer ---
+    kl_weight = training_cfg.get("kl_weight", 1e-6)
+    print(f"[Trainer] Using KL weight: {kl_weight}")
+
     trainer = AutoEncoderTrainer(
         autoencoder=ae,
-        loss_fn=torch.nn.MSELoss(),
+        recon_loss_fn=nn.MSELoss(),  # Pass the reconstruction loss function
+        kl_weight=kl_weight,         # Pass the KL divergence weight
         epochs=training_cfg.get("epochs", 50),
         log_interval=training_cfg.get("log_interval", 10),
         sample_interval=training_cfg.get("sample_interval", 100),

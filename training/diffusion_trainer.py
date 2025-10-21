@@ -30,6 +30,7 @@ class DiffusionTrainer:
         self.unet = unet.to(device)
         self.autoencoder = autoencoder.eval().to(device)
         self.scheduler = scheduler
+        self.scheduler = scheduler.to(device)
         self.device = device
         self.logger = logger
 

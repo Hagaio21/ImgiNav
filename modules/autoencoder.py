@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Any, Dict, List, Optional
+import yaml
 
 
 # --- helpers ---
@@ -75,7 +76,11 @@ class ConvEncoder(nn.Module):
 
         self.conv = nn.Sequential(*layers)
 
-        self.to_latent = nn.Sequential(
+        self.to_latent_mu = nn.Sequential(
+            nn.Conv2d(prev, latent_channels, kernel_size=1),
+            nn.AdaptiveAvgPool2d((latent_base, latent_base))
+        )
+        self.to_latent_logvar = nn.Sequential(
             nn.Conv2d(prev, latent_channels, kernel_size=1),
             nn.AdaptiveAvgPool2d((latent_base, latent_base))
         )
@@ -84,12 +89,13 @@ class ConvEncoder(nn.Module):
         self.latent_base = latent_base
         self.conv_output_channels = prev
         self.conv_output_size = current_size
+        self.image_size = image_size  # Store original image size for config
 
     def forward(self, x):
         x = self.conv(x)
-        z = self.to_latent(x)
-        z = z / (z.flatten(1).norm(dim=1, keepdim=True).unsqueeze(-1).unsqueeze(-1) + 1e-8)
-        return z
+        mu = self.to_latent_mu(x)
+        logvar = self.to_latent_logvar(x)
+        return mu, logvar
 
     def print_summary(self):
         print(f"[Encoder] Conv output: {self.conv_output_channels}x{self.conv_output_size}x{self.conv_output_size}")
@@ -158,47 +164,80 @@ class ConvDecoder(nn.Module):
         print(f"[Decoder] Final output: {self.output_channels}x{self.output_size}x{self.output_size}")
 
 
-# --- AutoEncoder wrapper ---
+# --- AutoEncoder wrapper (now a VAE) ---
 class AutoEncoder(nn.Module):
     def __init__(self, encoder: nn.Module, decoder: nn.Module):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
 
+    def reparameterize(self, mu, logvar):
+        """
+        Implements the reparameterization trick for VAEs.
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
     def forward(self, x):
-        z = self.encoder(x)
+        """
+        Forward pass for training. Returns reconstruction and latent params.
+        """
+        mu, logvar = self.encoder(x)
+        z = self.reparameterize(mu, logvar)
         x_recon = self.decoder(z)
-        return x_recon
+        return x_recon, mu, logvar
+    
+    @torch.no_grad()
+    def sample(self, z):
+        """
+        Generate image from a given latent vector z (for inference).
+        """
+        self.eval()
+        return self.decoder(z)
+    
+    @torch.no_grad()
+    def encode(self, x):
+        """
+        Encode an image to its latent mean and logvar (for inference).
+        """
+        self.eval()
+        mu, logvar = self.encoder(x)
+        return mu, logvar
+
     
     def to_config(self):
         """Return YAML-compatible config matching from_config() schema."""
         enc = self.encoder
         dec = self.decoder
+        
+        layers_cfg = []
+        for layer in enc.conv:
+            if isinstance(layer, nn.Sequential) and hasattr(layer[0], "out_channels"):
+                conv_layer = layer[0]
+                layers_cfg.append({
+                    "out_channels": conv_layer.out_channels,
+                    "kernel_size": conv_layer.kernel_size[0],
+                    "stride": conv_layer.stride[0],
+                    "padding": conv_layer.padding[0],
+                })
+
         cfg = {
             "encoder": {
                 "in_channels": enc.conv[0][0].in_channels if hasattr(enc.conv[0][0], "in_channels") else None,
-                "layers": [
-                    {
-                        "out_channels": layer[0].out_channels,
-                        "kernel_size": layer[0].kernel_size[0],
-                        "stride": layer[0].stride[0],
-                        "padding": layer[0].padding[0],
-                    }
-                    for layer in enc.conv
-                    if hasattr(layer[0], "out_channels")
-                ],
-                "latent_dim": 0,
-                "image_size": enc.conv_output_size * (2 ** len(enc.conv)),
+                "layers": layers_cfg,
+                "latent_dim": 0, 
+                "image_size": enc.image_size, 
                 "latent_channels": enc.latent_channels,
                 "latent_base": enc.latent_base,
-                "global_norm": None,
-                "global_act": None,
+                "global_norm": None, 
+                "global_act": None,  
                 "global_dropout": 0.0,
             },
             "decoder": {
                 "out_channels": dec.output_channels,
                 "latent_dim": 0,
-                "image_size": dec.output_size,
+                "image_size": dec.output_size, 
                 "latent_channels": dec.latent_channels,
                 "latent_base": dec.latent_base,
                 "global_norm": None,
@@ -237,7 +276,7 @@ class AutoEncoder(nn.Module):
         decoder = ConvDecoder(
             out_channels=dec_cfg["out_channels"],
             latent_dim=dec_cfg["latent_dim"],
-            encoder_layers_cfg=enc_cfg["layers"],
+            encoder_layers_cfg=enc_cfg["layers"], 
             image_size=dec_cfg["image_size"],
             latent_channels=dec_cfg["latent_channels"],
             latent_base=dec_cfg["latent_base"],
@@ -269,7 +308,8 @@ class AutoEncoder(nn.Module):
 
         layers_cfg = []
         ch = base_channels
-        for _ in range(depth):
+        
+        for i in range(depth):
             layers_cfg.append({
                 "out_channels": ch,
                 "kernel_size": kernel_size,
