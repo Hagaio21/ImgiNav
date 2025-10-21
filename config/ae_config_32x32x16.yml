@@ -10,7 +10,7 @@ model:
   in_channels: 3          # RGB inputs
   out_channels: 3         # RGB reconstruction
   base_channels: 32       # starting conv channels
-  latent_channels: 8      # channels in latent space
+  latent_channels: 16      # channels in latent space
   image_size: 512         # input image size
   latent_base: 32         # spatial size of latent feature map
   norm: batch             # normalization type (batch, instance, or null)
@@ -24,5 +24,5 @@ training:
   log_interval: 10
   sample_interval: 200
   eval_interval: 1
-  output_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8
-  ckpt_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x8/checkpoints
+  output_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x16
+  ckpt_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x16/checkpoints
