@@ -22,6 +22,7 @@ class DiffusionTrainer:
                  log_interval=100,
                  eval_interval=1000,
                  sample_interval=2000,
+                 checkpoint_interval=10,
                  num_samples=8,
                  grad_clip=None,
                  logger=None,
@@ -40,6 +41,7 @@ class DiffusionTrainer:
         self.log_interval = log_interval
         self.eval_interval = eval_interval
         self.sample_interval = sample_interval
+        self.checkpoint_interval = checkpoint_interval
         self.grad_clip = grad_clip
         self.ckpt_dir = ckpt_dir
         self.num_samples = num_samples
@@ -108,7 +110,7 @@ class DiffusionTrainer:
                 self.optimizer.zero_grad(set_to_none=True)
 
                 layout = self._get_layout_from_batch(batch, self.device)
-                z = self.autoencoder.encoder(layout)
+                z = self.autoencoder.encode_latent(layout)
                 t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
                 noise = torch.randn_like(z)
                 z_noisy = self.scheduler.add_noise(z, noise, t)
@@ -169,9 +171,10 @@ class DiffusionTrainer:
                             print(f"[Validation] New best model saved → {best_path}")
 
                     self.train(True)
-
-            if self.ckpt_dir:
-                self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
+                    
+            if epoch % self.checkpoint_interval == 0:
+                if self.ckpt_dir:
+                    self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
 
         # --- save unified LatentDiffusion config at the end ---
         latent_shape = (
@@ -195,7 +198,7 @@ class DiffusionTrainer:
 
         for batch in val_loader:
             layout = self._get_layout_from_batch(batch, self.device)
-            z = self.autoencoder.encoder(layout)
+            z = self.autoencoder.encode_latent(layout)
             t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
             noise = torch.randn_like(z)
             z_noisy = self.scheduler.add_noise(z, noise, t)
@@ -215,7 +218,7 @@ class DiffusionTrainer:
     def evaluate(self, val_loader, step=None):
         self.train(False)
         layout = self._get_layout_from_batch(next(iter(val_loader)), self.device)
-        z = self.autoencoder.encoder(layout)
+        z = self.autoencoder.encode_latent(layout)
         t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
         noise = torch.randn_like(z)
         z_noisy = self.scheduler.add_noise(z, noise, t)

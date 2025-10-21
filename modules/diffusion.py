@@ -58,6 +58,8 @@ class LatentDiffusion(nn.Module):
 
         self.eval()
         self.unet.eval()
+        if self.autoencoder is not None:
+            self.autoencoder.eval()
 
         C, H, W = self.latent_shape
         if start_noise is None:

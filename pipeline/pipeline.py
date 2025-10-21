@@ -81,9 +81,11 @@ class DiffusionPipeline(nn.Module):
             self.unet, self.scheduler, self.autoencoder, latent_shape=latent_shape
         )
 
-    def encode_layout(self, layout: torch.Tensor) -> torch.Tensor:
+    def encode_layout(self, layout):
         with torch.no_grad():
-            return self.autoencoder.encoder(layout.to(self.device))
+            return self.autoencoder.encode_latent(layout.to(self.device))
+
+
 
     def forward(self, latents: torch.Tensor,
                 cond_pov: torch.Tensor | None,

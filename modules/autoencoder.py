@@ -215,6 +215,18 @@ class AutoEncoder(nn.Module):
         self.eval()
         mu, logvar = self.encoder(x)
         return mu, logvar
+    
+    @torch.no_grad()
+    def encode_latent(self, x, deterministic: bool = True):
+        """
+        Encode x into a latent tensor.
+        If deterministic=True, use mu (mean) only.
+        If False, sample using reparameterization.
+        """
+        self.eval()
+        mu, logvar = self.encoder(x)
+        return mu if deterministic else self.reparameterize(mu, logvar)
+
 
     
     def to_config(self):

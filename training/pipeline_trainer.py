@@ -1,9 +1,10 @@
-# pipeline_trainer.py
 import torch
 from torch.optim import AdamW
 from tqdm import tqdm
 from torchvision.utils import save_image
 import os
+from PIL import Image
+from stage8_create_graph_embeddings import graph2text
 
 
 class PipelineTrainer:
@@ -30,7 +31,6 @@ class PipelineTrainer:
         self.device = pipeline.device
         self.logger = logger
 
-        # core training parameters
         self.loss_fn = loss_fn or torch.nn.MSELoss()
         self.epochs = epochs
         self.grad_clip = grad_clip
@@ -40,19 +40,16 @@ class PipelineTrainer:
         self.mixed_precision = mixed_precision
         self.ema_decay = ema_decay
 
-        # condition dropout probabilities
         self.cond_dropout_pov = cond_dropout_pov
         self.cond_dropout_graph = cond_dropout_graph
         self.cond_dropout_both = cond_dropout_both
 
-        # optimization
         self.optimizer = optimizer or AdamW(
             list(pipeline.unet.parameters()) + list(pipeline.mixer.parameters()),
             lr=lr,
             weight_decay=weight_decay,
         )
 
-        # bookkeeping
         self.global_step = 0
         self.ckpt_dir = ckpt_dir
         self.output_dir = output_dir or "samples"
@@ -60,13 +57,15 @@ class PipelineTrainer:
         if self.ckpt_dir:
             os.makedirs(self.ckpt_dir, exist_ok=True)
 
-        # EMA
         self.ema_unet = None
         if ema_decay:
             import copy
             self.ema_unet = copy.deepcopy(pipeline.unet).eval()
 
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.mixed_precision)
+
+        # fixed noise for consistent samples
+        self.fixed_noise = None
 
     def to(self, device):
         self.pipeline.to(device)
@@ -82,10 +81,8 @@ class PipelineTrainer:
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.epochs}", leave=False)
             for batch in pbar:
                 self.optimizer.zero_grad(set_to_none=True)
-
                 layout, cond_pov, cond_graph = batch
 
-                # --- conditioning dropout ---
                 if torch.rand(1).item() < self.cond_dropout_both:
                     cond_pov = None
                     cond_graph = None
@@ -96,7 +93,6 @@ class PipelineTrainer:
                         cond_graph = None
 
                 batch = (layout, cond_pov, cond_graph)
-
                 with torch.cuda.amp.autocast(enabled=self.mixed_precision):
                     loss = self.pipeline.training_step(batch, self.loss_fn, step=self.global_step)
 
@@ -109,7 +105,6 @@ class PipelineTrainer:
                     )
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-
                 self.global_step += 1
                 pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
@@ -124,7 +119,8 @@ class PipelineTrainer:
                     self.train(True)
 
                 if self.global_step % self.sample_interval == 0:
-                    self.sample_and_save(self.global_step)
+                    example_batch = next(iter(train_loader))
+                    self.sample_and_save(self.global_step, example_batch)
 
             if self.ckpt_dir:
                 self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
@@ -139,14 +135,58 @@ class PipelineTrainer:
         return metrics
 
     @torch.no_grad()
-    def sample_and_save(self, step, batch_size=4):
+    def sample_and_save(self, step, batch, sample_num=4):
         self.pipeline.eval()
-        samples = self.pipeline.sample(batch_size=batch_size, image=True)
-        save_path = os.path.join(self.output_dir, f"samples_step_{step}.png")
-        save_image(samples, save_path, nrow=2, normalize=True, value_range=(0, 1))
-        if self.logger:
-            self.logger.log({"samples": samples, "step": step})
-        print(f"[Step {step}] Saved sample grid → {save_path}")
+        layout, pov_img, graph_path = batch
+
+        # initialize fixed noise once
+        if self.fixed_noise is None:
+            latent_shape = (sample_num, self.pipeline.scheduler.latent_channels,
+                            self.pipeline.scheduler.latent_base,
+                            self.pipeline.scheduler.latent_base)
+            self.fixed_noise = torch.randn(latent_shape, device=self.device)
+
+        # conditioned samples
+        cond_dir = os.path.join(self.output_dir, "samples", "condition", str(sample_num))
+        os.makedirs(cond_dir, exist_ok=True)
+
+        for i in range(min(sample_num, len(layout))):
+            item_dir = os.path.join(cond_dir, f"{i}")
+            os.makedirs(item_dir, exist_ok=True)
+
+            pov_path = os.path.join(item_dir, "pov.png")
+            target_path = os.path.join(item_dir, "target.png")
+            graph_txt = os.path.join(item_dir, "graph.txt")
+
+            if isinstance(pov_img, torch.Tensor):
+                save_image(pov_img[i], pov_path, normalize=True, value_range=(0, 1))
+            elif isinstance(pov_img[i], Image.Image):
+                pov_img[i].save(pov_path)
+
+            save_image(layout[i], target_path, normalize=True, value_range=(0, 1))
+            with open(graph_txt, "w", encoding="utf-8") as f:
+                f.write(graph2text(graph_path[i]))
+
+            cond_sample = self.pipeline.sample(
+                batch_size=1,
+                image=True,
+                noise=self.fixed_noise[i].unsqueeze(0),
+                pov=pov_img[i:i+1],
+                graph_path=graph_path[i]
+            )
+            save_image(cond_sample, os.path.join(item_dir, f"generated_sample_{step}.png"),
+                       normalize=True, value_range=(0, 1))
+
+        # unconditioned samples
+        uncond_dir = os.path.join(self.output_dir, "samples", "unconditioned")
+        os.makedirs(uncond_dir, exist_ok=True)
+        uncond_samples = self.pipeline.sample(
+            batch_size=sample_num, image=True, noise=self.fixed_noise
+        )
+        save_image(uncond_samples,
+                   os.path.join(uncond_dir, f"generated_sample_{step}.png"),
+                   nrow=2, normalize=True, value_range=(0, 1))
+        print(f"[Step {step}] Saved conditioned and unconditioned samples.")
 
     def save_checkpoint(self, path):
         state = {
