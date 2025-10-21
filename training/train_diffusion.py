@@ -1,42 +1,109 @@
 # train_diffusion.py
 from __future__ import annotations
-import sys, os
+import sys, os, yaml, random, torch, pandas as pd
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import yaml
-import random
-import torch
 from torch.utils.data import DataLoader, random_split
 from modules.datasets import LayoutDataset, collate_skip_none
 from modules.autoencoder import AutoEncoder
 from modules.unet import UNet
 from modules.scheduler import CosineScheduler, LinearScheduler
 from training.diffusion_trainer import DiffusionTrainer
-import pandas as pd
-from copy import deepcopy
 
+
+# ---------------------------- Dataset utils ---------------------------- #
 
 def build_datasets(manifest_path, split_ratio, seed, transform):
     dataset = LayoutDataset(manifest_path, transform=transform, mode="all")
     n_total = len(dataset)
     n_train = int(n_total * split_ratio)
     n_val = n_total - n_train
-
     generator = torch.Generator().manual_seed(seed)
-    train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=generator)
-    return train_ds, val_ds
+    return random_split(dataset, [n_train, n_val], generator=generator)
 
 
 def save_split_csvs(train_ds, val_ds, output_dir):
     train_paths = [train_ds.dataset.entries[i]["layout_path"] for i in train_ds.indices]
     val_paths = [val_ds.dataset.entries[i]["layout_path"] for i in val_ds.indices]
+    pd.DataFrame({"layout_path": train_paths}).to_csv(os.path.join(output_dir, "trained_on.csv"), index=False)
+    pd.DataFrame({"layout_path": val_paths}).to_csv(os.path.join(output_dir, "evaluated_on.csv"), index=False)
 
-    pd.DataFrame({"layout_path": train_paths}).to_csv(
-        os.path.join(output_dir, "trained_on.csv"), index=False
-    )
-    pd.DataFrame({"layout_path": val_paths}).to_csv(
-        os.path.join(output_dir, "evaluated_on.csv"), index=False
-    )
 
+def build_dataloaders(dataset_cfg):
+    import torchvision.transforms as T
+    transform = T.ToTensor()
+
+    manifest = dataset_cfg["manifest"]
+    split_ratio = dataset_cfg.get("split_ratio", 0.9)
+    seed = dataset_cfg.get("seed", 42)
+    batch_size = dataset_cfg.get("batch_size", 16)
+    num_workers = dataset_cfg.get("num_workers", 4)
+    shuffle = dataset_cfg.get("shuffle", True)
+
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    train_ds, val_ds = build_datasets(manifest, split_ratio, seed, transform)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle,
+                              num_workers=num_workers, collate_fn=collate_skip_none)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
+                            num_workers=num_workers, collate_fn=collate_skip_none)
+    return train_ds, val_ds, train_loader, val_loader
+
+
+# ---------------------------- Model builders ---------------------------- #
+
+def build_autoencoder(encoder_cfg):
+    ae_cfg_path = encoder_cfg["autoencoder_config"]
+    ae_ckpt_path = encoder_cfg["autoencoder_ckpt"]
+    autoencoder = AutoEncoder.from_config(ae_cfg_path)
+    autoencoder.load_state_dict(torch.load(ae_ckpt_path, map_location="cpu"))
+    autoencoder.eval()
+    return autoencoder, ae_cfg_path
+
+
+def build_unet(unet_cfg):
+    unet = UNet.from_shape(
+        in_channels=unet_cfg["latent_channels"],
+        out_channels=unet_cfg["latent_channels"],
+        base_channels=unet_cfg["base_channels"],
+        depth=unet_cfg.get("depth", 3),
+        norm=unet_cfg.get("norm", "batch"),
+        act=unet_cfg.get("act", "relu"),
+    )
+    unet.print_summary()
+    return unet
+
+
+def build_scheduler(diff_cfg):
+    sched_type = diff_cfg.get("scheduler", "cosine").lower()
+    num_steps = diff_cfg.get("num_steps", 1000)
+    if sched_type == "cosine":
+        return CosineScheduler(num_steps=num_steps)
+    if sched_type == "linear":
+        return LinearScheduler(num_steps=num_steps)
+    raise ValueError(f"Unknown scheduler type: {sched_type}")
+
+
+def save_model_config(ae_cfg_path, unet_cfg, diff_cfg, model_cfg_path):
+    nested_cfg = {
+        "autoencoder": AutoEncoder.from_config(ae_cfg_path).to_config(),
+        "unet": UNet.from_shape(
+            in_channels=unet_cfg["latent_channels"],
+            out_channels=unet_cfg["latent_channels"],
+            base_channels=unet_cfg["base_channels"],
+            depth=unet_cfg.get("depth", 3),
+            norm=unet_cfg.get("norm", "batch"),
+            act=unet_cfg.get("act", "relu"),
+        ).to_config()["unet"],
+        "scheduler": diff_cfg.get("scheduler", "cosine"),
+        "num_steps": diff_cfg.get("num_steps", 1000),
+    }
+    with open(model_cfg_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(nested_cfg, f)
+    print(f"[Config] Saved nested model architecture config → {model_cfg_path}")
+
+
+# ---------------------------- Main routine ---------------------------- #
 
 def main():
     import argparse
@@ -51,88 +118,25 @@ def main():
     model_cfg = cfg["model"]
     training_cfg = cfg["training"]
 
-    # --- Experiment setup ---
+    encoder_cfg = model_cfg["encoder"]
+    unet_cfg = model_cfg["unet"]
+    diff_cfg = model_cfg["diffusion"]
+
     out_dir = training_cfg.get("output_dir", "diffusion_outputs")
     ckpt_dir = training_cfg.get("ckpt_dir", os.path.join(out_dir, "checkpoints"))
     os.makedirs(ckpt_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
     model_cfg_path = os.path.join(ckpt_dir, "model_config.yaml")
 
-    # --- build nested config ---
-    nested_cfg = {
-        "autoencoder": AutoEncoder.from_config(model_cfg["autoencoder_config"]).to_config(),
-        "unet": UNet.from_shape(
-            in_channels=model_cfg["latent_channels"],
-            out_channels=model_cfg["latent_channels"],
-            base_channels=model_cfg["base_channels"],
-            depth=model_cfg.get("depth", 3),
-            norm=model_cfg.get("norm", "batch"),
-            act=model_cfg.get("act", "relu"),
-        ).to_config()["unet"],
-        "scheduler": model_cfg.get("scheduler", "cosine"),
-        "num_steps": model_cfg.get("num_steps", 1000),
-    }
-
-    with open(model_cfg_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(nested_cfg, f)
-
-    print(f"[Config] Saved nested model architecture config → {model_cfg_path}")
-    
-    # --- Dataset setup ---
-    manifest = dataset_cfg["manifest"]
-    batch_size = dataset_cfg.get("batch_size", 16)
-    split_ratio = dataset_cfg.get("split_ratio", 0.9)
-    num_workers = dataset_cfg.get("num_workers", 4)
-    shuffle = dataset_cfg.get("shuffle", True)
-    seed = dataset_cfg.get("seed", 42)
-
-    random.seed(seed)
-    torch.manual_seed(seed)
-    import torchvision.transforms as T
-    transform = T.ToTensor()
-
-    train_ds, val_ds = build_datasets(manifest, split_ratio, seed, transform)
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=shuffle,
-        num_workers=num_workers, collate_fn=collate_skip_none
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, collate_fn=collate_skip_none
-    )
-
-    os.makedirs(out_dir, exist_ok=True)
+    train_ds, val_ds, train_loader, val_loader = build_dataloaders(dataset_cfg)
     save_split_csvs(train_ds, val_ds, out_dir)
 
-    # --- Model components ---
-    # Autoencoder (frozen)
-    ae_cfg_path = model_cfg["autoencoder_config"]
-    ae_ckpt_path = model_cfg["autoencoder_ckpt"]
-    autoencoder = AutoEncoder.from_config(ae_cfg_path)
-    autoencoder.load_state_dict(torch.load(ae_ckpt_path, map_location="cpu"))
-    autoencoder.eval()
+    autoencoder, ae_cfg_path = build_autoencoder(encoder_cfg)
+    unet = build_unet(unet_cfg)
+    scheduler = build_scheduler(diff_cfg)
+    save_model_config(ae_cfg_path, unet_cfg, diff_cfg, model_cfg_path)
 
-    # UNet
-    unet = UNet.from_shape(
-        in_channels=model_cfg["latent_channels"],
-        out_channels=model_cfg["latent_channels"],
-        base_channels=model_cfg["base_channels"],
-        depth=model_cfg.get("depth", 3),
-        norm=model_cfg.get("norm", "batch"),
-        act=model_cfg.get("act", "relu"),
-    )
-    unet.print_summary()
-
-    # Scheduler
-    sched_type = model_cfg.get("scheduler", "cosine").lower()
-    if sched_type == "cosine":
-        scheduler = CosineScheduler(num_steps=model_cfg.get("num_steps", 1000))
-    elif sched_type == "linear":
-        scheduler = LinearScheduler(num_steps=model_cfg.get("num_steps", 1000))
-    else:
-        raise ValueError(f"Unknown scheduler type: {sched_type}")
-
-    # --- Trainer ---
     trainer = DiffusionTrainer(
         unet=unet,
         autoencoder=autoencoder,
@@ -147,7 +151,6 @@ def main():
         output_dir=out_dir,
     )
 
-    # --- Train ---
     trainer.fit(train_loader, val_loader)
 
 

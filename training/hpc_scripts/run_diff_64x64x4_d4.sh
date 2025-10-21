@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
-CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/diff_config_64x64x4_d4.yml"
+CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/architecture/diffusion/diff_config_64x64x4.yml"
 
 # =============================================================================
 # MODULES

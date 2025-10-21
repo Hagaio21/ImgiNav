@@ -49,6 +49,8 @@ class DiffusionTrainer:
         self.global_step = 0
 
         os.makedirs(self.output_dir, exist_ok=True)
+        self.samples_dir = os.path.join(self.output_dir, "samples")
+        os.makedirs(self.samples_dir, exist_ok=True)
         if self.ckpt_dir:
             os.makedirs(self.ckpt_dir, exist_ok=True)
 
@@ -344,8 +346,9 @@ class DiffusionTrainer:
 
 
         decoded = samples if samples.shape[1] != autoencoder.encoder.latent_channels else autoencoder.decoder(samples)
-        save_image(decoded, os.path.join(output_dir, f"samples/samples_step_{step}.png"),
-                   nrow=2, normalize=True, value_range=(0, 1))
+        save_image(decoded, os.path.join(self.samples_dir, f"samples_step_{step}.png"),
+           nrow=2, normalize=True, value_range=(0, 1))
+
 
     # ============================================================
     # Dataset diversity computation
