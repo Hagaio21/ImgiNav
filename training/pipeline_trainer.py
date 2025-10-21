@@ -5,6 +5,30 @@ from torchvision.utils import save_image
 import os
 from PIL import Image
 from stage8_create_graph_embeddings import graph2text
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+
+
+def compute_condition_correlation(pred, conds):
+    result = {}
+    flat_pred = pred.flatten(1)
+    for name, c in zip(["pov", "graph"], conds):
+        if c is None:
+            continue
+        flat_cond = c.flatten(1)
+        sim = F.cosine_similarity(flat_pred, flat_cond, dim=1)
+        result[name] = sim.mean().item()
+    return result
+
+
+def safe_grad_norm(model):
+    norms = []
+    for p in model.parameters():
+        if p.grad is not None:
+            norms.append(p.grad.norm() ** 2)
+    if not norms:
+        return 0.0
+    return torch.sqrt(sum(norms)).item()
 
 
 class PipelineTrainer:
@@ -71,6 +95,15 @@ class PipelineTrainer:
         # fixed noise for consistent samples
         self.fixed_noise = None
 
+        # tracking for plots
+        self.train_losses = []
+        self.train_steps = []
+        self.val_losses = []
+        self.val_steps = []
+        self.corr_pov_history = []
+        self.corr_graph_history = []
+        self.corr_steps = []
+
     def to(self, device):
         self.pipeline.to(device)
         return self
@@ -78,6 +111,79 @@ class PipelineTrainer:
     def train(self, mode=True):
         self.pipeline.train(mode)
         return self
+
+    def training_step(self, batch):
+        """
+        Training expects pre-computed embeddings for efficiency.
+        """
+        layout = batch["layout"]
+        cond_pov_emb = batch["pov"]
+        cond_graph_emb = batch["graph"]
+        
+        z = self.pipeline.encode_layout(layout)
+        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device=self.device)
+        noise = torch.randn_like(z)
+        z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
+
+        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb])
+        noise_pred = self.pipeline.unet(z_noisy, t, cond)
+
+        loss = self.loss_fn(noise_pred, noise)
+
+        if self.logger is not None:
+            log = {"loss": loss.item(), "timestep": t.float().mean().item()}
+
+            # correlation and cosine
+            corr = compute_condition_correlation(noise_pred.detach(), [cond_pov_emb, cond_graph_emb])
+            for k, v in corr.items():
+                log[f"corr_{k}"] = v
+            cos = F.cosine_similarity(noise_pred.flatten(1), noise.flatten(1)).mean().item()
+            log["cosine_pred_true"] = cos
+
+            # SNR
+            snr = (z_noisy.var(dim=(1,2,3)) / (noise_pred - noise).var(dim=(1,2,3))).mean().item()
+            log["snr"] = snr
+
+            # grad norm
+            log["grad_norm"] = safe_grad_norm(self.pipeline.unet)
+
+            self.logger.log(log, step=self.global_step)
+
+        return loss
+
+    def plot_metrics(self):
+        """Generate and save metric plots."""
+        plots_dir = os.path.join(self.output_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+
+        # Plot 1: Loss per step (train and val)
+        if self.train_losses:
+            plt.figure(figsize=(10, 6))
+            plt.plot(self.train_steps, self.train_losses, label='Train Loss', alpha=0.7)
+            if self.val_losses:
+                plt.plot(self.val_steps, self.val_losses, label='Val Loss', marker='o', alpha=0.7)
+            plt.xlabel('Step')
+            plt.ylabel('Loss')
+            plt.title('Loss per Step')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(plots_dir, 'loss_per_step.png'), dpi=150, bbox_inches='tight')
+            plt.close()
+
+        # Plot 2: Correlation per step (pov and graph)
+        if self.corr_pov_history or self.corr_graph_history:
+            plt.figure(figsize=(10, 6))
+            if self.corr_pov_history:
+                plt.plot(self.corr_steps, self.corr_pov_history, label='corr_pov', alpha=0.7)
+            if self.corr_graph_history:
+                plt.plot(self.corr_steps, self.corr_graph_history, label='corr_graph', alpha=0.7)
+            plt.xlabel('Step')
+            plt.ylabel('Correlation')
+            plt.title('Condition Correlation per Step')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(plots_dir, 'correlation_per_step.png'), dpi=150, bbox_inches='tight')
+            plt.close()
 
     def fit(self, train_loader, val_loader=None):
         self.train(True)
@@ -118,7 +224,7 @@ class PipelineTrainer:
                 }
                 
                 with torch.cuda.amp.autocast(enabled=self.mixed_precision):
-                    loss = self.pipeline.training_step(batch_dict, self.loss_fn, step=self.global_step)
+                    loss = self.training_step(batch_dict)
 
                 self.scaler.scale(loss).backward()
                 if self.grad_clip:
@@ -137,9 +243,42 @@ class PipelineTrainer:
 
                 if self.logger and self.global_step % self.log_interval == 0:
                     self.logger.log({"loss": loss.item(), "epoch": epoch, "step": self.global_step})
+                    
+                    # Track train loss
+                    self.train_losses.append(loss.item())
+                    self.train_steps.append(self.global_step)
+                    
+                    # Track correlations from last training step
+                    with torch.no_grad():
+                        z = self.pipeline.encode_layout(layout)
+                        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device=self.device)
+                        noise = torch.randn_like(z)
+                        z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
+                        cond = self.pipeline.mixer([cond_pov, cond_graph])
+                        noise_pred = self.pipeline.unet(z_noisy, t, cond)
+                        corr = compute_condition_correlation(noise_pred, [cond_pov, cond_graph])
+                        
+                        if "pov" in corr:
+                            self.corr_pov_history.append(corr["pov"])
+                        if "graph" in corr:
+                            self.corr_graph_history.append(corr["graph"])
+                        if corr:
+                            self.corr_steps.append(self.global_step)
+                    
+                    # Generate plots
+                    self.plot_metrics()
 
                 if val_loader and self.global_step % self.eval_interval == 0:
-                    self.evaluate(val_loader, step=self.global_step)
+                    val_metrics = self.evaluate(val_loader, step=self.global_step)
+                    
+                    # Track val loss if available
+                    if "loss" in val_metrics:
+                        self.val_losses.append(val_metrics["loss"])
+                        self.val_steps.append(self.global_step)
+                    
+                    # Generate plots after evaluation
+                    self.plot_metrics()
+                    
                     self.train(True)
 
                 if self.global_step % self.sample_interval == 0:
@@ -152,7 +291,23 @@ class PipelineTrainer:
     def evaluate(self, val_loader, step=None):
         self.train(False)
         batch = next(iter(val_loader))
+        
+        # Compute validation loss
+        layout = batch["layout"]
+        cond_pov_emb = batch["pov"]
+        cond_graph_emb = batch["graph"]
+        
+        z = self.pipeline.encode_layout(layout)
+        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device=self.device)
+        noise = torch.randn_like(z)
+        z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
+        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb])
+        noise_pred = self.pipeline.unet(z_noisy, t, cond)
+        val_loss = self.loss_fn(noise_pred, noise)
+        
         metrics = self.pipeline.evaluate(batch, step=step)
+        metrics["loss"] = val_loss.item()
+        
         if self.logger and step is not None:
             self.logger.log({"val_step": step, **metrics}, step=step)
         return metrics

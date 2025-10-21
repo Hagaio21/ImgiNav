@@ -150,45 +150,6 @@ class DiffusionPipeline(nn.Module):
         noise_pred = self.unet(latents, timesteps, cond)
         return noise_pred
 
-    def training_step(self, batch, loss_fn, step=None):
-        """
-        Training expects pre-computed embeddings for efficiency.
-        """
-        layout = batch["layout"]
-        cond_pov_emb = batch["pov"]
-        cond_graph_emb = batch["graph"]
-        
-        z = self.encode_layout(layout)
-        t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device)
-        noise = torch.randn_like(z)
-        z_noisy = self.scheduler.add_noise(z, noise, t)
-
-        cond = self.mixer([cond_pov_emb, cond_graph_emb])
-        noise_pred = self.unet(z_noisy, t, cond)
-
-        loss = loss_fn(noise_pred, noise)
-
-        if self.logger is not None and step is not None:
-            log = {"loss": loss.item(), "timestep": t.float().mean().item()}
-
-            # correlation and cosine
-            corr = compute_condition_correlation(noise_pred.detach(), [cond_pov_emb, cond_graph_emb])
-            for k, v in corr.items():
-                log[f"corr_{k}"] = v
-            cos = F.cosine_similarity(noise_pred.flatten(1), noise.flatten(1)).mean().item()
-            log["cosine_pred_true"] = cos
-
-            # SNR
-            snr = (z_noisy.var(dim=(1,2,3)) / (noise_pred - noise).var(dim=(1,2,3))).mean().item()
-            log["snr"] = snr
-
-            # grad norm
-            log["grad_norm"] = safe_grad_norm(self.unet)
-
-            self.logger.log(log, step=step)
-
-        return loss
-
     def sample(self, batch_size: int, 
                pov_raw=None, graph_raw=None,           
                cond_pov_emb=None, cond_graph_emb=None, 

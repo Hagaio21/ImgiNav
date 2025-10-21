@@ -35,7 +35,7 @@ def select_mixer(name: str, out_channels: int, latent_base: int,
     return LinearConcatMixer(out_channels, size, pov_dim, graph_dim)
 
 
-def build_dataloader(cfg, use_embeddings=True):
+def build_dataloader(cfg, use_embeddings=True, shuffle=True):
     ds = UnifiedLayoutDataset(
         room_manifest=cfg["room_manifest"],
         scene_manifest=cfg["scene_manifest"],
@@ -47,7 +47,7 @@ def build_dataloader(cfg, use_embeddings=True):
         ds,
         batch_size=cfg["batch_size"],
         num_workers=cfg["num_workers"],
-        shuffle=True,
+        shuffle=shuffle,
         drop_last=True,
         collate_fn=collate_fn
     )
@@ -137,8 +137,9 @@ def main():
                             device)
     
     # Build dataloaders
-    train_loader = build_dataloader(cfg["dataset"], use_embeddings=True)
-    sample_loader = build_dataloader(cfg["dataset"], use_embeddings=False)
+    train_loader = build_dataloader(cfg["dataset"], use_embeddings=True, shuffle=True)
+    val_loader = build_dataloader(cfg["dataset"], use_embeddings=True, shuffle=False)
+    sample_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=False)
     
     # Build pipeline
     pipeline = build_pipeline(cfg, device, embed)
@@ -167,7 +168,7 @@ def main():
     )
 
     # Run training
-    trainer.fit(train_loader)
+    trainer.fit(train_loader, val_loader=val_loader)
 
     # Save final weights and config
     save_dir = trainer_cfg["ckpt_dir"]
