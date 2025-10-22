@@ -2,6 +2,7 @@
 dataset:
   room_manifest: /work3/s233249/ImgiNav/datasets/room_dataset_with_emb.csv
   scene_manifest: /work3/s233249/ImgiNav/datasets/scene_dataset_with_emb.csv
+  taxonomy_path:  /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
   data_mode: rooms_only     # one of: rooms_only, scenes_only, rooms_and_scenes
   pov_type: seg                      # valid: seg, tex, or null
   batch_size: 8
@@ -27,8 +28,8 @@ model:
     unet_config: /work3/s233249/ImgiNav/experiments/diffusion/diff_32x32x8_d3/checkpoints/unet_config.yaml
 
 training:
-  use_modalities: pov
-  epochs: 20
+  use_modalities: pov_only
+  epochs: 10
   lr: 1e-4
   grad_clip: 1.0
   ema_decay: 0.999

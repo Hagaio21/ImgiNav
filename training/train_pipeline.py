@@ -1,4 +1,5 @@
-import os
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import argparse
 import yaml
 import torch
@@ -9,8 +10,8 @@ from modules.unified_dataset import UnifiedLayoutDataset, collate_fn
 from modules.autoencoder import AutoEncoder
 from modules.unet import UNet
 from modules.condition_mixer import LinearConcatMixer, NonLinearConcatMixer
-from pipeline import DiffusionPipeline
-from pipeline_trainer import PipelineTrainer
+from pipeline.pipeline import DiffusionPipeline
+from training.pipeline_trainer import PipelineTrainer
 from modules.scheduler import LinearScheduler, CosineScheduler
 from utils.utlis import graph2text, load_taxonomy
 import torch.nn as nn
@@ -131,11 +132,15 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(cfg["dataset"].get("seed", 42))
+    
 
-    # Create embedder first
+    taxonomy_path = Path(cfg["dataset"]["taxonomy_path"])
+    
     embed = EmbedderManager(cfg["model"]["embedders"]["pov"],
                             cfg["model"]["embedders"]["graph"],
+                            taxonomy_path,
                             device)
+
     
     # Build dataloaders
     train_loader = build_dataloader(cfg["dataset"], use_embeddings=True, shuffle=True)
@@ -144,7 +149,7 @@ def main():
     
     # Build pipeline
     pipeline = build_pipeline(cfg, device, embed)
-    taxonomy_path = cfg["dataset"]["taxonomy_path"]
+    
     trainer_cfg = cfg["training"]
     trainer = PipelineTrainer(
         pipeline=pipeline,
@@ -166,7 +171,7 @@ def main():
         cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
         cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
         cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
-        taxonomy=taxonomy_path,
+        taxonomy=taxonomy_path, # This is correct
         use_modalities=trainer_cfg.get("use_modalities", "both")
     )
 
