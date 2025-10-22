@@ -13,7 +13,7 @@ from modules.condition_mixer import LinearConcatMixer, NonLinearConcatMixer
 from pipeline.pipeline import DiffusionPipeline
 from training.pipeline_trainer import PipelineTrainer
 from modules.scheduler import LinearScheduler, CosineScheduler
-from utils.utlis import graph2text, load_taxonomy
+from utils.utlis import load_taxonomy
 import torch.nn as nn
 from pathlib import Path
 
@@ -37,12 +37,11 @@ def select_mixer(name: str, out_channels: int, latent_base: int,
 
 
 def build_dataloader(cfg, use_embeddings=False, shuffle=True):
+    """Build dataloader with new unified manifest structure."""
     ds = UnifiedLayoutDataset(
-        room_manifest=cfg["room_manifest"],
-        scene_manifest=cfg["scene_manifest"],
-        data_mode=cfg["data_mode"],
-        pov_type=cfg["pov_type"],
-        use_embeddings=use_embeddings
+        manifest_path=cfg["manifest_path"],
+        use_embeddings=use_embeddings,
+        sample_type=cfg.get("sample_type", "both"),  # 'room', 'scene', or 'both'
     )
     return DataLoader(
         ds,
@@ -57,40 +56,46 @@ def build_dataloader(cfg, use_embeddings=False, shuffle=True):
 def build_pipeline(cfg, device, embedder_manager):
     model_cfg = cfg["model"]
     ae_cfg = model_cfg["autoencoder"]
-    
-    # Load autoencoder skeleton from its config
     autoencoder = AutoEncoder.from_config(ae_cfg["config"]).to(device)
     if os.path.exists(ae_cfg["ckpt"]):
         ae_state = torch.load(ae_cfg["ckpt"], map_location=device)
-        # Load weights from checkpoint
         autoencoder.load_state_dict(ae_state["model"] if "model" in ae_state else ae_state)
     autoencoder.eval()
 
     diff_cfg = model_cfg["diffusion"]
     scheduler = load_scheduler(diff_cfg["scheduler"], diff_cfg["num_steps"])
+    scheduler.to(device)
 
-    # --- START MODIFICATION ---
-    # Get the TRUE latent channels from the autoencoder object itself,
-    # not from the experiment_config.yaml file.
-    # This ensures the UNet matches the (loaded) AutoEncoder.
-    true_latent_channels = autoencoder.encoder.latent_channels
+    # Detect true latent channels
+    try:
+        dummy_input_shape = (1, autoencoder.encoder.in_channels, 
+                             autoencoder.encoder.image_size, autoencoder.encoder.image_size)
+        dummy_input = torch.randn(dummy_input_shape, device=device)
+        
+        with torch.no_grad():
+            dummy_latent = autoencoder.encode_latent(dummy_input)
+        
+        true_latent_channels = dummy_latent.shape[1]
+        
+        print(f"[Info] AutoEncoder latent channels *detected via test*: {true_latent_channels}")
+        if true_latent_channels != diff_cfg["latent_channels"]:
+             print(f"[Warning] Config mismatch: experiment_config.yaml says latent_channels={diff_cfg['latent_channels']}, "
+                   f"but loaded AE *outputs* {true_latent_channels}. Using {true_latent_channels}.")
     
-    # Log this to be certain
-    print(f"[Info] AutoEncoder latent channels detected: {true_latent_channels}")
-    if true_latent_channels != diff_cfg["latent_channels"]:
-        print(f"[Warning] Config mismatch: experiment_config.yaml says latent_channels={diff_cfg['latent_channels']}, "
-              f"but loaded AE has {true_latent_channels}. Using {true_latent_channels}.")
-    # --- END MODIFICATION ---
+    except Exception as e:
+        print(f"[Warning] Failed to detect latent channels via test: {e}. "
+              f"Falling back to config value: {diff_cfg['latent_channels']}")
+        true_latent_channels = diff_cfg["latent_channels"]
 
     unet = UNet.from_config(diff_cfg["unet_config"],
-                            latent_channels=true_latent_channels,  # <-- Use the true value
+                            latent_channels=true_latent_channels,
                             latent_base=model_cfg.get("latent_base", 32)).to(device)
 
     pov_dim = 512
     graph_dim = 384
     hidden_dim_mlp = model_cfg.get("mixer_hidden_dim")
     mixer = select_mixer(model_cfg["mixer"],
-                        out_channels=true_latent_channels, # <-- Use the true value
+                        out_channels=true_latent_channels,
                         latent_base=model_cfg.get("latent_base", 32),
                         pov_dim=pov_dim,
                         graph_dim=graph_dim,
@@ -108,32 +113,65 @@ def build_pipeline(cfg, device, embedder_manager):
 
 
 class EmbedderManager:
-    def __init__(self, pov_name: str, graph_name: str,taxonomy_path: Path, device):
+    """
+    Manages embedding models for POV images and graph text.
+    Handles both pre-loaded embeddings and on-the-fly embedding generation.
+    """
+    def __init__(self, pov_name: str, graph_name: str, taxonomy_path: Path, device):
         self.device = device
+        
+        # POV embedder (ResNet)
         self.resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
         self.resnet.fc = nn.Identity()
         self.resnet.eval().to(device)
+        
+        # Graph text embedder (SentenceTransformer)
         self.graph_encoder = SentenceTransformer(graph_name).to(device)
         self.graph_encoder.eval()
+        
+        # Taxonomy for graph processing (not used with text files)
         self.taxonomy = load_taxonomy(taxonomy_path)
+        
+        # Text cache for graph paths
         self.cache = {}
+        
+        # POV preprocessing
         self.pov_transform = transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.ToTensor()
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
     @torch.no_grad()
     def embed_pov(self, img):
-        img = self.pov_transform(img).unsqueeze(0).to(self.device)
-        return self.resnet(img).squeeze(0)
+        """Embed a single POV image (PIL Image)."""
+        img_tensor = self.pov_transform(img).unsqueeze(0).to(self.device)
+        return self.resnet(img_tensor).squeeze(0)
 
     @torch.no_grad()
-    def embed_graph(self, graph_path):
-        if graph_path in self.cache:
-            text = self.cache[graph_path]
+    def embed_graph(self, graph_data):
+        """
+        Embed graph data. Handles:
+        - str: Path to .txt file (cached)
+        - Already loaded text string
+        """
+        if isinstance(graph_data, str):
+            # Check if it's cached text
+            if graph_data in self.cache:
+                text = self.cache[graph_data]
+            else:
+                # Load from file if it looks like a path
+                if os.path.exists(graph_data) and graph_data.endswith('.txt'):
+                    with open(graph_data, 'r', encoding='utf-8') as f:
+                        text = f.read().strip()
+                    self.cache[graph_data] = text
+                else:
+                    # Treat as raw text
+                    text = graph_data
         else:
-            text = graph2text(graph_path, self.taxonomy)
-            self.cache[graph_path] = text
+            raise TypeError(f"embed_graph expected str, but got {type(graph_data)}")
+
+        # Encode text to embedding
         emb = self.graph_encoder.encode([text], convert_to_tensor=True, device=self.device)
         return emb.squeeze(0)
 
@@ -149,14 +187,14 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(cfg["dataset"].get("seed", 42))
     
-
     taxonomy_path = Path(cfg["dataset"]["taxonomy_path"])
     
-    embed = EmbedderManager(cfg["model"]["embedders"]["pov"],
-                            cfg["model"]["embedders"]["graph"],
-                            taxonomy_path,
-                            device)
-
+    embed = EmbedderManager(
+        cfg["model"]["embedders"]["pov"],
+        cfg["model"]["embedders"]["graph"],
+        taxonomy_path,
+        device
+    )
     
     # Build dataloaders
     train_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=True)
@@ -179,7 +217,7 @@ def main():
         log_interval=trainer_cfg.get("log_interval", 100),
         eval_interval=trainer_cfg.get("eval_interval", 1000),
         sample_interval=trainer_cfg.get("sample_interval", 2000),
-        eval_num_samples=trainer_cfg.get("eval_sample_num",8),
+        eval_num_samples=trainer_cfg.get("eval_sample_num", 8),
         ckpt_dir=trainer_cfg["ckpt_dir"],
         output_dir=trainer_cfg["output_dir"],
         mixed_precision=trainer_cfg.get("mixed_precision", False),
@@ -187,7 +225,7 @@ def main():
         cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
         cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
         cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
-        taxonomy=taxonomy_path, # This is correct
+        taxonomy=taxonomy_path,
         use_modalities=trainer_cfg.get("use_modalities", "both")
     )
 
@@ -223,10 +261,7 @@ def main():
             "num_steps": cfg["model"]["diffusion"]["num_steps"]
         },
         "embedders": cfg["model"]["embedders"],
-        # --- START MODIFICATION ---
-        # Save the true latent channels that were used
-        "latent_channels": pipeline.autoencoder.encoder.latent_channels,
-        # --- END MODIFICATION ---
+        "latent_channels": pipeline.unet.in_channels,
         "latent_base": cfg["model"].get("latent_base", 32)
     }
 

@@ -1,453 +1,422 @@
-import torch
-from torch.optim import AdamW
-from tqdm import tqdm
-from torchvision.utils import save_image
 import os
+import torch
+import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
+from tqdm import tqdm
+from pathlib import Path
 from PIL import Image
-from utils.utlis import graph2text, load_taxonomy
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
-
-def compute_condition_correlation(pred, conds):
-    result = {}
-    flat_pred = pred.flatten(1)
-    for name, c in zip(["pov", "graph"], conds):
-        if c is None:
-            continue
-        flat_cond = c.flatten(1)
-        sim = F.cosine_similarity(flat_pred, flat_cond, dim=1)
-        result[name] = sim.mean().item()
-    return result
-
-
-def safe_grad_norm(model):
-    norms = []
-    for p in model.parameters():
-        if p.grad is not None:
-            norms.append(p.grad.norm() ** 2)
-    if not norms:
-        return 0.0
-    return torch.sqrt(sum(norms)).item()
+import torchvision.utils as vutils
 
 
 class PipelineTrainer:
-    def __init__(self,
-                 pipeline,
-                 sample_loader=None,
-                 optimizer=None,
-                 loss_fn=None,
-                 epochs=10,
-                 lr=1e-4,
-                 weight_decay=0.0,
-                 grad_clip=None,
-                 log_interval=100,
-                 eval_interval=1000,
-                 sample_interval=2000,
-                 eval_num_samples = 4,
-                 ckpt_dir=None,
-                 output_dir=None,
-                 logger=None,
-                 mixed_precision=False,
-                 ema_decay=None,
-                 cond_dropout_pov=0.1,
-                 cond_dropout_graph=0.1,
-                 cond_dropout_both=0.0,
-                 taxonomy = None,
-                 use_modalities="both"):
-        
-        self.pipeline = pipeline.to(pipeline.device)
-        self.device = pipeline.device
-        self.logger = logger
+    """
+    Trainer for DiffusionPipeline with ablation support and mixed batch handling.
+    """
+    def __init__(
+        self,
+        pipeline,
+        sample_loader,
+        optimizer=None,
+        loss_fn=None,
+        epochs=100,
+        lr=1e-4,
+        weight_decay=0.0,
+        grad_clip=None,
+        log_interval=100,
+        eval_interval=1000,
+        sample_interval=2000,
+        eval_num_samples=8,
+        ckpt_dir="checkpoints",
+        output_dir="outputs",
+        mixed_precision=False,
+        ema_decay=None,
+        cond_dropout_pov=0.0,
+        cond_dropout_graph=0.0,
+        cond_dropout_both=0.0,
+        taxonomy=None,
+        use_modalities="both",  # 'pov_only', 'graph_only', 'both', 'none'
+    ):
+        self.pipeline = pipeline
         self.sample_loader = sample_loader
-        self.taxonomy = load_taxonomy(taxonomy)
-
-        self.loss_fn = loss_fn or torch.nn.MSELoss()
         self.epochs = epochs
         self.grad_clip = grad_clip
         self.log_interval = log_interval
         self.eval_interval = eval_interval
         self.sample_interval = sample_interval
+        self.eval_num_samples = eval_num_samples
+        self.ckpt_dir = Path(ckpt_dir)
+        self.output_dir = Path(output_dir)
         self.mixed_precision = mixed_precision
         self.ema_decay = ema_decay
-
-        self.eval_num_samples = eval_num_samples
-
+        self.taxonomy = taxonomy
+        
+        # Ablation settings
+        self.use_modalities = use_modalities.lower()
+        self.use_pov = self.use_modalities in ["pov_only", "both"]
+        self.use_graph = self.use_modalities in ["graph_only", "both"]
+        
+        # Conditional dropout probabilities
         self.cond_dropout_pov = cond_dropout_pov
         self.cond_dropout_graph = cond_dropout_graph
         self.cond_dropout_both = cond_dropout_both
-        self.use_modalities = use_modalities
-
-        self.optimizer = optimizer or AdamW(
-            list(pipeline.unet.parameters()) + list(pipeline.mixer.parameters()),
-            lr=lr,
-            weight_decay=weight_decay,
-        )
-
+        
+        # Create directories
+        self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Setup optimizer
+        if optimizer is None:
+            trainable_params = []
+            trainable_params.extend(self.pipeline.unet.parameters())
+            trainable_params.extend(self.pipeline.mixer.parameters())
+            self.optimizer = torch.optim.AdamW(
+                trainable_params, lr=lr, weight_decay=weight_decay
+            )
+        else:
+            self.optimizer = optimizer
+        
+        # Setup loss
+        self.loss_fn = loss_fn if loss_fn is not None else nn.MSELoss()
+        
+        # Setup mixed precision
+        self.scaler = GradScaler() if mixed_precision else None
+        
+        # EMA model
+        self.ema_model = None
+        if ema_decay is not None:
+            self.ema_model = self._create_ema_model()
+        
+        # Training state
         self.global_step = 0
-        self.ckpt_dir = ckpt_dir
-        self.output_dir = output_dir or "samples"
-        os.makedirs(self.output_dir, exist_ok=True)
-        if self.ckpt_dir:
-            os.makedirs(self.ckpt_dir, exist_ok=True)
-
-        self.ema_unet = None
-        if ema_decay:
-            import copy
-            self.ema_unet = copy.deepcopy(pipeline.unet).eval()
-
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.mixed_precision)
-
-        # fixed noise for consistent samples
-        self.fixed_noise = None
-
-        # tracking for plots
-        self.train_losses = []
-        self.train_steps = []
-        self.val_losses = []
-        self.val_steps = []
-        self.corr_pov_history = []
-        self.corr_graph_history = []
-        self.corr_steps = []
-
-    def to(self, device):
-        self.pipeline.to(device)
-        return self
-
-    def train(self, mode=True):
-        self.pipeline.train(mode)
-        return self
-
-    def training_step(self, batch):
-        """
-        MODIFIED: Handles raw data (images/paths) by creating embeddings.
-        """
-        layout = batch["layout"]
+        self.current_epoch = 0
         
-        # --- START FIX ---
-        # We now get raw data, not embeddings
-        pov_raw = batch["pov"]
-        graph_raw = batch["graph"]
+        print(f"[Trainer] Initialized with modality mode: {self.use_modalities}")
+        print(f"  - Use POV: {self.use_pov}")
+        print(f"  - Use Graph: {self.use_graph}")
+        print(f"  - Conditional dropout: POV={cond_dropout_pov}, Graph={cond_dropout_graph}, Both={cond_dropout_both}")
+
+    def _create_ema_model(self):
+        """Create EMA shadow model."""
+        import copy
+        ema = copy.deepcopy(self.pipeline)
+        ema.eval()
+        for param in ema.parameters():
+            param.requires_grad = False
+        return ema
+
+    def _update_ema(self):
+        """Update EMA model parameters."""
+        if self.ema_model is None:
+            return
         
-        # Convert raw inputs to embeddings using the pipeline's method
-        cond_pov_emb, cond_graph_emb = self.pipeline._prepare_conditions(
-            pov_raw, graph_raw
+        with torch.no_grad():
+            for ema_param, model_param in zip(
+                self.ema_model.parameters(), self.pipeline.parameters()
+            ):
+                ema_param.data.mul_(self.ema_decay).add_(
+                    model_param.data, alpha=1 - self.ema_decay
+                )
+
+    def _apply_conditional_dropout(self, pov_emb, graph_emb, has_pov_mask=None):
+        """
+        Apply conditional dropout during training.
+        Respects ablation settings and only drops conditions that are actually used.
+        
+        Args:
+            pov_emb: POV embeddings [B, D] or None
+            graph_emb: Graph embeddings [B, D] or None
+            has_pov_mask: Boolean tensor [B] indicating which samples have POVs
+        
+        Returns:
+            Tuple of (pov_emb, graph_emb) with dropout applied
+        """
+        if not self.pipeline.training:
+            return pov_emb, graph_emb
+        
+        # Determine batch size
+        if pov_emb is not None:
+            batch_size = pov_emb.shape[0]
+            device = pov_emb.device
+        elif graph_emb is not None:
+            batch_size = graph_emb.shape[0]
+            device = graph_emb.device
+        else:
+            return None, None
+        
+        # Generate dropout masks
+        drop_pov = torch.rand(batch_size, device=device) < self.cond_dropout_pov
+        drop_graph = torch.rand(batch_size, device=device) < self.cond_dropout_graph
+        drop_both = torch.rand(batch_size, device=device) < self.cond_dropout_both
+        
+        # Apply "drop both" first
+        drop_pov = drop_pov | drop_both
+        drop_graph = drop_graph | drop_both
+        
+        # Only drop POV for samples that actually have POVs (respect has_pov_mask)
+        if has_pov_mask is not None and pov_emb is not None:
+            # has_pov_mask should be a boolean tensor on the same device
+            if not isinstance(has_pov_mask, torch.Tensor):
+                has_pov_mask = torch.tensor(has_pov_mask, device=device, dtype=torch.bool)
+            drop_pov = drop_pov & has_pov_mask.to(device)
+        
+        # Apply dropout (zero out embeddings)
+        if pov_emb is not None and drop_pov.any():
+            pov_emb = pov_emb.clone()
+            pov_emb[drop_pov] = 0
+        
+        if graph_emb is not None and drop_graph.any():
+            graph_emb = graph_emb.clone()
+            graph_emb[drop_graph] = 0
+        
+        return pov_emb, graph_emb
+
+    def _prepare_batch(self, batch):
+        """
+        Prepare batch for training: embed conditions and handle mixed batches.
+        
+        Returns:
+            layout: Tensor [B, C, H, W]
+            pov_emb: Tensor [B, D] or None
+            graph_emb: Tensor [B, D] or None
+            has_pov_mask: Boolean tensor [B]
+        """
+        layout = batch["layout"].to(self.pipeline.device)
+        
+        # Get raw data
+        pov_raw = batch.get("pov")  # List of PIL Images or None values
+        graph_raw = batch.get("graph")  # List of strings
+        
+        # Determine which samples have POVs
+        if pov_raw is not None and isinstance(pov_raw, list):
+            has_pov_mask = torch.tensor(
+                [p is not None for p in pov_raw],
+                device=self.pipeline.device,
+                dtype=torch.bool
+            )
+        else:
+            has_pov_mask = torch.zeros(layout.shape[0], device=self.pipeline.device, dtype=torch.bool)
+        
+        # Embed conditions using pipeline's embedder (respecting ablation settings)
+        pov_emb, graph_emb = self.pipeline._prepare_conditions(
+            pov_raw=pov_raw if self.use_pov else None,
+            graph_raw=graph_raw if self.use_graph else None,
+            use_pov=self.use_pov,
+            use_graph=self.use_graph
         )
-        # --- END FIX ---
         
-        z = self.pipeline.encode_layout(layout)
-        # t is on CPU for scheduler indexing
-        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device="cpu")
-        noise = torch.randn_like(z)
-        z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
-
-        # Use the generated embeddings
-        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb], B_hint=z_noisy.shape[0], device_hint=z_noisy.device)
+        # Apply conditional dropout
+        pov_emb, graph_emb = self._apply_conditional_dropout(pov_emb, graph_emb, has_pov_mask)
         
-        # Move t to GPU for the UNet
-        noise_pred = self.pipeline.unet(z_noisy, t.to(self.device), cond)
+        return layout, pov_emb, graph_emb, has_pov_mask
 
-        loss = self.loss_fn(noise_pred, noise)
-
-        if self.logger is not None:
-            log = {"loss": loss.item(), "timestep": t.float().mean().item()}
-
-            # correlation and cosine
-            # Use embeddings for correlation
-            corr = compute_condition_correlation(noise_pred.detach(), [cond_pov_emb, cond_graph_emb])
-            for k, v in corr.items():
-                log[f"corr_{k}"] = v
-            cos = F.cosine_similarity(noise_pred.flatten(1), noise.flatten(1)).mean().item()
-            log["cosine_pred_true"] = cos
-
-            # SNR
-            snr = (z_noisy.var(dim=(1,2,3)) / (noise_pred - noise).var(dim=(1,2,3))).mean().item()
-            log["snr"] = snr
-
-            # grad norm
-            log["grad_norm"] = safe_grad_norm(self.pipeline.unet)
-
-            self.logger.log(log, step=self.global_step)
-
-        return loss
-
-    def plot_metrics(self):
-        """Generate and save metric plots."""
-        plots_dir = os.path.join(self.output_dir, "plots")
-        os.makedirs(plots_dir, exist_ok=True)
-
-        # Plot 1: Loss per step (train and val)
-        if self.train_losses:
-            plt.figure(figsize=(10, 6))
-            plt.plot(self.train_steps, self.train_losses, label='Train Loss', alpha=0.7)
-            if self.val_losses:
-                plt.plot(self.val_steps, self.val_losses, label='Val Loss', marker='o', alpha=0.7)
-            plt.xlabel('Step')
-            plt.ylabel('Loss')
-            plt.title('Loss per Step')
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.savefig(os.path.join(plots_dir, 'loss_per_step.png'), dpi=150, bbox_inches='tight')
-            plt.close()
-
-        # Plot 2: Correlation per step (pov and graph)
-        if self.corr_pov_history or self.corr_graph_history:
-            plt.figure(figsize=(10, 6))
-            if self.corr_pov_history:
-                plt.plot(self.corr_steps, self.corr_pov_history, label='corr_pov', alpha=0.7)
-            if self.corr_graph_history:
-                plt.plot(self.corr_steps, self.corr_graph_history, label='corr_graph', alpha=0.7)
-            plt.xlabel('Step')
-            plt.ylabel('Correlation')
-            plt.title('Condition Correlation per Step')
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.savefig(os.path.join(plots_dir, 'correlation_per_step.png'), dpi=150, bbox_inches='tight')
-            plt.close()
+    def train_step(self, batch):
+        """Single training step."""
+        self.optimizer.zero_grad()
+        
+        # Prepare batch
+        layout, pov_emb, graph_emb, has_pov_mask = self._prepare_batch(batch)
+        
+        # Encode layout to latent space
+        with torch.no_grad():
+            latents = self.pipeline.encode_layout(layout)
+        
+        # Sample random timesteps
+        batch_size = latents.shape[0]
+        timesteps = torch.randint(
+            0, 
+            self.pipeline.scheduler.num_steps, 
+            (batch_size,), 
+            device=self.pipeline.device
+        ).long()
+        
+        # Add noise to latents
+        noise = torch.randn_like(latents)
+        noisy_latents = self.pipeline.scheduler.add_noise(latents, noise, timesteps)
+        
+        # Forward pass with mixed precision
+        if self.mixed_precision:
+            with autocast():
+                noise_pred = self.pipeline(noisy_latents, pov_emb, graph_emb, timesteps)
+                loss = self.loss_fn(noise_pred, noise)
+        else:
+            noise_pred = self.pipeline(noisy_latents, pov_emb, graph_emb, timesteps)
+            loss = self.loss_fn(noise_pred, noise)
+        
+        # Backward pass
+        if self.mixed_precision:
+            self.scaler.scale(loss).backward()
+            if self.grad_clip is not None:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.pipeline.parameters(), self.grad_clip)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            if self.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.pipeline.parameters(), self.grad_clip)
+            self.optimizer.step()
+        
+        # Update EMA
+        if self.ema_model is not None:
+            self._update_ema()
+        
+        return {
+            "loss": loss.item(),
+            "num_pov": has_pov_mask.sum().item(),
+            "num_no_pov": (~has_pov_mask).sum().item(),
+        }
 
     def fit(self, train_loader, val_loader=None):
-        self.train(True)
+        """Main training loop."""
+        print(f"[Trainer] Starting training for {self.epochs} epochs")
+        print(f"[Trainer] Total steps per epoch: {len(train_loader)}")
+        
         for epoch in range(self.epochs):
-            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.epochs}", leave=False)
-            for batch in pbar:
-                self.optimizer.zero_grad(set_to_none=True)
+            self.current_epoch = epoch
+            self.pipeline.train()
+            
+            epoch_loss = 0.0
+            epoch_pov_count = 0
+            epoch_no_pov_count = 0
+            
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
+            
+            for batch_idx, batch in enumerate(pbar):
+                # Training step
+                metrics = self.train_step(batch)
                 
-                # Unpack dict batch (raw data)
-                layout = batch["layout"]
-                cond_pov = batch["pov"]
-                cond_graph = batch["graph"]
-
-                # Modality control (from config)
-                if self.use_modalities == "pov_only":
-                    cond_graph = None
-                elif self.use_modalities == "graph_only":
-                    cond_pov = None
-                elif self.use_modalities == "none":
-                    cond_pov = None
-                    cond_graph = None
-
-                # Stochastic dropout within selected modalities
-                if torch.rand(1).item() < self.cond_dropout_both:
-                    cond_pov = None
-                    cond_graph = None
-                else:
-                    if torch.rand(1).item() < self.cond_dropout_pov:
-                        cond_pov = None
-                    if torch.rand(1).item() < self.cond_dropout_graph:
-                        cond_graph = None
-
-                # Reconstruct batch dict for training_step (still raw data)
-                batch_dict = {
-                    "layout": layout,
-                    "pov": cond_pov,
-                    "graph": cond_graph
-                }
+                epoch_loss += metrics["loss"]
+                epoch_pov_count += metrics["num_pov"]
+                epoch_no_pov_count += metrics["num_no_pov"]
                 
-                with torch.cuda.amp.autocast(enabled=self.mixed_precision):
-                    # training_step will handle embedding
-                    loss = self.training_step(batch_dict)
-
-                self.scaler.scale(loss).backward()
-                if self.grad_clip:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        list(self.pipeline.unet.parameters()) + list(self.pipeline.mixer.parameters()),
-                        self.grad_clip,
-                    )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.global_step += 1
-                pbar.set_postfix({"loss": f"{loss.item():.4f}"})
-
-                if self.ema_unet and self.ema_decay:
-                    self.update_ema()
-
-                if self.logger and self.global_step % self.log_interval == 0:
-                    self.logger.log({"loss": loss.item(), "epoch": epoch, "step": self.global_step})
-                    
-                    # Track train loss
-                    self.train_losses.append(loss.item())
-                    self.train_steps.append(self.global_step)
-                    
-                    # Track correlations from last training step
-                    with torch.no_grad():
-                        # Create embeddings from raw data for correlation
-                        cond_pov_emb, cond_graph_emb = self.pipeline._prepare_conditions(
-                            cond_pov, cond_graph
-                        )
-                    
-                        z = self.pipeline.encode_layout(layout)
-                        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device="cpu")
-                        noise = torch.randn_like(z)
-                        z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
-                        
-                        # Use embeddings for mixer and correlation
-                        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb]) 
-                        noise_pred = self.pipeline.unet(z_noisy, t.to(self.device), cond) # Move t to device
-                        corr = compute_condition_correlation(noise_pred, [cond_pov_emb, cond_graph_emb])
-                        
-                        if "pov" in corr:
-                            self.corr_pov_history.append(corr["pov"])
-                        if "graph" in corr:
-                            self.corr_graph_history.append(corr["graph"])
-                        if corr:
-                            self.corr_steps.append(self.global_step)
-                    
-                    # Generate plots
-                    self.plot_metrics()
-
-                if val_loader and self.global_step % self.eval_interval == 0:
-                    # evaluate() will handle its own embedding
-                    val_metrics = self.evaluate(val_loader, step=self.global_step)
-                    
-                    # Track val loss if available
-                    if "loss" in val_metrics:
-                        self.val_losses.append(val_metrics["loss"])
-                        self.val_steps.append(self.global_step)
-                    
-                    # Generate plots after evaluation
-                    self.plot_metrics()
-                    
-                    self.train(True)
-
+                # Update progress bar
+                pbar.set_postfix({
+                    "loss": f"{metrics['loss']:.4f}",
+                    "pov": metrics["num_pov"],
+                    "no_pov": metrics["num_no_pov"]
+                })
+                
+                # Logging
+                if self.global_step % self.log_interval == 0:
+                    print(f"\n[Step {self.global_step}] Loss: {metrics['loss']:.4f}")
+                
+                # Evaluation
+                if val_loader is not None and self.global_step % self.eval_interval == 0:
+                    self.evaluate(val_loader)
+                    self.pipeline.train()
+                
+                # Sampling
                 if self.global_step % self.sample_interval == 0:
-                    self.sample_and_save(self.global_step)
-
-            if self.ckpt_dir:
-                self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
+                    self.sample_and_save(batch)
+                    self.pipeline.train()
+                
+                self.global_step += 1
+            
+            # Epoch summary
+            avg_loss = epoch_loss / len(train_loader)
+            print(f"\n[Epoch {epoch+1}] Average Loss: {avg_loss:.4f}")
+            print(f"  - Samples with POV: {epoch_pov_count}")
+            print(f"  - Samples without POV: {epoch_no_pov_count}")
+            
+            # Save checkpoint
+            self.save_checkpoint(f"epoch_{epoch+1}.pt")
+            
+            # End of epoch evaluation
+            if val_loader is not None:
+                self.evaluate(val_loader)
+                self.pipeline.train()
 
     @torch.no_grad()
-    def evaluate(self, val_loader, step=None):
-        self.train(False)
-        batch = next(iter(val_loader)) # This is a raw data batch
-        num_eval_samples = self.eval_num_samples
+    def evaluate(self, val_loader):
+        """Evaluation loop."""
+        self.pipeline.eval()
+        print(f"\n[Eval] Running evaluation at step {self.global_step}")
         
-        # Compute validation loss
-        layout = batch["layout"]
+        val_batch = next(iter(val_loader))
         
-        # --- START FIX ---
-        # We now get raw data, not embeddings
-        pov_raw = batch["pov"]
-        graph_raw = batch["graph"]
-
-        # Convert raw inputs to embeddings
-        cond_pov_emb, cond_graph_emb = self.pipeline._prepare_conditions(
-            pov_raw, graph_raw
+        metrics = self.pipeline.evaluate(
+            val_batch,
+            num_samples=self.eval_num_samples,
+            step=self.global_step,
+            use_pov=self.use_pov,
+            use_graph=self.use_graph
         )
-        # --- END FIX ---
         
-        z = self.pipeline.encode_layout(layout)
-        
-        # t is on CPU for scheduler indexing
-        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device="cpu")
-        
-        noise = torch.randn_like(z)
-        z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
-        
-        # Use embeddings for mixer
-        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb], B_hint=z_noisy.shape[0], device_hint=z_noisy.device)
-        
-        # Move t to GPU for the UNet
-        noise_pred = self.pipeline.unet(z_noisy, t.to(self.device), cond)
-        
-        val_loss = self.loss_fn(noise_pred, noise)
-        
-        # Pass the raw batch to pipeline.evaluate
-        metrics = self.pipeline.evaluate(batch, num_samples=num_eval_samples, step=step) 
-        metrics["loss"] = val_loss.item()
-        
-        if self.logger and step is not None:
-            self.logger.log({"val_step": step, **metrics}, step=step)
+        print(f"[Eval] Metrics: {metrics}")
         return metrics
 
-
-
-
     @torch.no_grad()
-    def sample_and_save(self, step, sample_num=4):
-        if self.sample_loader is None:
-            print(f"[Warning] No sample_loader provided, skipping sampling at step {step}")
-            return
-            
+    def sample_and_save(self, batch):
+        """Generate and save samples."""
         self.pipeline.eval()
         
-        # Get batch from sample loader (raw data, not embeddings)
-        batch = next(iter(self.sample_loader))
-        layout = batch["layout"]
-        pov_img = batch["pov"]
-        graph_path = batch["graph"]
-
-        # Initialize fixed noise once
-        if self.fixed_noise is None:
-            C, H, W = self.pipeline.diffusion.latent_shape
-            latent_shape = (sample_num, C, H, W)
-            self.fixed_noise = torch.randn(latent_shape, device=self.device)
-
-        # Use step in directory name to avoid overwriting
-        cond_dir = os.path.join(self.output_dir, "samples", "conditioned", f"step_{step}")
-        os.makedirs(cond_dir, exist_ok=T)
-
-        for i in range(min(sample_num, len(layout))):
-            item_dir = os.path.join(cond_dir, f"sample_{i}")
-            os.makedirs(item_dir, exist_ok=True)
-
-            pov_path = os.path.join(item_dir, "pov.png")
-            target_path = os.path.join(item_dir, "target.png")
-            graph_txt = os.path.join(item_dir, "graph.txt")
-            generated_path = os.path.join(item_dir, "generated.png")
-
-            # Save inputs
-            if isinstance(pov_img, torch.Tensor):
-                save_image(pov_img[i], pov_path, normalize=True, value_range=(0, 1))
-            elif isinstance(pov_img[i], Image.Image):
-                pov_img[i].save(pov_path)
-
-            save_image(layout[i], target_path, normalize=True, value_range=(0, 1))
-            with open(graph_txt, "w", encoding="utf-8") as f:
-                if isinstance(graph_path[i], str):
-                    f.write(graph2text(graph_path[i], taxonomy=self.taxonomy))
-                else:
-                    f.write(str(graph_path[i]))
-
-
-            # Generate and save
-            cond_sample = self.pipeline.sample(
-                batch_size=1,
-                pov_raw=pov_img[i] if not isinstance(pov_img, torch.Tensor) else pov_img[i].cpu(),
-                graph_raw=graph_path[i] if isinstance(graph_path[i], str) else None,
-                image=True,
-                noise=self.fixed_noise[i].unsqueeze(0)
-            )
-            save_image(cond_sample, generated_path, normalize=True, value_range=(0, 1))
-
-        # Unconditioned samples
-        uncond_dir = os.path.join(self.output_dir, "samples", "unconditioned")
-        os.makedirs(uncond_dir, exist_ok=True)
-        uncond_samples = self.pipeline.sample(
-            batch_size=sample_num, image=True, noise=self.fixed_noise
+        # Prepare conditions from batch
+        layout, pov_emb, graph_emb, has_pov_mask = self._prepare_batch(batch)
+        
+        # Take first sample from batch
+        if pov_emb is not None:
+            pov_emb = pov_emb[:1]
+        if graph_emb is not None:
+            graph_emb = graph_emb[:1]
+        
+        # Generate sample
+        samples = self.pipeline.sample(
+            batch_size=1,
+            cond_pov_emb=pov_emb,
+            cond_graph_emb=graph_emb,
+            image=True,
+            use_pov=self.use_pov,
+            use_graph=self.use_graph
         )
-        save_image(uncond_samples,
-                   os.path.join(uncond_dir, f"step_{step}.png"),
-                   nrow=2, normalize=True, value_range=(0, 1))
-        print(f"[Step {step}] Saved conditioned and unconditioned samples.")
+        
+        # Save
+        save_path = self.output_dir / f"sample_step_{self.global_step}.png"
+        vutils.save_image(
+            samples,
+            save_path,
+            normalize=True,
+            value_range=(-1, 1)
+        )
+        print(f"[Sample] Saved to {save_path}")
 
-    def save_checkpoint(self, path):
-        state = {
-            "unet": self.pipeline.unet.state_dict(),
-            "mixer": self.pipeline.mixer.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "step": self.global_step,
+    def save_checkpoint(self, filename):
+        """Save training checkpoint."""
+        ckpt_path = self.ckpt_dir / filename
+        
+        checkpoint = {
+            "epoch": self.current_epoch,
+            "global_step": self.global_step,
+            "unet_state_dict": self.pipeline.unet.state_dict(),
+            "mixer_state_dict": self.pipeline.mixer.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
         }
-        torch.save(state, path)
+        
+        if self.ema_model is not None:
+            checkpoint["ema_unet_state_dict"] = self.ema_model.unet.state_dict()
+            checkpoint["ema_mixer_state_dict"] = self.ema_model.mixer.state_dict()
+        
+        if self.scaler is not None:
+            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
+        
+        torch.save(checkpoint, ckpt_path)
+        print(f"[Checkpoint] Saved to {ckpt_path}")
 
-    def load_checkpoint(self, path):
-        state = torch.load(path, map_location=self.device)
-        self.pipeline.unet.load_state_dict(state["unet"])
-        self.pipeline.mixer.load_state_dict(state["mixer"])
-        self.optimizer.load_state_dict(state["optimizer"])
-        self.global_step = state["step"]
-        print(f"Checkpoint loaded from {path} at step {self.global_step}")
-
-    def update_ema(self):
-        with torch.no_grad():
-            for ema_param, param in zip(self.ema_unet.parameters(), self.pipeline.unet.parameters()):
-                ema_param.data.mul_(self.ema_decay).add_(param.data, alpha=1 - self.ema_decay)
+    def load_checkpoint(self, checkpoint_path):
+        """Load training checkpoint."""
+        checkpoint = torch.load(checkpoint_path, map_location=self.pipeline.device)
+        
+        self.current_epoch = checkpoint["epoch"]
+        self.global_step = checkpoint["global_step"]
+        self.pipeline.unet.load_state_dict(checkpoint["unet_state_dict"])
+        self.pipeline.mixer.load_state_dict(checkpoint["mixer_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        
+        if self.ema_model is not None and "ema_unet_state_dict" in checkpoint:
+            self.ema_model.unet.load_state_dict(checkpoint["ema_unet_state_dict"])
+            self.ema_model.mixer.load_state_dict(checkpoint["ema_mixer_state_dict"])
+        
+        if self.scaler is not None and "scaler_state_dict" in checkpoint:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        
+        print(f"[Checkpoint] Loaded from {checkpoint_path}")
+        print(f"  - Resuming from epoch {self.current_epoch}, step {self.global_step}")

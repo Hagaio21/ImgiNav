@@ -45,31 +45,21 @@ def compute_diversity(samples):
 
 
 def compute_fid(a, b):
-    # --- FIX: Flatten from [B, C, H, W] to [B, D_flat] ---
     a_flat = a.flatten(1)
     b_flat = b.flatten(1)
     
-    # Calculate means (shape [D_flat])
     mu1 = a_flat.mean(dim=0)
     mu2 = b_flat.mean(dim=0)
     
-    # Calculate covariance matrices (shape [D_flat, D_flat])
-    # torch.cov expects [D, N], so we transpose [B, D] -> [D, B]
     cov1 = torch.cov(a_flat.T)
     cov2 = torch.cov(b_flat.T)
     
-    # L2 norm of mean difference
     diff = (mu1 - mu2).pow(2).sum().sqrt() 
     
     try:
-        # --- FIX: Use proper matrix square root ---
-        # Calculate the trace term: Tr(cov1 + cov2 - 2 * (cov1 @ cov2)^(1/2))
         cov_prod_sqrt = matrix_power(cov1 @ cov2, 0.5)
-        
-        # The result can be complex, we need the real part of the trace
         cov_diff = torch.trace(cov1 + cov2 - 2 * cov_prod_sqrt).real
     except Exception as e:
-        # Fallback if linalg fails (e.g., singular matrix)
         print(f"Warning: FID covariance calculation failed: {e}. Returning mean diff only.")
         cov_diff = torch.tensor(0.0, device=a.device)
 
@@ -112,25 +102,36 @@ class DiffusionPipeline(nn.Module):
             return self.autoencoder.encode_latent(layout.to(self.device))
 
     def _prepare_conditions(self, pov_raw=None, graph_raw=None, 
-                           cond_pov_emb=None, cond_graph_emb=None):
+                           cond_pov_emb=None, cond_graph_emb=None,
+                           use_pov=True, use_graph=True):
         """
         Convert raw inputs to embeddings if needed.
+        Supports ablation via use_pov and use_graph flags.
+        
+        Args:
+            pov_raw: Raw POV data (PIL Image, list of images, or None)
+            graph_raw: Raw graph data (text string, path, list, or None)
+            cond_pov_emb: Pre-computed POV embeddings
+            cond_graph_emb: Pre-computed graph embeddings
+            use_pov: If False, ignore POV even if provided (ablation)
+            use_graph: If False, ignore graph even if provided (ablation)
         """
-        # If embeddings already provided, use them directly:
+        # If embeddings already provided, use them directly (respecting ablation flags)
         if cond_pov_emb is not None or cond_graph_emb is not None:
-            return cond_pov_emb, cond_graph_emb
+            return (cond_pov_emb if use_pov else None, 
+                    cond_graph_emb if use_graph else None)
         
         pov_emb = None
         graph_emb = None
         
-        if pov_raw is not None and self.embedder_manager is not None:
+        # POV embedding
+        if use_pov and pov_raw is not None and self.embedder_manager is not None:
             # Handle single image
             if isinstance(pov_raw, Image.Image):
                 pov_emb = self.embedder_manager.embed_pov(pov_raw).unsqueeze(0)
             # Handle tensor (single or batch)
             elif isinstance(pov_raw, torch.Tensor):
                 if len(pov_raw.shape) == 3:  # Single [C,H,W]
-                    # Convert to PIL for embedder
                     from torchvision.transforms import ToPILImage
                     pov_pil = ToPILImage()(pov_raw.cpu())
                     pov_emb = self.embedder_manager.embed_pov(pov_pil).unsqueeze(0)
@@ -144,18 +145,22 @@ class DiffusionPipeline(nn.Module):
                     pov_emb = torch.stack(pov_embs)
             # Handle list of images
             elif isinstance(pov_raw, (list, tuple)):
-                pov_emb = torch.stack([
-                    self.embedder_manager.embed_pov(img) for img in pov_raw
-                ])
+                # Filter out None values (for scene samples)
+                valid_povs = [img for img in pov_raw if img is not None]
+                if valid_povs:
+                    pov_emb = torch.stack([
+                        self.embedder_manager.embed_pov(img) for img in valid_povs
+                    ])
         
-        if graph_raw is not None and self.embedder_manager is not None:
+        # Graph embedding
+        if use_graph and graph_raw is not None and self.embedder_manager is not None:
             if isinstance(graph_raw, str):
-                # Single path
+                # Single path or text
                 graph_emb = self.embedder_manager.embed_graph(graph_raw).unsqueeze(0)
             elif isinstance(graph_raw, (list, tuple)):
-                # Batch of paths
+                # Batch of paths/texts
                 graph_emb = torch.stack([
-                    self.embedder_manager.embed_graph(path) for path in graph_raw
+                    self.embedder_manager.embed_graph(g) for g in graph_raw
                 ])
         
         if pov_emb is not None:
@@ -178,14 +183,22 @@ class DiffusionPipeline(nn.Module):
                cond_pov_emb=None, cond_graph_emb=None, 
                image=True, step=None, noise=None,
                guidance_scale=1.0,
-               num_steps=None):
-
+               num_steps=None,
+               use_pov=True, use_graph=True):
+        """
+        Sample from the diffusion model.
+        
+        Args:
+            use_pov: If False, ignore POV conditioning (ablation)
+            use_graph: If False, ignore graph conditioning (ablation)
+        """
         if self.diffusion is None:
             self._build_diffusion()
 
-        # Step 1: Embed raw inputs if provided
+        # Step 1: Embed raw inputs if provided (respecting ablation flags)
         cond_pov, cond_graph = self._prepare_conditions(
-            pov_raw, graph_raw, cond_pov_emb, cond_graph_emb
+            pov_raw, graph_raw, cond_pov_emb, cond_graph_emb,
+            use_pov=use_pov, use_graph=use_graph
         )
         
         # Step 2: Mix conditions into the format expected by UNet
@@ -194,7 +207,6 @@ class DiffusionPipeline(nn.Module):
         # Step 3: Prepare unconditional embedding for classifier-free guidance
         uncond_cond = None
         if guidance_scale != 1.0 and cond is not None:
-            # Create unconditional embedding (all zeros or null conditions)
             uncond_cond = self.mixer([None, None], B_hint=batch_size, device_hint=self.device)
         
         # Step 4: Pass to diffusion denoising loop
@@ -220,8 +232,8 @@ class DiffusionPipeline(nn.Module):
         self.autoencoder.to(device)
         self.unet.to(device)
         self.mixer.to(device)
+        self.scheduler.to(device)
         if self.embedder_manager is not None:
-            # Move embedder models if needed
             if hasattr(self.embedder_manager, 'resnet'):
                 self.embedder_manager.resnet.to(device)
             if hasattr(self.embedder_manager, 'graph_encoder'):
@@ -237,7 +249,6 @@ class DiffusionPipeline(nn.Module):
         self.mixer.train(mode)
         self.autoencoder.eval()  # always frozen
         if self.embedder_manager is not None:
-            # Embedders always in eval mode
             if hasattr(self.embedder_manager, 'resnet'):
                 self.embedder_manager.resnet.eval()
             if hasattr(self.embedder_manager, 'graph_encoder'):
@@ -249,24 +260,42 @@ class DiffusionPipeline(nn.Module):
         return self.train(False)
         
     @torch.no_grad()
-    def evaluate(self, val_batch, num_samples=8, step=None):
+    def evaluate(self, val_batch, num_samples=8, step=None, 
+                 use_pov=True, use_graph=True):
         """
-        Evaluation expects a raw batch (not pre-computed embeddings).
+        Evaluation with ablation support.
+        
+        Args:
+            use_pov: If False, ignore POV conditioning (ablation)
+            use_graph: If False, ignore graph conditioning (ablation)
         """
         layout = val_batch["layout"]
         
-        # --- START MODIFICATION ---
         # Get raw data from batch
-        pov_raw = val_batch["pov"]
-        graph_raw = val_batch["graph"]
+        pov_raw = val_batch.get("pov")
+        graph_raw = val_batch.get("graph")
         
-        # Convert raw inputs to embeddings
+        # Handle mixed batches (rooms + scenes)
+        # Filter out None POVs if present
+        if pov_raw is not None and isinstance(pov_raw, list):
+            valid_pov_indices = [i for i, p in enumerate(pov_raw) if p is not None]
+            if not valid_pov_indices:
+                pov_raw = None  # All None
+            elif len(valid_pov_indices) < len(pov_raw):
+                # Mixed batch - only use samples with POVs for evaluation
+                print(f"[Warning] Mixed batch detected: {len(valid_pov_indices)}/{len(pov_raw)} samples have POVs")
+                # Take only room samples
+                pov_raw = [pov_raw[i] for i in valid_pov_indices]
+                graph_raw = [graph_raw[i] for i in valid_pov_indices]
+                layout = layout[valid_pov_indices]
+        
+        # Convert raw inputs to embeddings (respecting ablation flags)
         cond_pov_emb, cond_graph_emb = self._prepare_conditions(
-            pov_raw, graph_raw
+            pov_raw, graph_raw,
+            use_pov=use_pov, use_graph=use_graph
         )
-        # --- END MODIFICATION ---
         
-        # --- FIX: Resize input batch to match num_samples ---
+        # Resize input batch to match num_samples
         B_in = layout.size(0)
         
         if B_in != num_samples:
@@ -275,31 +304,33 @@ class DiffusionPipeline(nn.Module):
                 ratio = (num_samples + B_in - 1) // B_in
                 layout = layout.repeat(ratio, 1, 1, 1)[:num_samples]
                 if cond_pov_emb is not None:
-                    # Handle 2D embedding tensor [B, C]
                     repeat_dims = [ratio] + [1] * (cond_pov_emb.dim() - 1)
                     cond_pov_emb = cond_pov_emb.repeat(*repeat_dims)[:num_samples]
                 if cond_graph_emb is not None:
-                    # Handle 2D embedding tensor [B, C]
                     repeat_dims = [ratio] + [1] * (cond_graph_emb.dim() - 1)
                     cond_graph_emb = cond_graph_emb.repeat(*repeat_dims)[:num_samples]
-            else: # B_in > num_samples
+            else:  # B_in > num_samples
                 # Truncate conditions
                 layout = layout[:num_samples]
                 if cond_pov_emb is not None:
                     cond_pov_emb = cond_pov_emb[:num_samples]
                 if cond_graph_emb is not None:
                     cond_graph_emb = cond_graph_emb[:num_samples]
-        # --- End Fix ---
 
-        samples = self.sample(num_samples, cond_pov_emb=cond_pov_emb, 
-                            cond_graph_emb=cond_graph_emb, image=True)
+        samples = self.sample(
+            num_samples, 
+            cond_pov_emb=cond_pov_emb, 
+            cond_graph_emb=cond_graph_emb, 
+            image=True,
+            use_pov=use_pov,
+            use_graph=use_graph
+        )
         
-        # Use the (potentially resized) layout tensor for recon and FID
         recon_output = self.autoencoder(layout.to(self.device))
         recon = recon_output[0] if isinstance(recon_output, tuple) else recon_output
 
         metrics = {
-            "psnr": compute_psnr(recon, layout.to(self.device)), # ensure layout is on device
+            "psnr": compute_psnr(recon, layout.to(self.device)),
             "diversity": compute_diversity(samples),
             "latent_fid": compute_fid(
                 self.encode_layout(layout), self.encode_layout(samples)

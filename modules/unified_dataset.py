@@ -5,8 +5,6 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import numpy as np
-
-
 from torchvision import transforms
 
 # This transform will be used to convert layout images to tensors
@@ -38,7 +36,6 @@ def collate_fn(batch):
 
     collated_batch = {}
 
-    # --- START MODIFICATION ---
     # Handle "layout" items
     if layout_items:
         # Check the type of the first item
@@ -52,9 +49,8 @@ def collate_fn(batch):
         else:
             # Handle unexpected type
             raise TypeError(f"Unexpected type for layout: {type(layout_items[0])}")
-    # --- END MODIFICATION ---
     
-    # Return pov and graph items as lists (from previous fix)
+    # Return pov and graph items as lists
     if pov_items:
         collated_batch["pov"] = pov_items
     
@@ -62,6 +58,7 @@ def collate_fn(batch):
         collated_batch["graph"] = graph_items
 
     return collated_batch
+
 
 # ---------- Utility loaders ----------
 
@@ -81,14 +78,14 @@ def load_embedding(path):
         raise ValueError(f"Unsupported embedding format: {path}")
 
 
-def load_graph(path, use_embeddings=False):
-    if use_embeddings:
-        return load_embedding(path)
-    with open(path, "r") as f:
-        return json.load(f)
+def load_graph_text(path):
+    """Load graph text file."""
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read().strip()
 
 
 def valid_path(x):
+    """Check if a path string is valid (not empty, not placeholder)."""
     invalid = {"", "false", "0", "none"}
     return isinstance(x, str) and str(x).strip().lower() not in invalid
 
@@ -97,135 +94,123 @@ def valid_path(x):
 
 class UnifiedLayoutDataset(Dataset):
     """
-    Unified dataset combining room and scene manifests.
+    Unified dataset for conditional diffusion training.
     Each item returns dict(pov, graph, layout) for diffusion training.
     - Room samples: pov, graph, layout all valid.
     - Scene samples: pov=None, graph+layout valid.
     
     Args:
-        room_manifest: Path to room manifest CSV
-        scene_manifest: Path to scene manifest CSV
+        manifest_path: Path to training_manifest.csv (from collect_all.py)
         use_embeddings: If True, load embeddings instead of raw data
-        pov_mode: Which POV to use - 'seg', 'tex', or None (no POV filtering)
+        sample_type: 'room', 'scene', or 'both' - which samples to include
         transform: Optional transform for images
         device: Device to load tensors to
     """
 
-    def __init__(self, room_manifest, scene_manifest, use_embeddings=False, 
-             pov_type=None, data_mode="rooms_and_scenes",
-             transform=None, device=None):
+    def __init__(
+        self, 
+        manifest_path,
+        use_embeddings=False,
+        sample_type="both",  # 'room', 'scene', or 'both'
+        transform=None,
+        device=None
+    ):
         self.use_embeddings = use_embeddings
-        self.pov_type = pov_type
-        self.data_mode = data_mode
+        self.sample_type = sample_type
         self.transform = transform 
         self.device = device
-        # Load both manifests
-        room_df = pd.read_csv(room_manifest)
-        scene_df = pd.read_csv(scene_manifest)
-
-    # --- Load and combine manifests based on data_mode ---
-        dfs_to_concat = []
-
-        if self.data_mode in ["rooms_only", "rooms_and_scenes"]:
-            room_df = pd.read_csv(room_manifest)
-            # --- Standardize room schema ---
-            room_df = room_df.rename(columns={
-                "ROOM_GRAPH_PATH": "GRAPH_PATH",
-                "ROOM_GRAPH_EMBEDDING_PATH": "GRAPH_EMBEDDING_PATH",
-                "ROOM_LAYOUT_PATH": "LAYOUT_PATH",
-                "ROOM_LAYOUT_EMBEDDING_PATH": "LAYOUT_EMBEDDING_PATH"
-            })
-            # --- Common column order ---
-            cols = [
-                "SCENE_ID", "ROOM_ID", "POV_TYPE", "POV_PATH", "POV_EMBEDDING_PATH",
-                "GRAPH_PATH", "GRAPH_EMBEDDING_PATH", "LAYOUT_PATH", "LAYOUT_EMBEDDING_PATH"
-            ]
-            room_df = room_df[cols]
-
-            # --- Filter by POV mode if specified ---
-            if pov_type is not None:
-                room_df = room_df[room_df["POV_TYPE"] == pov_type].reset_index(drop=True)
-                print(f"Filtered to POV mode '{pov_type}': {len(room_df)} room samples", flush=True)
-
-            dfs_to_concat.append(room_df)
-
-        if self.data_mode in ["scenes_only", "rooms_and_scenes"]:
-            scene_df = pd.read_csv(scene_manifest)
-            # --- Standardize scene schema ---
-            scene_df["ROOM_ID"] = ""
-            scene_df["POV_TYPE"] = ""
-            scene_df["POV_PATH"] = ""
-            scene_df["POV_EMBEDDING_PATH"] = ""
-            scene_df = scene_df.rename(columns={
-                        "SCENE_GRAPH_PATH": "GRAPH_PATH",
-                        "SCENE_GRAPH_EMBEDDING_PATH": "GRAPH_EMBEDDING_PATH",
-                        "SCENE_LAYOUT_PATH": "LAYOUT_PATH",
-                        "SCENE_LAYOUT_EMBEDDING_PATH": "LAYOUT_EMBEDDING_PATH"
-                    })
-            # --- Common column order ---
-            cols = [
-                "SCENE_ID", "ROOM_ID", "POV_TYPE", "POV_PATH", "POV_EMBEDDING_PATH",
-                "GRAPH_PATH", "GRAPH_EMBEDDING_PATH", "LAYOUT_PATH", "LAYOUT_EMBEDDING_PATH"
-            ]
-            scene_df = scene_df[cols]
-            dfs_to_concat.append(scene_df)
-
-        if not dfs_to_concat:
-            raise ValueError(f"Invalid data_mode '{self.data_mode}' or no data loaded.")
-
-        # --- Merge manifests ---
-        df = pd.concat(dfs_to_concat, ignore_index=True)
-
-        # --- Filter invalid paths ---
-        mask = (
-            df["GRAPH_PATH"].apply(valid_path)
-            & df["GRAPH_EMBEDDING_PATH"].apply(valid_path)
-            & df["LAYOUT_PATH"].apply(valid_path)
-            & df["LAYOUT_EMBEDDING_PATH"].apply(valid_path)
+        
+        # Load manifest
+        df = pd.read_csv(manifest_path)
+        
+        # Filter by sample type
+        if sample_type == "room":
+            df = df[df["sample_type"] == "room"].reset_index(drop=True)
+            print(f"Filtered to room samples only: {len(df)} samples", flush=True)
+        elif sample_type == "scene":
+            df = df[df["sample_type"] == "scene"].reset_index(drop=True)
+            print(f"Filtered to scene samples only: {len(df)} samples", flush=True)
+        elif sample_type == "both":
+            print(f"Using both room and scene samples: {len(df)} samples", flush=True)
+        else:
+            raise ValueError(f"Invalid sample_type: {sample_type}. Must be 'room', 'scene', or 'both'")
+        
+        # Filter out samples with invalid required paths
+        valid_mask = (
+            df["graph_text"].apply(valid_path) &
+            df["layout_image"].apply(valid_path)
         )
-        df = df[mask].reset_index(drop=True)
+        
+        # For embeddings mode, also check embedding paths
+        if use_embeddings:
+            valid_mask = valid_mask & df["layout_embedding"].apply(valid_path)
+            # Graph embeddings are optional for rooms
+        
+        df = df[valid_mask].reset_index(drop=True)
         
         self.df = df
         self.entries = df.to_dict("records")
         
         # Print dataset statistics
-        num_with_pov = (df["POV_PATH"].apply(valid_path)).sum()
-        num_without_pov = len(df) - num_with_pov
-        print(f"Dataset: {len(df)} total samples ({num_with_pov} with POV, {num_without_pov} without)", flush=True)
+        room_count = (df["sample_type"] == "room").sum()
+        scene_count = (df["sample_type"] == "scene").sum()
+        
+        print(f"Dataset loaded: {len(df)} total samples", flush=True)
+        print(f"  - Room samples: {room_count}", flush=True)
+        print(f"  - Scene samples: {scene_count}", flush=True)
 
     def __len__(self):
         return len(self.entries)
 
     def __getitem__(self, idx):
         row = self.entries[idx]
-
-        # ----- POV -----
+        
+        is_room = row["sample_type"] == "room"
+        
+        # ----- POV (only for room samples) -----
         pov = None
-        pov_path = row["POV_EMBEDDING_PATH"] if self.use_embeddings else row["POV_PATH"]
-        if valid_path(pov_path):
-            pov = load_embedding(pov_path) if self.use_embeddings else load_image(pov_path, self.transform)
-            if self.device and isinstance(pov, torch.Tensor):
-                pov = pov.to(self.device)
+        if is_room:
+            if self.use_embeddings:
+                pov_path = row["pov_embedding"]
+                if valid_path(pov_path):
+                    pov = load_embedding(pov_path)
+                    if self.device:
+                        pov = pov.to(self.device)
+            else:
+                pov_path = row["pov_image"]
+                if valid_path(pov_path):
+                    pov = load_image(pov_path, self.transform)
 
         # ----- Graph -----
-        graph_path = row["GRAPH_EMBEDDING_PATH"] if self.use_embeddings else row["GRAPH_PATH"]
-        graph = load_graph(graph_path, use_embeddings=self.use_embeddings)
-        if self.device and isinstance(graph, torch.Tensor):
-            graph = graph.to(self.device)
+        if self.use_embeddings:
+            graph_path = row["graph_embedding"]
+            if valid_path(graph_path):
+                graph = load_embedding(graph_path)
+                if self.device:
+                    graph = graph.to(self.device)
+            else:
+                # Fallback to text if embedding not available
+                graph = load_graph_text(row["graph_text"])
+        else:
+            # Load as text
+            graph = load_graph_text(row["graph_text"])
 
         # ----- Layout -----
-        layout_path = row["LAYOUT_EMBEDDING_PATH"] if self.use_embeddings else row["LAYOUT_PATH"]
-        layout = load_embedding(layout_path) if self.use_embeddings else load_image(layout_path, self.transform)
-        if self.device and isinstance(layout, torch.Tensor):
-            layout = layout.to(self.device)
+        if self.use_embeddings:
+            layout_path = row["layout_embedding"]
+            layout = load_embedding(layout_path)
+            if self.device:
+                layout = layout.to(self.device)
+        else:
+            layout_path = row["layout_image"]
+            layout = load_image(layout_path, self.transform)
 
         return {
-            "scene_id": row["SCENE_ID"],
-            "room_id": row["ROOM_ID"] if row["ROOM_ID"] else None,
-            "pov_type": row["POV_TYPE"] if row["POV_TYPE"] else None,
+            "sample_id": row["sample_id"],
+            "scene_id": row["scene_id"],
+            "room_id": row["room_id"] if is_room else None,
+            "sample_type": row["sample_type"],
             "pov": pov,
             "graph": graph,
             "layout": layout
         }
-
-

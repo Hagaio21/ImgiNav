@@ -153,6 +153,12 @@ class LatentDiffusion(nn.Module):
             yaml.safe_dump(config, f)
         print(f"[Config] LatentDiffusion saved → {save_path}")
 
+    def to(self, device):
+        self.unet.to(device)
+        self.scheduler.to(device)
+        self.autoencoder.to(device)
+        return self
+        
     @classmethod
     def from_config(
         cls,
