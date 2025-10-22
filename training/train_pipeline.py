@@ -36,7 +36,7 @@ def select_mixer(name: str, out_channels: int, latent_base: int,
     return LinearConcatMixer(out_channels, size, pov_dim, graph_dim)
 
 
-def build_dataloader(cfg, use_embeddings=True, shuffle=True):
+def build_dataloader(cfg, use_embeddings=False, shuffle=True):
     ds = UnifiedLayoutDataset(
         room_manifest=cfg["room_manifest"],
         scene_manifest=cfg["scene_manifest"],
@@ -143,8 +143,8 @@ def main():
 
     
     # Build dataloaders
-    train_loader = build_dataloader(cfg["dataset"], use_embeddings=True, shuffle=True)
-    val_loader = build_dataloader(cfg["dataset"], use_embeddings=True, shuffle=False)
+    train_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=True)
+    val_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=False)
     sample_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=False)
     
     # Build pipeline
