@@ -41,7 +41,7 @@ def build_dataloader(cfg, use_embeddings=False, shuffle=True):
     ds = UnifiedLayoutDataset(
         manifest_path=cfg["manifest_path"],
         use_embeddings=use_embeddings,
-        sample_type=cfg.get("sample_type", "both"),  # 'room', 'scene', or 'both'
+        sample_type=cfg.get("sample_type", "both"),
     )
     return DataLoader(
         ds,
@@ -64,7 +64,7 @@ def build_pipeline(cfg, device, embedder_manager):
 
     diff_cfg = model_cfg["diffusion"]
     scheduler = load_scheduler(diff_cfg["scheduler"], diff_cfg["num_steps"])
-    scheduler.to(device)
+    scheduler.to(device)  # ✅ FIXED
 
     # Detect true latent channels
     try:

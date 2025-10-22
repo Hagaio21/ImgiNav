@@ -213,6 +213,13 @@ class NonLinearConcatMixer(BaseMixer):
         std = torch.clamp(std, min=1e-5, max=1e5)
         out = (out / std)
         out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Print output shape on first forward pass only
+        if not hasattr(self, '_printed_output_shape'):
+            print(f"NonLinearConcatMixer output shape: {out.shape} [B={B}, C={self.out_channels}, H={self.target_size[0]}, W={self.target_size[1]}]", flush=True)
+            print(f"  - POV contribution: {pov_out.shape}", flush=True)
+            print(f"  - Graph contribution: {graph_out.shape}", flush=True)
+            self._printed_output_shape = True
 
         return out
 

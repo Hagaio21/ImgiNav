@@ -12,14 +12,26 @@ from torch.linalg import matrix_power
 
 # --- metrics helpers ---
 def compute_condition_correlation(pred, conds):
+    """
+    Compute cosine similarity between predictions and conditions.
+    
+    Args:
+        pred: Predicted/denoised latents [B, C, H, W]
+        conds: List of [pov_emb, graph_emb], each [B, D] or None
+    
+    Returns:
+        dict with 'pov' and 'graph' correlation scores
+    """
     result = {}
-    flat_pred = pred.flatten(1)
+    flat_pred = pred.flatten(1)  # [B, C*H*W]
+    
     for name, c in zip(["pov", "graph"], conds):
         if c is None:
             continue
-        flat_cond = c.flatten(1)
+        flat_cond = c.flatten(1) if c.dim() > 2 else c  # Handle [B, D]
         sim = F.cosine_similarity(flat_pred, flat_cond, dim=1)
         result[name] = sim.mean().item()
+    
     return result
 
 
@@ -81,7 +93,7 @@ class DiffusionPipeline(nn.Module):
         self.autoencoder = autoencoder.eval().to(device)
         self.unet = unet.to(device)
         self.mixer = mixer.to(device)
-        self.scheduler = scheduler
+        self.scheduler = scheduler.to(device)  # ✅ FIXED
         self.embedder_manager = embedder_manager
         self.logger = logger
         self.diffusion = None
@@ -96,6 +108,7 @@ class DiffusionPipeline(nn.Module):
         self.diffusion = LatentDiffusion(
             self.unet, self.scheduler, self.autoencoder, latent_shape=latent_shape
         )
+        self.diffusion.to(self.device)  # ✅ FIXED
 
     def encode_layout(self, layout):
         with torch.no_grad():
@@ -107,14 +120,6 @@ class DiffusionPipeline(nn.Module):
         """
         Convert raw inputs to embeddings if needed.
         Supports ablation via use_pov and use_graph flags.
-        
-        Args:
-            pov_raw: Raw POV data (PIL Image, list of images, or None)
-            graph_raw: Raw graph data (text string, path, list, or None)
-            cond_pov_emb: Pre-computed POV embeddings
-            cond_graph_emb: Pre-computed graph embeddings
-            use_pov: If False, ignore POV even if provided (ablation)
-            use_graph: If False, ignore graph even if provided (ablation)
         """
         # If embeddings already provided, use them directly (respecting ablation flags)
         if cond_pov_emb is not None or cond_graph_emb is not None:
@@ -187,10 +192,6 @@ class DiffusionPipeline(nn.Module):
                use_pov=True, use_graph=True):
         """
         Sample from the diffusion model.
-        
-        Args:
-            use_pov: If False, ignore POV conditioning (ablation)
-            use_graph: If False, ignore graph conditioning (ablation)
         """
         if self.diffusion is None:
             self._build_diffusion()
@@ -232,7 +233,7 @@ class DiffusionPipeline(nn.Module):
         self.autoencoder.to(device)
         self.unet.to(device)
         self.mixer.to(device)
-        self.scheduler.to(device)
+        self.scheduler.to(device)  # ✅ Already here
         if self.embedder_manager is not None:
             if hasattr(self.embedder_manager, 'resnet'):
                 self.embedder_manager.resnet.to(device)
@@ -262,13 +263,7 @@ class DiffusionPipeline(nn.Module):
     @torch.no_grad()
     def evaluate(self, val_batch, num_samples=8, step=None, 
                  use_pov=True, use_graph=True):
-        """
-        Evaluation with ablation support.
-        
-        Args:
-            use_pov: If False, ignore POV conditioning (ablation)
-            use_graph: If False, ignore graph conditioning (ablation)
-        """
+        """Evaluation with ablation support."""
         layout = val_batch["layout"]
         
         # Get raw data from batch
@@ -276,20 +271,17 @@ class DiffusionPipeline(nn.Module):
         graph_raw = val_batch.get("graph")
         
         # Handle mixed batches (rooms + scenes)
-        # Filter out None POVs if present
         if pov_raw is not None and isinstance(pov_raw, list):
             valid_pov_indices = [i for i, p in enumerate(pov_raw) if p is not None]
             if not valid_pov_indices:
-                pov_raw = None  # All None
+                pov_raw = None
             elif len(valid_pov_indices) < len(pov_raw):
-                # Mixed batch - only use samples with POVs for evaluation
                 print(f"[Warning] Mixed batch detected: {len(valid_pov_indices)}/{len(pov_raw)} samples have POVs")
-                # Take only room samples
                 pov_raw = [pov_raw[i] for i in valid_pov_indices]
                 graph_raw = [graph_raw[i] for i in valid_pov_indices]
                 layout = layout[valid_pov_indices]
         
-        # Convert raw inputs to embeddings (respecting ablation flags)
+        # Convert raw inputs to embeddings
         cond_pov_emb, cond_graph_emb = self._prepare_conditions(
             pov_raw, graph_raw,
             use_pov=use_pov, use_graph=use_graph
@@ -300,7 +292,6 @@ class DiffusionPipeline(nn.Module):
         
         if B_in != num_samples:
             if B_in < num_samples:
-                # Repeat conditions to match num_samples
                 ratio = (num_samples + B_in - 1) // B_in
                 layout = layout.repeat(ratio, 1, 1, 1)[:num_samples]
                 if cond_pov_emb is not None:
@@ -309,8 +300,7 @@ class DiffusionPipeline(nn.Module):
                 if cond_graph_emb is not None:
                     repeat_dims = [ratio] + [1] * (cond_graph_emb.dim() - 1)
                     cond_graph_emb = cond_graph_emb.repeat(*repeat_dims)[:num_samples]
-            else:  # B_in > num_samples
-                # Truncate conditions
+            else:
                 layout = layout[:num_samples]
                 if cond_pov_emb is not None:
                     cond_pov_emb = cond_pov_emb[:num_samples]
@@ -329,12 +319,17 @@ class DiffusionPipeline(nn.Module):
         recon_output = self.autoencoder(layout.to(self.device))
         recon = recon_output[0] if isinstance(recon_output, tuple) else recon_output
 
+        # Compute condition correlation on samples
+        sample_latents = self.encode_layout(samples)
+        correlation = compute_condition_correlation(sample_latents, [cond_pov_emb, cond_graph_emb])
+
         metrics = {
             "psnr": compute_psnr(recon, layout.to(self.device)),
             "diversity": compute_diversity(samples),
             "latent_fid": compute_fid(
-                self.encode_layout(layout), self.encode_layout(samples)
+                self.encode_layout(layout), sample_latents
             ),
+            **{f"corr_{k}": v for k, v in correlation.items()}  # Add correlations
         }
 
         if self.logger is not None and step is not None:

@@ -6,11 +6,17 @@ from tqdm import tqdm
 from pathlib import Path
 from PIL import Image
 import torchvision.utils as vutils
+import matplotlib.pyplot as plt
+import json
 
 
 class PipelineTrainer:
     """
-    Trainer for DiffusionPipeline with ablation support and mixed batch handling.
+    Trainer for DiffusionPipeline with comprehensive evaluation:
+    - Training/validation loss curves
+    - Condition correlation tracking
+    - Conditioned vs unconditioned samples (from fixed noise)
+    - Per-sample output directories with conditions saved
     """
     def __init__(
         self,
@@ -34,7 +40,7 @@ class PipelineTrainer:
         cond_dropout_graph=0.0,
         cond_dropout_both=0.0,
         taxonomy=None,
-        use_modalities="both",  # 'pov_only', 'graph_only', 'both', 'none'
+        use_modalities="both",
     ):
         self.pipeline = pipeline
         self.sample_loader = sample_loader
@@ -63,6 +69,8 @@ class PipelineTrainer:
         # Create directories
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "samples").mkdir(exist_ok=True)
+        (self.output_dir / "curves").mkdir(exist_ok=True)
         
         # Setup optimizer
         if optimizer is None:
@@ -79,7 +87,10 @@ class PipelineTrainer:
         self.loss_fn = loss_fn if loss_fn is not None else nn.MSELoss()
         
         # Setup mixed precision
-        self.scaler = GradScaler() if mixed_precision else None
+        if mixed_precision:
+            self.scaler = GradScaler()
+        else:
+            self.scaler = None
         
         # EMA model
         self.ema_model = None
@@ -89,6 +100,21 @@ class PipelineTrainer:
         # Training state
         self.global_step = 0
         self.current_epoch = 0
+        
+        # Metrics tracking
+        self.train_losses = []
+        self.val_losses = []
+        self.train_steps = []
+        self.val_steps = []
+        self.correlation_history = {
+            'pov': [],
+            'graph': [],
+            'steps': []
+        }
+        
+        # Fixed noise for consistent sampling
+        self.fixed_noise = None
+        self.fixed_batch = None
         
         print(f"[Trainer] Initialized with modality mode: {self.use_modalities}")
         print(f"  - Use POV: {self.use_pov}")
@@ -102,6 +128,7 @@ class PipelineTrainer:
         ema.eval()
         for param in ema.parameters():
             param.requires_grad = False
+        ema.to(self.pipeline.device)
         return ema
 
     def _update_ema(self):
@@ -120,15 +147,6 @@ class PipelineTrainer:
     def _apply_conditional_dropout(self, pov_emb, graph_emb, has_pov_mask=None):
         """
         Apply conditional dropout during training.
-        Respects ablation settings and only drops conditions that are actually used.
-        
-        Args:
-            pov_emb: POV embeddings [B, D] or None
-            graph_emb: Graph embeddings [B, D] or None
-            has_pov_mask: Boolean tensor [B] indicating which samples have POVs
-        
-        Returns:
-            Tuple of (pov_emb, graph_emb) with dropout applied
         """
         if not self.pipeline.training:
             return pov_emb, graph_emb
@@ -152,14 +170,13 @@ class PipelineTrainer:
         drop_pov = drop_pov | drop_both
         drop_graph = drop_graph | drop_both
         
-        # Only drop POV for samples that actually have POVs (respect has_pov_mask)
+        # Only drop POV for samples that actually have POVs
         if has_pov_mask is not None and pov_emb is not None:
-            # has_pov_mask should be a boolean tensor on the same device
             if not isinstance(has_pov_mask, torch.Tensor):
                 has_pov_mask = torch.tensor(has_pov_mask, device=device, dtype=torch.bool)
             drop_pov = drop_pov & has_pov_mask.to(device)
         
-        # Apply dropout (zero out embeddings)
+        # Apply dropout
         if pov_emb is not None and drop_pov.any():
             pov_emb = pov_emb.clone()
             pov_emb[drop_pov] = 0
@@ -173,18 +190,12 @@ class PipelineTrainer:
     def _prepare_batch(self, batch):
         """
         Prepare batch for training: embed conditions and handle mixed batches.
-        
-        Returns:
-            layout: Tensor [B, C, H, W]
-            pov_emb: Tensor [B, D] or None
-            graph_emb: Tensor [B, D] or None
-            has_pov_mask: Boolean tensor [B]
         """
         layout = batch["layout"].to(self.pipeline.device)
         
         # Get raw data
-        pov_raw = batch.get("pov")  # List of PIL Images or None values
-        graph_raw = batch.get("graph")  # List of strings
+        pov_raw = batch.get("pov")
+        graph_raw = batch.get("graph")
         
         # Determine which samples have POVs
         if pov_raw is not None and isinstance(pov_raw, list):
@@ -196,7 +207,7 @@ class PipelineTrainer:
         else:
             has_pov_mask = torch.zeros(layout.shape[0], device=self.pipeline.device, dtype=torch.bool)
         
-        # Embed conditions using pipeline's embedder (respecting ablation settings)
+        # Embed conditions
         pov_emb, graph_emb = self.pipeline._prepare_conditions(
             pov_raw=pov_raw if self.use_pov else None,
             graph_raw=graph_raw if self.use_graph else None,
@@ -210,7 +221,7 @@ class PipelineTrainer:
         return layout, pov_emb, graph_emb, has_pov_mask
 
     def train_step(self, batch):
-        """Single training step."""
+        """Single training step with correlation tracking."""
         self.optimizer.zero_grad()
         
         # Prepare batch
@@ -233,7 +244,7 @@ class PipelineTrainer:
         noise = torch.randn_like(latents)
         noisy_latents = self.pipeline.scheduler.add_noise(latents, noise, timesteps)
         
-        # Forward pass with mixed precision
+        # Forward pass
         if self.mixed_precision:
             with autocast():
                 noise_pred = self.pipeline(noisy_latents, pov_emb, graph_emb, timesteps)
@@ -241,6 +252,10 @@ class PipelineTrainer:
         else:
             noise_pred = self.pipeline(noisy_latents, pov_emb, graph_emb, timesteps)
             loss = self.loss_fn(noise_pred, noise)
+        
+        # Compute correlation between noise prediction and conditions
+        from pipeline.pipeline import compute_condition_correlation
+        correlation = compute_condition_correlation(noise_pred, [pov_emb, graph_emb])
         
         # Backward pass
         if self.mixed_precision:
@@ -264,12 +279,26 @@ class PipelineTrainer:
             "loss": loss.item(),
             "num_pov": has_pov_mask.sum().item(),
             "num_no_pov": (~has_pov_mask).sum().item(),
+            "correlation": correlation
         }
 
     def fit(self, train_loader, val_loader=None):
         """Main training loop."""
         print(f"[Trainer] Starting training for {self.epochs} epochs")
         print(f"[Trainer] Total steps per epoch: {len(train_loader)}")
+        
+        # Initialize fixed batch for consistent sampling
+        if self.fixed_batch is None:
+            self.fixed_batch = next(iter(self.sample_loader))
+            # Create fixed noise based on batch size
+            batch_size = self.fixed_batch["layout"].shape[0]
+            self.fixed_noise = torch.randn(
+                batch_size,
+                self.pipeline.autoencoder.encoder.latent_channels,
+                self.pipeline.autoencoder.encoder.latent_base,
+                self.pipeline.autoencoder.encoder.latent_base,
+                device=self.pipeline.device
+            )
         
         for epoch in range(self.epochs):
             self.current_epoch = epoch
@@ -289,6 +318,16 @@ class PipelineTrainer:
                 epoch_pov_count += metrics["num_pov"]
                 epoch_no_pov_count += metrics["num_no_pov"]
                 
+                # Track metrics
+                self.train_losses.append(metrics["loss"])
+                self.train_steps.append(self.global_step)
+                
+                # Track correlation
+                if metrics["correlation"]:
+                    for key, val in metrics["correlation"].items():
+                        self.correlation_history[key].append(val)
+                    self.correlation_history['steps'].append(self.global_step)
+                
                 # Update progress bar
                 pbar.set_postfix({
                     "loss": f"{metrics['loss']:.4f}",
@@ -298,16 +337,22 @@ class PipelineTrainer:
                 
                 # Logging
                 if self.global_step % self.log_interval == 0:
-                    print(f"\n[Step {self.global_step}] Loss: {metrics['loss']:.4f}")
+                    corr_str = ", ".join([f"{k}: {v:.3f}" for k, v in metrics["correlation"].items()])
+                    print(f"\n[Step {self.global_step}] Loss: {metrics['loss']:.4f}, Correlation: {corr_str}")
                 
                 # Evaluation
                 if val_loader is not None and self.global_step % self.eval_interval == 0:
-                    self.evaluate(val_loader)
+                    val_loss = self.evaluate(val_loader)
+                    self.val_losses.append(val_loss)
+                    self.val_steps.append(self.global_step)
                     self.pipeline.train()
+                    
+                    # Plot curves
+                    self.plot_curves()
                 
-                # Sampling
+                # Sampling with fixed noise
                 if self.global_step % self.sample_interval == 0:
-                    self.sample_and_save(batch)
+                    self.sample_and_save_comparison()
                     self.pipeline.train()
                 
                 self.global_step += 1
@@ -323,8 +368,15 @@ class PipelineTrainer:
             
             # End of epoch evaluation
             if val_loader is not None:
-                self.evaluate(val_loader)
+                val_loss = self.evaluate(val_loader)
+                self.val_losses.append(val_loss)
+                self.val_steps.append(self.global_step)
+                self.plot_curves()
                 self.pipeline.train()
+        
+        # Final comprehensive evaluation
+        print("\n[Final Evaluation] Generating comprehensive comparison...")
+        self.sample_and_save_comparison(final=True)
 
     @torch.no_grad()
     def evaluate(self, val_loader):
@@ -332,52 +384,196 @@ class PipelineTrainer:
         self.pipeline.eval()
         print(f"\n[Eval] Running evaluation at step {self.global_step}")
         
-        val_batch = next(iter(val_loader))
+        total_loss = 0.0
+        num_batches = 0
         
-        metrics = self.pipeline.evaluate(
-            val_batch,
-            num_samples=self.eval_num_samples,
-            step=self.global_step,
-            use_pov=self.use_pov,
-            use_graph=self.use_graph
-        )
+        for batch in val_loader:
+            layout, pov_emb, graph_emb, has_pov_mask = self._prepare_batch(batch)
+            
+            # Encode layout
+            latents = self.pipeline.encode_layout(layout)
+            
+            # Sample timesteps
+            batch_size = latents.shape[0]
+            timesteps = torch.randint(
+                0, 
+                self.pipeline.scheduler.num_steps, 
+                (batch_size,), 
+                device=self.pipeline.device
+            ).long()
+            
+            # Add noise
+            noise = torch.randn_like(latents)
+            noisy_latents = self.pipeline.scheduler.add_noise(latents, noise, timesteps)
+            
+            # Predict noise
+            noise_pred = self.pipeline(noisy_latents, pov_emb, graph_emb, timesteps)
+            loss = self.loss_fn(noise_pred, noise)
+            
+            total_loss += loss.item()
+            num_batches += 1
+            
+            if num_batches >= 10:  # Evaluate on 10 batches
+                break
         
-        print(f"[Eval] Metrics: {metrics}")
-        return metrics
+        avg_val_loss = total_loss / num_batches
+        print(f"[Eval] Validation Loss: {avg_val_loss:.4f}")
+        
+        return avg_val_loss
 
     @torch.no_grad()
-    def sample_and_save(self, batch):
-        """Generate and save samples."""
+    def sample_and_save_comparison(self, final=False):
+        """
+        Generate conditioned vs unconditioned samples from fixed noise.
+        Save in per-sample directories with conditions.
+        """
         self.pipeline.eval()
         
-        # Prepare conditions from batch
-        layout, pov_emb, graph_emb, has_pov_mask = self._prepare_batch(batch)
+        # Prepare conditions from fixed batch
+        layout, pov_emb, graph_emb, has_pov_mask = self._prepare_batch(self.fixed_batch)
         
-        # Take first sample from batch
+        # Take subset for sampling
+        num_samples = min(self.eval_num_samples, layout.shape[0])
+        layout = layout[:num_samples]
+        
         if pov_emb is not None:
-            pov_emb = pov_emb[:1]
+            pov_emb = pov_emb[:num_samples]
         if graph_emb is not None:
-            graph_emb = graph_emb[:1]
+            graph_emb = graph_emb[:num_samples]
         
-        # Generate sample
-        samples = self.pipeline.sample(
-            batch_size=1,
+        fixed_noise = self.fixed_noise[:num_samples]
+        
+        # Generate conditioned samples (with POV and Graph)
+        print("[Sampling] Generating conditioned samples...")
+        conditioned_samples = self.pipeline.sample(
+            batch_size=num_samples,
             cond_pov_emb=pov_emb,
             cond_graph_emb=graph_emb,
             image=True,
+            noise=fixed_noise,
             use_pov=self.use_pov,
             use_graph=self.use_graph
         )
         
-        # Save
-        save_path = self.output_dir / f"sample_step_{self.global_step}.png"
-        vutils.save_image(
-            samples,
-            save_path,
-            normalize=True,
-            value_range=(-1, 1)
+        # Generate unconditioned samples (no conditions)
+        print("[Sampling] Generating unconditioned samples...")
+        unconditioned_samples = self.pipeline.sample(
+            batch_size=num_samples,
+            cond_pov_emb=None,
+            cond_graph_emb=None,
+            image=True,
+            noise=fixed_noise,
+            use_pov=False,
+            use_graph=False
         )
-        print(f"[Sample] Saved to {save_path}")
+        
+        # Create output directory for this step
+        step_dir = self.output_dir / "samples" / f"step_{self.global_step:06d}"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save per-sample comparisons
+        for i in range(num_samples):
+            sample_dir = step_dir / f"sample_{i:02d}"
+            sample_dir.mkdir(exist_ok=True)
+            
+            # Save target
+            vutils.save_image(
+                layout[i],
+                sample_dir / "target.png",
+                normalize=True,
+                value_range=(-1, 1)
+            )
+            
+            # Save conditioned sample
+            vutils.save_image(
+                conditioned_samples[i],
+                sample_dir / "conditioned.png",
+                normalize=True,
+                value_range=(-1, 1)
+            )
+            
+            # Save unconditioned sample
+            vutils.save_image(
+                unconditioned_samples[i],
+                sample_dir / "unconditioned.png",
+                normalize=True,
+                value_range=(-1, 1)
+            )
+            
+            # Save POV condition if available
+            if "pov" in self.fixed_batch and self.fixed_batch["pov"] is not None:
+                pov_list = self.fixed_batch["pov"]
+                if isinstance(pov_list, list) and i < len(pov_list) and pov_list[i] is not None:
+                    pov_list[i].save(sample_dir / "pov_condition.png")
+            
+            # Save graph text condition
+            if "graph" in self.fixed_batch and self.fixed_batch["graph"] is not None:
+                graph_list = self.fixed_batch["graph"]
+                if isinstance(graph_list, list) and i < len(graph_list):
+                    with open(sample_dir / "graph_condition.txt", "w") as f:
+                        f.write(graph_list[i])
+            
+            # Save metadata
+            metadata = {
+                "step": self.global_step,
+                "epoch": self.current_epoch,
+                "sample_id": self.fixed_batch.get("sample_id", [None] * num_samples)[i] if "sample_id" in self.fixed_batch else None,
+                "has_pov": has_pov_mask[i].item() if i < len(has_pov_mask) else False,
+                "use_modalities": self.use_modalities
+            }
+            with open(sample_dir / "metadata.json", "w") as f:
+                json.dump(metadata, f, indent=2)
+        
+        # Create grid comparison
+        grid_images = []
+        for i in range(num_samples):
+            grid_images.extend([
+                layout[i],
+                conditioned_samples[i],
+                unconditioned_samples[i]
+            ])
+        
+        grid = vutils.make_grid(grid_images, nrow=3, normalize=True, value_range=(-1, 1))
+        vutils.save_image(grid, step_dir / "comparison_grid.png")
+        
+        print(f"[Sampling] Saved comparison to {step_dir}")
+
+    def plot_curves(self):
+        """Plot training/validation loss and correlation curves."""
+        fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+        
+        # Loss curve
+        ax1 = axes[0]
+        if self.train_losses:
+            ax1.plot(self.train_steps, self.train_losses, label='Train Loss', alpha=0.6)
+        if self.val_losses:
+            ax1.plot(self.val_steps, self.val_losses, label='Val Loss', marker='o', linestyle='--')
+        ax1.set_xlabel('Steps')
+        ax1.set_ylabel('Loss')
+        ax1.set_title('Training and Validation Loss')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Correlation curve
+        ax2 = axes[1]
+        if self.correlation_history['steps']:
+            if self.correlation_history['pov']:
+                ax2.plot(self.correlation_history['steps'], 
+                        self.correlation_history['pov'], 
+                        label='POV Correlation', alpha=0.7)
+            if self.correlation_history['graph']:
+                ax2.plot(self.correlation_history['steps'], 
+                        self.correlation_history['graph'], 
+                        label='Graph Correlation', alpha=0.7)
+        ax2.set_xlabel('Steps')
+        ax2.set_ylabel('Cosine Similarity')
+        ax2.set_title('Condition Correlation (Denoised vs Conditions)')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(self.output_dir / "curves" / f"metrics_step_{self.global_step:06d}.png", dpi=150)
+        plt.close()
 
     def save_checkpoint(self, filename):
         """Save training checkpoint."""
@@ -389,6 +585,11 @@ class PipelineTrainer:
             "unet_state_dict": self.pipeline.unet.state_dict(),
             "mixer_state_dict": self.pipeline.mixer.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "train_losses": self.train_losses,
+            "val_losses": self.val_losses,
+            "train_steps": self.train_steps,
+            "val_steps": self.val_steps,
+            "correlation_history": self.correlation_history,
         }
         
         if self.ema_model is not None:
@@ -411,9 +612,20 @@ class PipelineTrainer:
         self.pipeline.mixer.load_state_dict(checkpoint["mixer_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
+        # Load metric history
+        self.train_losses = checkpoint.get("train_losses", [])
+        self.val_losses = checkpoint.get("val_losses", [])
+        self.train_steps = checkpoint.get("train_steps", [])
+        self.val_steps = checkpoint.get("val_steps", [])
+        self.correlation_history = checkpoint.get("correlation_history", {'pov': [], 'graph': [], 'steps': []})
+        
+        # Move scheduler to device
+        self.pipeline.scheduler.to(self.pipeline.device)
+        
         if self.ema_model is not None and "ema_unet_state_dict" in checkpoint:
             self.ema_model.unet.load_state_dict(checkpoint["ema_unet_state_dict"])
             self.ema_model.mixer.load_state_dict(checkpoint["ema_mixer_state_dict"])
+            self.ema_model.scheduler.to(self.pipeline.device)
         
         if self.scaler is not None and "scaler_state_dict" in checkpoint:
             self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
