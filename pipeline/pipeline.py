@@ -11,29 +11,32 @@ from modules.condition_mixer import BaseMixer
 from torch.linalg import matrix_power
 
 # --- metrics helpers ---
-def compute_condition_correlation(pred, conds):
+def compute_condition_correlation(pred, mixed_cond):
     """
-    Compute cosine similarity between predictions and conditions.
+    Compute cosine similarity between predictions and mixed conditions.
+    Both should be in the same spatial format [B, C, H, W].
     
     Args:
         pred: Predicted/denoised latents [B, C, H, W]
-        conds: List of [pov_emb, graph_emb], each [B, D] or None
+        mixed_cond: Mixed condition output from mixer [B, C, H, W]
     
     Returns:
-        dict with 'pov' and 'graph' correlation scores
+        float: correlation score
     """
-    result = {}
+    if mixed_cond is None or pred is None:
+        return 0.0
+    
     flat_pred = pred.flatten(1)  # [B, C*H*W]
+    flat_cond = mixed_cond.flatten(1)  # [B, C*H*W]
     
-    for name, c in zip(["pov", "graph"], conds):
-        if c is None:
-            continue
-        flat_cond = c.flatten(1) if c.dim() > 2 else c  # Handle [B, D]
-        sim = F.cosine_similarity(flat_pred, flat_cond, dim=1)
-        result[name] = sim.mean().item()
+    # Check dimension compatibility
+    if flat_pred.shape[1] != flat_cond.shape[1]:
+        print(f"[Warning] Dimension mismatch: pred={flat_pred.shape[1]}, cond={flat_cond.shape[1]}")
+        return 0.0
     
-    return result
-
+    # Compute cosine similarity
+    sim = F.cosine_similarity(flat_pred, flat_cond, dim=1)
+    return sim.mean().item()
 
 def safe_grad_norm(model):
     norms = []
@@ -262,7 +265,7 @@ class DiffusionPipeline(nn.Module):
         
     @torch.no_grad()
     def evaluate(self, val_batch, num_samples=8, step=None, 
-                 use_pov=True, use_graph=True):
+                use_pov=True, use_graph=True):
         """Evaluation with ablation support."""
         layout = val_batch["layout"]
         
@@ -307,6 +310,11 @@ class DiffusionPipeline(nn.Module):
                 if cond_graph_emb is not None:
                     cond_graph_emb = cond_graph_emb[:num_samples]
 
+        # Generate the mixed condition for correlation
+        mixed_cond = self.mixer([cond_pov_emb, cond_graph_emb], 
+                                B_hint=num_samples, 
+                                device_hint=self.device)
+
         samples = self.sample(
             num_samples, 
             cond_pov_emb=cond_pov_emb, 
@@ -321,7 +329,7 @@ class DiffusionPipeline(nn.Module):
 
         # Compute condition correlation on samples
         sample_latents = self.encode_layout(samples)
-        correlation = compute_condition_correlation(sample_latents, [cond_pov_emb, cond_graph_emb])
+        correlation = compute_condition_correlation(sample_latents, mixed_cond)
 
         metrics = {
             "psnr": compute_psnr(recon, layout.to(self.device)),
@@ -329,7 +337,7 @@ class DiffusionPipeline(nn.Module):
             "latent_fid": compute_fid(
                 self.encode_layout(layout), sample_latents
             ),
-            **{f"corr_{k}": v for k, v in correlation.items()}  # Add correlations
+            "condition_correlation": correlation  # Single correlation score
         }
 
         if self.logger is not None and step is not None:
@@ -337,3 +345,5 @@ class DiffusionPipeline(nn.Module):
             self.logger.log({"eval_samples": samples}, step=step)
 
         return metrics
+
+

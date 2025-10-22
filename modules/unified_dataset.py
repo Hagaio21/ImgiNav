@@ -103,6 +103,7 @@ class UnifiedLayoutDataset(Dataset):
         manifest_path: Path to training_manifest.csv (from collect_all.py)
         use_embeddings: If True, load embeddings instead of raw data
         sample_type: 'room', 'scene', or 'both' - which samples to include
+        pov_type: 'seg', 'tex', or None - filter by POV type for room samples
         transform: Optional transform for images
         device: Device to load tensors to
     """
@@ -112,11 +113,13 @@ class UnifiedLayoutDataset(Dataset):
         manifest_path,
         use_embeddings=False,
         sample_type="both",  # 'room', 'scene', or 'both'
+        pov_type=None,  # 'seg', 'tex', or None (use both)
         transform=None,
         device=None
     ):
         self.use_embeddings = use_embeddings
         self.sample_type = sample_type
+        self.pov_type = pov_type
         self.transform = transform 
         self.device = device
         
@@ -135,6 +138,16 @@ class UnifiedLayoutDataset(Dataset):
         else:
             raise ValueError(f"Invalid sample_type: {sample_type}. Must be 'room', 'scene', or 'both'")
         
+        # Filter by POV type (only for room samples)
+        if pov_type is not None:
+            if pov_type not in ['seg', 'tex']:
+                raise ValueError(f"Invalid pov_type: {pov_type}. Must be 'seg', 'tex', or None")
+            
+            # Keep scenes (pov_type is empty) OR rooms with matching pov_type
+            mask = (df["sample_type"] == "scene") | (df["pov_type"] == pov_type)
+            df = df[mask].reset_index(drop=True)
+            print(f"Filtered to pov_type='{pov_type}': {len(df)} samples", flush=True)
+        
         # Filter out samples with invalid required paths
         valid_mask = (
             df["graph_text"].apply(valid_path) &
@@ -144,7 +157,6 @@ class UnifiedLayoutDataset(Dataset):
         # For embeddings mode, also check embedding paths
         if use_embeddings:
             valid_mask = valid_mask & df["layout_embedding"].apply(valid_path)
-            # Graph embeddings are optional for rooms
         
         df = df[valid_mask].reset_index(drop=True)
         
@@ -155,9 +167,18 @@ class UnifiedLayoutDataset(Dataset):
         room_count = (df["sample_type"] == "room").sum()
         scene_count = (df["sample_type"] == "scene").sum()
         
-        print(f"Dataset loaded: {len(df)} total samples", flush=True)
-        print(f"  - Room samples: {room_count}", flush=True)
-        print(f"  - Scene samples: {scene_count}", flush=True)
+        if pov_type:
+            pov_type_count = (df["pov_type"] == pov_type).sum()
+            print(f"Dataset loaded: {len(df)} total samples", flush=True)
+            print(f"  - Room samples ({pov_type} POVs): {pov_type_count}", flush=True)
+            print(f"  - Scene samples: {scene_count}", flush=True)
+        else:
+            seg_count = (df["pov_type"] == "seg").sum()
+            tex_count = (df["pov_type"] == "tex").sum()
+            print(f"Dataset loaded: {len(df)} total samples", flush=True)
+            print(f"  - Room samples (seg POVs): {seg_count}", flush=True)
+            print(f"  - Room samples (tex POVs): {tex_count}", flush=True)
+            print(f"  - Scene samples: {scene_count}", flush=True)
 
     def __len__(self):
         return len(self.entries)
@@ -210,7 +231,10 @@ class UnifiedLayoutDataset(Dataset):
             "scene_id": row["scene_id"],
             "room_id": row["room_id"] if is_room else None,
             "sample_type": row["sample_type"],
+            "pov_type": row.get("pov_type", None),
             "pov": pov,
             "graph": graph,
             "layout": layout
         }
+
+

@@ -42,6 +42,7 @@ def build_dataloader(cfg, use_embeddings=False, shuffle=True):
         manifest_path=cfg["manifest_path"],
         use_embeddings=use_embeddings,
         sample_type=cfg.get("sample_type", "both"),
+        pov_type=cfg.get("pov_type"),  # Add this line
     )
     return DataLoader(
         ds,
@@ -51,7 +52,6 @@ def build_dataloader(cfg, use_embeddings=False, shuffle=True):
         drop_last=True,
         collate_fn=collate_fn
     )
-
 
 def build_pipeline(cfg, device, embedder_manager):
     model_cfg = cfg["model"]
@@ -226,7 +226,8 @@ def main():
         cond_dropout_graph=trainer_cfg.get("cond_dropout_graph", 0.0),
         cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
         taxonomy=taxonomy_path,
-        use_modalities=trainer_cfg.get("use_modalities", "both")
+        use_modalities=trainer_cfg.get("use_modalities", "both"),
+        cfg_scale=trainer_cfg.get("cfg_scale", 7.5)  # ← ADD THIS LINE
     )
 
     # Run training

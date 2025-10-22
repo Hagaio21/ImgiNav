@@ -8,13 +8,14 @@ from PIL import Image
 import torchvision.utils as vutils
 import matplotlib.pyplot as plt
 import json
+import csv
 
 
 class PipelineTrainer:
     """
     Trainer for DiffusionPipeline with comprehensive evaluation:
-    - Training/validation loss curves
-    - Condition correlation tracking
+    - Training/validation loss curves (saved to CSV)
+    - Condition correlation tracking (predicted clean latents vs mixed conditions)
     - Conditioned vs unconditioned samples (from fixed noise)
     - Per-sample output directories with conditions saved
     """
@@ -41,6 +42,7 @@ class PipelineTrainer:
         cond_dropout_both=0.0,
         taxonomy=None,
         use_modalities="both",
+        cfg_scale=7.5,
     ):
         self.pipeline = pipeline
         self.sample_loader = sample_loader
@@ -61,6 +63,9 @@ class PipelineTrainer:
         self.use_pov = self.use_modalities in ["pov_only", "both"]
         self.use_graph = self.use_modalities in ["graph_only", "both"]
         
+        # Classifier-Free Guidance
+        self.cfg_scale = cfg_scale
+        
         # Conditional dropout probabilities
         self.cond_dropout_pov = cond_dropout_pov
         self.cond_dropout_graph = cond_dropout_graph
@@ -71,6 +76,7 @@ class PipelineTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / "samples").mkdir(exist_ok=True)
         (self.output_dir / "curves").mkdir(exist_ok=True)
+        (self.output_dir / "metrics").mkdir(exist_ok=True)
         
         # Setup optimizer
         if optimizer is None:
@@ -103,23 +109,38 @@ class PipelineTrainer:
         
         # Metrics tracking
         self.train_losses = []
+        self.train_correlations = []
         self.val_losses = []
+        self.val_correlations = []
         self.train_steps = []
         self.val_steps = []
-        self.correlation_history = {
-            'pov': [],
-            'graph': [],
-            'steps': []
-        }
+        self.correlation_steps = []
         
         # Fixed noise for consistent sampling
         self.fixed_noise = None
         self.fixed_batch = None
         
+        # CSV file for metrics
+        self.metrics_csv = self.output_dir / "metrics" / "training_metrics.csv"
+        self._init_metrics_csv()
+        
         print(f"[Trainer] Initialized with modality mode: {self.use_modalities}")
         print(f"  - Use POV: {self.use_pov}")
         print(f"  - Use Graph: {self.use_graph}")
+        print(f"  - CFG Scale: {self.cfg_scale}")
         print(f"  - Conditional dropout: POV={cond_dropout_pov}, Graph={cond_dropout_graph}, Both={cond_dropout_both}")
+
+    def _init_metrics_csv(self):
+        """Initialize CSV file for metrics logging."""
+        with open(self.metrics_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['step', 'epoch', 'metric_type', 'loss', 'correlation'])
+
+    def _log_metrics_to_csv(self, step, epoch, metric_type='train', loss=None, correlation=None):
+        """Append metrics to CSV file."""
+        with open(self.metrics_csv, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([step, epoch, metric_type, loss or '', correlation or ''])
 
     def _create_ema_model(self):
         """Create EMA shadow model."""
@@ -244,6 +265,13 @@ class PipelineTrainer:
         noise = torch.randn_like(latents)
         noisy_latents = self.pipeline.scheduler.add_noise(latents, noise, timesteps)
         
+        # Get mixed condition for correlation
+        mixed_cond = self.pipeline.mixer(
+            [pov_emb, graph_emb],
+            B_hint=batch_size,
+            device_hint=self.pipeline.device
+        )
+        
         # Forward pass
         if self.mixed_precision:
             with autocast():
@@ -253,9 +281,24 @@ class PipelineTrainer:
             noise_pred = self.pipeline(noisy_latents, pov_emb, graph_emb, timesteps)
             loss = self.loss_fn(noise_pred, noise)
         
-        # Compute correlation between noise prediction and conditions
-        from pipeline.pipeline import compute_condition_correlation
-        correlation = compute_condition_correlation(noise_pred, [pov_emb, graph_emb])
+        # Compute correlation between predicted clean latents and mixed conditions
+        # Only compute periodically to avoid overhead
+        correlation = None
+        if self.global_step % self.log_interval == 0:
+            from pipeline.pipeline import compute_condition_correlation
+            with torch.no_grad():
+                # Predict x0 from noise prediction using DDPM formula
+                # x0 = (x_t - sqrt(1-alpha_t) * epsilon) / sqrt(alpha_t)
+                alpha_t = self.pipeline.scheduler.alphas_cumprod[timesteps].view(-1, 1, 1, 1)
+                sqrt_alpha_t = torch.sqrt(alpha_t)
+                sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
+                
+                predicted_clean = (noisy_latents - sqrt_one_minus_alpha_t * noise_pred) / sqrt_alpha_t
+                correlation = compute_condition_correlation(predicted_clean, mixed_cond)
+                
+                # Track correlation
+                self.train_correlations.append(correlation)
+                self.correlation_steps.append(self.global_step)
         
         # Backward pass
         if self.mixed_precision:
@@ -322,32 +365,55 @@ class PipelineTrainer:
                 self.train_losses.append(metrics["loss"])
                 self.train_steps.append(self.global_step)
                 
-                # Track correlation
-                if metrics["correlation"]:
-                    for key, val in metrics["correlation"].items():
-                        self.correlation_history[key].append(val)
-                    self.correlation_history['steps'].append(self.global_step)
+                # Log to CSV
+                self._log_metrics_to_csv(
+                    self.global_step, 
+                    self.current_epoch, 
+                    metric_type='train',
+                    loss=metrics["loss"],
+                    correlation=metrics.get("correlation")
+                )
                 
                 # Update progress bar
-                pbar.set_postfix({
+                pbar_dict = {
                     "loss": f"{metrics['loss']:.4f}",
                     "pov": metrics["num_pov"],
                     "no_pov": metrics["num_no_pov"]
-                })
+                }
+                if metrics.get("correlation") is not None:
+                    pbar_dict["corr"] = f"{metrics['correlation']:.3f}"
+                pbar.set_postfix(pbar_dict)
                 
                 # Logging
                 if self.global_step % self.log_interval == 0:
-                    corr_str = ", ".join([f"{k}: {v:.3f}" for k, v in metrics["correlation"].items()])
-                    print(f"\n[Step {self.global_step}] Loss: {metrics['loss']:.4f}, Correlation: {corr_str}")
+                    log_str = f"\n[Step {self.global_step}] Loss: {metrics['loss']:.4f}"
+                    if metrics.get("correlation") is not None:
+                        log_str += f", Correlation: {metrics['correlation']:.3f}"
+                    print(log_str)
                 
                 # Evaluation
                 if val_loader is not None and self.global_step % self.eval_interval == 0:
-                    val_loss = self.evaluate(val_loader)
-                    self.val_losses.append(val_loss)
+                    val_metrics = self.evaluate(val_loader)
+                    self.val_losses.append(val_metrics['loss'])
                     self.val_steps.append(self.global_step)
+                    
+                    # Track correlation from evaluation
+                    correlation = val_metrics.get('correlation', None)
+                    if correlation is not None:
+                        self.val_correlations.append(correlation)
+                    
+                    # Log to CSV
+                    self._log_metrics_to_csv(
+                        self.global_step, 
+                        self.current_epoch,
+                        metric_type='val',
+                        loss=val_metrics['loss'],
+                        correlation=correlation
+                    )
+                    
                     self.pipeline.train()
                     
-                    # Plot curves
+                    # Plot curves (overwrites previous)
                     self.plot_curves()
                 
                 # Sampling with fixed noise
@@ -368,9 +434,24 @@ class PipelineTrainer:
             
             # End of epoch evaluation
             if val_loader is not None:
-                val_loss = self.evaluate(val_loader)
-                self.val_losses.append(val_loss)
+                val_metrics = self.evaluate(val_loader)
+                self.val_losses.append(val_metrics['loss'])
                 self.val_steps.append(self.global_step)
+                
+                # Track correlation
+                correlation = val_metrics.get('correlation', None)
+                if correlation is not None:
+                    self.val_correlations.append(correlation)
+                
+                # Log to CSV
+                self._log_metrics_to_csv(
+                    self.global_step,
+                    self.current_epoch,
+                    metric_type='val',
+                    loss=val_metrics['loss'],
+                    correlation=correlation
+                )
+                
                 self.plot_curves()
                 self.pipeline.train()
         
@@ -380,12 +461,14 @@ class PipelineTrainer:
 
     @torch.no_grad()
     def evaluate(self, val_loader):
-        """Evaluation loop."""
+        """Evaluation loop with correlation tracking."""
         self.pipeline.eval()
         print(f"\n[Eval] Running evaluation at step {self.global_step}")
         
         total_loss = 0.0
+        total_correlation = 0.0
         num_batches = 0
+        num_correlation_batches = 0
         
         for batch in val_loader:
             layout, pov_emb, graph_emb, has_pov_mask = self._prepare_batch(batch)
@@ -406,6 +489,13 @@ class PipelineTrainer:
             noise = torch.randn_like(latents)
             noisy_latents = self.pipeline.scheduler.add_noise(latents, noise, timesteps)
             
+            # Get mixed condition
+            mixed_cond = self.pipeline.mixer(
+                [pov_emb, graph_emb],
+                B_hint=batch_size,
+                device_hint=self.pipeline.device
+            )
+            
             # Predict noise
             noise_pred = self.pipeline(noisy_latents, pov_emb, graph_emb, timesteps)
             loss = self.loss_fn(noise_pred, noise)
@@ -413,13 +503,33 @@ class PipelineTrainer:
             total_loss += loss.item()
             num_batches += 1
             
+            # Compute correlation for first few batches
+            if num_batches <= 3:
+                from pipeline.pipeline import compute_condition_correlation
+                # Predict clean latent
+                alpha_t = self.pipeline.scheduler.alphas_cumprod[timesteps].view(-1, 1, 1, 1)
+                sqrt_alpha_t = torch.sqrt(alpha_t)
+                sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
+                predicted_clean = (noisy_latents - sqrt_one_minus_alpha_t * noise_pred) / sqrt_alpha_t
+                
+                correlation = compute_condition_correlation(predicted_clean, mixed_cond)
+                total_correlation += correlation
+                num_correlation_batches += 1
+            
             if num_batches >= 10:  # Evaluate on 10 batches
                 break
         
         avg_val_loss = total_loss / num_batches
-        print(f"[Eval] Validation Loss: {avg_val_loss:.4f}")
+        avg_correlation = total_correlation / num_correlation_batches if num_correlation_batches > 0 else 0.0
         
-        return avg_val_loss
+        metrics = {
+            'loss': avg_val_loss,
+            'correlation': avg_correlation
+        }
+        
+        print(f"[Eval] Validation Loss: {avg_val_loss:.4f}, Correlation: {avg_correlation:.3f}")
+        
+        return metrics
 
     @torch.no_grad()
     def sample_and_save_comparison(self, final=False):
@@ -443,8 +553,8 @@ class PipelineTrainer:
         
         fixed_noise = self.fixed_noise[:num_samples]
         
-        # Generate conditioned samples (with POV and Graph)
-        print("[Sampling] Generating conditioned samples...")
+        # Generate conditioned samples (with POV and Graph + CFG)
+        print(f"[Sampling] Generating conditioned samples with CFG scale={self.cfg_scale}...")
         conditioned_samples = self.pipeline.sample(
             batch_size=num_samples,
             cond_pov_emb=pov_emb,
@@ -452,10 +562,11 @@ class PipelineTrainer:
             image=True,
             noise=fixed_noise,
             use_pov=self.use_pov,
-            use_graph=self.use_graph
+            use_graph=self.use_graph,
+            guidance_scale=self.cfg_scale
         )
         
-        # Generate unconditioned samples (no conditions)
+        # Generate unconditioned samples (no conditions, no CFG)
         print("[Sampling] Generating unconditioned samples...")
         unconditioned_samples = self.pipeline.sample(
             batch_size=num_samples,
@@ -464,40 +575,38 @@ class PipelineTrainer:
             image=True,
             noise=fixed_noise,
             use_pov=False,
-            use_graph=False
+            use_graph=False,
+            guidance_scale=1.0  # No guidance for unconditional
         )
         
         # Create output directory for this step
         step_dir = self.output_dir / "samples" / f"step_{self.global_step:06d}"
         step_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save per-sample comparisons
+        # Save per-sample comparisons (NO NORMALIZATION - preserve RGB values)
         for i in range(num_samples):
             sample_dir = step_dir / f"sample_{i:02d}"
             sample_dir.mkdir(exist_ok=True)
             
-            # Save target
+            # Save target (clamp to [0,1] without normalization)
             vutils.save_image(
-                layout[i],
+                torch.clamp((layout[i] + 1) / 2, 0, 1),  # Convert from [-1,1] to [0,1]
                 sample_dir / "target.png",
-                normalize=True,
-                value_range=(-1, 1)
+                normalize=False
             )
             
             # Save conditioned sample
             vutils.save_image(
-                conditioned_samples[i],
+                torch.clamp((conditioned_samples[i] + 1) / 2, 0, 1),
                 sample_dir / "conditioned.png",
-                normalize=True,
-                value_range=(-1, 1)
+                normalize=False
             )
             
             # Save unconditioned sample
             vutils.save_image(
-                unconditioned_samples[i],
+                torch.clamp((unconditioned_samples[i] + 1) / 2, 0, 1),
                 sample_dir / "unconditioned.png",
-                normalize=True,
-                value_range=(-1, 1)
+                normalize=False
             )
             
             # Save POV condition if available
@@ -524,30 +633,30 @@ class PipelineTrainer:
             with open(sample_dir / "metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
         
-        # Create grid comparison
+        # Create grid comparison (NO NORMALIZATION)
         grid_images = []
         for i in range(num_samples):
             grid_images.extend([
-                layout[i],
-                conditioned_samples[i],
-                unconditioned_samples[i]
+                torch.clamp((layout[i] + 1) / 2, 0, 1),
+                torch.clamp((conditioned_samples[i] + 1) / 2, 0, 1),
+                torch.clamp((unconditioned_samples[i] + 1) / 2, 0, 1)
             ])
         
-        grid = vutils.make_grid(grid_images, nrow=3, normalize=True, value_range=(-1, 1))
+        grid = vutils.make_grid(grid_images, nrow=3, normalize=False)
         vutils.save_image(grid, step_dir / "comparison_grid.png")
         
         print(f"[Sampling] Saved comparison to {step_dir}")
 
     def plot_curves(self):
-        """Plot training/validation loss and correlation curves."""
+        """Plot training/validation loss and correlation curves (overwrites previous)."""
         fig, axes = plt.subplots(1, 2, figsize=(15, 5))
         
         # Loss curve
         ax1 = axes[0]
         if self.train_losses:
-            ax1.plot(self.train_steps, self.train_losses, label='Train Loss', alpha=0.6)
+            ax1.plot(self.train_steps, self.train_losses, label='Train Loss', alpha=0.6, linewidth=0.5)
         if self.val_losses:
-            ax1.plot(self.val_steps, self.val_losses, label='Val Loss', marker='o', linestyle='--')
+            ax1.plot(self.val_steps, self.val_losses, label='Val Loss', marker='o', linestyle='--', linewidth=2)
         ax1.set_xlabel('Steps')
         ax1.set_ylabel('Loss')
         ax1.set_title('Training and Validation Loss')
@@ -556,24 +665,26 @@ class PipelineTrainer:
         
         # Correlation curve
         ax2 = axes[1]
-        if self.correlation_history['steps']:
-            if self.correlation_history['pov']:
-                ax2.plot(self.correlation_history['steps'], 
-                        self.correlation_history['pov'], 
-                        label='POV Correlation', alpha=0.7)
-            if self.correlation_history['graph']:
-                ax2.plot(self.correlation_history['steps'], 
-                        self.correlation_history['graph'], 
-                        label='Graph Correlation', alpha=0.7)
+        if self.correlation_steps and self.train_correlations:
+            ax2.plot(self.correlation_steps, 
+                    self.train_correlations, 
+                    label='Train Correlation', alpha=0.7, color='blue', linewidth=1)
+        if self.val_steps and self.val_correlations:
+            ax2.plot(self.val_steps[:len(self.val_correlations)], 
+                    self.val_correlations, 
+                    label='Val Correlation', marker='o', linestyle='--', color='green', linewidth=2)
         ax2.set_xlabel('Steps')
         ax2.set_ylabel('Cosine Similarity')
-        ax2.set_title('Condition Correlation (Denoised vs Conditions)')
+        ax2.set_title('Predicted Clean Latents vs Mixed Conditions')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(self.output_dir / "curves" / f"metrics_step_{self.global_step:06d}.png", dpi=150)
+        # Overwrite the same file
+        plt.savefig(self.output_dir / "curves" / "training_curves.png", dpi=150)
         plt.close()
+        
+        print(f"[Curves] Updated training curves")
 
     def save_checkpoint(self, filename):
         """Save training checkpoint."""
@@ -586,10 +697,12 @@ class PipelineTrainer:
             "mixer_state_dict": self.pipeline.mixer.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "train_losses": self.train_losses,
+            "train_correlations": self.train_correlations,
             "val_losses": self.val_losses,
+            "val_correlations": self.val_correlations,
             "train_steps": self.train_steps,
             "val_steps": self.val_steps,
-            "correlation_history": self.correlation_history,
+            "correlation_steps": self.correlation_steps,
         }
         
         if self.ema_model is not None:
@@ -614,10 +727,12 @@ class PipelineTrainer:
         
         # Load metric history
         self.train_losses = checkpoint.get("train_losses", [])
+        self.train_correlations = checkpoint.get("train_correlations", [])
         self.val_losses = checkpoint.get("val_losses", [])
+        self.val_correlations = checkpoint.get("val_correlations", [])
         self.train_steps = checkpoint.get("train_steps", [])
         self.val_steps = checkpoint.get("val_steps", [])
-        self.correlation_history = checkpoint.get("correlation_history", {'pov': [], 'graph': [], 'steps': []})
+        self.correlation_steps = checkpoint.get("correlation_steps", [])
         
         # Move scheduler to device
         self.pipeline.scheduler.to(self.pipeline.device)

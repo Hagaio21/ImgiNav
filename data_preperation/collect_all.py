@@ -6,6 +6,7 @@ Creates a manifest for conditional diffusion training:
 - Each row represents one training sample
 - Links POV → Graph Text → Layout
 - Filters out empty rooms based on pov_manifest
+- Includes BOTH seg and tex POVs with pov_type column
 """
 
 import argparse
@@ -36,10 +37,11 @@ def create_manifest(data_root: str, pov_manifest: str, output_manifest: str):
     Create training manifest with columns:
     - sample_id: unique identifier
     - scene_id: scene UUID
-    - room_id: room ID (None for scene-level)
+    - room_id: room ID (empty for scene-level)
     - sample_type: 'room' or 'scene'
-    - pov_image: path to POV image (None for scene-level)
-    - pov_embedding: path to POV embedding (None for scene-level)
+    - pov_type: 'seg' or 'tex' (empty for scene-level)
+    - pov_image: path to POV image (empty for scene-level)
+    - pov_embedding: path to POV embedding (empty for scene-level)
     - graph_text: path to graph text file
     - graph_embedding: path to graph embedding (if exists)
     - layout_image: path to layout image
@@ -79,6 +81,7 @@ def create_manifest(data_root: str, pov_manifest: str, output_manifest: str):
                 'scene_id': scene_id,
                 'room_id': '',
                 'sample_type': 'scene',
+                'pov_type': '',
                 'pov_image': '',
                 'pov_embedding': '',
                 'graph_text': str(scene_graph_txt),
@@ -88,7 +91,7 @@ def create_manifest(data_root: str, pov_manifest: str, output_manifest: str):
             })
         
         # ================================================================
-        # ROOM-LEVEL SAMPLES (with POVs)
+        # ROOM-LEVEL SAMPLES (with POVs - BOTH seg and tex)
         # ================================================================
         rooms_dir = scene_dir / "rooms"
         if not rooms_dir.exists():
@@ -113,39 +116,37 @@ def create_manifest(data_root: str, pov_manifest: str, output_manifest: str):
             if not room_graph_txt.exists() or not room_layout_img.exists():
                 continue
             
-            # POV metadata to find all viewpoints
-            pov_meta = room_dir / "povs" / f"{scene_id}_{room_id}_pov_meta.json"
-            
-            # Find all POV images
-            tex_dir = room_dir / "povs" / "tex"
-            seg_dir = room_dir / "povs" / "seg"
-            
-            if not tex_dir.exists():
-                continue
-            
-            # Get all POV variants (v01, v02, etc.)
-            pov_images = sorted(tex_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png"))
-            
-            for pov_img in pov_images:
-                # Extract viewpoint ID (v01, v02, etc.)
-                viewpoint = pov_img.stem.split('_')[-3]  # e.g., 'v01' from '..._v01_pov_tex'
+            # Process BOTH POV types: seg and tex
+            for pov_type in ['seg', 'tex']:
+                pov_dir = room_dir / "povs" / pov_type
                 
-                pov_emb = pov_img.with_suffix('.pt')
+                if not pov_dir.exists():
+                    continue
                 
-                sample_id = f"{scene_id}_{room_id}_{viewpoint}"
+                # Get all POV variants (v01, v02, etc.) for this type
+                pov_images = sorted(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_{pov_type}.png"))
                 
-                samples.append({
-                    'sample_id': sample_id,
-                    'scene_id': scene_id,
-                    'room_id': room_id,
-                    'sample_type': 'room',
-                    'pov_image': str(pov_img),
-                    'pov_embedding': str(pov_emb) if pov_emb.exists() else '',
-                    'graph_text': str(room_graph_txt),
-                    'graph_embedding': '',  # Room graphs typically don't have embeddings
-                    'layout_image': str(room_layout_img),
-                    'layout_embedding': '',  # Room layouts typically don't have embeddings
-                })
+                for pov_img in pov_images:
+                    # Extract viewpoint ID (v01, v02, etc.)
+                    viewpoint = pov_img.stem.split('_')[-3]  # e.g., 'v01'
+                    
+                    pov_emb = pov_img.with_suffix('.pt')
+                    
+                    sample_id = f"{scene_id}_{room_id}_{pov_type}_{viewpoint}"
+                    
+                    samples.append({
+                        'sample_id': sample_id,
+                        'scene_id': scene_id,
+                        'room_id': room_id,
+                        'sample_type': 'room',
+                        'pov_type': pov_type,
+                        'pov_image': str(pov_img),
+                        'pov_embedding': str(pov_emb) if pov_emb.exists() else '',
+                        'graph_text': str(room_graph_txt),
+                        'graph_embedding': '',
+                        'layout_image': str(room_layout_img),
+                        'layout_embedding': '',
+                    })
     
     # Write manifest
     output_path = Path(output_manifest)
@@ -156,6 +157,7 @@ def create_manifest(data_root: str, pov_manifest: str, output_manifest: str):
         'scene_id', 
         'room_id',
         'sample_type',
+        'pov_type',
         'pov_image',
         'pov_embedding',
         'graph_text',
@@ -170,11 +172,13 @@ def create_manifest(data_root: str, pov_manifest: str, output_manifest: str):
         writer.writerows(samples)
     
     # Print statistics
-    room_samples = sum(1 for s in samples if s['sample_type'] == 'room')
+    room_samples_seg = sum(1 for s in samples if s['sample_type'] == 'room' and s['pov_type'] == 'seg')
+    room_samples_tex = sum(1 for s in samples if s['sample_type'] == 'room' and s['pov_type'] == 'tex')
     scene_samples = sum(1 for s in samples if s['sample_type'] == 'scene')
     
     print(f"\n✓ Created manifest with {len(samples)} total samples")
-    print(f"  - Room-level samples: {room_samples}")
+    print(f"  - Room-level samples (seg POVs): {room_samples_seg}")
+    print(f"  - Room-level samples (tex POVs): {room_samples_tex}")
     print(f"  - Scene-level samples: {scene_samples}")
     print(f"  - Skipped empty rooms: {skipped_empty}")
     print(f"✓ Output: {output_path}")
