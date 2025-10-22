@@ -251,11 +251,20 @@ class DiffusionPipeline(nn.Module):
     @torch.no_grad()
     def evaluate(self, val_batch, num_samples=8, step=None):
         """
-        Evaluation expects pre-computed embeddings.
+        Evaluation expects a raw batch (not pre-computed embeddings).
         """
         layout = val_batch["layout"]
-        cond_pov_emb = val_batch["pov"]
-        cond_graph_emb = val_batch["graph"]
+        
+        # --- START MODIFICATION ---
+        # Get raw data from batch
+        pov_raw = val_batch["pov"]
+        graph_raw = val_batch["graph"]
+        
+        # Convert raw inputs to embeddings
+        cond_pov_emb, cond_graph_emb = self._prepare_conditions(
+            pov_raw, graph_raw
+        )
+        # --- END MODIFICATION ---
         
         # --- FIX: Resize input batch to match num_samples ---
         B_in = layout.size(0)

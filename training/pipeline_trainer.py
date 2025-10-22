@@ -119,19 +119,32 @@ class PipelineTrainer:
 
     def training_step(self, batch):
         """
-        Training expects pre-computed embeddings for efficiency.
+        MODIFIED: Handles raw data (images/paths) by creating embeddings.
         """
         layout = batch["layout"]
-        cond_pov_emb = batch["pov"]
-        cond_graph_emb = batch["graph"]
+        
+        # --- START FIX ---
+        # We now get raw data, not embeddings
+        pov_raw = batch["pov"]
+        graph_raw = batch["graph"]
+        
+        # Convert raw inputs to embeddings using the pipeline's method
+        cond_pov_emb, cond_graph_emb = self.pipeline._prepare_conditions(
+            pov_raw, graph_raw
+        )
+        # --- END FIX ---
         
         z = self.pipeline.encode_layout(layout)
-        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device=self.device)
+        # t is on CPU for scheduler indexing
+        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device="cpu")
         noise = torch.randn_like(z)
         z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
 
+        # Use the generated embeddings
         cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb], B_hint=z_noisy.shape[0], device_hint=z_noisy.device)
-        noise_pred = self.pipeline.unet(z_noisy, t, cond)
+        
+        # Move t to GPU for the UNet
+        noise_pred = self.pipeline.unet(z_noisy, t.to(self.device), cond)
 
         loss = self.loss_fn(noise_pred, noise)
 
@@ -139,6 +152,7 @@ class PipelineTrainer:
             log = {"loss": loss.item(), "timestep": t.float().mean().item()}
 
             # correlation and cosine
+            # Use embeddings for correlation
             corr = compute_condition_correlation(noise_pred.detach(), [cond_pov_emb, cond_graph_emb])
             for k, v in corr.items():
                 log[f"corr_{k}"] = v
@@ -197,7 +211,7 @@ class PipelineTrainer:
             for batch in pbar:
                 self.optimizer.zero_grad(set_to_none=True)
                 
-                # Unpack dict batch
+                # Unpack dict batch (raw data)
                 layout = batch["layout"]
                 cond_pov = batch["pov"]
                 cond_graph = batch["graph"]
@@ -221,7 +235,7 @@ class PipelineTrainer:
                     if torch.rand(1).item() < self.cond_dropout_graph:
                         cond_graph = None
 
-                # Reconstruct batch dict for training_step
+                # Reconstruct batch dict for training_step (still raw data)
                 batch_dict = {
                     "layout": layout,
                     "pov": cond_pov,
@@ -229,6 +243,7 @@ class PipelineTrainer:
                 }
                 
                 with torch.cuda.amp.autocast(enabled=self.mixed_precision):
+                    # training_step will handle embedding
                     loss = self.training_step(batch_dict)
 
                 self.scaler.scale(loss).backward()
@@ -255,13 +270,20 @@ class PipelineTrainer:
                     
                     # Track correlations from last training step
                     with torch.no_grad():
+                        # Create embeddings from raw data for correlation
+                        cond_pov_emb, cond_graph_emb = self.pipeline._prepare_conditions(
+                            cond_pov, cond_graph
+                        )
+                    
                         z = self.pipeline.encode_layout(layout)
-                        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device=self.device)
+                        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device="cpu")
                         noise = torch.randn_like(z)
                         z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
-                        cond = self.pipeline.mixer([cond_pov, cond_graph])
-                        noise_pred = self.pipeline.unet(z_noisy, t, cond)
-                        corr = compute_condition_correlation(noise_pred, [cond_pov, cond_graph])
+                        
+                        # Use embeddings for mixer and correlation
+                        cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb]) 
+                        noise_pred = self.pipeline.unet(z_noisy, t.to(self.device), cond) # Move t to device
+                        corr = compute_condition_correlation(noise_pred, [cond_pov_emb, cond_graph_emb])
                         
                         if "pov" in corr:
                             self.corr_pov_history.append(corr["pov"])
@@ -274,6 +296,7 @@ class PipelineTrainer:
                     self.plot_metrics()
 
                 if val_loader and self.global_step % self.eval_interval == 0:
+                    # evaluate() will handle its own embedding
                     val_metrics = self.evaluate(val_loader, step=self.global_step)
                     
                     # Track val loss if available
@@ -295,21 +318,40 @@ class PipelineTrainer:
     @torch.no_grad()
     def evaluate(self, val_loader, step=None):
         self.train(False)
-        batch = next(iter(val_loader))
+        batch = next(iter(val_loader)) # This is a raw data batch
         num_eval_samples = self.eval_num_samples
+        
         # Compute validation loss
         layout = batch["layout"]
-        cond_pov_emb = batch["pov"]
-        cond_graph_emb = batch["graph"]
+        
+        # --- START FIX ---
+        # We now get raw data, not embeddings
+        pov_raw = batch["pov"]
+        graph_raw = batch["graph"]
+
+        # Convert raw inputs to embeddings
+        cond_pov_emb, cond_graph_emb = self.pipeline._prepare_conditions(
+            pov_raw, graph_raw
+        )
+        # --- END FIX ---
         
         z = self.pipeline.encode_layout(layout)
-        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device=self.device)
+        
+        # t is on CPU for scheduler indexing
+        t = torch.randint(0, self.pipeline.scheduler.num_steps, (z.size(0),), device="cpu")
+        
         noise = torch.randn_like(z)
         z_noisy = self.pipeline.scheduler.add_noise(z, noise, t)
+        
+        # Use embeddings for mixer
         cond = self.pipeline.mixer([cond_pov_emb, cond_graph_emb], B_hint=z_noisy.shape[0], device_hint=z_noisy.device)
-        noise_pred = self.pipeline.unet(z_noisy, t, cond)
+        
+        # Move t to GPU for the UNet
+        noise_pred = self.pipeline.unet(z_noisy, t.to(self.device), cond)
+        
         val_loss = self.loss_fn(noise_pred, noise)
         
+        # Pass the raw batch to pipeline.evaluate
         metrics = self.pipeline.evaluate(batch, num_samples=num_eval_samples, step=step) 
         metrics["loss"] = val_loss.item()
         
@@ -342,7 +384,7 @@ class PipelineTrainer:
 
         # Use step in directory name to avoid overwriting
         cond_dir = os.path.join(self.output_dir, "samples", "conditioned", f"step_{step}")
-        os.makedirs(cond_dir, exist_ok=True)
+        os.makedirs(cond_dir, exist_ok=T)
 
         for i in range(min(sample_num, len(layout))):
             item_dir = os.path.join(cond_dir, f"sample_{i}")

@@ -7,6 +7,62 @@ from PIL import Image
 import numpy as np
 
 
+from torchvision import transforms
+
+# This transform will be used to convert layout images to tensors
+layout_transform = transforms.ToTensor()
+
+def collate_fn(batch):
+    """
+    Collator function that handles a batch of samples.
+    - Converts "layout" (PIL.Image) to Tensors and stacks them.
+    - Returns "pov" (PIL.Image) and "graph" (str) as lists.
+    """
+    
+    # Check if batch is empty
+    if not batch:
+        return {}
+
+    # Separate items
+    layout_items = []
+    pov_items = []
+    graph_items = []
+
+    for sample in batch:
+        if "layout" in sample:
+            layout_items.append(sample["layout"])
+        if "pov" in sample:
+            pov_items.append(sample["pov"])
+        if "graph" in sample:
+            graph_items.append(sample["graph"])
+
+    collated_batch = {}
+
+    # --- START MODIFICATION ---
+    # Handle "layout" items
+    if layout_items:
+        # Check the type of the first item
+        if isinstance(layout_items[0], torch.Tensor):
+            # All are tensors, stack them
+            collated_batch["layout"] = torch.stack(layout_items)
+        elif isinstance(layout_items[0], Image.Image):
+            # They are images, transform and stack
+            tensor_layouts = [layout_transform(img) for img in layout_items]
+            collated_batch["layout"] = torch.stack(tensor_layouts)
+        else:
+            # Handle unexpected type
+            raise TypeError(f"Unexpected type for layout: {type(layout_items[0])}")
+    # --- END MODIFICATION ---
+    
+    # Return pov and graph items as lists (from previous fix)
+    if pov_items:
+        collated_batch["pov"] = pov_items
+    
+    if graph_items:
+        collated_batch["graph"] = graph_items
+
+    return collated_batch
+
 # ---------- Utility loaders ----------
 
 def load_image(path, transform=None):
@@ -173,28 +229,3 @@ class UnifiedLayoutDataset(Dataset):
         }
 
 
-
-def collate_fn(batch):
-    """Ensure batch size consistency when some samples have no POV."""
-    pov_example = next((b["pov"] for b in batch if b["pov"] is not None), None)
-
-    pov_batch, graph_batch, layout_batch = [], [], []
-    for b in batch:
-        if b["pov"] is None:
-            if pov_example is not None:
-                pov_batch.append(torch.zeros_like(pov_example))
-            else:
-                pov_batch.append(torch.zeros(1))
-        else:
-            pov_batch.append(b["pov"])
-        graph_batch.append(b["graph"])
-        layout_batch.append(b["layout"])
-
-    return {
-        "scene_id": [b["scene_id"] for b in batch],
-        "room_id": [b["room_id"] for b in batch],
-        "pov_type": [b["pov_type"] for b in batch],
-        "pov": torch.stack(pov_batch),
-        "graph": torch.stack(graph_batch),
-        "layout": torch.stack(layout_batch),
-    }

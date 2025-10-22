@@ -10,7 +10,7 @@ dataset:
   seed: 42
 
 model:
-  latent_base: 32                    # must match AE latent spatial size
+  latent_base: 64                    # must match AE latent spatial size
   mixer: mlp                         # linear or mlp
   mixer_hidden_dim: 8192
   embedders:
@@ -24,13 +24,13 @@ model:
   diffusion:
     scheduler: cosine                # cosine or linear
     num_steps: 400
-    latent_channels: 8               # must match AE latent channels
+    latent_channels: 4               # must match AE latent channels
     unet_config: /work3/s233249/ImgiNav/experiments/diffusion/diff_32x32x8_d3/checkpoints/unet_config.yaml
 
 training:
   use_modalities: pov_only
   epochs: 10
-  lr: 1e-4
+  lr: 0.0001
   grad_clip: 1.0
   ema_decay: 0.999
   mixed_precision: true

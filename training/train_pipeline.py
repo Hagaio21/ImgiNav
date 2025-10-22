@@ -57,24 +57,40 @@ def build_dataloader(cfg, use_embeddings=False, shuffle=True):
 def build_pipeline(cfg, device, embedder_manager):
     model_cfg = cfg["model"]
     ae_cfg = model_cfg["autoencoder"]
+    
+    # Load autoencoder skeleton from its config
     autoencoder = AutoEncoder.from_config(ae_cfg["config"]).to(device)
     if os.path.exists(ae_cfg["ckpt"]):
         ae_state = torch.load(ae_cfg["ckpt"], map_location=device)
+        # Load weights from checkpoint
         autoencoder.load_state_dict(ae_state["model"] if "model" in ae_state else ae_state)
     autoencoder.eval()
 
     diff_cfg = model_cfg["diffusion"]
     scheduler = load_scheduler(diff_cfg["scheduler"], diff_cfg["num_steps"])
 
+    # --- START MODIFICATION ---
+    # Get the TRUE latent channels from the autoencoder object itself,
+    # not from the experiment_config.yaml file.
+    # This ensures the UNet matches the (loaded) AutoEncoder.
+    true_latent_channels = autoencoder.encoder.latent_channels
+    
+    # Log this to be certain
+    print(f"[Info] AutoEncoder latent channels detected: {true_latent_channels}")
+    if true_latent_channels != diff_cfg["latent_channels"]:
+        print(f"[Warning] Config mismatch: experiment_config.yaml says latent_channels={diff_cfg['latent_channels']}, "
+              f"but loaded AE has {true_latent_channels}. Using {true_latent_channels}.")
+    # --- END MODIFICATION ---
+
     unet = UNet.from_config(diff_cfg["unet_config"],
-                            latent_channels=diff_cfg["latent_channels"],
+                            latent_channels=true_latent_channels,  # <-- Use the true value
                             latent_base=model_cfg.get("latent_base", 32)).to(device)
 
     pov_dim = 512
     graph_dim = 384
     hidden_dim_mlp = model_cfg.get("mixer_hidden_dim")
     mixer = select_mixer(model_cfg["mixer"],
-                        out_channels=diff_cfg["latent_channels"],
+                        out_channels=true_latent_channels, # <-- Use the true value
                         latent_base=model_cfg.get("latent_base", 32),
                         pov_dim=pov_dim,
                         graph_dim=graph_dim,
@@ -207,7 +223,10 @@ def main():
             "num_steps": cfg["model"]["diffusion"]["num_steps"]
         },
         "embedders": cfg["model"]["embedders"],
-        "latent_channels": cfg["model"]["diffusion"]["latent_channels"],
+        # --- START MODIFICATION ---
+        # Save the true latent channels that were used
+        "latent_channels": pipeline.autoencoder.encoder.latent_channels,
+        # --- END MODIFICATION ---
         "latent_base": cfg["model"].get("latent_base", 32)
     }
 

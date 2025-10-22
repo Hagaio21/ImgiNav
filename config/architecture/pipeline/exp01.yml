@@ -20,13 +20,13 @@ model:
 
   autoencoder:
     config: "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4/autoencoder_config.yaml"
-    ckpt: "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4/checkpoints/ae_latest.pt"
+    ckpt: "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4/checkpoints/ae_epoch_40.pt"
 
   diffusion:
     scheduler: "cosine"             # "linear" or "cosine"
     num_steps: 500
     latent_channels: 4
-    unet_config: "/work3/s233249/ImgiNav/ImgiNav/config/architecture/unets/small.yml"
+    unet_config: "/work3/s233249/ImgiNav/ImgiNav/config/architecture/unets/medium_c.yml"
 
 training:
   epochs: 10
