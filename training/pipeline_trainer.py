@@ -289,7 +289,8 @@ class PipelineTrainer:
             with torch.no_grad():
                 # Predict x0 from noise prediction using DDPM formula
                 # x0 = (x_t - sqrt(1-alpha_t) * epsilon) / sqrt(alpha_t)
-                alpha_t = self.pipeline.scheduler.alphas_cumprod[timesteps].view(-1, 1, 1, 1)
+                
+                alpha_t = self.pipeline.scheduler.alpha_bars[timesteps].view(-1, 1, 1, 1)
                 sqrt_alpha_t = torch.sqrt(alpha_t)
                 sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
                 
@@ -506,8 +507,9 @@ class PipelineTrainer:
             # Compute correlation for first few batches
             if num_batches <= 3:
                 from pipeline.pipeline import compute_condition_correlation
-                # Predict clean latent
-                alpha_t = self.pipeline.scheduler.alphas_cumprod[timesteps].view(-1, 1, 1, 1)
+                
+                # Get alpha_bars from scheduler
+                alpha_t = self.pipeline.scheduler.alpha_bars[timesteps].view(-1, 1, 1, 1)
                 sqrt_alpha_t = torch.sqrt(alpha_t)
                 sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
                 predicted_clean = (noisy_latents - sqrt_one_minus_alpha_t * noise_pred) / sqrt_alpha_t
@@ -583,28 +585,28 @@ class PipelineTrainer:
         step_dir = self.output_dir / "samples" / f"step_{self.global_step:06d}"
         step_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save per-sample comparisons (NO NORMALIZATION - preserve RGB values)
+        # Save per-sample comparisons (NO PROCESSING - direct from autoencoder)
         for i in range(num_samples):
             sample_dir = step_dir / f"sample_{i:02d}"
             sample_dir.mkdir(exist_ok=True)
             
-            # Save target (clamp to [0,1] without normalization)
+            # Save target (direct from autoencoder decode, no processing)
             vutils.save_image(
-                torch.clamp((layout[i] + 1) / 2, 0, 1),  # Convert from [-1,1] to [0,1]
+                layout[i],
                 sample_dir / "target.png",
                 normalize=False
             )
             
-            # Save conditioned sample
+            # Save conditioned sample (direct from autoencoder decode, no processing)
             vutils.save_image(
-                torch.clamp((conditioned_samples[i] + 1) / 2, 0, 1),
+                conditioned_samples[i],
                 sample_dir / "conditioned.png",
                 normalize=False
             )
             
-            # Save unconditioned sample
+            # Save unconditioned sample (direct from autoencoder decode, no processing)
             vutils.save_image(
-                torch.clamp((unconditioned_samples[i] + 1) / 2, 0, 1),
+                unconditioned_samples[i],
                 sample_dir / "unconditioned.png",
                 normalize=False
             )
@@ -633,13 +635,13 @@ class PipelineTrainer:
             with open(sample_dir / "metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
         
-        # Create grid comparison (NO NORMALIZATION)
+        # Create grid comparison (NO PROCESSING - direct images)
         grid_images = []
         for i in range(num_samples):
             grid_images.extend([
-                torch.clamp((layout[i] + 1) / 2, 0, 1),
-                torch.clamp((conditioned_samples[i] + 1) / 2, 0, 1),
-                torch.clamp((unconditioned_samples[i] + 1) / 2, 0, 1)
+                layout[i],
+                conditioned_samples[i],
+                unconditioned_samples[i]
             ])
         
         grid = vutils.make_grid(grid_images, nrow=3, normalize=False)

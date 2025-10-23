@@ -3,10 +3,10 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/pipeline_train.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/pipeline_train.%J.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=64000]"
-#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=32000]"
+#BSUB -gpu "num=1"
 #BSUB -W 24:00
-#BSUB -q gpua10
+#BSUB -q gpul40s
 
 set -euo pipefail
 
