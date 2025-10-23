@@ -1,6 +1,6 @@
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
-  batch_size: 32
+  batch_size: 64
   split_ratio: 0.9
   num_workers: 4
   shuffle: true
@@ -15,16 +15,17 @@ model:
   time_dim: 256
   num_res_blocks: 
   scheduler: cosine          # cosine or linear
-  num_steps: 400
+  num_steps: 1000
   norm: batch
   act: relu
 
 training:
   epochs: 100
-  log_interval: 100
-  eval_interval: 100
-  sample_interval: 200
+  log_interval: 1000
+  eval_interval: 1000
+  sample_interval: 1000
+  checkpoint_interval: 10
   num_samples: 8
   grad_clip: 1.0
-  output_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_64x64x4_d4"
-  ckpt_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_64x64x4_d4/checkpoints"
+  output_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_64x64x4_d4_t1000"
+  ckpt_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_64x64x4_d4_t1000/checkpoints"

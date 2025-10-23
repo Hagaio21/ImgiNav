@@ -585,7 +585,6 @@ class PipelineTrainer:
         step_dir = self.output_dir / "samples" / f"step_{self.global_step:06d}"
         step_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save per-sample comparisons (NO PROCESSING - direct from autoencoder)
         for i in range(num_samples):
             sample_dir = step_dir / f"sample_{i:02d}"
             sample_dir.mkdir(exist_ok=True)
@@ -634,19 +633,26 @@ class PipelineTrainer:
             }
             with open(sample_dir / "metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
-        
+
         # Create grid comparison (NO PROCESSING - direct images)
+        # Order: unconditioned (top), conditioned (middle), targets (bottom)
         grid_images = []
+
+        # Row 1: All unconditioned samples
         for i in range(num_samples):
-            grid_images.extend([
-                layout[i],
-                conditioned_samples[i],
-                unconditioned_samples[i]
-            ])
-        
-        grid = vutils.make_grid(grid_images, nrow=3, normalize=False)
+            grid_images.append(unconditioned_samples[i])
+
+        # Row 2: All conditioned samples
+        for i in range(num_samples):
+            grid_images.append(conditioned_samples[i])
+
+        # Row 3: All targets
+        for i in range(num_samples):
+            grid_images.append(layout[i])
+
+        grid = vutils.make_grid(grid_images, nrow=num_samples, normalize=False)
         vutils.save_image(grid, step_dir / "comparison_grid.png")
-        
+                
         print(f"[Sampling] Saved comparison to {step_dir}")
 
     def plot_curves(self):

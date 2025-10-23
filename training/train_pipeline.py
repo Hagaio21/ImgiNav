@@ -16,6 +16,47 @@ from modules.scheduler import LinearScheduler, CosineScheduler
 from utils.utlis import load_taxonomy
 import torch.nn as nn
 from pathlib import Path
+from datetime import datetime
+import shutil
+
+def generate_experiment_name(config):
+    """
+    Generate experiment name from config parameters.
+    Format: {latent_shape}_{mixer}_{scheduler}{steps}_{dataset_mode}_{pov_type}
+    Example: 64x64x4_mlp_cosine500_room_seg
+    """
+    model_cfg = config['model']
+    dataset_cfg = config['dataset']
+    diff_cfg = model_cfg['diffusion']
+    
+    # Latent shape: {base}x{base}x{channels}
+    latent_base = model_cfg.get('latent_base', 64)
+    latent_channels = diff_cfg['latent_channels']
+    latent_shape = f"{latent_base}x{latent_base}x{latent_channels}"
+    
+    # Mixer type
+    mixer = model_cfg['mixer'].lower()  # 'mlp' or 'linear'
+    
+    # Scheduler: {type}{steps}
+    scheduler = diff_cfg['scheduler'].lower()  # 'cosine' or 'linear'
+    num_steps = diff_cfg['num_steps']
+    scheduler_str = f"{scheduler}{num_steps}"
+    
+    # Dataset mode
+    sample_type = dataset_cfg.get('sample_type', 'both')  # 'room', 'scene', 'both'
+    
+    # POV type (if applicable)
+    pov_type = dataset_cfg.get('pov_type')
+    if pov_type and sample_type == 'room':
+        dataset_str = f"{sample_type}_{pov_type}"
+    else:
+        dataset_str = sample_type
+    
+    # Combine all parts
+    exp_name = f"{latent_shape}_{mixer}_{scheduler_str}_{dataset_str}"
+    
+    return exp_name
+
 
 def load_scheduler(name: str, num_steps: int):
     name = name.lower()
@@ -25,6 +66,41 @@ def load_scheduler(name: str, num_steps: int):
         return LinearScheduler(num_steps=num_steps)
     raise ValueError(f"Unknown scheduler type: {name}")
 
+def save_experiment_config(config_dict, output_dir, original_config_path):
+    """
+    Save complete experiment configuration for reproducibility.
+    
+    Args:
+        config_dict: The loaded config dictionary
+        output_dir: Output directory for the experiment
+        original_config_path: Path to the original config file
+    """
+    config_dir = Path(output_dir) / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Add experiment metadata
+    config_with_metadata = {
+        'experiment_info': {
+            'timestamp': datetime.now().isoformat(),
+            'original_config': str(original_config_path),
+            'output_dir': str(output_dir),
+        },
+        'dataset': config_dict['dataset'],
+        'model': config_dict['model'],
+        'training': config_dict['training'],
+    }
+    
+    # Save as pipeline.yaml in config directory
+    config_file = config_dir / "pipeline.yaml"
+    with open(config_file, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(config_with_metadata, f, default_flow_style=False, sort_keys=False)
+    
+    # Also copy the original config file for reference
+    original_copy = config_dir / "original_config.yaml"
+    shutil.copy2(original_config_path, original_copy)
+    
+    print(f"[Config] Saved experiment configuration to {config_file}")
+    print(f"[Config] Copied original config to {original_copy}")
 
 def select_mixer(name: str, out_channels: int, latent_base: int,
                  pov_dim: int, graph_dim: int, hidden_dim_mlp: int | None = None):
@@ -184,6 +260,22 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    exp_name = generate_experiment_name(cfg)
+    print(f"[Experiment] Auto-generated name: {exp_name}")
+
+    base_exp_dir = Path(cfg["training"]["experiment_dir"])
+    exp_dir = base_exp_dir / exp_name
+    output_dir = exp_dir / "outputs"
+    ckpt_dir = exp_dir / "checkpoints"  
+    config_dir = exp_dir / "config"
+
+    print(f"[Paths] Experiment directory: {exp_dir}")
+    print(f"  - Config: {config_dir}")
+    print(f"  - Outputs: {output_dir}")
+    print(f"  - Checkpoints: {ckpt_dir}")
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(cfg["dataset"].get("seed", 42))
     
@@ -199,7 +291,7 @@ def main():
     # Build dataloaders
     train_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=True)
     val_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=False)
-    sample_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=False)
+    sample_loader = build_dataloader(cfg["dataset"], use_embeddings=False, shuffle=True)
     
     # Build pipeline
     pipeline = build_pipeline(cfg, device, embed)
@@ -218,8 +310,8 @@ def main():
         eval_interval=trainer_cfg.get("eval_interval", 1000),
         sample_interval=trainer_cfg.get("sample_interval", 2000),
         eval_num_samples=trainer_cfg.get("eval_sample_num", 8),
-        ckpt_dir=trainer_cfg["ckpt_dir"],
-        output_dir=trainer_cfg["output_dir"],
+        ckpt_dir=str(ckpt_dir),
+        output_dir=str(output_dir),
         mixed_precision=trainer_cfg.get("mixed_precision", False),
         ema_decay=trainer_cfg.get("ema_decay"),
         cond_dropout_pov=trainer_cfg.get("cond_dropout_pov", 0.0),
@@ -227,35 +319,37 @@ def main():
         cond_dropout_both=trainer_cfg.get("cond_dropout_both", 0.0),
         taxonomy=taxonomy_path,
         use_modalities=trainer_cfg.get("use_modalities", "both"),
-        cfg_scale=trainer_cfg.get("cfg_scale", 7.5)  # ← ADD THIS LINE
+        cfg_scale=trainer_cfg.get("cfg_scale", 7.5)
     )
 
+    # Save experiment config
+    save_experiment_config(cfg, output_dir, args.config)  # ← Fixed: use output_dir (matches function signature)
+    
     # Run training
     trainer.fit(train_loader, val_loader=val_loader)
 
-    # Save final weights and config
-    save_dir = trainer_cfg["ckpt_dir"]
-    os.makedirs(save_dir, exist_ok=True)
+    # Save final weights and config - use our generated ckpt_dir
+    os.makedirs(ckpt_dir, exist_ok=True)  # ← Fixed: use ckpt_dir variable
     
     torch.save(pipeline.autoencoder.state_dict(), 
-               os.path.join(save_dir, "ae_latest.pt"))
+               ckpt_dir / "ae_latest.pt")  # ← Use Path
     torch.save(pipeline.unet.state_dict(), 
-               os.path.join(save_dir, "unet_latest.pt"))
+               ckpt_dir / "unet_latest.pt")  # ← Use Path
     torch.save(pipeline.mixer.state_dict(), 
-               os.path.join(save_dir, "mixer_latest.pt"))
+               ckpt_dir / "mixer_latest.pt")  # ← Use Path
     
     pipeline_config = {
         "autoencoder": {
             "config": cfg["model"]["autoencoder"]["config"],
-            "checkpoint": os.path.join(save_dir, "ae_latest.pt")
+            "checkpoint": str(ckpt_dir / "ae_latest.pt")  # ← Use Path
         },
         "unet": {
             "config": cfg["model"]["diffusion"]["unet_config"],
-            "checkpoint": os.path.join(save_dir, "unet_latest.pt")
+            "checkpoint": str(ckpt_dir / "unet_latest.pt")  # ← Use Path
         },
         "mixer": {
             "type": cfg["model"]["mixer"],
-            "checkpoint": os.path.join(save_dir, "mixer_latest.pt")
+            "checkpoint": str(ckpt_dir / "mixer_latest.pt")  # ← Use Path
         },
         "scheduler": {
             "type": cfg["model"]["diffusion"]["scheduler"],
@@ -266,11 +360,10 @@ def main():
         "latent_base": cfg["model"].get("latent_base", 32)
     }
 
-    with open(os.path.join(save_dir, "pipeline_config.yaml"), "w", encoding="utf-8") as f:
+    with open(ckpt_dir / "pipeline_config.yaml", "w", encoding="utf-8") as f:  # ← Use Path
         yaml.safe_dump(pipeline_config, f)
 
-    print(f"[Done] Saved pipeline config and weights to {save_dir}")
-
+    print(f"[Done] Saved pipeline config and weights to {ckpt_dir}")
 
 if __name__ == "__main__":
     main()

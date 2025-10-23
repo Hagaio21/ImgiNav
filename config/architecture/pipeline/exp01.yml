@@ -3,14 +3,14 @@ dataset:
   sample_type: "room"  # 'room', 'scene', or 'both'
   pov_type: "seg"  # 'seg', 'tex', or null (to use both)
   taxonomy_path: "/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
-  batch_size: 32
+  batch_size: 64
   num_workers: 8
-  seed: 42
+  seed: 1234
 
 model:
   latent_base: 64
   mixer: "mlp"                      # "linear" or "mlp"
-  mixer_hidden_dim: 16000
+  mixer_hidden_dim: 16384
   
   embedders:
     pov: "resnet18"
@@ -53,5 +53,4 @@ training:
   eval_sample_num: 8
   
   # Output Paths
-  ckpt_dir: "/work3/s233249/ImgiNav/experiments/Pipeline/exp2/checkpoints"
-  output_dir: "/work3/s233249/ImgiNav/experiments/Pipeline/exp2/outputs"
+  experiment_dir: "/work3/s233249/ImgiNav/experiments/Pipeline"

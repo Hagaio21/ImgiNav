@@ -3,10 +3,10 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_train.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_train.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=48000]"
+#BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
 #BSUB -W 20:00
-#BSUB -q gpul40s
+#BSUB -q gpua10
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
-CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/architecture/diffusion/diff_config_64x64x4.yml"
+CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/architecture/diffusion/diff_config_64x64x4_d4.yml"
 
 # =============================================================================
 # MODULES

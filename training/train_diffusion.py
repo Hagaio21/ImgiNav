@@ -145,6 +145,7 @@ def main():
         log_interval=training_cfg.get("log_interval", 100),
         eval_interval=training_cfg.get("eval_interval", 1000),
         sample_interval=training_cfg.get("sample_interval", 2000),
+        checkpoint_interval=training_cfg.get("checkpoint_interval",10),
         num_samples=training_cfg.get("num_samples", 8),
         grad_clip=training_cfg.get("grad_clip"),
         ckpt_dir=ckpt_dir,
