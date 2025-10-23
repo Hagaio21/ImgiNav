@@ -1,6 +1,6 @@
 dataset:
   manifest_path: "/work3/s233249/ImgiNav/datasets/training_manifest.csv"
-  sample_type: "room"  # 'room', 'scene', or 'both'
+  sample_type: "both"  # 'room', 'scene', or 'both'
   pov_type: "tex"  # 'seg', 'tex', or null (to use both)
   taxonomy_path: "/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
   batch_size: 64
