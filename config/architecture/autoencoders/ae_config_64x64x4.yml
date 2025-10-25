@@ -18,13 +18,13 @@ model:
   # capacity
   base_channels: 64
   latent_channels: 4
-  num_classes: 25 # <-- ADD THIS (Replace 25 with your actual number of classes)
+  num_classes: 13 # 
   # normalization and activations
   norm: batch
   act: relu
   dropout: 0.0
   # decoder behavior
-  use_sigmoid: true # <-- CHANGE THIS. SegmentationVAELoss uses MSE on RGB head
+  use_sigmoid: false # <-- CHANGE THIS. SegmentationVAELoss uses MSE on RGB head
 
 # --- Training ---
 training:
