@@ -33,6 +33,6 @@ training:
   log_interval: 10
   sample_interval: 200
   eval_interval: 1
-  output_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4
-  ckpt_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4/checkpoints
+  output_dir: /work3/s233249/ImgiNav/experiments/VAE/cross_enth_loss/VAE_512_64x64x4/output
+  ckpt_dir: /work3/s233249/ImgiNav/experiments/VAE/cross_enth_loss/VAE_512_64x64x4/checkpoints
   recon_loss: CrossEntropy   
