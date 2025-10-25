@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_pipeline.py"
-CONFIG_FILE="${BASE_DIR}/config/architecture/pipeline/exp03.yml"
+CONFIG_FILE="${BASE_DIR}/config/architecture/pipeline/exp07.yml"
 
 # =============================================================================
 # MODULES
