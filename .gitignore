@@ -19,6 +19,8 @@ env/
 
 # Ignore large data and output files from version control
 dataset/
+dataset_v2/
+data_preprocessing/
 outputs/
 indexes/
 logs/

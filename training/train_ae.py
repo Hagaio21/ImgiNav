@@ -1,3 +1,4 @@
+# train_ae.py
 import os, sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import yaml
@@ -13,6 +14,7 @@ import torchvision.transforms as T
 from modules.datasets import LayoutDataset, collate_skip_none
 from modules.autoencoder import AutoEncoder
 from training.autoencoder_trainer import AutoEncoderTrainer
+from modules.custom_loss import StandardVAELoss, SegmentationVAELoss
 
 
 def build_datasets(manifest_path, split_ratio, seed, transform, dataset_cfg):
@@ -45,6 +47,62 @@ def save_split_csvs(train_ds, val_ds, output_dir):
     val_df.to_csv(os.path.join(output_dir, "evaluated_on.csv"), index=False)
 
 
+def build_loss_function(loss_cfg):
+    """
+    Factory function to build loss function from config.
+    
+    Expected loss_cfg format:
+    {
+        "type": "standard" | "segmentation",
+        "kl_weight": float,
+        # For segmentation loss:
+        "lambda_seg": float,
+        "lambda_mse": float,
+        "color_to_class": dict or path to yaml
+    }
+    """
+    loss_type = loss_cfg.get("type", "standard").lower()
+    kl_weight = loss_cfg.get("kl_weight", 1e-6)
+    
+    if loss_type == "standard":
+        print(f"[Loss] Using StandardVAELoss (kl_weight={kl_weight})")
+        return StandardVAELoss(kl_weight=kl_weight)
+    
+    elif loss_type == "segmentation":
+        lambda_seg = loss_cfg.get("lambda_seg", 1.0)
+        lambda_mse = loss_cfg.get("lambda_mse", 1.0)
+        
+        # Load color_to_class mapping
+        color_to_class_input = loss_cfg.get("color_to_class")
+        if isinstance(color_to_class_input, str):
+            # Load from YAML file
+            with open(color_to_class_input, "r", encoding="utf-8") as f:
+                color_mapping = yaml.safe_load(f)
+            # Convert string keys to tuples if needed
+            color_to_class = {}
+            for key, val in color_mapping.items():
+                if isinstance(key, str):
+                    # Parse string like "(255, 0, 0)" to tuple
+                    key = tuple(map(int, key.strip("()").split(",")))
+                color_to_class[tuple(key)] = val
+        else:
+            color_to_class = color_to_class_input
+        
+        print(f"[Loss] Using SegmentationVAELoss (kl_weight={kl_weight}, "
+              f"lambda_seg={lambda_seg}, lambda_mse={lambda_mse})")
+        print(f"[Loss] Loaded {len(color_to_class)} class colors")
+        
+        return SegmentationVAELoss(
+            color_to_class=color_to_class,
+            kl_weight=kl_weight,
+            lambda_seg=lambda_seg,
+            lambda_mse=lambda_mse,
+        )
+    
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}. Choose 'standard' or 'segmentation'.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run AutoEncoder experiment")
     parser.add_argument("--config", required=True, help="Path to experiment config YAML")
@@ -73,34 +131,32 @@ def main():
     print(f"[Config] Saved experiment config to {model_cfg_path}")
 
     # --- Dataset config ---
-    manifest = dataset_cfg["manifest"]
-    batch_size = dataset_cfg.get("batch_size", 32)
-    split_ratio = dataset_cfg.get("split_ratio", 0.9)
-    num_workers = dataset_cfg.get("num_workers", 4)
-    shuffle = dataset_cfg.get("shuffle", True)
     seed = dataset_cfg.get("seed", 42)
-
     random.seed(seed)
     torch.manual_seed(seed)
     transform = T.ToTensor()
 
     train_ds, val_ds = build_datasets(
-    manifest_path=dataset_cfg["manifest"],
-    split_ratio=dataset_cfg.get("split_ratio", 0.9),
-    seed=dataset_cfg.get("seed", 42),
-    transform=transform,
-    dataset_cfg=dataset_cfg,
+        manifest_path=dataset_cfg["manifest"],
+        split_ratio=dataset_cfg.get("split_ratio", 0.9),
+        seed=seed,
+        transform=transform,
+        dataset_cfg=dataset_cfg,
     )
 
+    batch_size = dataset_cfg.get("batch_size", 32)
+    num_workers = dataset_cfg.get("num_workers", 4)
+    shuffle = dataset_cfg.get("shuffle", True)
 
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=collate_skip_none
+        train_ds, batch_size=batch_size, shuffle=shuffle, 
+        num_workers=num_workers, collate_fn=collate_skip_none
     )
     val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_skip_none
+        val_ds, batch_size=batch_size, shuffle=False, 
+        num_workers=num_workers, collate_fn=collate_skip_none
     )
 
-    os.makedirs(out_dir, exist_ok=True)
     save_split_csvs(train_ds, val_ds, out_dir)
 
     # --- Model ---
@@ -118,22 +174,15 @@ def main():
 
     ae.encoder.print_summary()
     ae.decoder.print_summary()
-    # --- Choose loss function ---
-    loss_type = training_cfg.get("recon_loss", "mse").lower()
-    if loss_type == "crossentropy":
-        recon_loss_fn = nn.CrossEntropyLoss()
-    elif loss_type == "mse":
-        recon_loss_fn = nn.MSELoss()
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
 
-    kl_weight = training_cfg.get("kl_weight", 1e-6)
-    print(f"[Trainer] Using KL weight: {kl_weight}, loss={loss_type}")
+    # --- Build loss function from config ---
+    loss_cfg = training_cfg.get("loss", {"type": "standard", "kl_weight": 1e-6})
+    loss_fn = build_loss_function(loss_cfg)
 
+    # --- Trainer ---
     trainer = AutoEncoderTrainer(
         autoencoder=ae,
-        recon_loss_fn=recon_loss_fn,
-        kl_weight=kl_weight,
+        loss_fn=loss_fn,
         epochs=training_cfg.get("epochs", 50),
         log_interval=training_cfg.get("log_interval", 10),
         sample_interval=training_cfg.get("sample_interval", 100),
