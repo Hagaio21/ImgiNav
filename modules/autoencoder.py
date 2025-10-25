@@ -113,6 +113,7 @@ class ConvDecoder(nn.Module):
                  latent_base: int,
                  global_norm: Optional[str] = None,
                  global_act: Optional[str] = None,
+                 use_sigmoi: bool = False,
                  global_dropout: float = 0.0):
         super().__init__()
 
@@ -158,7 +159,7 @@ class ConvDecoder(nn.Module):
         x = self.from_latent(z)
         x = self.deconv(x)
         x = self.final(x)
-        return torch.sigmoid(x)
+        return torch.sigmoid(x) if self.use_sigmoid else x
 
     def print_summary(self):
         print(f"[Decoder] Final output: {self.output_channels}x{self.output_size}x{self.output_size}")
@@ -269,27 +270,29 @@ class AutoEncoder(nn.Module):
                 })
 
         cfg = {
-            "encoder": {
-                "in_channels": enc.conv[0][0].in_channels if hasattr(enc.conv[0][0], "in_channels") else None,
-                "layers": layers_cfg,
-                "image_size": enc.image_size,
-                "latent_channels": enc.latent_channels,
-                "latent_base": enc.latent_base,
-                "global_norm": enc_norm,
-                "global_act": enc_act,
-                "global_dropout": 0.0,
-            },
-            "decoder": {
-                "out_channels": dec.output_channels,
-                "image_size": dec.output_size,
-                "latent_channels": dec.latent_channels,
-                "latent_base": dec.latent_base,
-                "global_norm": dec_norm,
-                "global_act": dec_act,
-                "global_dropout": 0.0,
-            },
-        }
-        return cfg
+                "encoder": {
+                    "in_channels": enc.conv[0][0].in_channels if hasattr(enc.conv[0][0], "in_channels") else None,
+                    "layers": layers_cfg,
+                    "image_size": enc.image_size,
+                    "latent_channels": enc.latent_channels,
+                    "latent_base": enc.latent_base,
+                    "global_norm": enc_norm,
+                    "global_act": enc_act,
+                    "global_dropout": 0.0,
+                },
+                "decoder": {
+                    "out_channels": dec.output_channels,
+                    "image_size": dec.output_size,
+                    "latent_channels": dec.latent_channels,
+                    "latent_base": dec.latent_base,
+                    "global_norm": dec_norm,
+                    "global_act": dec_act,
+                    "global_dropout": 0.0,
+                    "use_sigmoid": getattr(dec, "use_sigmoid", False),
+                },
+            }
+            return cfg
+
 
     @classmethod
     def from_config(cls, cfg: dict | str):
@@ -320,14 +323,16 @@ class AutoEncoder(nn.Module):
         decoder = ConvDecoder(
             out_channels=dec_cfg["out_channels"],
             latent_dim=dec_cfg["latent_dim"],
-            encoder_layers_cfg=enc_cfg["layers"], 
+            encoder_layers_cfg=enc_cfg["layers"],
             image_size=dec_cfg["image_size"],
             latent_channels=dec_cfg["latent_channels"],
             latent_base=dec_cfg["latent_base"],
             global_norm=dec_cfg.get("global_norm"),
             global_act=dec_cfg.get("global_act"),
             global_dropout=dec_cfg.get("global_dropout", 0.0),
+            use_sigmoid=dec_cfg.get("use_sigmoid", False),
         )
+
 
         return cls(encoder, decoder)
 
@@ -387,6 +392,7 @@ class AutoEncoder(nn.Module):
             global_norm=norm,
             global_act=act,
             global_dropout=dropout,
+            use_sigmoid=False,  # or True for RGB
         )
 
         return cls(encoder, decoder)

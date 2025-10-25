@@ -4,7 +4,8 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import torch
 import numpy as np
-
+import json
+from utils.utils import load_taxonomy
 # ---------- Base Utilities ----------
 
 def load_image(path, transform=None):
@@ -15,6 +16,7 @@ def load_image(path, transform=None):
 
 def load_embedding(path):
     return torch.load(path) if path.endswith(".pt") else torch.from_numpy(np.load(path))
+
 
 
 def compute_sample_weights(df: pd.DataFrame) -> torch.DoubleTensor:
@@ -28,37 +30,88 @@ def compute_sample_weights(df: pd.DataFrame) -> torch.DoubleTensor:
 # ---------- Layout Dataset ----------
 
 class LayoutDataset(Dataset):
-    def __init__(self, manifest_path, transform=None, mode="all", skip_empty=True, return_embeddings=False):
+    """
+    Loads layout images for either:
+      - RGB reconstruction (one_hot=False)
+      - Semantic segmentation (one_hot=True) using taxonomy.json
+    """
+
+    def __init__(
+        self,
+        manifest_path,
+        transform=None,
+        mode="all",
+        one_hot=False,
+        taxonomy_path=None,
+        skip_empty=True,
+        return_embeddings=False,
+    ):
         self.df = pd.read_csv(manifest_path)
         self.transform = transform
         self.mode = mode
+        self.one_hot = one_hot
         self.skip_empty = skip_empty
         self.return_embeddings = return_embeddings
+        self.taxonomy_path = taxonomy_path
 
+        # --- taxonomy mapping ---
+        if taxonomy_path is not None:
+            self.taxonomy = load_taxonomy(taxonomy_path)
+            self._build_supercategory_mapping()
+        else:
+            self.COLOR_TO_CLASS = None
+            self.NUM_CLASSES = None
+
+        # --- filtering ---
         if self.mode != "all":
             self.df = self.df[self.df["type"] == self.mode]
-
         if self.skip_empty:
             self.df = self.df[self.df["is_empty"] == False]
 
         self.entries = self.df.to_dict("records")
+
+    # --------------------------------------------------------
+    # Taxonomy helpers
+    # --------------------------------------------------------
+
+    def _build_supercategory_mapping(self):
+        """Map RGB colors to supercategory indices."""
+        id2color = self.taxonomy["id2color"]
+        id2super = self.taxonomy.get("id2supercat", self.taxonomy.get("id2cat"))
+
+        # compact set of supercategories
+        supercats = sorted(set(id2super.values()))
+        self.supercat_to_idx = {name: i for i, name in enumerate(supercats)}
+
+        # build color → class index map
+        self.COLOR_TO_CLASS = {
+            tuple(id2color[str(i)]): self.supercat_to_idx[id2super[str(i)]]
+            for i in id2color.keys()
+        }
+        self.NUM_CLASSES = len(self.supercat_to_idx)
+
+    # --------------------------------------------------------
+    # Dataset methods
+    # --------------------------------------------------------
 
     def __len__(self):
         return len(self.entries)
 
     def __getitem__(self, idx):
         row = self.entries[idx]
-
         try:
             if self.return_embeddings:
-                # Use embedding_path if available, otherwise fall back to layout_path
                 path = row.get("embedding_path", row["layout_path"])
                 layout = load_embedding(path)
             else:
                 path = row["layout_path"]
-                layout = load_image(path, self.transform)
+                layout_rgb = load_image(path, self.transform)
+
+                if self.one_hot and self.COLOR_TO_CLASS is not None:
+                    layout = self.rgb_to_class_index(layout_rgb)
+                else:
+                    layout = layout_rgb
         except Exception:
-            # skip only broken or unreadable files
             return None
 
         return {
@@ -69,6 +122,16 @@ class LayoutDataset(Dataset):
             "path": path,
             "layout": layout,
         }
+
+    def rgb_to_class_index(self, tensor_img):
+        """Convert RGB tensor (3,H,W) ∈ [0,1] to (H,W) long indices."""
+        img = (tensor_img.permute(1, 2, 0) * 255).byte()
+        h, w, _ = img.shape
+        class_map = torch.zeros((h, w), dtype=torch.long)
+        for color, idx in self.COLOR_TO_CLASS.items():
+            mask = (img == torch.tensor(color, dtype=torch.uint8)).all(dim=-1)
+            class_map[mask] = idx
+        return class_map
 
 # ---------- POV Dataset ----------
 

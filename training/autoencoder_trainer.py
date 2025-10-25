@@ -56,15 +56,26 @@ class AutoEncoderTrainer:
         raise TypeError(f"Unexpected batch type: {type(batch)}")
 
     def _compute_loss(self, x, recon, mu, logvar):
-            """Computes VAE loss (Reconstruction + KL Divergence)."""
+        """Computes VAE loss (Reconstruction + KL Divergence)."""
+
+        # CrossEntropyLoss expects logits (B,C,H,W) and class indices (B,H,W)
+        if isinstance(self.recon_loss_fn, torch.nn.CrossEntropyLoss):
+            # If x is RGB in [0,1] with 3 channels, assume it encodes class indices as grayscale or color
+            if x.ndim == 4 and x.shape[1] == 3:
+                # Convert to single channel by taking argmax over one-hot or simple max channel
+                x = torch.argmax(x, dim=1)
+            elif x.ndim == 4 and x.shape[1] == 1:
+                x = x.squeeze(1)
+            recon_loss = self.recon_loss_fn(recon, x.long())
+        else:
+            # Standard regression (MSE) loss
             recon_loss = self.recon_loss_fn(recon, x)
 
-            kl_div = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp(), dim=[1, 2, 3])
-            kl_loss = torch.mean(kl_div)  # Mean over batch
+        kl_div = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp(), dim=[1, 2, 3])
+        kl_loss = torch.mean(kl_div)
 
-            total_loss = recon_loss + self.kl_weight * kl_loss
-
-            return total_loss, recon_loss, kl_loss
+        total_loss = recon_loss + self.kl_weight * kl_loss
+        return total_loss, recon_loss, kl_loss
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader = None):
         self.autoencoder.train()
