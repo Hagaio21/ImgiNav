@@ -89,7 +89,7 @@ class ConvEncoder(nn.Module):
         self.latent_base = latent_base
         self.conv_output_channels = prev
         self.conv_output_size = current_size
-        self.image_size = image_size  # Store original image size for config
+        self.image_size = image_size
 
     def forward(self, x):
         x = self.conv(x)
@@ -102,7 +102,7 @@ class ConvEncoder(nn.Module):
         print(f"[Encoder] Latent output: {self.latent_channels}x{self.latent_base}x{self.latent_base}")
 
 
-# --- Decoder ---
+# --- Decoder (supports optional segmentation head) ---
 class ConvDecoder(nn.Module):
     def __init__(self,
                  out_channels: int,
@@ -114,17 +114,18 @@ class ConvDecoder(nn.Module):
                  global_norm: Optional[str] = None,
                  global_act: Optional[str] = None,
                  use_sigmoid: bool = False,
-                 global_dropout: float = 0.0):
+                 global_dropout: float = 0.0,
+                 num_classes: Optional[int] = None):
         super().__init__()
 
         self.latent_channels = latent_channels
         self.latent_base = latent_base
-
+        self.num_classes = num_classes
         self.use_sigmoid = use_sigmoid
+
         start_size = image_size
         for cfg in encoder_layers_cfg:
             start_size //= cfg.get("stride", 1)
-
         start_channels = encoder_layers_cfg[-1]["out_channels"]
 
         self.from_latent = nn.Sequential(
@@ -152,21 +153,30 @@ class ConvDecoder(nn.Module):
             prev_ch = out_ch
 
         self.deconv = nn.Sequential(*layers)
-        self.final = nn.Conv2d(prev_ch, out_channels, kernel_size=3, padding=1)
+        self.final_rgb = nn.Conv2d(prev_ch, out_channels, kernel_size=3, padding=1)
+
+        # optional segmentation head
+        self.seg_head = None
+        if num_classes is not None and num_classes > 0:
+            self.seg_head = nn.Conv2d(prev_ch, num_classes, kernel_size=1)
+
         self.output_size = current_size
         self.output_channels = out_channels
 
     def forward(self, z):
         x = self.from_latent(z)
         x = self.deconv(x)
-        x = self.final(x)
-        return torch.sigmoid(x) if self.use_sigmoid else x
+        rgb_out = torch.sigmoid(self.final_rgb(x)) if self.use_sigmoid else self.final_rgb(x)
+        seg_logits = self.seg_head(x) if self.seg_head is not None else None
+        return rgb_out, seg_logits
 
     def print_summary(self):
-        print(f"[Decoder] Final output: {self.output_channels}x{self.output_size}x{self.output_size}")
+        print(f"[Decoder] Final RGB output: {self.output_channels}x{self.output_size}x{self.output_size}")
+        if self.seg_head is not None:
+            print(f"[Decoder] Segmentation head: {self.seg_head.out_channels} classes")
 
 
-# --- AutoEncoder wrapper (now a VAE) ---
+# --- AutoEncoder wrapper (VAE + optional segmentation) ---
 class AutoEncoder(nn.Module):
     def __init__(self, encoder: nn.Module, decoder: nn.Module):
         super().__init__()
@@ -174,69 +184,52 @@ class AutoEncoder(nn.Module):
         self.decoder = decoder
 
     def reparameterize(self, mu, logvar):
-        """
-        Implements the reparameterization trick for VAEs.
-        """
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
 
     def forward(self, x):
-        """
-        Forward pass for training. Returns reconstruction and latent params.
-        """
         mu, logvar = self.encoder(x)
         z = self.reparameterize(mu, logvar)
-        x_recon = self.decoder(z)
-        return x_recon, mu, logvar
-    
+        rgb_out, seg_logits = self.decoder(z)
+        return {
+            "recon": rgb_out,
+            "seg_logits": seg_logits,
+            "mu": mu,
+            "logvar": logvar,
+        }
+
+
     @torch.no_grad()
     def decode(self, x):
-        """
-        Encode input x and return its reconstruction.
-        Keeps logic self-contained for downstream modules.
-        """
         mu, logvar = self.encoder(x)
         z = self.reparameterize(mu, logvar)
-        return self.decoder(z)
-
+        rgb_out, seg_logits = self.decoder(z)
+        return rgb_out, seg_logits
 
     @torch.no_grad()
     def sample(self, z):
-        """
-        Generate image from a given latent vector z (for inference).
-        """
         self.eval()
-        return self.decoder(z)
-    
+        rgb_out, seg_logits = self.decoder(z)
+        return rgb_out, seg_logits
+
     @torch.no_grad()
     def encode(self, x):
-        """
-        Encode an image to its latent mean and logvar (for inference).
-        """
         self.eval()
         mu, logvar = self.encoder(x)
         return mu, logvar
-    
+
     @torch.no_grad()
     def encode_latent(self, x, deterministic: bool = True):
-        """
-        Encode x into a latent tensor.
-        If deterministic=True, use mu (mean) only.
-        If False, sample using reparameterization.
-        """
         self.eval()
         mu, logvar = self.encoder(x)
         return mu if deterministic else self.reparameterize(mu, logvar)
 
-
-    
     def to_config(self):
         """Return YAML-compatible config that fully reproduces architecture."""
         enc = self.encoder
         dec = self.decoder
 
-        # --- infer global settings ---
         def infer_norm_act(seq):
             norm = None
             act = None
@@ -258,7 +251,6 @@ class AutoEncoder(nn.Module):
         enc_norm, enc_act = infer_norm_act(enc.conv)
         dec_norm, dec_act = infer_norm_act(dec.deconv)
 
-        # --- encode layer list ---
         layers_cfg = []
         for layer in enc.conv:
             if isinstance(layer, nn.Sequential) and isinstance(layer[0], nn.Conv2d):
@@ -290,20 +282,18 @@ class AutoEncoder(nn.Module):
                 "global_act": dec_act,
                 "global_dropout": 0.0,
                 "use_sigmoid": getattr(dec, "use_sigmoid", False),
+                "num_classes": getattr(dec, "num_classes", None),
             },
         }
         return cfg
 
-
     @classmethod
     def from_config(cls, cfg: dict | str):
-        import yaml
         if isinstance(cfg, str):
             with open(cfg, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
-            
+
         if "encoder" not in cfg and "decoder" not in cfg:
-            # flat config from train_ae.py
             return cls.from_shape(**cfg)
 
         enc_cfg = cfg["encoder"]
@@ -312,7 +302,7 @@ class AutoEncoder(nn.Module):
         encoder = ConvEncoder(
             in_channels=enc_cfg["in_channels"],
             layers_cfg=enc_cfg["layers"],
-            latent_dim=enc_cfg["latent_dim"],
+            latent_dim=enc_cfg.get("latent_dim", 0),
             image_size=enc_cfg["image_size"],
             latent_channels=enc_cfg["latent_channels"],
             latent_base=enc_cfg["latent_base"],
@@ -323,7 +313,7 @@ class AutoEncoder(nn.Module):
 
         decoder = ConvDecoder(
             out_channels=dec_cfg["out_channels"],
-            latent_dim=dec_cfg["latent_dim"],
+            latent_dim=dec_cfg.get("latent_dim", 0),
             encoder_layers_cfg=enc_cfg["layers"],
             image_size=dec_cfg["image_size"],
             latent_channels=dec_cfg["latent_channels"],
@@ -332,8 +322,8 @@ class AutoEncoder(nn.Module):
             global_act=dec_cfg.get("global_act"),
             global_dropout=dec_cfg.get("global_dropout", 0.0),
             use_sigmoid=dec_cfg.get("use_sigmoid", False),
+            num_classes=dec_cfg.get("num_classes", None),
         )
-
 
         return cls(encoder, decoder)
 
@@ -350,7 +340,8 @@ class AutoEncoder(nn.Module):
                    dropout: float = 0.0,
                    kernel_size: int = 3,
                    stride: int = 2,
-                   padding: int = 1):
+                   padding: int = 1,
+                   num_classes: Optional[int] = None):
         ratio = image_size // latent_base
         depth = int(torch.log2(torch.tensor(ratio)).item())
         if 2 ** depth != ratio:
@@ -358,7 +349,6 @@ class AutoEncoder(nn.Module):
 
         layers_cfg = []
         ch = base_channels
-        
         for i in range(depth):
             layers_cfg.append({
                 "out_channels": ch,
@@ -393,7 +383,8 @@ class AutoEncoder(nn.Module):
             global_norm=norm,
             global_act=act,
             global_dropout=dropout,
-            use_sigmoid=False,  # or True for RGB
+            use_sigmoid=True,
+            num_classes=num_classes,
         )
 
         return cls(encoder, decoder)

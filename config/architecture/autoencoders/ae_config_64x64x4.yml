@@ -11,28 +11,36 @@ dataset:
 # --- Model ---
 model:
   # input/output
-  in_channels: 3          # 3 for RGB, 1 for grayscale, N for classes (one-hot)
-  out_channels: 3          # same as input if RGB reconstruction
+  in_channels: 3
+  out_channels: 3
   image_size: 512
-  latent_base: 64          # spatial size of latent feature map
+  latent_base: 64
   # capacity
-  base_channels: 64        # first conv layer channels
-  latent_channels: 4       # depth of latent tensor
+  base_channels: 64
+  latent_channels: 4
+  num_classes: 25 # <-- ADD THIS (Replace 25 with your actual number of classes)
   # normalization and activations
   norm: batch
   act: relu
   dropout: 0.0
   # decoder behavior
-  use_sigmoid: false        # true for RGB+MSE, false for logits+CrossEntropy
+  use_sigmoid: true # <-- CHANGE THIS. SegmentationVAELoss uses MSE on RGB head
 
 # --- Training ---
 training:
   epochs: 50
   lr: !!float 1e-4
-  kl_weight: !!float 1e-6
   log_interval: 10
   sample_interval: 200
   eval_interval: 1
   output_dir: /work3/s233249/ImgiNav/experiments/VAE/cross_enth_loss/VAE_512_64x64x4/output
   ckpt_dir: /work3/s233249/ImgiNav/experiments/VAE/cross_enth_loss/VAE_512_64x64x4/checkpoints
-  recon_loss: CrossEntropy   
+  
+  # --- CORRECT LOSS CONFIG ---
+  loss:
+    type: segmentation
+    kl_weight: !!float 1e-6
+    lambda_seg: 1.0  # Weight for segmentation head loss
+    lambda_mse: 1.0  # Weight for RGB reconstruction head loss
+    taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json # Must be provided here
+    include_background: true

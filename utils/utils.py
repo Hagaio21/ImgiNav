@@ -22,6 +22,29 @@ def articleize(label: str) -> str:
     return f"{article} {clean}"
 
 
+def load_valid_colors(taxonomy_path, include_background=True):
+    """
+    Return filtered id→color mapping for super-categories + structure surfaces.
+    Optionally add white background as class 9000.
+    """
+    with open(taxonomy_path, "r", encoding="utf-8") as f:
+        taxonomy = json.load(f)
+
+    valid_ids = [
+        1001, 1002, 1003, 1004, 1005,
+        1006, 1007, 1008, 1009,  # super categories
+        2051, 2052, 2053         # ceiling, floor, wall
+    ]
+
+    if include_background:
+        taxonomy["id2color"]["9000"] = [255, 255, 255]
+        valid_ids.append(9000)
+
+    filtered = {str(i): taxonomy["id2color"][str(i)] for i in valid_ids if str(i) in taxonomy["id2color"]}
+    return filtered, valid_ids
+
+
+
 def graph2text(graph_path: str, taxonomy: dict, max_edges: int = 10_000):
     """
     Converts either a 3D-FRONT room graph or scene graph JSON to text.

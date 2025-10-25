@@ -82,10 +82,10 @@ class AutoEncoderTrainer:
 
                 for batch_idx, batch in enumerate(pbar):
                     x = self._get_batch(batch)
-                    recon, mu, logvar = self.autoencoder(x)
+                    outputs = self.autoencoder(x)
+                    loss_output = self.loss_fn(x, outputs)
 
                     # Call loss function - it returns (total_loss, *components, metrics_dict)
-                    loss_output = self.loss_fn(x, recon, mu, logvar)
                     total_loss = loss_output[0]
                     metrics = loss_output[-1]  # Last element is always metrics dict
 
@@ -112,7 +112,7 @@ class AutoEncoderTrainer:
 
                     # Save samples
                     if self.sample_interval and step % self.sample_interval == 0:
-                        self._save_sample(x, recon, step)
+                        self._save_sample(x, outputs["recon"], step)
 
                     # Update progress bar
                     pbar.set_postfix({"loss": f"{total_loss.item():.4f}"})
@@ -154,10 +154,10 @@ class AutoEncoderTrainer:
 
         for batch in val_loader:
             x = self._get_batch(batch)
-            recon, mu, logvar = self.autoencoder(x)
+            outputs = self.autoencoder(x) # <-- CHANGE
             
             # Call loss function
-            loss_output = self.loss_fn(x, recon, mu, logvar)
+            loss_output = self.loss_fn(x, outputs) # <-- CHANGE
             metrics = loss_output[-1]
             
             # Accumulate

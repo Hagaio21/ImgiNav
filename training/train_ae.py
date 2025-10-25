@@ -15,7 +15,7 @@ from modules.datasets import LayoutDataset, collate_skip_none
 from modules.autoencoder import AutoEncoder
 from training.autoencoder_trainer import AutoEncoderTrainer
 from modules.custom_loss import StandardVAELoss, SegmentationVAELoss
-
+from utils.utils import load_valid_colors
 
 def build_datasets(manifest_path, split_ratio, seed, transform, dataset_cfg):
     dataset = LayoutDataset(
@@ -50,58 +50,50 @@ def save_split_csvs(train_ds, val_ds, output_dir):
 def build_loss_function(loss_cfg):
     """
     Factory function to build loss function from config.
-    
+
     Expected loss_cfg format:
     {
         "type": "standard" | "segmentation",
         "kl_weight": float,
-        # For segmentation loss:
+        # For segmentation:
         "lambda_seg": float,
         "lambda_mse": float,
-        "color_to_class": dict or path to yaml
+        "taxonomy_path": str,     # path to taxonomy.json
+        "include_background": bool
     }
     """
     loss_type = loss_cfg.get("type", "standard").lower()
     kl_weight = loss_cfg.get("kl_weight", 1e-6)
-    
+
     if loss_type == "standard":
         print(f"[Loss] Using StandardVAELoss (kl_weight={kl_weight})")
         return StandardVAELoss(kl_weight=kl_weight)
-    
+
     elif loss_type == "segmentation":
         lambda_seg = loss_cfg.get("lambda_seg", 1.0)
         lambda_mse = loss_cfg.get("lambda_mse", 1.0)
-        
-        # Load color_to_class mapping
-        color_to_class_input = loss_cfg.get("color_to_class")
-        if isinstance(color_to_class_input, str):
-            # Load from YAML file
-            with open(color_to_class_input, "r", encoding="utf-8") as f:
-                color_mapping = yaml.safe_load(f)
-            # Convert string keys to tuples if needed
-            color_to_class = {}
-            for key, val in color_mapping.items():
-                if isinstance(key, str):
-                    # Parse string like "(255, 0, 0)" to tuple
-                    key = tuple(map(int, key.strip("()").split(",")))
-                color_to_class[tuple(key)] = val
-        else:
-            color_to_class = color_to_class_input
-        
+        taxonomy_path = loss_cfg.get("taxonomy_path")
+        include_bg = loss_cfg.get("include_background", True)
+
+        if not taxonomy_path:
+            raise ValueError("[Loss] 'taxonomy_path' must be provided for segmentation loss")
+
+        # Load filtered id→color mapping
+        id_to_color, valid_ids = load_valid_colors(taxonomy_path, include_background=include_bg)
+
         print(f"[Loss] Using SegmentationVAELoss (kl_weight={kl_weight}, "
               f"lambda_seg={lambda_seg}, lambda_mse={lambda_mse})")
-        print(f"[Loss] Loaded {len(color_to_class)} class colors")
-        
+        print(f"[Loss] Loaded {len(valid_ids)} valid class IDs: {valid_ids}")
+
         return SegmentationVAELoss(
-            color_to_class=color_to_class,
+            id_to_color=id_to_color,
             kl_weight=kl_weight,
             lambda_seg=lambda_seg,
             lambda_mse=lambda_mse,
         )
-    
+
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. Choose 'standard' or 'segmentation'.")
-
 
 def main():
     parser = argparse.ArgumentParser(description="Run AutoEncoder experiment")
@@ -170,12 +162,15 @@ def main():
         norm=model_cfg.get("norm"),
         act=model_cfg.get("act", "relu"),
         dropout=model_cfg.get("dropout", 0.0),
+        num_classes=model_cfg.get("num_classes", None),
     )
 
     ae.encoder.print_summary()
     ae.decoder.print_summary()
 
     # --- Build loss function from config ---
+    
+
     loss_cfg = training_cfg.get("loss", {"type": "standard", "kl_weight": 1e-6})
     loss_fn = build_loss_function(loss_cfg)
 
