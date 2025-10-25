@@ -2,9 +2,9 @@ import json
 from pathlib import Path
 
 def load_taxonomy(taxonomy_path: str):
-    """Load taxonomy mapping from taxonomy.json."""
-    t = json.loads(Path(taxonomy_path).read_text(encoding="utf-8"))
-    return {int(k): v for k, v in t.get("id2room", {}).items()}
+    """Load the full taxonomy JSON (includes id2color, id2room, etc.)."""
+    with open(taxonomy_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def articleize(label: str) -> str:

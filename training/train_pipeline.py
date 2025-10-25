@@ -13,7 +13,7 @@ from modules.condition_mixer import LinearConcatMixer, NonLinearConcatMixer
 from pipeline.pipeline import DiffusionPipeline
 from training.pipeline_trainer import PipelineTrainer
 from modules.scheduler import LinearScheduler, CosineScheduler
-from utils.utlis import load_taxonomy
+from utils.utils import load_taxonomy
 import torch.nn as nn
 from pathlib import Path
 from datetime import datetime

@@ -1,6 +1,5 @@
-from __future__ import annotations
-import sys
-import os
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import yaml
 import random
 import argparse
@@ -11,7 +10,6 @@ from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as T
 
 # Add project root to path
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from modules.datasets import LayoutDataset, collate_skip_none
 from modules.autoencoder import AutoEncoder
 from training.autoencoder_trainer import AutoEncoderTrainer
@@ -62,11 +60,16 @@ def main():
     # --- Experiment setup ---
     out_dir = training_cfg.get("output_dir", "ae_outputs")
     ckpt_dir = training_cfg.get("ckpt_dir", os.path.join(out_dir, "checkpoints"))
+
+    # ensure both directories exist
+    os.makedirs(out_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
 
+    # Save the experiment config
     model_cfg_path = os.path.join(out_dir, "experiment_config.yaml")
     with open(model_cfg_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
+
     print(f"[Config] Saved experiment config to {model_cfg_path}")
 
     # --- Dataset config ---
@@ -115,9 +118,8 @@ def main():
 
     ae.encoder.print_summary()
     ae.decoder.print_summary()
-
     # --- Choose loss function ---
-    loss_type = training_cfg.get("loss", "mse").lower()
+    loss_type = training_cfg.get("recon_loss", "mse").lower()
     if loss_type == "crossentropy":
         recon_loss_fn = nn.CrossEntropyLoss()
     elif loss_type == "mse":

@@ -113,13 +113,14 @@ class ConvDecoder(nn.Module):
                  latent_base: int,
                  global_norm: Optional[str] = None,
                  global_act: Optional[str] = None,
-                 use_sigmoi: bool = False,
+                 use_sigmoid: bool = False,
                  global_dropout: float = 0.0):
         super().__init__()
 
         self.latent_channels = latent_channels
         self.latent_base = latent_base
 
+        self.use_sigmoid = use_sigmoid
         start_size = image_size
         for cfg in encoder_layers_cfg:
             start_size //= cfg.get("stride", 1)
@@ -270,28 +271,28 @@ class AutoEncoder(nn.Module):
                 })
 
         cfg = {
-                "encoder": {
-                    "in_channels": enc.conv[0][0].in_channels if hasattr(enc.conv[0][0], "in_channels") else None,
-                    "layers": layers_cfg,
-                    "image_size": enc.image_size,
-                    "latent_channels": enc.latent_channels,
-                    "latent_base": enc.latent_base,
-                    "global_norm": enc_norm,
-                    "global_act": enc_act,
-                    "global_dropout": 0.0,
-                },
-                "decoder": {
-                    "out_channels": dec.output_channels,
-                    "image_size": dec.output_size,
-                    "latent_channels": dec.latent_channels,
-                    "latent_base": dec.latent_base,
-                    "global_norm": dec_norm,
-                    "global_act": dec_act,
-                    "global_dropout": 0.0,
-                    "use_sigmoid": getattr(dec, "use_sigmoid", False),
-                },
-            }
-            return cfg
+            "encoder": {
+                "in_channels": enc.conv[0][0].in_channels if hasattr(enc.conv[0][0], "in_channels") else None,
+                "layers": layers_cfg,
+                "image_size": enc.image_size,
+                "latent_channels": enc.latent_channels,
+                "latent_base": enc.latent_base,
+                "global_norm": enc_norm,
+                "global_act": enc_act,
+                "global_dropout": 0.0,
+            },
+            "decoder": {
+                "out_channels": dec.output_channels,
+                "image_size": dec.output_size,
+                "latent_channels": dec.latent_channels,
+                "latent_base": dec.latent_base,
+                "global_norm": dec_norm,
+                "global_act": dec_act,
+                "global_dropout": 0.0,
+                "use_sigmoid": getattr(dec, "use_sigmoid", False),
+            },
+        }
+        return cfg
 
 
     @classmethod

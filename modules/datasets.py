@@ -1,4 +1,5 @@
-import os
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
@@ -75,20 +76,33 @@ class LayoutDataset(Dataset):
     # --------------------------------------------------------
 
     def _build_supercategory_mapping(self):
-        """Map RGB colors to supercategory indices."""
-        id2color = self.taxonomy["id2color"]
-        id2super = self.taxonomy.get("id2supercat", self.taxonomy.get("id2cat"))
+        """
+        Build mapping from RGB colors (from id2color) to supercategory indices (from id2super).
+        Works when taxonomy defines 'id2color' and 'id2super', but not 'color2id'.
+        """
+        id2color = self.taxonomy.get("id2color")
+        id2super = self.taxonomy.get("id2super") or self.taxonomy.get("supercategories")
 
-        # compact set of supercategories
-        supercats = sorted(set(id2super.values()))
-        self.supercat_to_idx = {name: i for i, name in enumerate(supercats)}
+        if id2color is None:
+            raise KeyError("Taxonomy missing 'id2color'. Cannot map colors to classes.")
+        if id2super is None:
+            raise KeyError("Taxonomy missing 'id2super' or 'supercategories'.")
 
-        # build color → class index map
-        self.COLOR_TO_CLASS = {
-            tuple(id2color[str(i)]): self.supercat_to_idx[id2super[str(i)]]
-            for i in id2color.keys()
-        }
-        self.NUM_CLASSES = len(self.supercat_to_idx)
+        # Collect unique supercategory names
+        unique_supers = sorted(set(id2super.values()))
+        super_to_idx = {name: i for i, name in enumerate(unique_supers)}
+
+        # Build final mapping: color → supercategory_index
+        color_to_super = {}
+        for cid_str, color in id2color.items():
+            cid = int(cid_str)
+            super_name = id2super.get(str(cid))
+            if super_name is None:
+                continue
+            color_to_super[tuple(color)] = super_to_idx[super_name]
+
+        self.COLOR_TO_CLASS = color_to_super
+        self.NUM_CLASSES = len(super_to_idx)
 
     # --------------------------------------------------------
     # Dataset methods
@@ -206,8 +220,6 @@ class GraphDataset(Dataset):
 
         return sample
 
-
-
 def make_dataloaders(layout_manifest, pov_manifest, graph_manifest, batch_size=32, transform=None):
     layout_ds = LayoutDataset(layout_manifest, transform=transform, mode="all")
     pov_ds = PovDataset(pov_manifest, transform=transform, pov_type="seg")
@@ -219,7 +231,6 @@ def make_dataloaders(layout_manifest, pov_manifest, graph_manifest, batch_size=3
 
     return layout_loader, pov_loader, graph_loader
 
-
 from torch.utils.data._utils.collate import default_collate
 
 def collate_skip_none(batch):
@@ -227,8 +238,6 @@ def collate_skip_none(batch):
     if not batch:
         return None
     return default_collate(batch)
-
-
 
 def main():
     import os
@@ -288,10 +297,6 @@ def main():
     print("Layout batch keys:", batch.keys())
     if "layout" in batch:
         print("Layout batch tensor shape:", batch["layout"].shape)
-
-
-
-
 
 if __name__ == "__main__":
     main()

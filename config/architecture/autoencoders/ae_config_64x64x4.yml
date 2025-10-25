@@ -2,7 +2,7 @@
 dataset:
   taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
   manifest: /work3/s233249/ImgiNav/datasets/layouts.csv
-  batch_size: 32
+  batch_size: 64
   split_ratio: 0.9
   num_workers: 4
   shuffle: true
@@ -28,8 +28,8 @@ model:
 # --- Training ---
 training:
   epochs: 50
-  lr: 1e-4
-  kl_weight: 1e-6
+  lr: !!float 1e-4
+  kl_weight: !!float 1e-6
   log_interval: 10
   sample_interval: 200
   eval_interval: 1

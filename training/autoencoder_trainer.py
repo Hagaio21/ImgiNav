@@ -1,6 +1,5 @@
-# training/autoencoder_trainer.py
-import os
-import sys
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import json
 import torch
 import torch.nn.functional as F
