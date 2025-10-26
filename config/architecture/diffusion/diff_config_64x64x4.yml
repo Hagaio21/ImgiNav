@@ -1,0 +1,33 @@
+dataset:
+  manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
+  batch_size: 32
+  split_ratio: 0.9
+  num_workers: 4
+  shuffle: true
+  seed: 42
+
+model:
+  encoder:
+    autoencoder_config: "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4/autoencoder_config.yaml"
+    autoencoder_ckpt: "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4/checkpoints/ae_latest.pt"
+  unet:
+    config: /work3/s233249/ImgiNav/ImgiNav/config/architecture/unets/medium.yml
+    latent_channels: 4         # must match autoencoder latent_channels
+    base_channels: 64          # UNet width
+    depth: 4                   # UNet depth (ensure 2^depth <= latent_base)
+    time_dim: 256
+    norm: batch
+    act: relu
+  diffusion:
+    scheduler: cosine  
+    num_steps: 500
+
+training:
+  epochs: 100
+  log_interval: 1000
+  eval_interval: 1000
+  sample_interval: 1000
+  num_samples: 8
+  grad_clip: 1.0
+  output_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_64x64x4_d4_2"
+  ckpt_dir: "/work3/s233249/ImgiNav/experiments/diffusion/diff_64x64x4_d4_2/checkpoints"

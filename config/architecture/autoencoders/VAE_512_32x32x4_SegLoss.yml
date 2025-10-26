@@ -1,0 +1,43 @@
+# --- Dataset ---
+dataset:
+  taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
+  manifest: /work3/s233249/ImgiNav/datasets/layouts.csv
+  batch_size: 64
+  split_ratio: 0.9
+  num_workers: 4
+  shuffle: true
+  seed: 42
+
+
+# --- Model ---
+model:
+  in_channels: 3
+  out_channels: 3
+  image_size: 512
+  latent_base: 32      # <-- CHANGED (64 -> 32)
+  base_channels: 64
+  latent_channels: 4
+  num_classes: 13
+  norm: batch
+  act: relu
+  dropout: 0.0
+  use_sigmoid: true
+
+# --- Training ---
+training:
+  epochs: 50
+  lr: !!float 1e-4
+  log_interval: 10
+  sample_interval: 200
+  eval_interval: 1
+  # --- NEW DIRECTORY ---
+  output_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x4_SegLoss/output
+  ckpt_dir: /work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x4_SegLoss/checkpoints
+  
+  loss:
+    type: segmentation
+    kl_weight: !!float 1e-6
+    lambda_seg: 1.0
+    lambda_mse: 1.0
+    taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
+    include_background: true
