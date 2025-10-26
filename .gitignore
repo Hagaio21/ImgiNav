@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+# Virtual Environments
+venv/
+env/
+.venv/
+
+# IDE & Editor folders
+.vscode/
+.idea/
+
+# OS-specific files
+
+# Project-specific ignores
+
+# Ignore large data and output files from version control
+dataset/
+dataset_v2/
+data_preprocessing/
+outputs/
+indexes/
+logs/
+/work3/s233249/ImgiNav/ImgiNav/notebooks/ae_test_outputs/checkpoints
+*/checkpoints/
+src/layout_generator.egg-info
+# Environment variables file
+.env
+.log
+
+
+# dataset files
+*.csv
+training/runs
+visualization/saved_embeddings/
+visualization/saved_embeddings/
