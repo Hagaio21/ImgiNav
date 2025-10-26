@@ -3,11 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-<<<<<<< HEAD
 
 =======
 *.pkl
->>>>>>> 5c084810d20620730b8efeb671ec743691a5b899
 # Virtual Environments
 venv/
 env/

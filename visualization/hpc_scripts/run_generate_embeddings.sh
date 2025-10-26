@@ -29,7 +29,7 @@ NUM_POINTS="27897"
 # 4. SegLoss 32x32x4 HighSeg
 # 5. SegLoss 32x32x2
 CONFIGS=(
-    "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4_MSE/experiment_config.yaml" # Model 0
+    "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4_MSE/output/experiment_config.yaml" # Model 0
     "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4_SegLoss/output/experiment_config.yaml"  # Model 1
     "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x4_SegLoss/output/experiment_config.yaml"  # Model 2
     "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x4_SegLoss_HighSeg/output/experiment_config.yaml" # Model 3
