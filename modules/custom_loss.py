@@ -168,3 +168,44 @@ class SegmentationVAELoss(VAELoss):
         }
 
         return total_loss, mse_loss, kl_loss, seg_loss, metrics
+
+
+class DiffusionLoss:
+    """Standard diffusion loss (unconditional)."""
+
+    def __call__(self, pred_noise, true_noise):
+        """
+        pred_noise: predicted noise (B,C,H,W)
+        true_noise: ground-truth noise (B,C,H,W)
+        """
+        mse_loss = F.mse_loss(pred_noise, true_noise)
+        metrics = {"mse": mse_loss.item()}
+        return mse_loss, metrics
+
+
+class CorrLoss:
+    """Correlation alignment loss between two tensors."""
+
+    def __init__(self, eps=1e-8):
+        self.eps = eps
+
+    def __call__(self, x, y):
+        """
+        Compute 1 - Pearson correlation over batch.
+        x, y: tensors of shape (B, ...) with same batch dimension.
+        """
+        B = x.shape[0]
+        x_f = x.view(B, -1)
+        y_f = y.view(B, -1)
+
+        # zero-mean normalize
+        x_f = x_f - x_f.mean(dim=1, keepdim=True)
+        y_f = y_f - y_f.mean(dim=1, keepdim=True)
+
+        num = (x_f * y_f).sum(dim=1)
+        denom = torch.sqrt((x_f.pow(2).sum(dim=1) + self.eps) *
+                           (y_f.pow(2).sum(dim=1) + self.eps))
+        corr = num / denom
+
+        # minimize (1 - correlation)
+        return 1 - corr.mean()

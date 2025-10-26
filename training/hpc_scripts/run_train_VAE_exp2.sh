@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_ae.py"
-CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/architecture/autoencoders/ae_config_64x64x4.yml"
+CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/config/architecture/autoencoders/VAE_512_32x32x4_SegLoss_HighSeg.yml"
 
 # =============================================================================
 # MODULES
