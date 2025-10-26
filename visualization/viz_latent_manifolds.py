@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # visualize_latents.py
 import os
 import sys
@@ -13,11 +14,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import umap.umap_ as umap # Assuming CPU UMAP
 # If you installed cuml: import cuml.manifold as umap
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 import torchvision.transforms as T
 from tqdm import tqdm
 
-# (Keep load_model_from_experiment, get_embedding, and plot_comparison_n functions exactly as they were in the previous version)
+# (Make sure 'modules.autoencoder' and 'modules.datasets' are importable
+#  by adding the project root to sys.path, as done in main())
+
 
 def load_model_from_experiment(config_path, checkpoint_path, device="cuda"):
     """Loads a VAE model from its experiment config and checkpoint file."""
@@ -34,6 +37,7 @@ def load_model_from_experiment(config_path, checkpoint_path, device="cuda"):
     dataset_cfg = config['dataset']
     
     # Re-create model architecture from config
+    # Ensure AutoEncoder is globally available after sys.path append
     model = AutoEncoder.from_shape(
         in_channels=model_cfg["in_channels"],
         out_channels=model_cfg["out_channels"],
@@ -80,12 +84,13 @@ def load_model_from_experiment(config_path, checkpoint_path, device="cuda"):
     
     return model, dataset_cfg, model_name
 
-def get_embedding(model, dataset_cfg, manifest_path, label_col, category_col, filter_empty, device="cuda"):
-    """Encodes all layouts from a manifest and computes their UMAP embedding."""
-    
-    # --- 1. Load Dataset ---
+# --- NEW FUNCTION: Loads and samples the dataset ONCE ---
+def load_dataset_and_sample(manifest_path, dataset_cfg, num_points=None):
+    """Loads the full dataset and (optionally) samples it."""
+    print("\n--- Loading and Sampling Dataset ---")
     transform = T.ToTensor()
-    from modules.datasets import LayoutDataset, collate_skip_none #
+    # Ensure LayoutDataset is globally available
+    from modules.datasets import LayoutDataset
     
     dataset = LayoutDataset(
         manifest_path=manifest_path,
@@ -103,10 +108,28 @@ def get_embedding(model, dataset_cfg, manifest_path, label_col, category_col, fi
     else:
         with open(taxonomy_path, 'r') as f:
             id2room_map = json.load(f).get("id2room", {})
+
+    # --- Sub-sample dataset if num_points is provided ---
+    if num_points is not None and num_points > 0 and num_points < len(dataset):
+        print(f"Sampling {num_points} random points from the total {len(dataset)} layouts.")
+        # Set a random seed to make the sampling reproducible across runs
+        np.random.seed(42) 
+        indices = np.random.choice(len(dataset), num_points, replace=False)
+        dataset = Subset(dataset, indices)
+    
+    print(f"Using {len(dataset)} layouts for all models.")
+    return dataset, id2room_map
+
+# --- MODIFIED: Takes a pre-loaded dataset ---
+def get_embedding(model, dataset, id2room_map, dataset_cfg, label_col, category_col, filter_empty, device="cuda"):
+    """Encodes all layouts from a *pre-loaded* dataset and computes their UMAP embedding."""
+    
+    # Ensure collate_fn is available
+    from modules.datasets import collate_skip_none
     
     loader = DataLoader(
         dataset, 
-        batch_size=dataset_cfg.get("batch_size", 64), # Increased batch size
+        batch_size=dataset_cfg.get("batch_size", 64), # Use model-specific batch size
         shuffle=False, 
         num_workers=dataset_cfg.get("num_workers", 4),
         collate_fn=collate_skip_none
@@ -116,8 +139,7 @@ def get_embedding(model, dataset_cfg, manifest_path, label_col, category_col, fi
     all_labels = []
     all_categories = []
     
-    print(f"Loaded {len(dataset)} total layouts. filter_empty={filter_empty}")
-    print(f"Encoding non-empty layouts...")
+    print(f"Encoding {len(dataset)} layouts (filter_empty={filter_empty})...")
     
     # --- 2. Encode All Layouts ---
     for batch in tqdm(loader, desc="Encoding batches"):
@@ -165,7 +187,7 @@ def get_embedding(model, dataset_cfg, manifest_path, label_col, category_col, fi
         translated_labels = [str(id2room_map.get(str(l), l)) for l in labels] # Ensure string keys
         
         with torch.no_grad():
-            z = model.encode_latent(x, deterministic=True) #
+            z = model.encode_latent(x, deterministic=True)
         
         z_flat = z.view(z.size(0), -1)
         
@@ -199,8 +221,12 @@ def get_embedding(model, dataset_cfg, manifest_path, label_col, category_col, fi
     
     return df
 
-def plot_comparison_n(list_of_dfs, list_of_names, plot_by, filename, category_col, filter_category=None, palette=None):
-    """Generates a side-by-side comparison plot for N models and saves it."""
+def plot_comparison_n(list_of_dfs, list_of_names, plot_by, filename, category_col, 
+                      filter_category=None, palette=None, grid_layout=None):
+    """
+    Generates a comparison plot for N models and saves it.
+    Can specify a grid_layout (e.g., (2, 2)) for the subplots.
+    """
     
     n_models = len(list_of_dfs)
     if n_models == 0:
@@ -208,10 +234,74 @@ def plot_comparison_n(list_of_dfs, list_of_names, plot_by, filename, category_co
         return
         
     print(f"Generating plot for {n_models} models: {filename}")
+
+    # --- DYNAMIC PALETTE GENERATION ---
+    final_palette = palette
+    n_hues = 0
+
+    if final_palette is None:
+        # If no palette is provided, create one.
+        # We must find all unique values for 'plot_by' across *all* dataframes
+        # in this function call to ensure the palette is consistent.
+        
+        try:
+            # Combine all DFs that will be plotted
+            all_dfs_combined = pd.concat(list_of_dfs)
+            
+            # Apply the *same filter* that will be used in the loop
+            if filter_category:
+                if category_col in all_dfs_combined.columns:
+                     all_dfs_combined = all_dfs_combined[all_dfs_combined[category_col] == filter_category]
+                # (Warning will be printed in loop if col is missing)
+            
+            if plot_by in all_dfs_combined.columns:
+                unique_hues = all_dfs_combined[plot_by].unique()
+                unique_hues.sort() # Ensure consistent order!
+                n_hues = len(unique_hues)
+                
+                # Check if we need more colors than the default 'tab20'
+                if n_hues > 20:
+                    print(f"  > Info: Found {n_hues} unique categories for '{plot_by}'. Generating 'hls' palette.")
+                    # Generate a list of n_hues distinct colors
+                    final_palette_list = sns.color_palette("hls", n_hues)
+                    # Create a dictionary to map each unique value to a color
+                    # This ensures consistency across all subplots
+                    final_palette = {hue: color for hue, color in zip(unique_hues, final_palette_list)}
+                else:
+                    # --- THIS IS THE FIX ---
+                    # Always create a dictionary, even for <= 20 hues, to ensure
+                    # the *same* dictionary is passed to *both* subplots.
+                    print(f"  > Info: Found {n_hues} unique categories for '{plot_by}'. Generating 'tab20' palette dict.")
+                    final_palette_list = sns.color_palette("tab20", n_hues)
+                    final_palette = {hue: color for hue, color in zip(unique_hues, final_palette_list)}
+                    # --- END OF FIX ---
+            else:
+                # Column is missing, plotting will fail later, but set a default
+                final_palette = 'tab20'
+        except Exception as e:
+            print(f"Warning: Could not auto-generate palette. Defaulting to 'tab20'. Error: {e}")
+            final_palette = 'tab20'
+            
+    # --- END OF DYNAMIC PALETTE ---
+
+
+    # --- NEW: DYNAMIC GRID LAYOUT ---
+    if grid_layout:
+        rows, cols = grid_layout
+        # Check if layout is valid for the number of models
+        if rows * cols < n_models:
+            print(f"Warning: Grid layout {grid_layout} is too small for {n_models} models. Defaulting to 1x{n_models}.")
+            rows, cols = 1, n_models
+        figsize = (8 * cols, 8 * rows) # Adjust figsize based on grid
+    else:
+        # Default to 1xN layout
+        rows, cols = 1, n_models
+        figsize = (8 * n_models, 8) # Original logic
     
-    # Dynamically create N subplots in one row
-    fig, axes = plt.subplots(1, n_models, figsize=(8 * n_models, 8), squeeze=False) 
+    # Dynamically create subplots
+    fig, axes = plt.subplots(rows, cols, figsize=figsize, squeeze=False) 
     axes = axes.flatten() # Ensure axes is always a 1D array
+    # --- END OF DYNAMIC GRID ---
 
     for i, (df, model_name) in enumerate(zip(list_of_dfs, list_of_names)):
         ax = axes[i]
@@ -232,9 +322,9 @@ def plot_comparison_n(list_of_dfs, list_of_names, plot_by, filename, category_co
         
         sns.scatterplot(
             data=plot_df, x='x', y='y', hue=plot_by,
-            s=3, alpha=0.5, # Adjusted point size and alpha for density
+            s=4, alpha=0.7, # Adjusted point size and alpha for density
             legend= 'auto' if i == 0 else False, # Show legend only on the first plot
-            palette=palette or 'tab20', 
+            palette=final_palette, # Use the new dynamic palette
             ax=ax
         )
         ax.set_title(f"{model_name}\n(Plotted by {plot_by})", fontsize=14) # Slightly smaller font
@@ -243,11 +333,16 @@ def plot_comparison_n(list_of_dfs, list_of_names, plot_by, filename, category_co
         if i == 0:
             legend_title = 'Type' if plot_by == category_col else 'Room Type'
             try:
-                # Place legend outside for potentially many room types/categories
+                # --- MODIFIED: Always show legend ---
                 ax.legend(title=legend_title, markerscale=2, bbox_to_anchor=(1.05, 1), loc='upper left')
-            except ValueError:
-                 print(f"Warning: Could not create legend for {model_name}. Possibly no data points to plot.")
+                
+            except Exception as e:
+                 print(f"Warning: Could not create/modify legend for {model_name}. Error: {e}")
 
+    # --- Clean up extra subplots if grid is larger than n_models ---
+    if grid_layout:
+        for j in range(n_models, rows * cols):
+            fig.delaxes(axes[j]) # Remove unused axes
 
     # Add a main title above all subplots
     plot_title = f"Latent Space Comparison ({plot_by})"
@@ -256,7 +351,9 @@ def plot_comparison_n(list_of_dfs, list_of_names, plot_by, filename, category_co
     plt.suptitle(plot_title, fontsize=20, y=1.03)
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.98]) # Adjust layout for suptitle
-    plt.savefig(filename, bbox_inches='tight')
+    
+    # Save the figure. Format is inferred from the filename extension (.svg)
+    plt.savefig(filename, bbox_inches='tight') 
     print(f"Saved plot to {filename}")
     plt.close(fig) # Close the figure to free up memory
 
@@ -272,6 +369,9 @@ def main():
     parser.add_argument('--label_col', type=str, required=True, help="Column name for room type (e.g., 'room_id')")
     parser.add_argument('--category_col', type=str, required=True, help="Column name for category (e.g., 'type')")
     parser.add_argument('--no_filter_empty', action='store_true', help="Set this flag to *disable* filtering of empty layouts")
+    
+    # --- NEW: Sampling ---
+    parser.add_argument('--num_points', type=int, default=None, help="Number of random points to sample for embedding (default: all)")
     
     # --- Models (Accepts multiple) ---
     parser.add_argument('--configs', type=str, nargs='+', required=True, help="List of paths to experiment_config.yaml files")
@@ -293,7 +393,9 @@ def main():
     sys.path.append(args.project_root)
     try:
         global AutoEncoder
-        from modules.autoencoder import AutoEncoder #
+        from modules.autoencoder import AutoEncoder
+        global LayoutDataset, collate_skip_none
+        from modules.datasets import LayoutDataset, collate_skip_none
     except ImportError:
         print(f"Error: Could not import modules from {args.project_root}")
         print("Please ensure --project_root points to the correct directory (e.g., /work3/s233249/ImgiNav/ImgiNav)")
@@ -327,13 +429,35 @@ def main():
         if first_dataset_cfg is None:
             first_dataset_cfg = dset_cfg # Store the first one
 
-    # Generate embeddings sequentially
+    # --- NEW: Load and sample dataset ONCE ---
+    if first_dataset_cfg is None:
+        print("Error: Could not load dataset config from any model.")
+        sys.exit(1)
+        
+    dataset, id2room_map = load_dataset_and_sample(
+        args.manifest, 
+        first_dataset_cfg, # Use first config for dataset params
+        args.num_points
+    )
+    # --- END NEW ---
+
+    # Generate embeddings sequentially (NOW using the SAME dataset)
     for i in range(n_models):
         name = names[i]
         model = models[i]
         print(f"\n--- Generating Embedding for Model ({name}) ---")
-        # Use the dataset_cfg corresponding to THIS model for loading params like batch_size
-        df = get_embedding(model, dset_cfgs[i], args.manifest, args.label_col, args.category_col, filter_empty_layouts, DEVICE)
+        
+        # --- MODIFIED: Pass the pre-loaded dataset ---
+        df = get_embedding(
+            model, 
+            dataset,         # Pass the single, sampled dataset
+            id2room_map,     # Pass the single map
+            dset_cfgs[i],    # Pass the model-specific config (for batch_size)
+            args.label_col, 
+            args.category_col, 
+            filter_empty_layouts, 
+            DEVICE
+        )
         
         if df is not None:
              all_dfs[name] = df
@@ -361,17 +485,22 @@ def main():
             plot_comparison_n(
                 dfs_fig1, names_fig1,
                 plot_by=args.category_col,
-                filename=os.path.join(args.output_dir, "latent_comparison_continents_mse_vs_seg64.png"),
+                # *** CHANGED to .svg ***
+                filename=os.path.join(args.output_dir, "latent_comparison_continents_mse_vs_seg64.svg"),
                 category_col=args.category_col,
-                palette=category_palette 
+                palette=category_palette
+                # No grid_layout specified, will default to 1x2
             )
             # --- Plot 1b: Countries ---
             plot_comparison_n(
                 dfs_fig1, names_fig1,
                 plot_by=args.label_col,
-                filename=os.path.join(args.output_dir, "latent_comparison_countries_mse_vs_seg64.png"),
+                # *** CHANGED to .svg ***
+                filename=os.path.join(args.output_dir, "latent_comparison_countries_mse_vs_seg64.svg"),
                 category_col=args.category_col,
                 filter_category='room' 
+                # No grid_layout specified, will default to 1x2
+                # Palette will be auto-generated consistently by plot_comparison_n
             )
         else:
             print("Warning: Could not create MSE vs Seg64 comparison plots (missing one or both models).")
@@ -388,17 +517,22 @@ def main():
             plot_comparison_n(
                 dfs_fig2, names_fig2,
                 plot_by=args.category_col,
-                filename=os.path.join(args.output_dir, "latent_comparison_continents_segloss_sizes.png"),
+                # *** CHANGED to .svg ***
+                filename=os.path.join(args.output_dir, "latent_comparison_continents_segloss_sizes.svg"),
                 category_col=args.category_col,
-                palette=category_palette 
+                palette=category_palette,
+                grid_layout=(2, 2) # *** ADDED grid_layout ***
             )
             # --- Plot 2b: Countries ---
             plot_comparison_n(
                 dfs_fig2, names_fig2,
                 plot_by=args.label_col,
-                filename=os.path.join(args.output_dir, "latent_comparison_countries_segloss_sizes.png"),
+                # *** CHANGED to .svg ***
+                filename=os.path.join(args.output_dir, "latent_comparison_countries_segloss_sizes.svg"),
                 category_col=args.category_col,
-                filter_category='room' 
+                filter_category='room',
+                grid_layout=(2, 2) #
+                # Palette will be auto-generated consistently by plot_comparison_n
             )
         else:
              print("Warning: Could not create SegLoss comparison plots (fewer than 2 SegLoss models found/processed).")

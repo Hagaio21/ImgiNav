@@ -19,6 +19,11 @@ OUTPUT_DIR="/work3/s233249/ImgiNav/ImgiNav/visualization/latent_visuals_split" #
 LABEL_COL="room_id"
 CATEGORY_COL="type"
 
+# --- NEW: Sampling ---
+# Set to a number (e.g., 1000) to sample.
+# Set to "" (empty string) to use all points.
+NUM_POINTS="27897"
+
 # --- Models to Compare (LISTS in specific order) ---
 # 1. MSE 64x64x4 (Baseline)
 # 2. SegLoss 64x64x4
@@ -38,11 +43,13 @@ CHECKPOINTS=(
     "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_64x64x4_SegLoss/checkpoints/ae_latest.pt" # Model 1
     "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x4_SegLoss/checkpoints/ae_latest.pt" # Model 2
     "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x4_SegLoss_HighSeg/checkpoints/ae_latest.pt" # Model 3
-    "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x2_SegLoss/checkpoints/ae_epoch_13.pt" # Model 4
+    "/work3/s233249/ImgiNav/experiments/VAE/VAE_512_32x32x2_SegLoss/checkpoints/ae_latest.pt" # Model 4
 )
-# --- !!! IMPORTANT: Update the placeholder /path/to/MSE_64x64x4/... paths above !!! ---
 
 echo "Running visualize_latents job for ${#CONFIGS[@]} models, splitting plots"
+if [ -n "${NUM_POINTS}" ]; then
+    echo "Sampling ${NUM_POINTS} points for embedding"
+fi
 echo "Outputting plots to: ${OUTPUT_DIR}"
 
 # ----------------------------------------------------------------------
@@ -54,14 +61,25 @@ fi
 
 # ----------------------------------------------------------------------
 # Run visualization
-# Pass the arrays to the python script
-python "${SCRIPT_PATH}" \
-  --project_root "${PROJECT_ROOT}" \
-  --manifest "${MANIFEST}" \
-  --label_col "${LABEL_COL}" \
-  --category_col "${CATEGORY_COL}" \
-  --output_dir "${OUTPUT_DIR}" \
-  --configs "${CONFIGS[@]}" \
-  --checkpoints "${CHECKPOINTS[@]}" \
+
+# Build options array
+OPTS=(
+    --project_root "${PROJECT_ROOT}"
+    --manifest "${MANIFEST}"
+    --label_col "${LABEL_COL}"
+    --category_col "${CATEGORY_COL}"
+    --output_dir "${OUTPUT_DIR}"
+    --configs "${CONFIGS[@]}"
+    --checkpoints "${CHECKPOINTS[@]}"
+)
+
+# Add sampling argument ONLY if NUM_POINTS is set and non-empty
+if [ -n "${NUM_POINTS}" ]; then
+    OPTS+=(--num_points "${NUM_POINTS}")
+    echo "Using --num_points ${NUM_POINTS}"
+fi
+
+# Pass the options array to the python script
+python "${SCRIPT_PATH}" "${OPTS[@]}"
 
 echo "Visualization completed successfully"

@@ -1,112 +1,125 @@
 #!/usr/bin/env python3
+"""
+stage6_create_layout_embeddings.py
+----------------------------------
+Encodes every layout image under a dataset root into latent embeddings
+using a trained AutoEncoder (VEA).
+
+Outputs *_layout_emb.pt next to each layout file.
+Logs progress and summary statistics.
+No manifest required as input.
+"""
+
 import argparse
-import os, sys
 from pathlib import Path
-import pandas as pd
-from tqdm import tqdm
-
-
 import torch
-from torch.utils.data import DataLoader
+from tqdm import tqdm
+from PIL import Image
 import torchvision.transforms as T
-
-sys.path.append(str(Path(__file__).parent.parent / "modules"))
-from datasets import LayoutDataset, collate_skip_none
-from autoencoder import AutoEncoder
+import yaml
+from modules.autoencoder import AutoEncoder
 
 
-def parse_args():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True, help="Path to autoencoder YAML config")
-    ap.add_argument("--ckpt", required=True, help="Path to autoencoder checkpoint .pt/.pth")
-    ap.add_argument("--manifest", required=True, help="Input CSV manifest of layouts")
-    ap.add_argument("--out_manifest", required=True, help="Output CSV manifest with embeddings column")
-    ap.add_argument("--batch_size", type=int, default=128)
-    ap.add_argument("--num_workers", type=int, default=4)
-    ap.add_argument("--device", default="cuda")
-    ap.add_argument("--format", choices=["pt", "npy"], default="pt")
-    return ap.parse_args()
+# -----------------------------------------------------------------------------
+# Model loading
+# -----------------------------------------------------------------------------
+def load_model_from_experiment(config_path, checkpoint_path, device="cuda"):
+    """Rebuild AutoEncoder and load weights."""
+    print(f"[INFO] Loading config: {config_path}")
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    if "model" not in config:
+        raise KeyError(f"'model' key missing in config file {config_path}")
+
+    model_cfg = config["model"]
+    model = AutoEncoder.from_shape(
+        in_channels=model_cfg["in_channels"],
+        out_channels=model_cfg["out_channels"],
+        base_channels=model_cfg["base_channels"],
+        latent_channels=model_cfg["latent_channels"],
+        image_size=model_cfg["image_size"],
+        latent_base=model_cfg["latent_base"],
+        norm=model_cfg.get("norm"),
+        act=model_cfg.get("act", "relu"),
+        dropout=model_cfg.get("dropout", 0.0),
+        num_classes=model_cfg.get("num_classes", None),
+    )
+
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    state_dict = ckpt["model"] if "model" in ckpt else ckpt
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
+    print(f"[INFO] Loaded checkpoint: {checkpoint_path}")
+    return model
 
 
-def main():
-    args = parse_args()
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+# -----------------------------------------------------------------------------
+# Image encoding
+# -----------------------------------------------------------------------------
+def encode_layouts(model, data_root, device="cuda", batch_size=32):
+    """Find all layout PNGs and encode them to latent space."""
+    data_root = Path(data_root)
+    layout_paths = sorted(list(data_root.rglob("*layout.png")))
 
-    # --- Load autoencoder ---
-    ae = AutoEncoder.from_config(args.config)
-    ckpt = torch.load(args.ckpt, map_location=device)
-    ae.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
-    ae.to(device)
-    ae.eval()
+    if not layout_paths:
+        raise RuntimeError(f"No layout images found under {data_root}")
 
-    # --- Transform (match training setup) ---
     transform = T.Compose([
-        T.Resize((512, 512)),  # adjust if config differs
-        T.ToTensor()
+        T.Resize((model.image_size, model.image_size)),
+        T.ToTensor(),
     ])
 
-    # --- Dataset + Loader ---
-    ds = LayoutDataset(args.manifest, transform=transform, mode="all", skip_empty=False, return_embeddings=False)
-    dl = DataLoader(
-                    ds,
-                    batch_size=args.batch_size,
-                    shuffle=False,
-                    num_workers=args.num_workers,
-                    collate_fn=collate_skip_none
-                    )
+    total = len(layout_paths)
+    success = failed = 0
 
-    # --- Prepare manifest update ---
-    df = pd.read_csv(args.manifest)
-    df = pd.read_csv(args.manifest)
-    if "embedding_path" not in df.columns:
-        df["embedding_path"] = None
-    if "embedding_dim" not in df.columns:
-        df["embedding_dim"] = None
-
-
-    # --- Encode and save with progress bar ---
-    total = len(ds)
+    print(f"[INFO] Found {total} layout images to encode.")
     with torch.no_grad():
-        pbar = tqdm(total=total, desc="Embedding layouts", unit="layout")
-        for batch in dl:
-            imgs = batch["layout"].to(device)
-            z = ae.encoder(imgs)
+        for i in tqdm(range(0, total, batch_size), desc="Encoding layouts", unit="batch"):
+            batch_paths = layout_paths[i:i + batch_size]
+            imgs, valid_paths = [], []
+            for path in batch_paths:
+                try:
+                    img = Image.open(path).convert("RGB")
+                    imgs.append(transform(img))
+                    valid_paths.append(path)
+                except Exception:
+                    failed += 1
 
-            for i in range(len(imgs)):
-                scene_id = batch["scene_id"][i]
-                room_id = batch["room_id"][i]
-                typ = batch["type"][i]
-                is_empty = batch["is_empty"][i]
-                layout_path = Path(batch["path"][i])
+            if not imgs:
+                continue
 
-                if is_empty:
-                    pbar.update(1)
-                    continue
+            imgs = torch.stack(imgs).to(device)
+            z = model.encode_latent(imgs)
 
-                if typ == "room":
-                    fname = f"{scene_id}_{room_id}_layout_emb.{args.format}"
-                else:  # scene
-                    fname = f"{scene_id}_layout_emb.{args.format}"
+            for j, layout_path in enumerate(valid_paths):
+                out_path = layout_path.with_name(layout_path.stem.replace("_layout", "") + "_layout_emb.pt")
+                emb = z[j].cpu()
+                torch.save(emb, out_path)
+                success += 1
 
-                out_path = layout_path.parent / fname
-                emb = z[i].cpu()
+    print("\n[SUMMARY]")
+    print(f"  Encoded layouts: {success}")
+    print(f"  Failed to load:  {failed}")
+    print(f"  Total processed: {total}")
+    print("[INFO] Embedding files written next to layouts.")
 
-                if args.format == "pt":
-                    torch.save(emb, out_path)
-                    emb_dim = emb.numel()
-                else:
-                    import numpy as np
-                    np.save(out_path.with_suffix(".npy"), emb.numpy())
 
-                mask = (df["scene_id"] == scene_id) & (df["room_id"] == room_id) & (df["type"] == typ)
-                df.loc[mask, "embedding_path"] = str(out_path.resolve())
-                df.loc[mask, "embedding_dim"] = emb_dim
-                pbar.update(1)
+# -----------------------------------------------------------------------------
+# CLI
+# -----------------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(description="Encode layout images into latent embeddings.")
+    ap.add_argument("--config", required=True, help="Path to experiment YAML config")
+    ap.add_argument("--ckpt", required=True, help="Path to model checkpoint")
+    ap.add_argument("--data_root", required=True, help="Root folder containing scenes/rooms")
+    ap.add_argument("--batch_size", type=int, default=32, help="Batch size for encoding")
+    ap.add_argument("--device", default="cuda", help="Device to use (cuda or cpu)")
+    args = ap.parse_args()
 
-        pbar.close()
-
-    df.to_csv(args.out_manifest, index=False)
-    print(f"[INFO] Wrote updated manifest to {args.out_manifest}")
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    model = load_model_from_experiment(args.config, args.ckpt, device=device)
+    encode_layouts(model, args.data_root, device=device, batch_size=args.batch_size)
 
 
 if __name__ == "__main__":
