@@ -245,7 +245,7 @@ def plot_single_embedding(df, plot_by, title, ax, palette=None, show_legend=True
         ax.scatter(df[mask]['x'], df[mask]['y'], 
                   c=palette[value], 
                   label=value if show_legend else "",
-                  s=20, alpha=0.7)
+                  s=10, alpha=0.5)
     
     ax.set_xlabel('UMAP 1')
     ax.set_ylabel('UMAP 2')
@@ -560,7 +560,7 @@ def main():
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
-    
+    sns.set_style("darkgrid")
     # Load all embedding files
     embedding_files = [f for f in os.listdir(args.embeddings_dir) 
                       if f.endswith('_embeddings.pkl')]

@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/visualization/hpc_scripts/logs/analyze_embeddings.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/visualization/hpc_scripts/logs/analyze_embeddings.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=8000]"
+#BSUB -R "rusage[mem=16000]"
 #BSUB -W 2:00
 #BSUB -q hpc
 

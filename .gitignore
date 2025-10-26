@@ -26,11 +26,8 @@ data_preprocessing/
 outputs/
 indexes/
 logs/
-<<<<<<< HEAD
-=======
 /work3/s233249/ImgiNav/ImgiNav/notebooks/ae_test_outputs/checkpoints
 */checkpoints/
->>>>>>> 5c084810d20620730b8efeb671ec743691a5b899
 src/layout_generator.egg-info
 # Environment variables file
 .env
@@ -40,8 +37,4 @@ src/layout_generator.egg-info
 # dataset files
 *.csv
 training/runs
-<<<<<<< HEAD
-=======
 visualization/saved_embeddings/
-visualization/saved_embeddings/
->>>>>>> 5c084810d20620730b8efeb671ec743691a5b899
