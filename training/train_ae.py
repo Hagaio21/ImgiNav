@@ -109,9 +109,12 @@ def main():
 
     # --- Model type ---
     model_type = model_cfg.get("type", "vae").lower()
-    if model_type == "ae":
+    is_ae = model_type == "ae"
+
+    # if AE, disable KL
+    if is_ae:
         training_cfg["loss"]["kl_weight"] = 0.0
-        
+
     # --- Experiment setup ---
     out_dir = training_cfg.get("output_dir", "ae_outputs")
     ckpt_dir = training_cfg.get("ckpt_dir", os.path.join(out_dir, "checkpoints"))
@@ -170,12 +173,11 @@ def main():
     ae.encoder.print_summary()
     ae.decoder.print_summary()
 
-    # Flag to control deterministic behavior
+    # assign deterministic flag based on model type
     ae.deterministic = is_ae
 
     # --- Build loss ---
     loss_cfg = training_cfg.get("loss", {"type": "standard", "kl_weight": 1e-6})
-    # auto-disable KL for AE
     if is_ae:
         loss_cfg["kl_weight"] = 0.0
 
