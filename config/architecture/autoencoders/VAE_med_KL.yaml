@@ -1,7 +1,7 @@
 dataset:
   batch_size: 64
   manifest: /work3/s233249/ImgiNav/datasets/layouts.csv
-  num_workers: 4
+  num_workers: 8
   seed: 42
   shuffle: true
   split_ratio: 0.9

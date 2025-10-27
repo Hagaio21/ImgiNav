@@ -2,8 +2,8 @@
 #BSUB -J ae_sweep[1-6]
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.err
-#BSUB -n 4
-#BSUB -R "rusage[mem=8000]"
+#BSUB -n 8
+#BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
 #BSUB -W 20:00
 #BSUB -q gpul40s

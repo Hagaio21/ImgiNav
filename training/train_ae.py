@@ -147,12 +147,13 @@ def main():
 
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=shuffle,
-        num_workers=num_workers, collate_fn=collate_skip_none
+        num_workers=num_workers, pin_memory=True, collate_fn=collate_skip_none
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, collate_fn=collate_skip_none
+        num_workers=num_workers, pin_memory=True, collate_fn=collate_skip_none
     )
+
 
     save_split_csvs(train_ds, val_ds, out_dir)
 
