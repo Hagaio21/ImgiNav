@@ -109,11 +109,9 @@ def main():
 
     # --- Model type ---
     model_type = model_cfg.get("type", "vae").lower()
-    if model_type not in ["ae", "vae"]:
-        raise ValueError("model.type must be 'ae' or 'vae'")
-
-    is_ae = model_type == "ae"
-
+    if model_type == "ae":
+        training_cfg["loss"]["kl_weight"] = 0.0
+        
     # --- Experiment setup ---
     out_dir = training_cfg.get("output_dir", "ae_outputs")
     ckpt_dir = training_cfg.get("ckpt_dir", os.path.join(out_dir, "checkpoints"))

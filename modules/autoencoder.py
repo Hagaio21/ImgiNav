@@ -178,7 +178,7 @@ class ConvDecoder(nn.Module):
 
 # --- AutoEncoder wrapper (VAE + optional segmentation) ---
 class AutoEncoder(nn.Module):
-    def __init__(self, encoder: nn.Module, decoder: nn.Module):
+    def __init__(self, encoder: nn.Module, decoder: nn.Module, deterministic: bool = True):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
@@ -321,7 +321,11 @@ class AutoEncoder(nn.Module):
             num_classes=dec_cfg.get("num_classes", None),
         )
 
-        return cls(encoder, decoder)
+        # read type if present (default to vae)
+        model_type = cfg.get("type", "vae").lower()
+        deterministic = model_type == "ae"
+
+        return cls(encoder, decoder, deterministic=deterministic)
 
     @classmethod
     def from_shape(cls,
