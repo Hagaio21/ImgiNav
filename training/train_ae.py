@@ -96,7 +96,7 @@ def build_loss_function(loss_cfg):
         raise ValueError(f"Unknown loss type: {loss_type}. Choose 'standard' or 'segmentation'.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Run AutoEncoder experiment")
+    parser = argparse.ArgumentParser(description="Run AutoEncoder or VAE experiment")
     parser.add_argument("--config", required=True, help="Path to experiment config YAML")
     args = parser.parse_args()
 
@@ -107,22 +107,26 @@ def main():
     model_cfg = cfg["model"]
     training_cfg = cfg["training"]
 
+    # --- Model type ---
+    model_type = model_cfg.get("type", "vae").lower()
+    if model_type not in ["ae", "vae"]:
+        raise ValueError("model.type must be 'ae' or 'vae'")
+
+    is_ae = model_type == "ae"
+
     # --- Experiment setup ---
     out_dir = training_cfg.get("output_dir", "ae_outputs")
     ckpt_dir = training_cfg.get("ckpt_dir", os.path.join(out_dir, "checkpoints"))
-
-    # ensure both directories exist
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    # Save the experiment config
+    # Save experiment config
     model_cfg_path = os.path.join(out_dir, "experiment_config.yaml")
     with open(model_cfg_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
-
     print(f"[Config] Saved experiment config to {model_cfg_path}")
 
-    # --- Dataset config ---
+    # --- Dataset setup ---
     seed = dataset_cfg.get("seed", 42)
     random.seed(seed)
     torch.manual_seed(seed)
@@ -141,11 +145,11 @@ def main():
     shuffle = dataset_cfg.get("shuffle", True)
 
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=shuffle, 
+        train_ds, batch_size=batch_size, shuffle=shuffle,
         num_workers=num_workers, collate_fn=collate_skip_none
     )
     val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False, 
+        val_ds, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, collate_fn=collate_skip_none
     )
 
@@ -168,10 +172,15 @@ def main():
     ae.encoder.print_summary()
     ae.decoder.print_summary()
 
-    # --- Build loss function from config ---
-    
+    # Flag to control deterministic behavior
+    ae.deterministic = is_ae
 
+    # --- Build loss ---
     loss_cfg = training_cfg.get("loss", {"type": "standard", "kl_weight": 1e-6})
+    # auto-disable KL for AE
+    if is_ae:
+        loss_cfg["kl_weight"] = 0.0
+
     loss_fn = build_loss_function(loss_cfg)
 
     # --- Trainer ---

@@ -188,16 +188,12 @@ class AutoEncoder(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def forward(self, x):
+    def forward(self, x, deterministic=True):
         mu, logvar = self.encoder(x)
-        z = self.reparameterize(mu, logvar)
+        z = mu if deterministic else self.reparameterize(mu, logvar)
         rgb_out, seg_logits = self.decoder(z)
-        return {
-            "recon": rgb_out,
-            "seg_logits": seg_logits,
-            "mu": mu,
-            "logvar": logvar,
-        }
+        return {"recon": rgb_out, "seg_logits": seg_logits, "mu": mu, "logvar": logvar}
+
 
 
     @torch.no_grad()

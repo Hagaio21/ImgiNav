@@ -82,7 +82,7 @@ class AutoEncoderTrainer:
 
                 for batch_idx, batch in enumerate(pbar):
                     x = self._get_batch(batch)
-                    outputs = self.autoencoder(x)
+                    outputs = self.autoencoder(x, deterministic=getattr(self.autoencoder, "deterministic", True))
                     loss_output = self.loss_fn(x, outputs)
 
                     # Call loss function - it returns (total_loss, *components, metrics_dict)
@@ -154,7 +154,7 @@ class AutoEncoderTrainer:
 
         for batch in val_loader:
             x = self._get_batch(batch)
-            outputs = self.autoencoder(x) # <-- CHANGE
+            outputs = self.autoencoder(x, deterministic=getattr(self.autoencoder, "deterministic", True))
             
             # Call loss function
             loss_output = self.loss_fn(x, outputs) # <-- CHANGE
