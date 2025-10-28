@@ -32,7 +32,7 @@ src/layout_generator.egg-info
 # Environment variables file
 .env
 .log
-
+*.pt
 
 # dataset files
 *.csv
