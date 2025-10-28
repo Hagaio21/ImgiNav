@@ -6,6 +6,7 @@ dataset:
   shuffle: true
   split_ratio: 0.9
   taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
+  
 model:
   type: vae
   in_channels: 3
@@ -19,8 +20,9 @@ model:
   dropout: 0.0
   num_classes: 13
   use_sigmoid: true
+  
 training:
-  epochs: 50
+  epochs: 25
   eval_interval: 1
   log_interval: 10
   lr: 0.0001
@@ -29,7 +31,7 @@ training:
   ckpt_dir: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/VAE_small_KL_seg/checkpoints
   loss:
     type: segmentation
-    kl_weight: 1.0e-06
+    kl_weight: 0.000001
     lambda_mse: 1.0
     lambda_seg: 1.0
     taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json

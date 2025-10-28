@@ -1,0 +1,784 @@
+
+Job <26673979[1]>, Job Name <ae_sweep[1]>, User <s233249>, Project <default>, S
+                          tatus <RUN>, Queue <gpul40s>, Command <#!/bin/bash;#B
+                          SUB -J ae_sweep[1-6];#BSUB -o /work3/s233249/ImgiNav/
+                          ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.out;
+                          #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_
+                          scripts/logs/ae_sweep.%J.%I.err;#BSUB -n 8;#BSUB -R "
+                          rusage[mem=32000]";#BSUB -gpu "num=1";#BSUB -W 20:00;
+                          #BSUB -q gpul40s; set -euo pipefail; # ==============
+                          =====================================================
+                          ==========;# PATHS;# ================================
+                          =============================================;BASE_DI
+                          R="/work3/s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${B
+                          ASE_DIR}/training/train_ae.py";CONFIG_DIR="${BASE_DIR
+                          }/config/architecture/autoencoders"; # Ordered list o
+                          f YAMLs to sweep;CONFIG_FILES=(;  "${CONFIG_DIR}/AE_s
+                          mall_latent.yaml";  "${CONFIG_DIR}/AE_large_latent_se
+                          g.yaml";  "${CONFIG_DIR}/AE_dropout.yaml";  "${CONFIG
+                          _DIR}/VAE_small_KL_seg.yaml";  "${CONFIG_DIR}/VAE_med
+                          _KL.yaml";  "${CONFIG_DIR}/VAE_large_KL_seg.yaml";); 
+                          # Pick config for this array index;CONFIG_FILE="${CON
+                          FIG_FILES[$((LSB_JOBINDEX-1))]}"; # =================
+                          =====================================================
+                          =======;# MODULES;# =================================
+                          ============================================;module l
+                          oad cuda/11.8;module load cudnn/v8.6.0.163-prod-cuda-
+                          11.X;export MKL_INTERFACE_LAYER=LP64; # =============
+                          =====================================================
+                          ===========;# CONDA ENV;# ===========================
+                          ==================================================;if
+                           [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; th
+                          en;  source "$HOME/miniconda3/etc/profile.d/conda.sh"
+                          ;  conda activate imginav || {;    echo "Failed to ac
+                          tivate conda environment 'imginav'" >&2;    conda act
+                          ivate scenefactor || {;      echo "Failed to activate
+                           any conda environment" >&2;      exit 1;    };  };fi
+                          ; # =================================================
+                          ============================;# RUN;# ================
+                          =====================================================
+                          ========;echo "======================================
+                          ====";echo "Array job index: ${LSB_JOBINDEX}";echo "T
+                          raining AutoEncoder/VAE experiment";echo "Config: ${C
+                          ONFIG_FILE}";echo "Start: $(date)";echo "============
+                          =============================="; python "${PYTHON_SCR
+                          IPT}" --config "${CONFIG_FILE}"; echo "==============
+                          ============================";echo "Training COMPLETE
+                          ";echo "End: $(date)";echo "=========================
+                          =================">, Share group charged </s233249>, 
+                          Esub <dcc>
+Mon Oct 27 18:17:30 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/ae_sweep.26673979.1.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_swee
+                          p.26673979.1.err>, 8 Task(s), Requested Resources <ru
+                          sage[mem=32000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 18:17:31 2025: [1] started 8 Task(s) on Host(s) <8*n-62-13-16>, Allo
+                          cated 8 Slot(s) on Host(s) <8*n-62-13-16>, Execution 
+                          Home </zhome/62/5/203350>, Execution CWD </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts>;
+Mon Oct 27 19:06:07 2025: Resource usage collected.
+                          The CPU time used is 5649 seconds.
+                          MEM: 2.9 Gbytes;  SWAP: 0 Mbytes;  NTHREAD: 45
+                          PGID: 3934639;  PIDs: 3934639 3934680 3934684 
+                          3934959 3957737 3957738 3957739 3957740 3957741 
+                          3957742 3957743 3957744 
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   31.2 G 
+
+ MEMORY USAGE:
+ MAX MEM: 4.4 Gbytes;  AVG MEM: 3.1 Gbytes; MEM Efficiency: 1.77%
+
+ CPU USAGE:
+ CPU PEAK: 2.06 ;  CPU PEAK DURATION: 328 second(s)
+ CPU AVERAGE EFFICIENCY: 24.21% ;  CPU PEAK EFFICIENCY: 25.74%
+
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	1
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ EXTERNAL MESSAGES:
+ MSG_ID FROM       POST_TIME      MESSAGE                             ATTACHMENT 
+ 0      s233249    Oct 27 18:17   n-62-13-16:gpus=1;                      N     
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=32000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=32000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: select[((ngpus>0)) && (type == local)] order[-slots:-maxslots] rusa
+                          ge[mem=32000.00,ngpus_physical=1.00] span[hosts=1] sa
+                          me[type:model] cu[type=enclosure:maxcus=1:pref=config
+                          ] affinity[core(1)*1] 
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=
+                          nvidia
+------------------------------------------------------------------------------
+
+Job <26673979[2]>, Job Name <ae_sweep[2]>, User <s233249>, Project <default>, S
+                          tatus <RUN>, Queue <gpul40s>, Command <#!/bin/bash;#B
+                          SUB -J ae_sweep[1-6];#BSUB -o /work3/s233249/ImgiNav/
+                          ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.out;
+                          #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_
+                          scripts/logs/ae_sweep.%J.%I.err;#BSUB -n 8;#BSUB -R "
+                          rusage[mem=32000]";#BSUB -gpu "num=1";#BSUB -W 20:00;
+                          #BSUB -q gpul40s; set -euo pipefail; # ==============
+                          =====================================================
+                          ==========;# PATHS;# ================================
+                          =============================================;BASE_DI
+                          R="/work3/s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${B
+                          ASE_DIR}/training/train_ae.py";CONFIG_DIR="${BASE_DIR
+                          }/config/architecture/autoencoders"; # Ordered list o
+                          f YAMLs to sweep;CONFIG_FILES=(;  "${CONFIG_DIR}/AE_s
+                          mall_latent.yaml";  "${CONFIG_DIR}/AE_large_latent_se
+                          g.yaml";  "${CONFIG_DIR}/AE_dropout.yaml";  "${CONFIG
+                          _DIR}/VAE_small_KL_seg.yaml";  "${CONFIG_DIR}/VAE_med
+                          _KL.yaml";  "${CONFIG_DIR}/VAE_large_KL_seg.yaml";); 
+                          # Pick config for this array index;CONFIG_FILE="${CON
+                          FIG_FILES[$((LSB_JOBINDEX-1))]}"; # =================
+                          =====================================================
+                          =======;# MODULES;# =================================
+                          ============================================;module l
+                          oad cuda/11.8;module load cudnn/v8.6.0.163-prod-cuda-
+                          11.X;export MKL_INTERFACE_LAYER=LP64; # =============
+                          =====================================================
+                          ===========;# CONDA ENV;# ===========================
+                          ==================================================;if
+                           [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; th
+                          en;  source "$HOME/miniconda3/etc/profile.d/conda.sh"
+                          ;  conda activate imginav || {;    echo "Failed to ac
+                          tivate conda environment 'imginav'" >&2;    conda act
+                          ivate scenefactor || {;      echo "Failed to activate
+                           any conda environment" >&2;      exit 1;    };  };fi
+                          ; # =================================================
+                          ============================;# RUN;# ================
+                          =====================================================
+                          ========;echo "======================================
+                          ====";echo "Array job index: ${LSB_JOBINDEX}";echo "T
+                          raining AutoEncoder/VAE experiment";echo "Config: ${C
+                          ONFIG_FILE}";echo "Start: $(date)";echo "============
+                          =============================="; python "${PYTHON_SCR
+                          IPT}" --config "${CONFIG_FILE}"; echo "==============
+                          ============================";echo "Training COMPLETE
+                          ";echo "End: $(date)";echo "=========================
+                          =================">, Share group charged </s233249>, 
+                          Esub <dcc>
+Mon Oct 27 18:17:30 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/ae_sweep.26673979.2.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_swee
+                          p.26673979.2.err>, 8 Task(s), Requested Resources <ru
+                          sage[mem=32000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 18:17:31 2025: [2] started 8 Task(s) on Host(s) <8*n-62-13-15>, Allo
+                          cated 8 Slot(s) on Host(s) <8*n-62-13-15>, Execution 
+                          Home </zhome/62/5/203350>, Execution CWD </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts>;
+Mon Oct 27 19:06:19 2025: Resource usage collected.
+                          The CPU time used is 5529 seconds.
+                          MEM: 3.2 Gbytes;  SWAP: 0 Mbytes;  NTHREAD: 45
+                          PGID: 706430;  PIDs: 706430 706471 706475 706681 
+                          734729 734730 734731 734732 734733 734734 734735 
+                          734736 
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   31.2 G 
+
+ MEMORY USAGE:
+ MAX MEM: 4 Gbytes;  AVG MEM: 3.1 Gbytes; MEM Efficiency: 1.62%
+
+ CPU USAGE:
+ CPU PEAK: 2.08 ;  CPU PEAK DURATION: 178 second(s)
+ CPU AVERAGE EFFICIENCY: 23.57% ;  CPU PEAK EFFICIENCY: 26.05%
+
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	1
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ EXTERNAL MESSAGES:
+ MSG_ID FROM       POST_TIME      MESSAGE                             ATTACHMENT 
+ 0      s233249    Oct 27 18:17   n-62-13-15:gpus=0;                      N     
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=32000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=32000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: select[((ngpus>0)) && (type == local)] order[-slots:-maxslots] rusa
+                          ge[mem=32000.00,ngpus_physical=1.00] span[hosts=1] sa
+                          me[type:model] cu[type=enclosure:maxcus=1:pref=config
+                          ] affinity[core(1)*1] 
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=
+                          nvidia
+------------------------------------------------------------------------------
+
+Job <26673979[3]>, Job Name <ae_sweep[3]>, User <s233249>, Project <default>, S
+                          tatus <PEND>, Queue <gpul40s>, Command <#!/bin/bash;#
+                          BSUB -J ae_sweep[1-6];#BSUB -o /work3/s233249/ImgiNav
+                          /ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.out
+                          ;#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc
+                          _scripts/logs/ae_sweep.%J.%I.err;#BSUB -n 8;#BSUB -R 
+                          "rusage[mem=32000]";#BSUB -gpu "num=1";#BSUB -W 20:00
+                          ;#BSUB -q gpul40s; set -euo pipefail; # =============
+                          =====================================================
+                          ===========;# PATHS;# ===============================
+                          ==============================================;BASE_D
+                          IR="/work3/s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${
+                          BASE_DIR}/training/train_ae.py";CONFIG_DIR="${BASE_DI
+                          R}/config/architecture/autoencoders"; # Ordered list 
+                          of YAMLs to sweep;CONFIG_FILES=(;  "${CONFIG_DIR}/AE_
+                          small_latent.yaml";  "${CONFIG_DIR}/AE_large_latent_s
+                          eg.yaml";  "${CONFIG_DIR}/AE_dropout.yaml";  "${CONFI
+                          G_DIR}/VAE_small_KL_seg.yaml";  "${CONFIG_DIR}/VAE_me
+                          d_KL.yaml";  "${CONFIG_DIR}/VAE_large_KL_seg.yaml";);
+                           # Pick config for this array index;CONFIG_FILE="${CO
+                          NFIG_FILES[$((LSB_JOBINDEX-1))]}"; # ================
+                          =====================================================
+                          ========;# MODULES;# ================================
+                          =============================================;module 
+                          load cuda/11.8;module load cudnn/v8.6.0.163-prod-cuda
+                          -11.X;export MKL_INTERFACE_LAYER=LP64; # ============
+                          =====================================================
+                          ============;# CONDA ENV;# ==========================
+                          ===================================================;i
+                          f [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; t
+                          hen;  source "$HOME/miniconda3/etc/profile.d/conda.sh
+                          ";  conda activate imginav || {;    echo "Failed to a
+                          ctivate conda environment 'imginav'" >&2;    conda ac
+                          tivate scenefactor || {;      echo "Failed to activat
+                          e any conda environment" >&2;      exit 1;    };  };f
+                          i; # ================================================
+                          =============================;# RUN;# ===============
+                          =====================================================
+                          =========;echo "=====================================
+                          =====";echo "Array job index: ${LSB_JOBINDEX}";echo "
+                          Training AutoEncoder/VAE experiment";echo "Config: ${
+                          CONFIG_FILE}";echo "Start: $(date)";echo "===========
+                          ==============================="; python "${PYTHON_SC
+                          RIPT}" --config "${CONFIG_FILE}"; echo "=============
+                          =============================";echo "Training COMPLET
+                          E";echo "End: $(date)";echo "========================
+                          ==================">, Share group charged </s233249>,
+                           Esub <dcc>
+Mon Oct 27 18:17:30 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/ae_sweep.26673979.3.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_swee
+                          p.26673979.3.err>, 8 Task(s), Requested Resources <ru
+                          sage[mem=32000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 18:17:31 2025: Reserved <8> job slots on host(s) <8*n-62-13-14> for 
+                          <8> tasks;
+ PENDING REASONS:
+ Resource (ngpus_physical) limit defined on queue has been reached;
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   31.2 G 
+
+ ESTIMATION:
+Mon Oct 27 18:50:57 2025: Started simulation-based estimation;
+Mon Oct 27 18:53:54 2025: Simulated job start time <Tue Oct 28 14:17:46 2025> o
+                          n host(s) <8*n-62-13-19>
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	2970
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=32000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=32000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: -
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=
+                          nvidia
+------------------------------------------------------------------------------
+
+Job <26673979[4]>, Job Name <ae_sweep[4]>, User <s233249>, Project <default>, S
+                          tatus <PEND>, Queue <gpul40s>, Command <#!/bin/bash;#
+                          BSUB -J ae_sweep[1-6];#BSUB -o /work3/s233249/ImgiNav
+                          /ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.out
+                          ;#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc
+                          _scripts/logs/ae_sweep.%J.%I.err;#BSUB -n 8;#BSUB -R 
+                          "rusage[mem=32000]";#BSUB -gpu "num=1";#BSUB -W 20:00
+                          ;#BSUB -q gpul40s; set -euo pipefail; # =============
+                          =====================================================
+                          ===========;# PATHS;# ===============================
+                          ==============================================;BASE_D
+                          IR="/work3/s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${
+                          BASE_DIR}/training/train_ae.py";CONFIG_DIR="${BASE_DI
+                          R}/config/architecture/autoencoders"; # Ordered list 
+                          of YAMLs to sweep;CONFIG_FILES=(;  "${CONFIG_DIR}/AE_
+                          small_latent.yaml";  "${CONFIG_DIR}/AE_large_latent_s
+                          eg.yaml";  "${CONFIG_DIR}/AE_dropout.yaml";  "${CONFI
+                          G_DIR}/VAE_small_KL_seg.yaml";  "${CONFIG_DIR}/VAE_me
+                          d_KL.yaml";  "${CONFIG_DIR}/VAE_large_KL_seg.yaml";);
+                           # Pick config for this array index;CONFIG_FILE="${CO
+                          NFIG_FILES[$((LSB_JOBINDEX-1))]}"; # ================
+                          =====================================================
+                          ========;# MODULES;# ================================
+                          =============================================;module 
+                          load cuda/11.8;module load cudnn/v8.6.0.163-prod-cuda
+                          -11.X;export MKL_INTERFACE_LAYER=LP64; # ============
+                          =====================================================
+                          ============;# CONDA ENV;# ==========================
+                          ===================================================;i
+                          f [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; t
+                          hen;  source "$HOME/miniconda3/etc/profile.d/conda.sh
+                          ";  conda activate imginav || {;    echo "Failed to a
+                          ctivate conda environment 'imginav'" >&2;    conda ac
+                          tivate scenefactor || {;      echo "Failed to activat
+                          e any conda environment" >&2;      exit 1;    };  };f
+                          i; # ================================================
+                          =============================;# RUN;# ===============
+                          =====================================================
+                          =========;echo "=====================================
+                          =====";echo "Array job index: ${LSB_JOBINDEX}";echo "
+                          Training AutoEncoder/VAE experiment";echo "Config: ${
+                          CONFIG_FILE}";echo "Start: $(date)";echo "===========
+                          ==============================="; python "${PYTHON_SC
+                          RIPT}" --config "${CONFIG_FILE}"; echo "=============
+                          =============================";echo "Training COMPLET
+                          E";echo "End: $(date)";echo "========================
+                          ==================">, Share group charged </s233249>,
+                           Esub <dcc>
+Mon Oct 27 18:17:30 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/ae_sweep.26673979.4.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_swee
+                          p.26673979.4.err>, 8 Task(s), Requested Resources <ru
+                          sage[mem=32000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 18:17:31 2025: Reserved <8> job slots on host(s) <8*n-62-13-14> for 
+                          <8> tasks;
+ PENDING REASONS:
+ Resource (ngpus_physical) limit defined on queue has been reached;
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   31.2 G 
+
+ ESTIMATION:
+Mon Oct 27 18:50:57 2025: Started simulation-based estimation;
+Mon Oct 27 18:54:19 2025: Simulated job start time <Tue Oct 28 18:25:52 2025> o
+                          n host(s) <8*n-62-13-19>
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	2970
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=32000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=32000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: -
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=
+                          nvidia
+------------------------------------------------------------------------------
+
+Job <26673979[5]>, Job Name <ae_sweep[5]>, User <s233249>, Project <default>, S
+                          tatus <PEND>, Queue <gpul40s>, Command <#!/bin/bash;#
+                          BSUB -J ae_sweep[1-6];#BSUB -o /work3/s233249/ImgiNav
+                          /ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.out
+                          ;#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc
+                          _scripts/logs/ae_sweep.%J.%I.err;#BSUB -n 8;#BSUB -R 
+                          "rusage[mem=32000]";#BSUB -gpu "num=1";#BSUB -W 20:00
+                          ;#BSUB -q gpul40s; set -euo pipefail; # =============
+                          =====================================================
+                          ===========;# PATHS;# ===============================
+                          ==============================================;BASE_D
+                          IR="/work3/s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${
+                          BASE_DIR}/training/train_ae.py";CONFIG_DIR="${BASE_DI
+                          R}/config/architecture/autoencoders"; # Ordered list 
+                          of YAMLs to sweep;CONFIG_FILES=(;  "${CONFIG_DIR}/AE_
+                          small_latent.yaml";  "${CONFIG_DIR}/AE_large_latent_s
+                          eg.yaml";  "${CONFIG_DIR}/AE_dropout.yaml";  "${CONFI
+                          G_DIR}/VAE_small_KL_seg.yaml";  "${CONFIG_DIR}/VAE_me
+                          d_KL.yaml";  "${CONFIG_DIR}/VAE_large_KL_seg.yaml";);
+                           # Pick config for this array index;CONFIG_FILE="${CO
+                          NFIG_FILES[$((LSB_JOBINDEX-1))]}"; # ================
+                          =====================================================
+                          ========;# MODULES;# ================================
+                          =============================================;module 
+                          load cuda/11.8;module load cudnn/v8.6.0.163-prod-cuda
+                          -11.X;export MKL_INTERFACE_LAYER=LP64; # ============
+                          =====================================================
+                          ============;# CONDA ENV;# ==========================
+                          ===================================================;i
+                          f [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; t
+                          hen;  source "$HOME/miniconda3/etc/profile.d/conda.sh
+                          ";  conda activate imginav || {;    echo "Failed to a
+                          ctivate conda environment 'imginav'" >&2;    conda ac
+                          tivate scenefactor || {;      echo "Failed to activat
+                          e any conda environment" >&2;      exit 1;    };  };f
+                          i; # ================================================
+                          =============================;# RUN;# ===============
+                          =====================================================
+                          =========;echo "=====================================
+                          =====";echo "Array job index: ${LSB_JOBINDEX}";echo "
+                          Training AutoEncoder/VAE experiment";echo "Config: ${
+                          CONFIG_FILE}";echo "Start: $(date)";echo "===========
+                          ==============================="; python "${PYTHON_SC
+                          RIPT}" --config "${CONFIG_FILE}"; echo "=============
+                          =============================";echo "Training COMPLET
+                          E";echo "End: $(date)";echo "========================
+                          ==================">, Share group charged </s233249>,
+                           Esub <dcc>
+Mon Oct 27 18:17:30 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/ae_sweep.26673979.5.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_swee
+                          p.26673979.5.err>, 8 Task(s), Requested Resources <ru
+                          sage[mem=32000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 18:17:31 2025: Reserved <8> job slots on host(s) <8*n-62-13-14> for 
+                          <8> tasks;
+ PENDING REASONS:
+ Resource (ngpus_physical) limit defined on queue has been reached;
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   31.2 G 
+
+ ESTIMATION:
+Mon Oct 27 18:50:57 2025: Started simulation-based estimation;
+Mon Oct 27 18:54:44 2025: Simulated job start time <Wed Oct 29 10:17:46 2025> o
+                          n host(s) <8*n-62-13-19>
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	2970
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=32000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=32000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: -
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=
+                          nvidia
+------------------------------------------------------------------------------
+
+Job <26673979[6]>, Job Name <ae_sweep[6]>, User <s233249>, Project <default>, S
+                          tatus <PEND>, Queue <gpul40s>, Command <#!/bin/bash;#
+                          BSUB -J ae_sweep[1-6];#BSUB -o /work3/s233249/ImgiNav
+                          /ImgiNav/training/hpc_scripts/logs/ae_sweep.%J.%I.out
+                          ;#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc
+                          _scripts/logs/ae_sweep.%J.%I.err;#BSUB -n 8;#BSUB -R 
+                          "rusage[mem=32000]";#BSUB -gpu "num=1";#BSUB -W 20:00
+                          ;#BSUB -q gpul40s; set -euo pipefail; # =============
+                          =====================================================
+                          ===========;# PATHS;# ===============================
+                          ==============================================;BASE_D
+                          IR="/work3/s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${
+                          BASE_DIR}/training/train_ae.py";CONFIG_DIR="${BASE_DI
+                          R}/config/architecture/autoencoders"; # Ordered list 
+                          of YAMLs to sweep;CONFIG_FILES=(;  "${CONFIG_DIR}/AE_
+                          small_latent.yaml";  "${CONFIG_DIR}/AE_large_latent_s
+                          eg.yaml";  "${CONFIG_DIR}/AE_dropout.yaml";  "${CONFI
+                          G_DIR}/VAE_small_KL_seg.yaml";  "${CONFIG_DIR}/VAE_me
+                          d_KL.yaml";  "${CONFIG_DIR}/VAE_large_KL_seg.yaml";);
+                           # Pick config for this array index;CONFIG_FILE="${CO
+                          NFIG_FILES[$((LSB_JOBINDEX-1))]}"; # ================
+                          =====================================================
+                          ========;# MODULES;# ================================
+                          =============================================;module 
+                          load cuda/11.8;module load cudnn/v8.6.0.163-prod-cuda
+                          -11.X;export MKL_INTERFACE_LAYER=LP64; # ============
+                          =====================================================
+                          ============;# CONDA ENV;# ==========================
+                          ===================================================;i
+                          f [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; t
+                          hen;  source "$HOME/miniconda3/etc/profile.d/conda.sh
+                          ";  conda activate imginav || {;    echo "Failed to a
+                          ctivate conda environment 'imginav'" >&2;    conda ac
+                          tivate scenefactor || {;      echo "Failed to activat
+                          e any conda environment" >&2;      exit 1;    };  };f
+                          i; # ================================================
+                          =============================;# RUN;# ===============
+                          =====================================================
+                          =========;echo "=====================================
+                          =====";echo "Array job index: ${LSB_JOBINDEX}";echo "
+                          Training AutoEncoder/VAE experiment";echo "Config: ${
+                          CONFIG_FILE}";echo "Start: $(date)";echo "===========
+                          ==============================="; python "${PYTHON_SC
+                          RIPT}" --config "${CONFIG_FILE}"; echo "=============
+                          =============================";echo "Training COMPLET
+                          E";echo "End: $(date)";echo "========================
+                          ==================">, Share group charged </s233249>,
+                           Esub <dcc>
+Mon Oct 27 18:17:30 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/ae_sweep.26673979.6.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/ae_swee
+                          p.26673979.6.err>, 8 Task(s), Requested Resources <ru
+                          sage[mem=32000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 18:17:31 2025: Reserved <8> job slots on host(s) <8*n-62-13-14> for 
+                          <8> tasks;
+ PENDING REASONS:
+ Resource (ngpus_physical) limit defined on queue has been reached;
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   31.2 G 
+
+ ESTIMATION:
+Mon Oct 27 18:50:57 2025: Started simulation-based estimation;
+Mon Oct 27 18:54:54 2025: Simulated job start time <Wed Oct 29 14:25:52 2025> o
+                          n host(s) <8*n-62-13-19>
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	2970
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=32000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=32000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: -
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=
+                          nvidia
+------------------------------------------------------------------------------
+
+Job <26674742>, Job Name <vae_stable>, User <s233249>, Project <default>, Statu
+                          s <PEND>, Queue <gpuv100>, Command <#!/bin/bash;#BSUB
+                           -J vae_stable;#BSUB -o /work3/s233249/ImgiNav/ImgiNa
+                          v/training/hpc_scripts/logs/vae_stable.%J.out;#BSUB -
+                          e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts
+                          /logs/vae_stable.%J.err;#BSUB -n 4;#BSUB -R "rusage[m
+                          em=16000]";#BSUB -gpu "num=1";#BSUB -W 20:00;#BSUB -q
+                           gpuv100; set -euo pipefail; # ======================
+                          =====================================================
+                          ==;# PATHS;# ========================================
+                          =====================================;BASE_DIR="/work
+                          3/s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${BASE_DIR}
+                          /training/train_ae.py";CONFIG_FILE="${BASE_DIR}/confi
+                          g/architecture/autoencoders/VAE_stable.yml"; # ======
+                          =====================================================
+                          ==================;# MODULES;# ======================
+                          =====================================================
+                          ==;module load cuda/11.8;module load cudnn/v8.6.0.163
+                          -prod-cuda-11.X;export MKL_INTERFACE_LAYER=LP64; # ==
+                          =====================================================
+                          ======================;# CONDA ENV;# ================
+                          =====================================================
+                          ========;if [ -f "$HOME/miniconda3/etc/profile.d/cond
+                          a.sh" ]; then;  source "$HOME/miniconda3/etc/profile.
+                          d/conda.sh";  conda activate imginav || {;    echo "F
+                          ailed to activate conda environment 'imginav'" >&2;  
+                            conda activate scenefactor || {;      echo "Failed 
+                          to activate any conda environment" >&2;      exit 1; 
+                             };  };fi; # ======================================
+                          =======================================;# RUN;# =====
+                          =====================================================
+                          ===================;echo "===========================
+                          ===============";echo "Training Baseline VAE (Stable 
+                          Diffusion-style)";echo "Config: ${CONFIG_FILE}";echo 
+                          "Start: $(date)";echo "==============================
+                          ============"; python "${PYTHON_SCRIPT}" --config "${
+                          CONFIG_FILE}"; echo "================================
+                          ==========";echo "Training COMPLETE";echo "End: $(dat
+                          e)";echo "=========================================="
+                          >, Share group charged </s233249>, Esub <dcc>
+Mon Oct 27 19:04:01 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/vae_stable.26674742.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/vae_sta
+                          ble.26674742.err>, 4 Task(s), Requested Resources <ru
+                          sage[mem=16000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 19:04:01 2025: Reserved <4> job slots on host(s) <4*n-62-11-13> for 
+                          <4> tasks;
+ PENDING REASONS:
+ Job's requirements for reserving resource (ngpus_physical) not satisfied: 6 ho
+                          sts;
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   15.6 G 
+
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	179
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=16000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=16000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: -
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: -
+------------------------------------------------------------------------------
+
+Job <26674765>, Job Name <vae_stable>, User <s233249>, Project <default>, Statu
+                          s <PEND>, Queue <gpua10>, Command <#!/bin/bash;#BSUB 
+                          -J vae_stable;#BSUB -o /work3/s233249/ImgiNav/ImgiNav
+                          /training/hpc_scripts/logs/vae_stable.%J.out;#BSUB -e
+                           /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/
+                          logs/vae_stable.%J.err;#BSUB -n 4;#BSUB -R "rusage[me
+                          m=16000]";#BSUB -gpu "num=1";#BSUB -W 20:00;#BSUB -q 
+                          gpua10; set -euo pipefail; # ========================
+                          =====================================================
+                          ;# PATHS;# ==========================================
+                          ===================================;BASE_DIR="/work3/
+                          s233249/ImgiNav/ImgiNav";PYTHON_SCRIPT="${BASE_DIR}/t
+                          raining/train_ae.py";CONFIG_FILE="${BASE_DIR}/config/
+                          architecture/autoencoders/VAE_stable.yml"; # ========
+                          =====================================================
+                          ================;# MODULES;# ========================
+                          =====================================================
+                          ;module load cuda/11.8;module load cudnn/v8.6.0.163-p
+                          rod-cuda-11.X;export MKL_INTERFACE_LAYER=LP64; # ====
+                          =====================================================
+                          ====================;# CONDA ENV;# ==================
+                          =====================================================
+                          ======;if [ -f "$HOME/miniconda3/etc/profile.d/conda.
+                          sh" ]; then;  source "$HOME/miniconda3/etc/profile.d/
+                          conda.sh";  conda activate imginav || {;    echo "Fai
+                          led to activate conda environment 'imginav'" >&2;    
+                          conda activate scenefactor || {;      echo "Failed to
+                           activate any conda environment" >&2;      exit 1;   
+                           };  };fi; # ========================================
+                          =====================================;# RUN;# =======
+                          =====================================================
+                          =================;echo "=============================
+                          =============";echo "Training Baseline VAE (Stable Di
+                          ffusion-style)";echo "Config: ${CONFIG_FILE}";echo "S
+                          tart: $(date)";echo "================================
+                          =========="; python "${PYTHON_SCRIPT}" --config "${CO
+                          NFIG_FILE}"; echo "==================================
+                          ========";echo "Training COMPLETE";echo "End: $(date)
+                          ";echo "==========================================">,
+                           Share group charged </s233249>, Esub <dcc>
+Mon Oct 27 19:05:41 2025: Submitted from host <gbarlogin1>, CWD </work3/s233249
+                          /ImgiNav/ImgiNav/training/hpc_scripts>, Output File <
+                          /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/l
+                          ogs/vae_stable.26674765.out>, Error File </work3/s233
+                          249/ImgiNav/ImgiNav/training/hpc_scripts/logs/vae_sta
+                          ble.26674765.err>, 4 Task(s), Requested Resources <ru
+                          sage[mem=16000] span[hosts=1]>, Requested GPU <num=1>
+                          ;
+Mon Oct 27 19:05:43 2025: Reserved <4> job slots on host(s) <4*n-62-18-5> for <
+                          4> tasks;
+ PENDING REASONS:
+ Job's requirements for reserving resource (ngpus_physical) not satisfied: 1 ho
+                          st;
+
+ RUNLIMIT                
+ 1200.0 min
+
+ MEMLIMIT
+   15.6 G 
+
+ PENDING TIME DETAILS:
+ Eligible pending time (seconds):	79
+ Ineligible pending time (seconds):	0
+
+ SCHEDULING PARAMETERS:
+           r15s   r1m  r15m   ut      pg    io   ls    it    tmp    swp    mem
+ loadSched   -     -     -     -       -     -    -     -     -      -      -  
+ loadStop    -     -     -     -       -     -    -     -     -      -      -  
+
+ RESOURCE REQUIREMENT DETAILS:
+ Job-level: rusage[mem=16000] span[hosts=1]
+ App-level: -
+ Queue-level: same[type:model] affinity[core] cu[type=enclosure:maxcus=1]
+ Combined: select[(ngpus>0) && (type == local)] order[-slots:-maxslots] rusage[
+                          mem=16000.00:ngpus_physical=1.00] span[hosts=1] same[
+                          type:model] cu[pref=config:maxcus=1:type=enclosure] a
+                          ffinity[core(1)*1]
+ Effective: -
+
+ GPU REQUIREMENT DETAILS:
+ Combined: num=1:mode=exclusive_process:mps=no:j_exclusive=yes:aff=no:gvendor=n
+                          vidia
+ Effective: -
+
