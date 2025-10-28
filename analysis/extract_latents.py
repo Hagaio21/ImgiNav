@@ -16,11 +16,24 @@ from torchvision import transforms
 from modules.autoencoder import AutoEncoder
 from modules.datasets import LayoutDataset, collate_skip_none
 
-# Deterministic setup
+#!/usr/bin/env python3
+"""
+Extract full-dataset AE/VAE latents and metadata for later analysis.
+
+Deterministic, single-GPU job.  Produces:
+  latent_analysis/<exp_name>/latents.pt
+  {
+      "latents": Tensor [N, C, H, W],
+      "scene_id": [...],
+      "type": [...],
+      "room_id": [...]
+  }
+
+"""
+# ----------------------------------------------------------------------
 def set_deterministic(seed: int = 0):
     import random
     import numpy as np
-
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -30,18 +43,21 @@ def set_deterministic(seed: int = 0):
     torch.use_deterministic_algorithms(True)
 
 
-# ---------------------------------------------------------------------
+# ----------------------------------------------------------------------
 @torch.no_grad()
-def extract_experiment_latents(exp_path, dataloader, device, output_root, save_recons=True, sample_vis=8):
-    """Extract and save latents (mu) for one experiment."""
+def extract_experiment_latents(exp_path, dataloader, device, output_root, sample_vis=8):
+    """Run encoder on entire dataset and save latents + metadata."""
     exp_name = os.path.basename(os.path.normpath(exp_path))
     out_dir = os.path.join(output_root, exp_name)
     os.makedirs(out_dir, exist_ok=True)
 
     cfg_path = os.path.join(exp_path, "output", "autoencoder_config.yaml")
     ckpt_path = os.path.join(exp_path, "checkpoints", "ae_latest.pt")
+    if not os.path.exists(cfg_path) or not os.path.exists(ckpt_path):
+        print(f"[WARN] Missing files for {exp_name}, skipping.")
+        return
 
-    print(f"Loading {exp_name}")
+    print(f"Loading model for {exp_name}")
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
@@ -49,7 +65,7 @@ def extract_experiment_latents(exp_path, dataloader, device, output_root, save_r
     model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model.to(device).eval()
 
-    all_mu = []
+    all_latents, scene_ids, types, room_ids = [], [], [], []
     example_inputs, example_recons = None, None
 
     for i, batch in enumerate(dataloader):
@@ -57,17 +73,19 @@ def extract_experiment_latents(exp_path, dataloader, device, output_root, save_r
             continue
 
         imgs = batch["layout"]
-        # handle raw PIL images if dataset doesn’t convert automatically
         if not torch.is_tensor(imgs):
             imgs = torch.stack([transforms.ToTensor()(im) for im in imgs])
 
         imgs = imgs.to(device, non_blocking=True)
         out = model(imgs)
-        mu = out["mu"].detach().cpu()
-        all_mu.append(mu)
+        lat = out["mu"].detach().cpu()
+        all_latents.append(lat)
 
-        # optionally keep a few sample visuals
-        if save_recons and example_inputs is None:
+        scene_ids.extend(batch["scene_id"])
+        types.extend(batch["type"])
+        room_ids.extend(batch["room_id"])
+
+        if example_inputs is None:
             recons = out["recon"].detach().cpu()
             example_inputs = imgs.cpu()[:sample_vis]
             example_recons = recons[:sample_vis]
@@ -75,28 +93,37 @@ def extract_experiment_latents(exp_path, dataloader, device, output_root, save_r
         if (i + 1) % 50 == 0:
             print(f"  Processed {i+1} batches")
 
-    latents = torch.cat(all_mu, dim=0)
-    torch.save(latents, os.path.join(out_dir, "latents.pt"))
-    print(f"Saved latents: {latents.shape} -> {out_dir}/latents.pt")
+    latents = torch.cat(all_latents)
+    torch.save(
+        {
+            "latents": latents,
+            "scene_id": scene_ids,
+            "type": types,
+            "room_id": room_ids,
+        },
+        os.path.join(out_dir, "latents.pt"),
+    )
+    print(f"Saved latents {latents.shape} → {out_dir}/latents.pt")
 
-    if save_recons and example_inputs is not None:
-        # normalize to [0,1]
-        inputs = (example_inputs - example_inputs.min()) / (example_inputs.max() - example_inputs.min() + 1e-8)
-        recons = (example_recons - example_recons.min()) / (example_recons.max() - example_recons.min() + 1e-8)
+    if example_inputs is not None:
+        inputs = (example_inputs - example_inputs.min()) / (
+            example_inputs.max() - example_inputs.min() + 1e-8
+        )
+        recons = (example_recons - example_recons.min()) / (
+            example_recons.max() - example_recons.min() + 1e-8
+        )
         grid = make_grid(torch.cat([inputs, recons], dim=0), nrow=sample_vis)
         save_image(grid, os.path.join(out_dir, "examples.png"))
-        print(f"Saved recon example grid to {out_dir}/examples.png")
+        print(f"Saved recon grid {out_dir}/examples.png")
 
     del model
     torch.cuda.empty_cache()
 
 
-# ---------------------------------------------------------------------
+# ----------------------------------------------------------------------
 def main(manifest, output_dir, exp_root, batch_size=32, num_workers=8):
     set_deterministic(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    from torchvision import transforms
 
     tfm = transforms.Compose([transforms.ToTensor()])
     dataset = LayoutDataset(manifest, transform=tfm)
@@ -110,22 +137,23 @@ def main(manifest, output_dir, exp_root, batch_size=32, num_workers=8):
     )
 
     exp_paths = sorted(glob.glob(os.path.join(exp_root, "AEVAE_sweep", "*/")))
-    print(f"Found {len(exp_paths)} experiments under {exp_root}/AEVAE_sweep/")
-
+    print(f"Found {len(exp_paths)} experiments.")
     os.makedirs(output_dir, exist_ok=True)
+
     for i, exp_path in enumerate(exp_paths, 1):
-        print(f"[{i}/{len(exp_paths)}] Extracting latents for {exp_path}")
+        print(f"[{i}/{len(exp_paths)}] {exp_path}")
         extract_experiment_latents(exp_path, dataloader, device, output_dir)
         torch.cuda.empty_cache()
 
 
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Extract AE/VAE latent representations for full dataset.")
-    parser.add_argument("--manifest", required=True, help="Path to dataset manifest CSV.")
-    parser.add_argument("--output_dir", required=True, help="Output directory for latent .pt files.")
-    parser.add_argument("--exp_root", required=True, help="Root dir containing AEVAE_sweep experiments.")
+    parser = argparse.ArgumentParser(description="Extract AE/VAE latents (GPU, full dataset).")
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--output_dir", required=True)
+    parser.add_argument("--exp_root", required=True)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
     args = parser.parse_args()

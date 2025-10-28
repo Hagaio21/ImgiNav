@@ -45,7 +45,6 @@ def compute_recon_metrics(model, dataloader, device, max_batches=10):
     ssim_mean = torch.stack(ssim_vals).mean().item() if ssim_vals else None
     return {"mse_mean": mse_mean, "ssim_mean": ssim_mean}
 
-
 @torch.no_grad()
 def compute_distribution_metrics(latents):
     # latents: (N, C, H, W)
@@ -61,7 +60,6 @@ def compute_distribution_metrics(latents):
         "std_mean": std_mean,
         "isotropy_ratio": isotropy_ratio.item(),
     }
-
 
 @torch.no_grad()
 def compute_geometric_metrics(latents, inputs, max_samples=256):
@@ -84,7 +82,6 @@ def compute_geometric_metrics(latents, inputs, max_samples=256):
 
     return {"latent_pixel_corr": corr, "trustworthiness": trust}
 
-
 @torch.no_grad()
 def compute_information_metrics(latents):
     flat = latents.reshape(latents.shape[0], -1).cpu().numpy()
@@ -94,4 +91,35 @@ def compute_information_metrics(latents):
     return {
         "pca_var_ratio1": float(evr[0]),
         "pca_var_ratio10": float(evr[:10].sum()),
+    }
+
+def compute_latent_health_metrics(latents):
+    """Detect collapse or degeneracy in latent representations."""
+    flat = latents.reshape(latents.shape[0], -1)
+    # Channel variance
+    var_per_feature = flat.var(axis=0)
+    mean_var = var_per_feature.mean()
+    zero_var_ratio = np.mean(var_per_feature < 1e-6)
+
+    # Pairwise cosine similarity mean and std
+    norms = np.linalg.norm(flat, axis=1, keepdims=True) + 1e-8
+    normalized = flat / norms
+    sim_matrix = normalized @ normalized.T
+    upper = sim_matrix[np.triu_indices_from(sim_matrix, k=1)]
+    mean_sim, std_sim = upper.mean(), upper.std()
+
+    # PCA explained variance ratio
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=min(50, flat.shape[1]))
+    pca.fit(flat)
+    var_ratio = pca.explained_variance_ratio_
+    var_top1, var_cumsum10 = var_ratio[0], var_ratio[:10].sum()
+
+    return {
+        "mean_feature_var": mean_var,
+        "zero_var_ratio": zero_var_ratio,
+        "mean_cosine_sim": mean_sim,
+        "std_cosine_sim": std_sim,
+        "pca_var_ratio1": var_top1,
+        "pca_var_ratio10": var_cumsum10,
     }

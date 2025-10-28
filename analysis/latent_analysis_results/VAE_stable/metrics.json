@@ -1,0 +1,19 @@
+{
+  "mean_feature_var": 1.166040301322937,
+  "zero_var_ratio": 0.0,
+  "mean_cosine_sim": 0.0895933210849762,
+  "std_cosine_sim": 0.11852944642305374,
+  "pca_var_ratio1": 0.09560959041118622,
+  "pca_var_ratio10": 0.2776291072368622,
+  "isotropy_ratio": 126413.06690480691,
+  "pca_uniformity": 39.71476149188871,
+  "silhouette_type": 0.02027934230864048,
+  "silhouette_roomid": -0.09424668550491333,
+  "db_type": 7.73586597842837,
+  "rand_decode_var": 0.034123193472623825,
+  "interp_smoothness": 0.0032815924900609795,
+  "latent_var_seen": 1.1566028594970703,
+  "latent_var_unseen": 1.1737101078033447,
+  "identity_risk_score": 0.7853753751779247,
+  "diffusion_fitness_score": 8.272545927940024
+}

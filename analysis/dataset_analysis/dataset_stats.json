@@ -1,0 +1,14 @@
+{
+  "total_images": 50015,
+  "scenes": 6807,
+  "rooms": 43208,
+  "empty": 22118,
+  "non_empty": 27897,
+  "duplicates": 5137,
+  "unique_hashes": 38167,
+  "avg_width": 512.0,
+  "avg_height": 512.0,
+  "avg_mean_intensity": 0.8808152447229911,
+  "avg_std_intensity": 0.1326101690511822,
+  "mean_aspect_ratio": 1.0
+}

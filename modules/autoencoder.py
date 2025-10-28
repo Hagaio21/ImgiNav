@@ -196,8 +196,18 @@ class AutoEncoder(nn.Module):
 
 
 
-    @torch.no_grad()
-    def decode(self, x):
+    def decode(self, x, from_latent: bool = False):
+        """
+        Decode either directly from latent space or from an input image.
+        If from_latent=True, x is assumed to be a latent tensor (z).
+        Otherwise, x is an image that will be encoded first.
+        """
+        if from_latent:
+            # Direct latent decoding (used in analysis scripts)
+            rgb_out, seg_logits = self.decoder(x)
+            return rgb_out, seg_logits
+
+        # Standard image-to-latent-to-image decode (used during training)
         mu, logvar = self.encoder(x)
         z = self.reparameterize(mu, logvar)
         rgb_out, seg_logits = self.decoder(z)
