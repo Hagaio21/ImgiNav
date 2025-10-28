@@ -9,6 +9,8 @@ dataset:
   num_workers: 8
   shuffle: true
   taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
+  return_embeddings: true
+
 model:
   autoencoder:
     config: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/output/autoencoder_config.yaml
@@ -19,8 +21,8 @@ model:
       num_steps: 1000
     unet:
       type: dualunet
-      in_channels: 4
-      out_channels: 4
+      in_channels: 8
+      out_channels: 8
       base_channels: 128
       depth: 4
       num_res_blocks: 2

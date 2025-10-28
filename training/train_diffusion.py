@@ -62,7 +62,7 @@ def build_dataloaders(dataset_cfg):
     random.seed(seed)
     torch.manual_seed(seed)
 
-    train_ds, val_ds = build_datasets(manifest, split_ratio, seed, transform, dataset_cfg)
+    train_ds, val_ds = build_datasets(dataset_cfg)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle,
                               num_workers=num_workers, collate_fn=collate_skip_none)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,

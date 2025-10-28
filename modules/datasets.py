@@ -15,8 +15,29 @@ def load_image(path, transform=None):
         img = transform(img)
     return img
 
+
 def load_embedding(path):
-    return torch.load(path) if path.endswith(".pt") else torch.from_numpy(np.load(path))
+    path = path.strip()
+    lower = path.lower()
+
+    if lower.endswith(".pt") or lower.endswith(".pth"):
+        data = torch.load(path, map_location="cpu")
+        if isinstance(data, dict):  # handles rare case if AE ever saves dicts
+            for k in ("latent", "z", "embedding"):
+                if k in data:
+                    data = data[k]
+                    break
+        if not isinstance(data, torch.Tensor):
+            raise TypeError(f"Invalid embedding type: {type(data)} in {path}")
+        return data.float()
+
+    elif lower.endswith(".npy"):
+        return torch.from_numpy(np.load(path, allow_pickle=True)).float()
+
+    else:
+        raise ValueError(f"Unsupported embedding file type: {path}")
+
+
 
 
 
@@ -119,18 +140,21 @@ class LayoutDataset(Dataset):
         row = self.entries[idx]
         try:
             if self.return_embeddings:
-                path = row.get("embedding_path", row["layout_path"])
-                layout = load_embedding(path)
+                path = row["layout_emb"]
+                if not str(path).endswith(".pt"):
+                    raise ValueError(f"Expected .pt file, got {path}")
+                layout = load_embedding(str(path))
             else:
                 path = row["layout_path"]
                 layout_rgb = load_image(path, self.transform)
-
                 if self.one_hot and self.COLOR_TO_CLASS is not None:
                     layout = self.rgb_to_class_index(layout_rgb)
                 else:
                     layout = layout_rgb
-        except Exception:
-            return None
+
+        except Exception as e:
+            print(f"[Dataset Error] idx={idx}, path={path}, error={type(e).__name__}: {e}", flush=True)
+            raise  # raise instead of returning None for now
 
         return {
             "scene_id": row["scene_id"],
@@ -140,6 +164,7 @@ class LayoutDataset(Dataset):
             "path": path,
             "layout": layout,
         }
+
 
     def rgb_to_class_index(self, tensor_img):
         """Convert RGB tensor (3,H,W) ∈ [0,1] to (H,W) long indices."""
