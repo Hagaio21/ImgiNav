@@ -4,29 +4,43 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as T
-
+import torch
 from modules.datasets import LayoutDataset, collate_skip_none
 from modules.autoencoder import AutoEncoder
 from modules.unet import DualUNet
-from modules.scheduler import CosineScheduler, LinearScheduler
+from modules.scheduler import LinearScheduler, CosineScheduler, QuadraticScheduler
 from training.diffusion_trainer import DiffusionTrainer
 
 
 # ---------------------------- Dataset ---------------------------- #
 
-def build_datasets(manifest_path, split_ratio, seed, transform, dataset_cfg):
+def build_datasets(dataset_cfg):
+    """
+    Build train/val datasets from manifest and configuration.
+    Supports both raw layouts and precomputed latent embeddings.
+    """
+    manifest_path = dataset_cfg["manifest"]
+    split_ratio = dataset_cfg.get("split_ratio", 0.9)
+    seed = dataset_cfg.get("seed", 42)
+    transform = T.ToTensor() if dataset_cfg.get("return_embeddings", False) is False else None
+
     dataset = LayoutDataset(
-        manifest_path,
+        manifest_path=manifest_path,
         transform=transform,
         mode="all",
         one_hot=dataset_cfg.get("one_hot", False),
         taxonomy_path=dataset_cfg.get("taxonomy_path"),
+        return_embeddings=dataset_cfg.get("return_embeddings", False),
+        skip_empty=dataset_cfg.get("skip_empty", True),
     )
+
     n_total = len(dataset)
     n_train = int(n_total * split_ratio)
     n_val = n_total - n_train
     gen = torch.Generator().manual_seed(seed)
-    return random_split(dataset, [n_train, n_val], generator=gen)
+
+    train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=gen)
+    return train_ds, val_ds
 
 
 def save_split_csvs(train_ds, val_ds, output_dir):
