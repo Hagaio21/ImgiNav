@@ -14,8 +14,9 @@ dataset:
   one_hot: false
 model:
   autoencoder:
-    config: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints/autoencoder_config.yaml
+    config: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/output/autoencoder_config.yaml
     checkpoint: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints/ae_latest.pt
+
   diffusion:
     scheduler:
       type: linear

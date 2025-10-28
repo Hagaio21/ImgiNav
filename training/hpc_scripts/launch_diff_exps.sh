@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_sweep.%J.%I.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_sweep.%J.%I.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=48000]"
+#BSUB -R "rusage[mem=24000]"
 #BSUB -gpu "num=1"
 #BSUB -W 24:00
 #BSUB -q gpul40s
@@ -19,12 +19,12 @@ CONFIG_DIR="${BASE_DIR}/config/architecture/diffusion"
 
 # Ordered list of YAMLs for unconditioned diffusion sweep
 CONFIG_FILES=(
-  "${CONFIG_DIR}/E1_linear_64.yaml"
-  "${CONFIG_DIR}/E2_cosine_64.yaml"
-  "${CONFIG_DIR}/E3_quadratic_64.yaml"
-  "${CONFIG_DIR}/E4_linear_128.yaml"
-  "${CONFIG_DIR}/E5_cosine_128.yaml"
-  "${CONFIG_DIR}/E6_quadratic_128.yaml"
+  "${CONFIG_DIR}/E1_Linear_64.yaml"
+  "${CONFIG_DIR}/E2_Cosine_64.yaml"
+  "${CONFIG_DIR}/E3_Quadratic_64.yaml"
+  "${CONFIG_DIR}/E4_Linear_128.yaml"
+  "${CONFIG_DIR}/E5_Cosine_128.yaml"
+  "${CONFIG_DIR}/E6_Quadratic_128.yaml"
 )
 
 # Pick config for this array index

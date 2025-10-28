@@ -1,6 +1,9 @@
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 import torch
 import torch.nn as nn
-from blocks import TimeEmbedding, DownBlock, UpBlock, ResidualBlock
+from modules.blocks import TimeEmbedding, DownBlock, UpBlock, ResidualBlock
 
 class ConditionFusion(nn.Module):
     """Implements F(x, cond) with selectable mode."""
@@ -42,7 +45,7 @@ class DualUNet(nn.Module):
                  fusion_mode: str = "none",
                  cond_mult: float = 1.0):
         super().__init__()
-        
+
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.cond_channels = cond_channels
