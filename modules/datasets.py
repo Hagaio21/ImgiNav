@@ -64,8 +64,12 @@ class LayoutDataset(Dataset):
             self.NUM_CLASSES = None
 
         # --- filtering ---
+
+        # scenes/rooms
         if self.mode != "all":
             self.df = self.df[self.df["type"] == self.mode]
+
+        # full/empty
         if self.skip_empty:
             self.df = self.df[self.df["is_empty"] == False]
 
