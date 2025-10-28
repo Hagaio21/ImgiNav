@@ -1,13 +1,19 @@
 # diffusion_trainer.py
 import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+import json
 import torch
-from torch.optim import AdamW
 import torch.nn.functional as F
+from torch.optim import AdamW
 from tqdm import tqdm
 from torchvision.utils import save_image
-from modules.diffusion import LatentDiffusion
 import matplotlib.pyplot as plt
-import json
+import seaborn as sns
+from modules.diffusion import LatentDiffusion
+
+# Global Seaborn style
+sns.set_theme(style="darkgrid", palette="tab20", context="talk", font_scale=0.9)
 
 
 class DiffusionTrainer:
@@ -22,29 +28,23 @@ class DiffusionTrainer:
                  log_interval=100,
                  eval_interval=1000,
                  sample_interval=2000,
-                 checkpoint_interval=10,
                  num_samples=8,
                  grad_clip=None,
-                 logger=None,
                  ckpt_dir=None,
-                 output_dir=None):
-        self.unet = unet.to(device)
-        self.autoencoder = autoencoder.eval().to(device)
-        self.scheduler = scheduler
-        self.scheduler = scheduler.to(device)
+                 output_dir=None,
+                 experiment_name: str = "DiffusionExperiment",
+                 logger=None):
+
         self.device = device
         self.logger = logger
-
-        self.loss_fn = loss_fn or torch.nn.MSELoss()
-        self.optimizer = optimizer or AdamW(self.unet.parameters(), lr=1e-4)
+        self.experiment_name = experiment_name
         self.epochs = epochs
         self.log_interval = log_interval
         self.eval_interval = eval_interval
         self.sample_interval = sample_interval
-        self.checkpoint_interval = checkpoint_interval
+        self.num_samples = num_samples
         self.grad_clip = grad_clip
         self.ckpt_dir = ckpt_dir
-        self.num_samples = num_samples
         self.output_dir = output_dir
         self.global_step = 0
 
@@ -54,15 +54,34 @@ class DiffusionTrainer:
         if self.ckpt_dir:
             os.makedirs(self.ckpt_dir, exist_ok=True)
 
+        # model setup
+        self.unet = unet.to(device)
+        self.autoencoder = autoencoder.eval().to(device)
+        self.scheduler = scheduler.to(device)
+
         latent_shape = (
             self.autoencoder.encoder.latent_channels,
             self.autoencoder.encoder.latent_base,
             self.autoencoder.encoder.latent_base,
         )
         self.diffusion = LatentDiffusion(
-            self.unet, self.scheduler, self.autoencoder, latent_shape=latent_shape
-        )
+            backbone=self.unet,
+            scheduler=self.scheduler,
+            autoencoder=self.autoencoder,
+            latent_shape=latent_shape,
+        ).to(device)
 
+        self.loss_fn = loss_fn or torch.nn.MSELoss()
+        self.optimizer = optimizer or AdamW(self.unet.parameters(), lr=1e-4)
+
+        # checkpoint tracking
+        self.best_loss = float("inf")
+        self.latest_ckpt = os.path.join(self.ckpt_dir, "unet_latest.pt") if self.ckpt_dir else None
+        self.best_ckpt = os.path.join(self.ckpt_dir, "unet_best.pt") if self.ckpt_dir else None
+
+    # ---------------------------------------------------------
+    # Training utilities
+    # ---------------------------------------------------------
     def to(self, device):
         self.device = device
         self.unet.to(device)
@@ -75,12 +94,8 @@ class DiffusionTrainer:
         self.autoencoder.eval()
         return self
 
-    # ============================================================
-    # Unified batch extractor
-    # ============================================================
     @staticmethod
     def _get_layout_from_batch(batch, device):
-        """Extract layout tensor from dataset batch (dict, tuple, or tensor)."""
         if isinstance(batch, dict):
             return batch["layout"].to(device)
         if isinstance(batch, (list, tuple)):
@@ -89,278 +104,190 @@ class DiffusionTrainer:
             return batch.to(device)
         raise TypeError(f"Unexpected batch type: {type(batch)}")
 
-    # ============================================================
-    # Main training loop with validation logging
-    # ============================================================
+    # ---------------------------------------------------------
+    # Fit loop
+    # ---------------------------------------------------------
     def fit(self, train_loader, val_loader=None):
         self.train(True)
-
         self.dataset_div = self._compute_dataset_diversity(train_loader)
         print(f"Dataset diversity baseline: {self.dataset_div:.4f}")
-        # save dataset diversity baseline
-        div_path = os.path.join(self.output_dir, "dataset_diversity.txt")
-        with open(div_path, "w", encoding="utf-8") as f:
+
+        with open(os.path.join(self.output_dir, "dataset_diversity.txt"), "w") as f:
             f.write(f"{self.dataset_div:.6f}\n")
 
-
         losses = []
-        best_val_loss = float("inf")
 
         for epoch in range(self.epochs):
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.epochs}", leave=False)
+
             for batch in pbar:
                 self.optimizer.zero_grad(set_to_none=True)
 
                 layout = self._get_layout_from_batch(batch, self.device)
                 z = self.autoencoder.encode_latent(layout)
-                t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
-                noise = torch.randn_like(z)
-                z_noisy = self.scheduler.add_noise(z, noise, t)
 
-                noise_pred = self.unet(z_noisy, t)
-                loss = self.loss_fn(noise_pred, noise)
+                pred, noise, t, z_t = self.diffusion.forward_step(z)
+                loss = self.loss_fn(pred, noise)
 
                 loss.backward()
                 if self.grad_clip:
                     torch.nn.utils.clip_grad_norm_(self.unet.parameters(), self.grad_clip)
                 self.optimizer.step()
-                self.global_step += 1
 
+                self.global_step += 1
                 losses.append(loss.item())
                 pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
-                # --- lightweight metrics ---
+                # --- lightweight logs ---
                 if self.global_step % self.log_interval == 0:
-                    self.log_metrics(
-                        loss=loss,
-                        z_noisy=z_noisy,
-                        noise_pred=noise_pred,
-                        noise=noise,
-                        step=self.global_step,
-                        autoencoder=self.autoencoder,
-                        dataset_div=self.dataset_div,
-                    )
+                    self.log_metrics(loss, z_t, pred, noise, step=self.global_step)
 
-                # --- heavy visual artifacts ---
+                # --- heavy sampling ---
                 if self.global_step % self.sample_interval == 0:
                     samples = self.diffusion.sample(batch_size=self.num_samples, image=True)
-                    self.create_viz_artifacts(
-                        autoencoder=self.autoencoder,
-                        samples=samples,
-                        step=self.global_step,
-                        losses=losses,
-                        output_dir=self.output_dir,
-                    )
+                    self.create_viz_artifacts(samples, self.global_step, losses)
 
                 # --- validation ---
                 if val_loader and self.global_step % self.eval_interval == 0:
                     val_loss = self.compute_validation_loss(val_loader)
                     print(f"[Validation @ step {self.global_step}] loss={val_loss:.4f}")
-
-                    # Log to JSON
-                    if hasattr(self, "metric_log"):
-                        self.metric_log[-1]["val_loss"] = val_loss
-                        metrics_path = os.path.join(self.output_dir, "metrics.json")
-                        with open(metrics_path, "w", encoding="utf-8") as f:
-                            json.dump(self.metric_log, f, indent=2)
-
-                    # Best checkpoint
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        if self.ckpt_dir:
-                            best_path = os.path.join(self.ckpt_dir, "best_val.pt")
-                            self.save_checkpoint(best_path)
-                            print(f"[Validation] New best model saved → {best_path}")
-
+                    self.save_checkpoint(val_loss)
+                    self._write_metrics_log()
                     self.train(True)
-                    
-            if epoch % self.checkpoint_interval == 0:
-                if self.ckpt_dir:
-                    self.save_checkpoint(f"{self.ckpt_dir}/epoch_{epoch+1}.pt")
 
-        # --- save unified LatentDiffusion config at the end ---
-        latent_shape = (
-            self.autoencoder.encoder.latent_channels,
-            self.autoencoder.encoder.latent_base,
-            self.autoencoder.encoder.latent_base,
-        )
-        latent_diffusion = LatentDiffusion(self.unet, self.scheduler, self.autoencoder, latent_shape=latent_shape)
-        master_cfg_path = os.path.join(self.ckpt_dir, "latent_diffusion.yaml")
-        latent_diffusion.to_config(master_cfg_path)
+        # save final config
+        cfg_path = os.path.join(self.ckpt_dir, "latent_diffusion.yaml")
+        self.diffusion.to_config(cfg_path)
+        print(f"[Config] Saved full diffusion config → {cfg_path}")
 
-    # ============================================================
-    # Validation loss computation
-    # ============================================================
+    # ---------------------------------------------------------
+    # Validation and evaluation
+    # ---------------------------------------------------------
     @torch.no_grad()
     def compute_validation_loss(self, val_loader):
-        """Compute average validation loss."""
         self.unet.eval()
-        total_loss = 0.0
-        count = 0
-
+        total, count = 0.0, 0
         for batch in val_loader:
             layout = self._get_layout_from_batch(batch, self.device)
             z = self.autoencoder.encode_latent(layout)
-            t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
-            noise = torch.randn_like(z)
-            z_noisy = self.scheduler.add_noise(z, noise, t)
-
-            noise_pred = self.unet(z_noisy, t)
-            loss = self.loss_fn(noise_pred, noise)
-            total_loss += loss.item() * z.size(0)
+            pred, noise, _, _ = self.diffusion.forward_step(z)
+            loss = self.loss_fn(pred, noise)
+            total += loss.item() * z.size(0)
             count += z.size(0)
-
         self.unet.train()
-        return total_loss / max(count, 1)
+        return total / max(count, 1)
 
-    # ============================================================
-    # Evaluation (one batch visualization)
-    # ============================================================
+    # ---------------------------------------------------------
+    # Checkpoint management
+    # ---------------------------------------------------------
+    def save_checkpoint(self, val_loss: float):
+        if not self.ckpt_dir:
+            return
+        state = {"state_dict": self.diffusion.backbone.state_dict()}
+        torch.save(state, self.latest_ckpt)
+        print(f"[Checkpoint] Latest model updated → {self.latest_ckpt}")
+
+        if val_loss < self.best_loss:
+            self.best_loss = val_loss
+            torch.save(state, self.best_ckpt)
+            print(f"[Checkpoint] New best model saved → {self.best_ckpt}")
+
+    # ---------------------------------------------------------
+    # Logging and visualization
+    # ---------------------------------------------------------
     @torch.no_grad()
-    def evaluate(self, val_loader, step=None):
-        self.train(False)
-        layout = self._get_layout_from_batch(next(iter(val_loader)), self.device)
-        z = self.autoencoder.encode_latent(layout)
-        t = torch.randint(0, self.scheduler.num_steps, (z.size(0),), device=self.device, dtype=torch.long)
-        noise = torch.randn_like(z)
-        z_noisy = self.scheduler.add_noise(z, noise, t)
+    def log_metrics(self, loss, z_noisy, noise_pred, noise, step):
+        log = {
+            "step": step,
+            "loss": loss.item(),
+            "mse": F.mse_loss(noise_pred, noise).item(),
+            "snr": (z_noisy.var(dim=(1,2,3)) / (noise_pred - noise).var(dim=(1,2,3))).mean().item(),
+            "cosine": F.cosine_similarity(noise_pred.flatten(1), noise.flatten(1)).mean().item(),
+        }
 
-        noise_pred = self.unet(z_noisy, t)
-        loss = self.loss_fn(noise_pred, noise).item()
+        norms = [p.grad.norm() ** 2 for p in self.unet.parameters() if p.grad is not None]
+        log["grad_norm"] = torch.sqrt(sum(norms)).item() if norms else 0.0
 
-        if self.logger and step is not None:
-            self.logger.log({"val_loss": loss, "val_step": step}, step=step)
-
-        return {"val_loss": loss}
-
-    @torch.no_grad()
-    def sample_and_save(self, step, batch_size=4):
-        self.unet.eval()
-        samples = self.diffusion.sample(batch_size=batch_size, image=True)
-        save_path = os.path.join(self.output_dir, f"samples_step_{step}.png")
-        save_image(samples, save_path, nrow=2, normalize=True, value_range=(0, 1))
-        if self.logger:
-            self.logger.log({"samples": samples, "step": step})
-        print(f"[Step {step}] Saved sample grid → {save_path}")
-
-    # ============================================================
-    # Checkpoint saving and config persistence
-    # ============================================================
-    def save_checkpoint(self, path):
-        torch.save({
-            "unet": self.unet.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "step": self.global_step,
-        }, path)
-        latest_path = os.path.join(self.ckpt_dir, "unet_latest.pt")
-        torch.save(self.unet.state_dict(), latest_path)
-        print(f"[Checkpoint] Saved: {path} and updated unet_latest.pt")
-
-        # --- save configs once for consistency ---
-        import yaml
-        unet_cfg_path = os.path.join(self.ckpt_dir, "unet_config.yaml")
-        ae_cfg_path = os.path.join(self.ckpt_dir, "autoencoder_config.yaml")
-
-        if not os.path.exists(unet_cfg_path):
-            with open(unet_cfg_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(self.unet.to_config(), f)
-            print(f"[Config] Saved UNet config → {unet_cfg_path}")
-
-        if not os.path.exists(ae_cfg_path):
-            with open(ae_cfg_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(self.autoencoder.to_config(), f)
-            print(f"[Config] Saved AutoEncoder config → {ae_cfg_path}")
-
-    def load_checkpoint(self, path):
-        state = torch.load(path, map_location=self.device)
-        self.unet.load_state_dict(state["unet"])
-        self.optimizer.load_state_dict(state["optimizer"])
-        self.global_step = state["step"]
-        print(f"Checkpoint loaded from {path} at step {self.global_step}")
-
-    # ============================================================
-    # Metric logging + visualization
-    # ============================================================
-    @torch.no_grad()
-    def log_metrics(self, loss, z_noisy, noise_pred, noise, step, autoencoder=None, dataset_div=None):
-        log = {"step": step, "loss": loss.item()}
-        snr = (z_noisy.var(dim=(1, 2, 3)) / (noise_pred - noise).var(dim=(1, 2, 3))).mean().item()
-        log["snr"] = snr
-        cos = F.cosine_similarity(noise_pred.flatten(1), noise.flatten(1)).mean().item()
-        log["cosine"] = cos
-        norms = [p.grad.norm()**2 for p in self.unet.parameters() if p.grad is not None]
-        grad_norm = torch.sqrt(sum(norms)).item() if norms else 0.0
-        log["grad_norm"] = grad_norm
         samples = self.diffusion.sample(batch_size=self.num_samples, image=True)
-        if samples.shape[1] == self.autoencoder.encoder.latent_channels:
-            decoded = self.autoencoder.decoder(samples)
-        else:
-            decoded = samples
-        flat = decoded.flatten(1)
-
+        decoded = samples if samples.shape[1] != self.autoencoder.encoder.latent_channels else self.autoencoder.decoder(samples)
         flat = decoded.flatten(1)
         div = torch.cdist(flat, flat).mean().item()
         log["diversity"] = div
-        if dataset_div:
-            log["div_ratio"] = div / dataset_div
+        log["div_ratio"] = div / self.dataset_div if hasattr(self, "dataset_div") else 0.0
 
         if not hasattr(self, "metric_log"):
             self.metric_log = []
         self.metric_log.append(log)
+        self._write_metrics_log()
+
+        print(f"[{step}] loss={log['loss']:.4f}, mse={log['mse']:.4f}, snr={log['snr']:.3f}, cos={log['cosine']:.3f}, div={log['diversity']:.3f}")
+
+    def _write_metrics_log(self):
         metrics_path = os.path.join(self.output_dir, "metrics.json")
         with open(metrics_path, "w", encoding="utf-8") as f:
             json.dump(self.metric_log, f, indent=2)
-        print(f"[{step}] loss={log['loss']:.4f}, snr={log['snr']:.3f}, cos={log['cosine']:.3f}, div={log['diversity']:.3f}")
-        return log
 
     @torch.no_grad()
-    def create_viz_artifacts(self, autoencoder, samples, step, losses, output_dir):
-        os.makedirs(output_dir, exist_ok=True)
+    def create_viz_artifacts(self, samples, step, losses):
+        os.makedirs(self.output_dir, exist_ok=True)
+        exp = self.experiment_name
 
+        # ---- Loss curve ----
         if losses:
-            plt.figure()
-            plt.plot(losses)
+            plt.figure(figsize=(7, 4))
+            sns.lineplot(x=range(len(losses)), y=losses, linewidth=2, color=sns.color_palette("tab20")[0])
             plt.xlabel("Step")
-            plt.ylabel("Loss")
-            plt.title("Training Loss")
-            plt.grid(True)
+            plt.ylabel("MSE Loss")
+            plt.title(f"{exp} — Training Loss (Noise Prediction)")
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "loss_curve.png"))
+            plt.savefig(os.path.join(self.output_dir, "loss_curve.png"))
             plt.close()
 
+        # ---- MSE trend ----
+        if hasattr(self, "metric_log") and any("mse" in m for m in self.metric_log):
+            steps = [x["step"] for x in self.metric_log]
+            mses = [x.get("mse") for x in self.metric_log if "mse" in x]
+            plt.figure(figsize=(7, 4))
+            sns.lineplot(x=steps, y=mses, linewidth=2, color=sns.color_palette("tab20")[2])
+            plt.xlabel("Step")
+            plt.ylabel("Noise MSE")
+            plt.title(f"{exp} — Noise Prediction Error")
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, "mse_curve.png"))
+            plt.close()
+
+        # ---- Diversity curve ----
         if hasattr(self, "metric_log"):
             divs = [x["diversity"] for x in self.metric_log]
             steps = [x["step"] for x in self.metric_log]
-            plt.figure()
-            plt.plot(steps, divs, label="Model Diversity")
+            plt.figure(figsize=(7, 4))
+            sns.lineplot(x=steps, y=divs, linewidth=2, color=sns.color_palette("tab20")[4], label="Model Diversity")
             if hasattr(self, "dataset_div"):
-                plt.axhline(self.dataset_div, color="red", linestyle="--", label="Dataset Diversity")
+                plt.axhline(self.dataset_div, color=sns.color_palette("tab20")[8], linestyle="--", label="Dataset Diversity")
             plt.xlabel("Step")
             plt.ylabel("Diversity")
-            plt.title("Diversity over Training")
+            plt.title(f"{exp} — Latent Diversity Over Training")
             plt.legend()
-            plt.grid(True)
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "diversity_curve.png"))
+            plt.savefig(os.path.join(self.output_dir, "diversity_curve.png"))
             plt.close()
 
-
-        decoded = samples if samples.shape[1] != autoencoder.encoder.latent_channels else autoencoder.decoder(samples)
+        # ---- Save decoded samples ----
+        decoded = samples if samples.shape[1] != self.autoencoder.encoder.latent_channels else self.autoencoder.decoder(samples)
         save_image(decoded, os.path.join(self.samples_dir, f"samples_step_{step}.png"),
-           nrow=2, normalize=True, value_range=(0, 1))
+                   nrow=2, normalize=True, value_range=(0, 1))
 
-
-    # ============================================================
-    # Dataset diversity computation
-    # ============================================================
+    # ---------------------------------------------------------
+    # Dataset baseline
+    # ---------------------------------------------------------
     @torch.no_grad()
     def _compute_dataset_diversity(self, dataloader, num_batches=5):
-        diversities = []
+        divs = []
         for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break
             x = self._get_layout_from_batch(batch, self.device)
-            decoded = self.autoencoder.decode(x)
+            decoded = self.autoencoder.decode_latent(x)
             flat = decoded.flatten(1)
-            diversities.append(torch.cdist(flat, flat).mean().item())
-        return sum(diversities) / len(diversities)
+            divs.append(torch.cdist(flat, flat).mean().item())
+        return sum(divs) / len(divs) if divs else 0.0

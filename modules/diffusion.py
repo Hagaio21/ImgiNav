@@ -46,6 +46,19 @@ class LatentDiffusion(nn.Module):
         self.autoencoder = autoencoder
         self.latent_shape = latent_shape
 
+
+    
+    def forward_step(self, x0: torch.Tensor, cond: Optional[torch.Tensor] = None):
+
+        device = x0.device
+        B = x0.shape[0]
+        t = torch.randint(0, self.scheduler.num_steps, (B,), device=device, dtype=torch.long)
+
+        noise = torch.randn_like(x0)
+        x_t = self.scheduler.add_noise(x0, noise, t)
+        pred_noise = self.backbone(x_t, t, cond)
+        return pred_noise, noise, t, x_t
+
     # -------------------------
     #   Sampling
     # -------------------------
@@ -66,20 +79,7 @@ class LatentDiffusion(nn.Module):
         start_noise: Optional[torch.Tensor] = None,
         verbose: bool = True,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, dict]]:
-        """
-        Sample from latent diffusion model using DDPM or DDIM method.
 
-        Args:
-            batch_size: number of samples to generate
-            image: decode latents to RGB using autoencoder if True
-            cond: conditioning tensor
-            num_steps: optional override of scheduler steps
-            return_latents: if True, return final latents and history
-            return_full_history: if True, return all x_t per timestep
-            method: "ddpm" (stochastic) or "ddim" (deterministic)
-            eta: interpolation between DDIM (0) and DDPM (1)
-            verbose: show progress and prints if True
-        """
         assert self.latent_shape is not None, "latent_shape must be set"
 
         self.eval()
@@ -158,7 +158,7 @@ class LatentDiffusion(nn.Module):
             assert self.autoencoder is not None, "AutoEncoder required for image decoding"
             if verbose:
                 print("Decoding...")
-            x_t = self.autoencoder(x_t) if callable(self.autoencoder) else self.autoencoder.decoder(x_t)
+            x_t = self.autoencoder.decode_latent(x_t)
 
         if return_latents or return_full_history:
             history = {"latents": latents_history, "noise": noise_history}
@@ -232,7 +232,7 @@ class LatentDiffusion(nn.Module):
                 autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
                 if ae_ckpt and Path(ae_ckpt).exists():
                     ae_state = torch.load(ae_ckpt, map_location=device)
-                    autoencoder.load_state_dict(ae_state.get("model", ae_state))
+                    autoencoder.load_state_dict(ae_state.get("model", ae_state), strict=False)
             except Exception:
                 pass
 

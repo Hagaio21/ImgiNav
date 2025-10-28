@@ -214,6 +214,12 @@ class AutoEncoder(nn.Module):
         return rgb_out, seg_logits
 
     @torch.no_grad()
+    def decode_latent(self, z):
+        rgb_out, _ = self.decoder(z)
+        return rgb_out
+
+
+    @torch.no_grad()
     def sample(self, z):
         self.eval()
         rgb_out, seg_logits = self.decoder(z)
