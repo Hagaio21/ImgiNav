@@ -21,7 +21,7 @@ def make_config(exp_name, base_channels, scheduler_type, base_exp_path):
         },
         "model": {
             "autoencoder": {
-                "config": "/work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints/autoencoder_config.yaml",
+                "config": "/work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/output/autoencoder_config.yaml",
                 "checkpoint": "/work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints/ae_latest.pt",
             },
             "diffusion": {
@@ -35,11 +35,14 @@ def make_config(exp_name, base_channels, scheduler_type, base_exp_path):
                     "out_channels": 4,
                     "base_channels": base_channels,
                     "depth": 4,
+                    "num_res_blocks": 2,     # required by DualUNet
+                    "time_dim": 128,         # required by DualUNet
                     "cond_channels": 0,
                     "act": "relu",
                     "norm": "batch",
                     "dropout": 0.1,
-                    "fusion_type": "none",
+                    "fusion_mode": "none",   # renamed key
+                    "cond_mult": 1.0,
                 },
             },
         },
@@ -74,21 +77,20 @@ EXPERIMENTS = [
 # ---------------------------------------------------------------------
 def main():
     base_exp_path = "/work3/s233249/ImgiNav/experiments/Diffusion_Uncond"
-    config_output_path = r"C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImgiNav\config\architecture\diffusion"
+    config_output_path = (
+        r"C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImgiNav\config\architecture\diffusion"
+    )
 
     os.makedirs(base_exp_path, exist_ok=True)
     os.makedirs(config_output_path, exist_ok=True)
 
     for name, base_ch, sched in EXPERIMENTS:
-        # Experiment directories
         exp_dir = os.path.join(base_exp_path, name)
         os.makedirs(os.path.join(exp_dir, "output"), exist_ok=True)
         os.makedirs(os.path.join(exp_dir, "checkpoints"), exist_ok=True)
 
-        # Config creation
         cfg = make_config(name, base_ch, sched, base_exp_path)
 
-        # Save config in shared config folder
         cfg_path = os.path.join(config_output_path, f"{name}.yaml")
         with open(cfg_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, sort_keys=False)
