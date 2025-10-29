@@ -49,7 +49,9 @@ class LatentDiffusion(nn.Module):
 
     
     def forward_step(self, x0: torch.Tensor, cond: Optional[torch.Tensor] = None):
-
+        """
+        Single forward step for diffusion training.
+        """
         device = x0.device
         B = x0.shape[0]
         t = torch.randint(0, self.scheduler.num_steps, (B,), device=device, dtype=torch.long)
@@ -58,6 +60,72 @@ class LatentDiffusion(nn.Module):
         x_t = self.scheduler.add_noise(x0, noise, t)
         pred_noise = self.backbone(x_t, t, cond)
         return pred_noise, noise, t, x_t
+    
+    def forward(self, batch, cfg_dropout_prob: float = 0.0):
+        """
+        Forward pass for training that extracts data and conditions from batch.
+        Args:
+            batch: Dict with keys:
+                - "layout" or "image" or "x": input tensor (B,C,H,W) or latent embeddings (B,C,H,W)
+                - "condition" or "cond" or "embedding": optional condition tensor
+            cfg_dropout_prob: Probability of dropping condition for classifier-free guidance
+        Returns:
+            dict with:
+                - "pred_noise": predicted noise
+                - "target_noise": ground-truth noise
+                - "timesteps": timestep tensor
+                - "x_t": noisy latent
+                - "pred_x0": predicted clean latent (optional)
+        """
+        # Extract input data
+        x = None
+        for key in ["layout", "image", "x", "embedding"]:
+            if key in batch:
+                x = batch[key]
+                break
+        
+        if x is None:
+            raise ValueError("Batch must contain 'layout', 'image', 'x', or 'embedding' key")
+        
+        # Extract condition
+        cond = None
+        for key in ["condition", "cond", "embedding_cond"]:
+            if key in batch:
+                cond = batch[key]
+                break
+        
+        # Classifier-free guidance: randomly drop condition
+        if cond is not None and cfg_dropout_prob > 0.0:
+            if torch.rand(1).item() < cfg_dropout_prob:
+                cond = None
+        
+        # If using embeddings, x is already in latent space
+        # Otherwise, encode to latent space
+        if self.autoencoder is not None:
+            if x.shape[1] != self.latent_shape[0]:
+                # This is RGB, need to encode
+                x = self.autoencoder.encode_latent(x, deterministic=True)
+        else:
+            # No autoencoder, assume x is already latent
+            pass
+        
+        # Forward step
+        pred_noise, target_noise, timesteps, x_t = self.forward_step(x, cond)
+        
+        # Optionally compute pred_x0 for visualization/metrics
+        alpha_bar_t = self.scheduler.alpha_bars[timesteps].view(-1, 1, 1, 1)
+        pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * pred_noise) / torch.sqrt(alpha_bar_t)
+        pred_x0 = torch.clamp(pred_x0, -3, 3)
+        
+        return {
+            "pred_noise": pred_noise,
+            "target_noise": target_noise,
+            "timesteps": timesteps,
+            "x_t": x_t,
+            "pred_x0": pred_x0,
+            "original_latent": x,
+            "condition": cond,
+        }
 
     # -------------------------
     #   Sampling
@@ -166,6 +234,34 @@ class LatentDiffusion(nn.Module):
 
         return x_t
 
+    @torch.no_grad()
+    def training_sample(self, batch_size: int = 8, cond: Optional[torch.Tensor] = None, 
+                       device=None, num_steps: Optional[int] = None):
+        """
+        Generate samples during training for visualization.
+        Uses the model's sample() method internally.
+        Args:
+            batch_size: Number of samples to generate
+            cond: Optional condition tensor
+            device: Device to generate on
+            num_steps: Number of diffusion steps (uses scheduler default if None)
+        Returns:
+            Decoded RGB images (B, C, H, W)
+        """
+        if device is None:
+            device = next(self.backbone.parameters()).device
+        
+        # Generate samples using the inference sample() method
+        samples = self.sample(
+            batch_size=batch_size,
+            image=True,  # Decode to images
+            cond=cond,
+            num_steps=num_steps,
+            device=device,
+            verbose=False,
+        )
+        return samples
+
     # -------------------------
     #   Save / Load Configs
     # -------------------------
@@ -208,13 +304,25 @@ class LatentDiffusion(nn.Module):
     @classmethod
     def from_config(
         cls,
-        config_path: Union[str, Path],
+        config: Union[str, Path, dict],
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
+        """
+        Load LatentDiffusion from config.
+        Args:
+            config: Either a file path (str/Path) or config dict
+            device: Device to load models to
+        """
         import importlib
-
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
+        
+        # Backward compatibility: accept string path or dict
+        if isinstance(config, (str, Path)):
+            with open(config, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+        elif isinstance(config, dict):
+            cfg = config
+        else:
+            raise TypeError(f"config must be str, Path, or dict, got {type(config)}")
 
         # Scheduler
         from .components.scheduler import LinearScheduler, CosineScheduler
@@ -228,27 +336,38 @@ class LatentDiffusion(nn.Module):
             ae_cfg = cfg["autoencoder"].get("config")
             ae_ckpt = cfg["autoencoder"].get("checkpoint")
             try:
-                AutoEncoder = importlib.import_module("modules.autoencoder").AutoEncoder
+                # Try to import AutoEncoder from models.autoencoder (new) or modules.autoencoder (old)
+                try:
+                    from models.autoencoder import AutoEncoder
+                except ImportError:
+                    AutoEncoder = importlib.import_module("modules.autoencoder").AutoEncoder
+                
                 autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
                 if ae_ckpt and Path(ae_ckpt).exists():
                     ae_state = torch.load(ae_ckpt, map_location=device)
                     autoencoder.load_state_dict(ae_state.get("model", ae_state), strict=False)
-            except Exception:
+            except Exception as e:
+                print(f"[Warning] Autoencoder loading failed: {e}")
                 pass
 
         # Backbone / UNet
         unet_cfg = cfg.get("unet", {}).get("config")
         unet_ckpt = cfg.get("unet", {}).get("checkpoint")
         try:
-            UNet = importlib.import_module("modules.unet").UNet
+            # Try to import DualUNet from models.components.unet (new) or modules.unet (old)
+            try:
+                from models.components.unet import DualUNet as UNet
+            except ImportError:
+                UNet = importlib.import_module("modules.unet").UNet
+            
             backbone = UNet.from_config(unet_cfg).to(device)
             if unet_ckpt and Path(unet_ckpt).exists():
                 state = torch.load(unet_ckpt, map_location=device)
                 if "state_dict" in state:
                     state = state["state_dict"]
                 backbone.load_state_dict(state, strict=False)
-        except Exception:
-            raise RuntimeError("Backbone import failed. Check your config and module path.")
+        except Exception as e:
+            raise RuntimeError(f"Backbone import failed: {e}. Check your config and module path.")
 
         latent = cfg["latent"]
         latent_shape = (latent["channels"], latent["base"], latent["base"])

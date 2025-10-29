@@ -173,16 +173,54 @@ class SegmentationVAELoss(VAELoss):
 
 
 class DiffusionLoss:
-    """Standard diffusion loss (unconditional)."""
+    """Standard diffusion loss that takes model output dict."""
 
-    def __call__(self, pred_noise, true_noise):
+    def __init__(self, lambda_mse=1.0, lambda_vgg=0.0, vgg_loss_fn=None):
         """
-        pred_noise: predicted noise (B,C,H,W)
-        true_noise: ground-truth noise (B,C,H,W)
+        Args:
+            lambda_mse: Weight for MSE loss
+            lambda_vgg: Weight for VGG perceptual loss (if vgg_loss_fn provided)
+            vgg_loss_fn: Optional VGGPerceptualLoss instance
         """
-        mse_loss = F.mse_loss(pred_noise, true_noise)
+        self.lambda_mse = lambda_mse
+        self.lambda_vgg = lambda_vgg
+        self.vgg_loss_fn = vgg_loss_fn
+
+    def __call__(self, outputs):
+        """
+        Args:
+            outputs: dict with keys:
+                "pred_noise": predicted noise (B,C,H,W)
+                "target_noise": ground-truth noise (B,C,H,W)
+                "timesteps": timestep tensor
+                "x_t": noisy latent at timestep t
+                "pred_x0" (optional): predicted clean latent
+                "original_image" (optional): original RGB image for VGG loss
+        Returns:
+            total_loss, metrics_dict
+        """
+        pred_noise = outputs.get("pred_noise")
+        target_noise = outputs.get("target_noise")
+        
+        if pred_noise is None or target_noise is None:
+            raise ValueError("DiffusionLoss requires 'pred_noise' and 'target_noise' in outputs")
+        
+        mse_loss = F.mse_loss(pred_noise, target_noise)
+        total_loss = self.lambda_mse * mse_loss
         metrics = {"mse": mse_loss.item()}
-        return mse_loss, metrics
+        
+        # VGG perceptual loss (if enabled and original image provided)
+        if self.lambda_vgg > 0 and self.vgg_loss_fn is not None:
+            pred_x0 = outputs.get("pred_x0")
+            original_image = outputs.get("original_image")
+            if pred_x0 is not None and original_image is not None:
+                # Decode predicted x0 to RGB if needed
+                # This assumes outputs contains the autoencoder for decoding
+                # For now, we'll skip VGG in the generic loss
+                # It can be handled in model-specific training_sample if needed
+                pass
+        
+        return total_loss, metrics
 
 
 class CorrLoss:

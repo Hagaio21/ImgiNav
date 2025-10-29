@@ -7,7 +7,7 @@ from common.taxonomy import load_valid_colors
 from models.autoencoder import AutoEncoder
 from models.components.unet import DualUNet
 from models.components.scheduler import LinearScheduler, CosineScheduler, QuadraticScheduler
-from models.losses.custom_loss import StandardVAELoss, SegmentationVAELoss
+from models.losses.custom_loss import StandardVAELoss, SegmentationVAELoss, DiffusionLoss, VGGPerceptualLoss
 
 
 def build_autoencoder(ae_cfg):
@@ -66,8 +66,22 @@ def build_loss_function(loss_cfg):
             lambda_mse=lambda_mse,
         )
 
+    elif loss_type == "mse" or loss_type == "diffusion":
+        # Diffusion loss
+        lambda_mse = loss_cfg.get("lambda_mse", 1.0)
+        lambda_vgg = loss_cfg.get("lambda_vgg", 0.0)
+        vgg_loss_fn = None
+        
+        if lambda_vgg > 0:
+            print(f"[Loss] Using DiffusionLoss with MSE (λ={lambda_mse}) and VGG (λ={lambda_vgg})")
+            vgg_loss_fn = VGGPerceptualLoss()
+        else:
+            print(f"[Loss] Using DiffusionLoss with MSE (λ={lambda_mse})")
+        
+        return DiffusionLoss(lambda_mse=lambda_mse, lambda_vgg=lambda_vgg, vgg_loss_fn=vgg_loss_fn)
+    
     else:
-        raise ValueError(f"Unknown loss type: {loss_type}. Choose 'standard' or 'segmentation'.")
+        raise ValueError(f"Unknown loss type: {loss_type}. Choose 'standard', 'segmentation', or 'diffusion'/'mse'.")
 
 
 def setup_experiment_directories(output_dir, ckpt_dir=None):

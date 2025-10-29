@@ -188,11 +188,30 @@ class AutoEncoder(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def forward(self, x, deterministic=True):
+    def forward(self, batch, deterministic=None):
+        """
+        Forward pass that accepts either tensor or batch dict.
+        Args:
+            batch: Either a tensor (B,C,H,W) or dict with "layout" key
+            deterministic: If None, uses self.deterministic attribute
+        Returns:
+            dict with "recon", "seg_logits", "mu", "logvar"
+        """
+        # Extract input from batch if it's a dict
+        if isinstance(batch, dict):
+            x = batch.get("layout", batch.get("image", batch.get("x")))
+            if x is None:
+                raise ValueError("Batch dict must contain 'layout', 'image', or 'x' key")
+        else:
+            x = batch
+        
+        if deterministic is None:
+            deterministic = getattr(self, "deterministic", True)
+        
         mu, logvar = self.encoder(x)
         z = mu if deterministic else self.reparameterize(mu, logvar)
         rgb_out, seg_logits = self.decoder(z)
-        return {"recon": rgb_out, "seg_logits": seg_logits, "mu": mu, "logvar": logvar}
+        return {"recon": rgb_out, "seg_logits": seg_logits, "mu": mu, "logvar": logvar, "input": x}
 
 
 
@@ -236,6 +255,29 @@ class AutoEncoder(nn.Module):
         self.eval()
         mu, logvar = self.encoder(x)
         return mu if deterministic else self.reparameterize(mu, logvar)
+
+    @torch.no_grad()
+    def training_sample(self, batch_size: int = 4, device=None):
+        """
+        Generate samples for training visualization.
+        Samples random latents from the prior distribution.
+        Args:
+            batch_size: Number of samples to generate
+            device: Device to generate on (uses model's device if None)
+        Returns:
+            Tensor of generated images (B, C, H, W)
+        """
+        self.eval()
+        if device is None:
+            device = next(self.parameters()).device
+        
+        # Sample from prior (standard normal)
+        latent_dim = self.encoder.latent_channels
+        latent_base = self.encoder.latent_base
+        z = torch.randn(batch_size, latent_dim, latent_base, latent_base, device=device)
+        
+        rgb_out, _ = self.decoder(z)
+        return rgb_out
 
     def to_config(self):
         """Return YAML-compatible config that fully reproduces architecture."""
