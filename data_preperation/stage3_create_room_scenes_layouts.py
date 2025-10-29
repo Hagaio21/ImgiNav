@@ -16,8 +16,7 @@ from utils.geometry_utils import load_room_meta, extract_frame_from_meta
 from utils.common import create_progress_tracker, safe_mkdir
 from utils.semantic_utils import Taxonomy
 from utils.geometry_utils import (
-    world_to_local_coords
-
+    world_to_local_coords, points_to_image_coords
 )
 
 TAXONOMY = None
