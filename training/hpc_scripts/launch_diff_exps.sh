@@ -3,10 +3,10 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_sweep.%J.%I.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_sweep.%J.%I.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=24000]"
+#BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
-#BSUB -W 12:00
-#BSUB -q gpua40
+#BSUB -W 10:00
+#BSUB -q gpuv100
 
 set -euo pipefail
 

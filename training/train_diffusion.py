@@ -146,6 +146,7 @@ def main():
         sample_interval=training_cfg.get("sample_interval", 2000),
         num_samples=training_cfg.get("num_samples", 8),
         grad_clip=training_cfg.get("grad_clip"),
+        use_embeddings=dataset_cfg["return_embeddings"],
         ckpt_dir=ckpt_dir,
         output_dir=out_dir,
         experiment_name=exp_name,

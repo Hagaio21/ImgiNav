@@ -32,6 +32,7 @@ class DiffusionTrainer:
                  grad_clip=None,
                  ckpt_dir=None,
                  output_dir=None,
+                 use_embeddings=False,
                  experiment_name: str = "DiffusionExperiment",
                  logger=None):
 
@@ -47,6 +48,7 @@ class DiffusionTrainer:
         self.ckpt_dir = ckpt_dir
         self.output_dir = output_dir
         self.global_step = 0
+        self.use_embeddings = use_embeddings
 
         os.makedirs(self.output_dir, exist_ok=True)
         self.samples_dir = os.path.join(self.output_dir, "samples")
@@ -124,9 +126,14 @@ class DiffusionTrainer:
                 self.optimizer.zero_grad(set_to_none=True)
 
                 layout = self._get_layout_from_batch(batch, self.device)
-                z = self.autoencoder.encode_latent(layout)
 
+                if self.use_embeddings:  # RGB image
+                    z = self.autoencoder.encode_latent(layout)
+                else:  # Already an embedding
+                    z = self.autoencoder.encode_latent(layout)
+                    
                 pred, noise, t, z_t = self.diffusion.forward_step(z)
+
                 loss = self.loss_fn(pred, noise)
 
                 loss.backward()
