@@ -91,7 +91,7 @@ class DualUNet(nn.Module):
         self.final = nn.Conv2d(prev_ch, out_channels, 1)
 
     def forward(self, x_t, t, cond=None):
-        t_emb = self.time_mlp(t)
+        t_emb = self.time_mlp(t.float())
         skips = []
 
         # Down path

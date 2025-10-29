@@ -127,9 +127,9 @@ class DiffusionTrainer:
 
                 layout = self._get_layout_from_batch(batch, self.device)
 
-                if self.use_embeddings:  # RGB image
-                    z = self.autoencoder.encode_latent(layout)
-                else:  # Already an embedding
+                if self.use_embeddings:  
+                    z = layout
+                else: 
                     z = self.autoencoder.encode_latent(layout)
                     
                 pred, noise, t, z_t = self.diffusion.forward_step(z)

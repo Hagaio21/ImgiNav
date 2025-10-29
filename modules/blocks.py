@@ -8,7 +8,7 @@ import torch.nn.functional as F
 class TimeEmbedding(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        self.fc1 = nn.Linear(dim, dim * 4)
+        self.fc1 = nn.Linear(1, dim * 4)
         self.act = nn.SiLU()
         self.fc2 = nn.Linear(dim * 4, dim)
 
@@ -75,15 +75,25 @@ class DownBlock(nn.Module):
 class UpBlock(nn.Module):
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1):
         super().__init__()
+        # Upsample layer halves channels (in_ch -> out_ch) and doubles size
+        self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
+
+        # Res blocks process the concatenated tensor: (upsampled_x + skip)
+        # u-x has 'out_ch' channels. 'skip' has 'out_ch' channels.
+        # So the concatenated tensor has (out_ch + out_ch) channels.
         self.res_blocks = nn.ModuleList([
-            ResidualBlock(in_ch if i == 0 else out_ch, out_ch, time_dim)
+            ResidualBlock(out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim)
             for i in range(num_res_blocks)
         ])
-        self.upsample = nn.ConvTranspose2d(out_ch, out_ch, 4, 2, 1)
 
     def forward(self, x, skip, t_emb):
+        # 1. Upsample first to match spatial dimensions
+        x = self.upsample(x)
+        
+        # 2. Now concatenate with the skip connection
         x = torch.cat([x, skip], dim=1)
+        
+        # 3. Pass through residual blocks
         for res in self.res_blocks:
             x = res(x, t_emb)
-        x = self.upsample(x)
         return x
