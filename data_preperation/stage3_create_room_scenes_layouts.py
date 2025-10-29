@@ -11,10 +11,9 @@ import pandas as pd
 from PIL import Image
 import json
 
-from utils.utils import (
-    discover_files, load_room_meta, extract_frame_from_meta, 
-    find_semantic_maps_json, load_global_palette, create_progress_tracker, safe_mkdir
-)
+from utils.file_discovery import discover_files
+from utils.geometry_utils import load_room_meta, extract_frame_from_meta
+from utils.common import create_progress_tracker, safe_mkdir
 from utils.semantic_utils import Taxonomy
 from utils.geometry_utils import (
     world_to_local_coords

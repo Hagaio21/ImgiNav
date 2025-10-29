@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import json
 import math
+from pathlib import Path
 from typing import Tuple
 import numpy as np
 
@@ -72,6 +74,58 @@ def angle_between_vectors(v1: np.ndarray, v2: np.ndarray) -> float:
 
 
 def angle_from_center(center: np.ndarray, point: np.ndarray) -> float:
-
     v = point[:2] - center[:2]  # Use only XY components
     return np.arctan2(v[1], v[0])
+
+
+def load_room_meta(room_dir: Path):
+    candidates = list(room_dir.glob("*_meta.json"))
+    if not candidates:
+        candidates = list(room_dir.glob("*_scene_info.json"))
+    if not candidates:
+        return None
+
+    meta_path = candidates[0]
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    if isinstance(meta, list) and len(meta) > 0:
+        meta = meta[0]
+
+    return meta
+
+
+def extract_frame_from_meta(meta):
+    if isinstance(meta, list):
+        if not meta:
+            raise ValueError("Empty metadata list")
+        meta = meta[0]
+
+    if "origin_world" in meta:
+        origin = np.array(meta["origin_world"], dtype=np.float32)
+        u = np.array(meta["u_world"], dtype=np.float32)
+        v = np.array(meta["v_world"], dtype=np.float32)
+        n = np.array(meta["n_world"], dtype=np.float32)
+        uv_bounds = tuple(meta["uv_bounds"])
+        yaw_auto = float(meta.get("yaw_auto", 0.0))
+        map_band = tuple(meta.get("map_band_m", [0.05, 0.50]))
+        return origin, u, v, n, uv_bounds, yaw_auto, map_band
+
+    if "bounds" in meta:
+        bounds = meta["bounds"]
+        if not bounds or len(bounds) != 2:
+            raise ValueError("Invalid bounds in scene_info.json")
+
+        (xmin, ymin, zmin), (xmax, ymax, zmax) = bounds
+        origin = np.array([(xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2], dtype=np.float32)
+
+        u = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        v = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        n = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+        uv_bounds = (xmin, xmax, ymin, ymax)
+        yaw_auto = 0.0
+        map_band = (0.0, zmax - zmin)
+
+        return origin, u, v, n, uv_bounds, yaw_auto, map_band
+
+    raise KeyError("Unrecognized metadata format (no origin_world or bounds)")

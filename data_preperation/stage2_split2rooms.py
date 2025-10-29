@@ -7,11 +7,8 @@ import pandas as pd
 import json
 from pathlib import Path
 from typing import Optional, Tuple, List
-from utils.utils import (
-    discover_files, find_semantic_maps_json, 
-    get_floor_label_ids, safe_mkdir, write_json, 
-    create_progress_tracker
-)
+from utils.file_discovery import discover_files
+from utils.common import safe_mkdir, write_json, create_progress_tracker
 from utils.file_discovery import infer_scene_id
 from utils.semantic_utils import Taxonomy
 from utils.geometry_utils import pca_plane_fit
@@ -261,7 +258,7 @@ def main():
 
     # Discover input files
     manifest_path = Path(args.manifest) if args.manifest else None
-    input_files = discover_files(in_dir, args.glob, manifest_path, "scene_parquet")
+    input_files = discover_files("pointcloud", in_dir, manifest_path, args.glob, "parquet_file_path")
 
     if not input_files:
         print("No input files found", file=sys.stderr)

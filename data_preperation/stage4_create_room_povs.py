@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional, List
 from sklearn.cluster import KMeans
-from utils.utils import create_progress_tracker
+from utils.common import create_progress_tracker
 from shapely.geometry import MultiPoint
 import alphashape
 from utils.semantic_utils import Taxonomy  # Import our taxonomy class

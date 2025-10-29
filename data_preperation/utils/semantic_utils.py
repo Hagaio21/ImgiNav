@@ -22,8 +22,6 @@ class Taxonomy:
         self.ranges = self.data.get("ranges", {})
         self.structural_categories = {'wall', 'floor', 'ceiling'}
 
-
-
     # ----------------------------
     # Core name ↔ id
     # ----------------------------

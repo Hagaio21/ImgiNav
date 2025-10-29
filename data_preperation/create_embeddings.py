@@ -392,6 +392,44 @@ def create_graph_embeddings(manifest_path: Path, taxonomy_path: Path,
 
 
 # =============================================================================
+# Graph Text Generation (from create_graph_text.py)
+# =============================================================================
+
+def create_graph_text_files(manifest_path: Path, taxonomy_path: Path):
+    print(f"Loading taxonomy from {taxonomy_path}")
+    taxonomy = Taxonomy(taxonomy_path)
+    
+    print(f"Reading manifest: {manifest_path}")
+    with open(manifest_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    
+    print(f"Found {len(rows)} graphs to process")
+    
+    skipped = 0
+    for row in tqdm(rows, desc="Creating text files"):
+        graph_path = row['graph_path']
+        
+        try:
+            text = graph2text(graph_path, taxonomy)
+            
+            if not text:
+                print(f"Warning: Empty text for {graph_path}")
+                skipped += 1
+                continue
+            
+            txt_path = Path(graph_path).with_suffix('.txt')
+            txt_path.write_text(text, encoding='utf-8')
+            
+        except Exception as e:
+            print(f"Error processing {graph_path}: {e}")
+            skipped += 1
+    
+    print(f"\n✓ Processed {len(rows) - skipped}/{len(rows)} graphs successfully")
+    print(f"✓ Skipped {skipped} graphs")
+
+
+# =============================================================================
 # Main CLI
 # =============================================================================
 
@@ -404,8 +442,8 @@ def main():
     parser.add_argument(
         "--type",
         required=True,
-        choices=["layout", "pov", "graph"],
-        help="Type of embeddings to create"
+        choices=["layout", "pov", "graph", "graph_text"],
+        help="Type of embeddings to create (or graph_text for text files only)"
     )
     
     # Common arguments
@@ -463,7 +501,7 @@ def main():
     # Graph-specific arguments
     parser.add_argument(
         "--taxonomy",
-        help="Path to taxonomy.json (required for graph type)"
+        help="Path to taxonomy.json (required for graph and graph_text types)"
     )
     parser.add_argument(
         "--model",
@@ -519,6 +557,15 @@ def main():
             output_manifest=Path(args.output),
             model_name=args.model,
             save_format=args.format
+        )
+    
+    elif args.type == "graph_text":
+        if not args.manifest or not args.taxonomy:
+            parser.error("--manifest and --taxonomy are required for graph_text type")
+        
+        create_graph_text_files(
+            Path(args.manifest),
+            Path(args.taxonomy)
         )
 
 
