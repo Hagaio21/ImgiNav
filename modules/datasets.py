@@ -138,12 +138,16 @@ class LayoutDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.entries[idx]
+        path = None  # ensure path exists for error printing
         try:
             if self.return_embeddings:
-                path = row["layout_emb"]
-                if not str(path).endswith(".pt"):
+                # strict access, fail early if missing
+                if "layout_emb" not in row:
+                    raise KeyError(f"'layout_emb' column missing in row {idx}: keys={list(row.keys())}")
+                path = str(row["layout_emb"]).strip()
+                if not path.endswith(".pt"):
                     raise ValueError(f"Expected .pt file, got {path}")
-                layout = load_embedding(str(path))
+                layout = load_embedding(path)
             else:
                 path = row["layout_path"]
                 layout_rgb = load_image(path, self.transform)
@@ -151,10 +155,9 @@ class LayoutDataset(Dataset):
                     layout = self.rgb_to_class_index(layout_rgb)
                 else:
                     layout = layout_rgb
-
         except Exception as e:
             print(f"[Dataset Error] idx={idx}, path={path}, error={type(e).__name__}: {e}", flush=True)
-            raise  # raise instead of returning None for now
+            raise
 
         return {
             "scene_id": row["scene_id"],
