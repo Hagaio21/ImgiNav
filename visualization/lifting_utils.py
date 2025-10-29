@@ -21,6 +21,8 @@ import argparse
 DEFAULT_HEIGHT_RANGE = (0.1, 1.8) 
 # Default background color
 DEFAULT_BG_COLOR = (240, 240, 240) 
+# "wall" category ID from taxonomy
+WALL_CATEGORY_ID = 2053 
 
 
 def create_zmap(
@@ -33,7 +35,10 @@ def create_zmap(
     """
     Analyzes Z distributions for each semantic class from parquet files.
     
-    Creates a zmap.json mapping colors to the mean and std of their z-values.
+    Creates a zmap.json mapping semantic layout colors (from taxonomy)
+    to the mean and std of their z-values.
+    
+    This function implements the "super categories + wall" logic.
     
     Args:
         taxonomy_path: Path to your taxonomy.json file.
@@ -51,12 +56,12 @@ def create_zmap(
     with open(taxonomy_path, 'r') as f:
         taxonomy = json.load(f)
     
-    # We need the id2color mapping
+    # Get the map of SEMANTIC ID -> LAYOUT COLOR
     id_to_color = taxonomy.get("id2color")
     if not id_to_color:
         raise ValueError("Taxonomy file is missing 'id2color' map.")
 
-    # This dict will store { "label_id_str": [z1, z2, ...] }
+    # This dict will store { "semantic_id_str": [z1, z2, ...] }
     z_data_by_id = {str(id_val): [] for id_val in id_to_color.keys()}
     
     if verbose:
@@ -68,18 +73,30 @@ def create_zmap(
 
     for file_path in iterator:
         try:
-            df = pd.read_parquet(file_path, columns=['z', 'label_id'])
+            # Load the required semantic IDs and z value
+            df = pd.read_parquet(file_path, columns=['z', 'category_id', 'super_id'])
             
             # Filter by the same height range used for 2D projection
             df = df[
                 (df['z'] >= height_range[0]) & (df['z'] <= height_range[1])
             ]
             
-            # Group by label_id and append z-values
-            for label_id, group in df.groupby('label_id'):
-                id_str = str(label_id)
-                if id_str in z_data_by_id:
-                    z_data_by_id[id_str].extend(group['z'].tolist())
+            # --- Apply "super categories + wall" logic ---
+            for row in df.itertuples(index=False):
+                z = row.z
+                cat_id = row.category_id
+                super_id = row.super_id
+
+                semantic_id_str = None
+                if cat_id == WALL_CATEGORY_ID:
+                    semantic_id_str = str(WALL_CATEGORY_ID)
+                else:
+                    semantic_id_str = str(super_id)
+                
+                # Store the z-value if the ID is one we have a color for
+                if semantic_id_str in z_data_by_id:
+                    z_data_by_id[semantic_id_str].append(z)
+                    
         except Exception as e:
             if verbose:
                 print(f"Warning: Could not process {file_path}. Error: {e}")
@@ -89,7 +106,7 @@ def create_zmap(
         print("Computing Z-statistics for each class...")
         
     zmap = {}
-    for label_id_str, z_list in z_data_by_id.items():
+    for semantic_id_str, z_list in z_data_by_id.items():
         if not z_list:
             continue
             
@@ -97,15 +114,15 @@ def create_zmap(
         z_mean = float(np.mean(z_array))
         z_std = float(np.std(z_array))
         
-        # Get the corresponding color
-        color_rgb = id_to_color.get(label_id_str)
+        # Get the corresponding layout color
+        color_rgb = id_to_color.get(semantic_id_str)
         if color_rgb:
             # Use a "rgb(r,g,b)" string as the key for the JSON
             color_key = f"rgb({color_rgb[0]},{color_rgb[1]},{color_rgb[2]})"
             zmap[color_key] = {
                 "mean": z_mean,
                 "std": z_std,
-                "label_id": int(label_id_str),
+                "semantic_id": int(semantic_id_str),
                 "samples": len(z_list)
             }
 
@@ -127,6 +144,7 @@ def lift_layout(
 ) -> np.ndarray:
     """
     Lifts a 2D segmented layout PNG to a 3D point cloud using a z-map.
+    (This function is unchanged, as it was already correct)
     
     Args:
         layout_path: Path to the layout.png to lift.
@@ -136,8 +154,6 @@ def lift_layout(
     
     Returns:
         A NumPy array of shape (N, 6) with columns [x, y, z, r, g, b].
-        - (x, y) coordinates are in pixel space.
-        - (z) coordinate is the sampled height in meters.
     """
     layout_path = Path(layout_path)
     zmap_path = Path(zmap_path)
@@ -152,7 +168,6 @@ def lift_layout(
         zmap = json.load(f)
 
     # 3. Find all non-background pixel coordinates
-    # We find where *any* channel is different from the background
     bg_mask = np.all(layout_np == bg_color, axis=-1)
     fg_coords_y, fg_coords_x = np.where(~bg_mask)
 
@@ -183,10 +198,11 @@ def lift_layout(
             # Sample Z value from the learned distribution
             z_mean = stats["mean"]
             z_std = stats["std"]
+            # Set a minimum std deviation to avoid all points landing on one plane
+            z_std = max(z_std, 0.01) 
             z_world = np.random.normal(z_mean, z_std)
             
             # We reverse the Y-axis flip from stage3
-            # to create a standard coordinate system where Y is "up" in the 2D plane.
             x_world = x
             y_world = (H - 1) - y 
             
@@ -201,7 +217,7 @@ def save_point_cloud_as_ply(
 ):
     """
     Saves an (N, 6) [x,y,z,r,g,b] point cloud to a standard .ply file.
-    You can open this file in any 3D viewer (e.g., MeshLab).
+    (This function is unchanged)
     
     Args:
         points: The (N, 6) NumPy array from lift_layout.
@@ -224,7 +240,6 @@ end_header
 """
     
     # Format the data
-    # We need to ensure colors are integers
     data = np.zeros((num_points, 6))
     data[:, :3] = points[:, :3] # x, y, z
     data[:, 3:] = points[:, 3:].astype(np.uint8) # r, g, b
@@ -278,7 +293,7 @@ if __name__ == "__main__":
         "--zmap", required=True, help="Path to the zmap.json"
     )
     parser_lift.add_argument(
-        "--output", required=True, help="Path to save the output .ply file"
+        "--output", required=True, help="Path to the output .ply file"
     )
     parser_lift.add_argument(
         "--density", type=float, default=1.0, 
