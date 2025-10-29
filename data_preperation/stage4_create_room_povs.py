@@ -11,10 +11,10 @@ import time
 from pathlib import Path
 from typing import Optional, List
 from sklearn.cluster import KMeans
-from utils.common import create_progress_tracker, write_json
+from common.utils import create_progress_tracker, write_json
 from shapely.geometry import MultiPoint
 import alphashape
-from utils.semantic_utils import Taxonomy
+from common.taxonomy import Taxonomy
 from utils.geometry_utils import load_room_meta, extract_frame_from_meta
 
 # only for HPC

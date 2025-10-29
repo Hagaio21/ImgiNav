@@ -5,9 +5,8 @@ from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as T
 import torch
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
-from utils.common import safe_mkdir
-from models.datasets import LayoutDataset, collate_skip_none
+from common.utils import safe_mkdir
+from models.datasets import LayoutDataset, collate_skip_none, build_datasets, build_dataloaders, save_split_csvs
 from models.autoencoder import AutoEncoder
 from models.components.unet import DualUNet
 from models.components.scheduler import LinearScheduler, CosineScheduler, QuadraticScheduler
@@ -15,61 +14,7 @@ from training.diffusion_trainer import DiffusionTrainer
 
 
 # ---------------------------- Dataset ---------------------------- #
-
-def build_datasets(dataset_cfg):
-    """
-    Build train/val datasets from manifest and configuration.
-    Supports both raw layouts and precomputed latent embeddings.
-    """
-    manifest_path = dataset_cfg["manifest"]
-    split_ratio = dataset_cfg.get("split_ratio", 0.9)
-    seed = dataset_cfg.get("seed", 42)
-    transform = T.ToTensor() if dataset_cfg.get("return_embeddings", False) is False else None
-
-    dataset = LayoutDataset(
-        manifest_path=manifest_path,
-        transform=transform,
-        mode="all",
-        one_hot=dataset_cfg.get("one_hot", False),
-        taxonomy_path=dataset_cfg.get("taxonomy_path"),
-        return_embeddings=dataset_cfg.get("return_embeddings", False),
-        skip_empty=dataset_cfg.get("skip_empty", True),
-    )
-
-    n_total = len(dataset)
-    n_train = int(n_total * split_ratio)
-    n_val = n_total - n_train
-    gen = torch.Generator().manual_seed(seed)
-
-    train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=gen)
-    return train_ds, val_ds
-
-
-def save_split_csvs(train_ds, val_ds, output_dir):
-    train_paths = [train_ds.dataset.entries[i]["layout_path"] for i in train_ds.indices]
-    val_paths = [val_ds.dataset.entries[i]["layout_path"] for i in val_ds.indices]
-    pd.DataFrame({"layout_path": train_paths}).to_csv(os.path.join(output_dir, "trained_on.csv"), index=False)
-    pd.DataFrame({"layout_path": val_paths}).to_csv(os.path.join(output_dir, "evaluated_on.csv"), index=False)
-
-
-def build_dataloaders(dataset_cfg):
-    transform = T.ToTensor()
-    manifest = dataset_cfg["manifest"]
-    split_ratio = dataset_cfg.get("split_ratio", 0.9)
-    seed = dataset_cfg.get("seed", 42)
-    batch_size = dataset_cfg.get("batch_size", 16)
-    num_workers = dataset_cfg.get("num_workers", 4)
-    shuffle = dataset_cfg.get("shuffle", True)
-
-    random.seed(seed)
-    torch.manual_seed(seed)
-
-    train_ds, val_ds = build_datasets(dataset_cfg)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle,
-                              num_workers=num_workers, collate_fn=collate_skip_none)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                            num_workers=num_workers, collate_fn=collate_skip_none)
-    return train_ds, val_ds, train_loader, val_loader
+# Dataset building functions are now in models.datasets.utils
 
 
 # ---------------------------- Builders ---------------------------- #

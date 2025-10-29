@@ -12,8 +12,8 @@ import trimesh
 from scipy.spatial.transform import Rotation
 
 # --- imports ---
-from utils.semantic_utils import Taxonomy
-from utils.common import (
+from common.taxonomy import Taxonomy
+from common.utils import (
     load_config_with_profile, create_progress_tracker,
     safe_mkdir, write_json
 )

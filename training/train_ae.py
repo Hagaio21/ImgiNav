@@ -11,44 +11,14 @@ from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as T
 
 # Add project root to path
-from models.datasets import LayoutDataset, collate_skip_none
+from models.datasets import LayoutDataset, collate_skip_none, build_datasets, build_dataloaders, save_split_csvs
 from models.autoencoder import AutoEncoder
 from training.autoencoder_trainer import AutoEncoderTrainer
 from models.losses.custom_loss import StandardVAELoss, SegmentationVAELoss
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
-from utils.semantic_utils import load_valid_colors
-from utils.common import safe_mkdir
-
-def build_datasets(manifest_path, split_ratio, seed, transform, dataset_cfg):
-    dataset = LayoutDataset(
-        manifest_path,
-        transform=transform,
-        mode="all",
-        one_hot=dataset_cfg.get("one_hot", False),
-        taxonomy_path=dataset_cfg.get("taxonomy_path"),
-    )
-
-    n_total = len(dataset)
-    n_train = int(n_total * split_ratio)
-    n_val = n_total - n_train
-
-    generator = torch.Generator().manual_seed(seed)
-    train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=generator)
-
-    return train_ds, val_ds
-
-
-def save_split_csvs(train_ds, val_ds, output_dir):
-    train_paths = [train_ds.dataset.entries[i]["layout_path"] for i in train_ds.indices]
-    val_paths = [val_ds.dataset.entries[i]["layout_path"] for i in val_ds.indices]
-
-    train_df = pd.DataFrame({"layout_path": train_paths})
-    val_df = pd.DataFrame({"layout_path": val_paths})
-
-    train_df.to_csv(os.path.join(output_dir, "trained_on.csv"), index=False)
-    val_df.to_csv(os.path.join(output_dir, "evaluated_on.csv"), index=False)
+from common.taxonomy import load_valid_colors
+from common.utils import safe_mkdir
 
 
 def build_loss_function(loss_cfg):
@@ -137,13 +107,7 @@ def main():
     torch.manual_seed(seed)
     transform = T.ToTensor()
 
-    train_ds, val_ds = build_datasets(
-        manifest_path=dataset_cfg["manifest"],
-        split_ratio=dataset_cfg.get("split_ratio", 0.9),
-        seed=seed,
-        transform=transform,
-        dataset_cfg=dataset_cfg,
-    )
+    train_ds, val_ds = build_datasets(dataset_cfg, transform=transform)
 
     batch_size = dataset_cfg.get("batch_size", 32)
     num_workers = dataset_cfg.get("num_workers", 4)
@@ -157,7 +121,6 @@ def main():
         val_ds, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=True, collate_fn=collate_skip_none
     )
-
 
     save_split_csvs(train_ds, val_ds, out_dir)
 

@@ -6,10 +6,8 @@ from PIL import Image
 import torch
 import numpy as np
 import json
-import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "data_preperation"))
-from utils.semantic_utils import Taxonomy
+from common.taxonomy import Taxonomy
 
 from .utils import load_image, load_embedding, load_graph_text, valid_path, compute_sample_weights
 

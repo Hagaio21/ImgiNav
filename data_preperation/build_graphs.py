@@ -15,14 +15,14 @@ from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN
 
 from utils.geometry_utils import angle_from_center, compute_directional_relations
-from utils.common import write_json
+from common.utils import write_json
 
 
 # =============================================================================
 # File Discovery - Imported from utils.file_discovery
 # =============================================================================
 from utils.file_discovery import find_layouts, find_scene_pointclouds
-from utils.semantic_utils import Taxonomy
+from common.taxonomy import Taxonomy
 
 
 # =============================================================================

@@ -11,8 +11,7 @@ from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
-from utils.common import safe_mkdir
+from common.utils import safe_mkdir
 from models.diffusion import LatentDiffusion
 # *** ADD THIS: Import your new loss class ***
 from models.losses.custom_loss import VGGPerceptualLoss

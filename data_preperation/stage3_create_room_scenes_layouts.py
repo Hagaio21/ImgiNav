@@ -13,8 +13,8 @@ import json
 
 from utils.file_discovery import discover_files
 from utils.geometry_utils import load_room_meta, extract_frame_from_meta
-from utils.common import create_progress_tracker, safe_mkdir, write_json
-from utils.semantic_utils import Taxonomy
+from common.utils import create_progress_tracker, safe_mkdir, write_json
+from common.taxonomy import Taxonomy
 from utils.geometry_utils import (
     world_to_local_coords, points_to_image_coords
 )

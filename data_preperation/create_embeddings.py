@@ -25,7 +25,7 @@ except ImportError:
     AutoEncoder = None  # Will fail gracefully if not available
 
 from utils.text_utils import articleize, graph2text
-from utils.semantic_utils import Taxonomy
+from common.taxonomy import Taxonomy
 
 
 # =============================================================================

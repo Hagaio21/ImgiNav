@@ -10,8 +10,7 @@ from torchvision.utils import save_image
 import yaml
 from tqdm import tqdm
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
-from utils.common import safe_mkdir
+from common.utils import safe_mkdir
 
 
 class AutoEncoderTrainer:

@@ -8,9 +8,7 @@ from PIL import Image
 import argparse
 from pathlib import Path
 
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
-from utils.common import safe_mkdir
+from common.utils import safe_mkdir
 from models.autoencoder import AutoEncoder
 
 

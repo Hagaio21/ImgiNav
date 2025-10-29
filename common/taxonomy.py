@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from utils.common import write_json, safe_mkdir
+from common.utils import write_json, safe_mkdir
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches

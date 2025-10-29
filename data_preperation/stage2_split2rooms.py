@@ -8,9 +8,9 @@ import json
 from pathlib import Path
 from typing import Optional, Tuple, List
 from utils.file_discovery import discover_files
-from utils.common import safe_mkdir, write_json, create_progress_tracker
+from common.utils import safe_mkdir, write_json, create_progress_tracker
 from utils.file_discovery import infer_ids_from_path
-from utils.semantic_utils import Taxonomy
+from common.taxonomy import Taxonomy
 from utils.geometry_utils import pca_plane_fit, world_to_local_coords, build_orthonormal_frame
 TAXONOMY: Taxonomy = None
 
