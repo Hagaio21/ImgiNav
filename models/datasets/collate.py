@@ -8,13 +8,19 @@ layout_transform = transforms.ToTensor()
 
 def _is_empty_batch(batch):
     """Check if batch is empty or None."""
-    return not batch
+    return not batch or len(batch) == 0
 
 def collate_skip_none(batch):
-    """Collate function that skips None values."""
+    """Collate function that handles empty batches and skips None values."""
     if _is_empty_batch(batch):
         return None
-    return default_collate(batch)
+    
+    # Filter out None values from batch
+    filtered_batch = [item for item in batch if item is not None]
+    if not filtered_batch:
+        return None
+        
+    return default_collate(filtered_batch)
 
 def collate_fn(batch):
     # Check if batch is empty

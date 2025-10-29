@@ -1,23 +1,18 @@
-# modules/trainer.py
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import json
 import torch
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
-import yaml
-from tqdm import tqdm
-from pathlib import Path
-from common.utils import safe_mkdir, set_seeds, extract_tensor_from_batch, MetricsLogger, save_checkpoint
+from training.base_trainer import BaseTrainer
+from training.utils import save_model_config
 
 
-class AutoEncoderTrainer:
+class AutoEncoderTrainer(BaseTrainer):
     def __init__(
         self,
         autoencoder,
-        loss_fn,  # Now accepts any callable loss function
+        loss_fn,
         epochs=10,
         log_interval=10,
         sample_interval=100,
@@ -27,120 +22,78 @@ class AutoEncoderTrainer:
         ckpt_dir="ae_outputs/checkpoints",
         device=None,
     ):
+        super().__init__(
+            epochs=epochs,
+            log_interval=log_interval,
+            sample_interval=sample_interval,
+            eval_interval=eval_interval,
+            output_dir=output_dir,
+            ckpt_dir=ckpt_dir,
+            device=device,
+        )
         self.autoencoder = autoencoder
         self.loss_fn = loss_fn
-        self.epochs = epochs
-        self.log_interval = log_interval
-        self.sample_interval = sample_interval
-        self.eval_interval = eval_interval
-        self.output_dir = output_dir
-        self.ckpt_dir = ckpt_dir
         self.lr = lr
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-        safe_mkdir(Path(self.output_dir))
-        safe_mkdir(Path(self.ckpt_dir))
-        safe_mkdir(Path(self.output_dir) / "samples")
-
         self.optimizer = torch.optim.Adam(self.autoencoder.parameters(), lr=self.lr)
-        self.metrics_logger = MetricsLogger(self.output_dir)
-
-    def _get_batch(self, batch):
-        """Helper to extract tensor from various batch types."""
-        return extract_tensor_from_batch(batch, device=self.device, key="layout")
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader = None):
         self.autoencoder.train()
         self.autoencoder.to(self.device)
         step = 0
 
-        # Save config
-        cfg_path = os.path.join(self.output_dir, "autoencoder_config.yaml")
-        try:
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(self.autoencoder.to_config(), f)
-            print(f"[Config] Saved: {cfg_path}", flush=True)
-        except Exception as e:
-            print(f"[Config] ERROR: Could not save config: {e}", flush=True)
-
+        save_model_config(self.autoencoder, self.output_dir)
         print(f"Training VAE for {self.epochs} epochs on {self.device}", flush=True)
 
         for epoch in range(1, self.epochs + 1):
             epoch_metrics = {}
 
-            with tqdm(train_loader,
-                      desc=f"Epoch {epoch}/{self.epochs}",
-                      unit="batch",
-                      file=sys.stdout,
-                      ncols=100,
-                      dynamic_ncols=True,
-                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
-
+            with self._create_progress_bar(train_loader, epoch, self.epochs) as pbar:
                 for batch_idx, batch in enumerate(pbar):
                     x = self._get_batch(batch)
                     outputs = self.autoencoder(x, deterministic=getattr(self.autoencoder, "deterministic", True))
                     loss_output = self.loss_fn(x, outputs)
 
-                    # Call loss function - it returns (total_loss, *components, metrics_dict)
                     total_loss = loss_output[0]
-                    metrics = loss_output[-1]  # Last element is always metrics dict
+                    metrics = loss_output[-1]
 
                     self.optimizer.zero_grad()
                     total_loss.backward()
                     self.optimizer.step()
 
-                    # Accumulate epoch metrics
-                    for key, val in metrics.items():
-                        epoch_metrics[key] = epoch_metrics.get(key, 0) + val
-
+                    epoch_metrics = self._accumulate_metrics(metrics, epoch_metrics)
                     step += 1
 
-                    # Logging
-                    if step % self.log_interval == 0:
-                        log_entry = {"epoch": epoch, "step": step}
-                        for key, val in metrics.items():
-                            log_entry[f"train_{key}"] = val
-                        self.metrics_logger.log(log_entry)
-                        
-                        # Format log message
-                        metric_str = ", ".join([f"{k}={v:.5f}" for k, v in metrics.items()])
+                    if self._should_log(step):
+                        log_entry = self._log_metrics(metrics, step, epoch, prefix="train")
+                        metric_str = self._format_metric_string(metrics)
                         pbar.write(f"[Epoch {epoch}] Step {step} | {metric_str}")
 
-                    # Save samples
-                    if self.sample_interval and step % self.sample_interval == 0:
+                    if self._should_sample(step):
                         self._save_sample(x, outputs["recon"], step)
 
-                    # Update progress bar
                     pbar.set_postfix({"loss": f"{total_loss.item():.4f}"})
 
-            # Epoch summary
             n_batches = len(train_loader)
-            avg_metrics = {k: v / n_batches for k, v in epoch_metrics.items()}
-            metric_str = ", ".join([f"{k}={v:.5f}" for k, v in avg_metrics.items()])
+            avg_metrics = self._average_metrics(epoch_metrics, n_batches)
+            metric_str = self._format_metric_string(avg_metrics)
             print(f"[Epoch {epoch}] Train Avg | {metric_str}", flush=True)
 
-            # Validation
-            if val_loader is not None and (self.eval_interval and epoch % self.eval_interval == 0):
+            if val_loader is not None and self._should_validate(epoch):
                 val_metrics = self.evaluate(val_loader)
-                metric_str = ", ".join([f"{k}={v:.5f}" for k, v in val_metrics.items()])
+                metric_str = self._format_metric_string(val_metrics)
                 print(f"[Epoch {epoch}] Val Avg | {metric_str}", flush=True)
-
-                # Add to log
-                log_entry = {"epoch": epoch, "step": step}
-                for key, val in val_metrics.items():
-                    log_entry[f"val_{key}"] = val
-                self.metrics_logger.log(log_entry)
+                self._log_metrics(val_metrics, step, epoch, prefix="val")
 
             self._save_checkpoint(epoch)
             self._save_metrics()
-            self._plot_losses()
+            self.metrics_logger.create_all_plots()
 
         print("Autoencoder training complete.", flush=True)
-
-        # Save final model
-        final_path = os.path.join(self.ckpt_dir, "ae_latest.pt")
-        save_checkpoint(self.autoencoder.state_dict(), final_path, metadata={"epoch": self.epochs, "final": True})
-        print(f"[Checkpoint] Saved final model: {final_path}")
+        self._save_checkpoint_base(
+            self.autoencoder.state_dict(),
+            "ae_latest.pt",
+            metadata={"epoch": self.epochs, "final": True}
+        )
 
     @torch.no_grad()
     def evaluate(self, val_loader: DataLoader):
@@ -151,19 +104,13 @@ class AutoEncoderTrainer:
         for batch in val_loader:
             x = self._get_batch(batch)
             outputs = self.autoencoder(x, deterministic=getattr(self.autoencoder, "deterministic", True))
-            
-            # Call loss function
-            loss_output = self.loss_fn(x, outputs) # <-- CHANGE
+            loss_output = self.loss_fn(x, outputs)
             metrics = loss_output[-1]
             
-            # Accumulate
-            for key, val in metrics.items():
-                total_metrics[key] = total_metrics.get(key, 0) + val
+            total_metrics = self._accumulate_metrics(metrics, total_metrics)
             n += 1
 
-        # Average
-        avg_metrics = {k: v / max(n, 1) for k, v in total_metrics.items()}
-        
+        avg_metrics = self._average_metrics(total_metrics, n)
         self.autoencoder.train()
         return avg_metrics
 
@@ -177,70 +124,11 @@ class AutoEncoderTrainer:
         print(f"[Sample] Saved: {path}")
 
     def _save_checkpoint(self, epoch):
-        path = os.path.join(self.ckpt_dir, f"ae_epoch_{epoch}.pt")
-        save_checkpoint(self.autoencoder.state_dict(), path, metadata={"epoch": epoch})
-        print(f"[Checkpoint] Saved: {path}")
+        self._save_checkpoint_base(
+            self.autoencoder.state_dict(),
+            f"ae_epoch_{epoch}.pt",
+            metadata={"epoch": epoch}
+        )
 
     def _save_metrics(self):
-        # Metrics are automatically saved by MetricsLogger
         pass
-
-    def _plot_losses(self):
-        """Dynamic plotting based on available metrics."""
-        metric_log = self.metrics_logger.get_metrics()
-        if not metric_log:
-            return
-
-        # Extract all unique metric keys
-        train_keys = set()
-        val_keys = set()
-        for entry in metric_log:
-            for key in entry.keys():
-                if key.startswith("train_"):
-                    train_keys.add(key)
-                elif key.startswith("val_"):
-                    val_keys.add(key)
-
-        if not train_keys:
-            return
-
-        # Group metrics by type (excluding step/epoch)
-        metric_names = sorted(set(k.replace("train_", "").replace("val_", "") 
-                                 for k in train_keys | val_keys))
-        
-        # Create subplots
-        n_plots = len(metric_names)
-        fig, axes = plt.subplots(n_plots, 1, figsize=(10, 4 * n_plots), 
-                                 sharex=True, squeeze=False)
-        axes = axes.flatten()
-
-        for idx, metric in enumerate(metric_names):
-            ax = axes[idx]
-            
-            # Train data
-            train_key = f"train_{metric}"
-            steps = [m["step"] for m in metric_log if train_key in m]
-            values = [m[train_key] for m in metric_log if train_key in m]
-            if steps:
-                ax.plot(steps, values, label=f"Train {metric}", alpha=0.7)
-            
-            # Val data
-            val_key = f"val_{metric}"
-            val_steps = [m["step"] for m in metric_log if val_key in m]
-            val_values = [m[val_key] for m in metric_log if val_key in m]
-            if val_steps:
-                ax.plot(val_steps, val_values, label=f"Val {metric}", 
-                       marker='o', linestyle='--')
-            
-            ax.set_ylabel(metric)
-            ax.legend()
-            ax.grid(True)
-            ax.set_title(f"{metric.upper()}")
-
-        axes[-1].set_xlabel("Step")
-        plt.tight_layout()
-        
-        plot_path = os.path.join(self.output_dir, "loss_curves.png")
-        plt.savefig(plot_path)
-        plt.close(fig)
-        print(f"[Plot] Updated: {plot_path}")

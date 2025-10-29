@@ -10,25 +10,8 @@ from pathlib import Path
 
 from common.utils import safe_mkdir
 from models.autoencoder import AutoEncoder
-
-
-# Import load_image from utils instead of defining locally
 from models.datasets.utils import load_image
-
-
-def validate_embedding_shape(z, expected_dims=3):
-    """
-    Validate and fix embedding shape.
-    Expected shape: (channels, height, width) - 3D tensor
-    """
-    if z.dim() == 4 and z.shape[0] == 1:
-        # Remove batch dimension if present
-        z = z.squeeze(0)
-    
-    if z.dim() != expected_dims:
-        raise ValueError(f"Expected {expected_dims}D tensor, got {z.dim()}D with shape {z.shape}")
-    
-    return z
+from training.utils import validate_embedding_shape
 
 
 def main(args):

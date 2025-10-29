@@ -1,51 +1,16 @@
-import os, sys, yaml, random, torch, argparse, pandas as pd
+import os, sys, yaml, argparse
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from torch.utils.data import DataLoader, random_split
-import torchvision.transforms as T
-import torch
-from pathlib import Path
-from common.utils import safe_mkdir, set_seeds
-from models.datasets import LayoutDataset, collate_skip_none, build_datasets, build_dataloaders, save_split_csvs
-from models.autoencoder import AutoEncoder
-from models.components.unet import DualUNet
-from models.components.scheduler import LinearScheduler, CosineScheduler, QuadraticScheduler
+from models.datasets import build_dataloaders, save_split_csvs
 from training.diffusion_trainer import DiffusionTrainer
-
-
-# ---------------------------- Dataset ---------------------------- #
-# Dataset building functions are now in models.datasets.utils
-
-
-# ---------------------------- Builders ---------------------------- #
-
-def build_autoencoder(ae_cfg):
-    ae_cfg_path = ae_cfg["config"]
-    ae_ckpt_path = ae_cfg["checkpoint"]
-    ae = AutoEncoder.from_config(ae_cfg_path)
-    state = torch.load(ae_ckpt_path, map_location="cpu")
-    ae.load_state_dict(state.get("model", state))
-    ae.eval()
-    return ae
-
-
-def build_scheduler(sched_cfg):
-    sched_type = sched_cfg.get("type", "cosine").lower()
-    num_steps = sched_cfg.get("num_steps", 1000)
-    if sched_type == "cosine":
-        return CosineScheduler(num_steps=num_steps)
-    if sched_type == "linear":
-        return LinearScheduler(num_steps=num_steps)
-    if sched_type == "quadratic":  # <-- ADD THIS LINE
-        return QuadraticScheduler(num_steps=num_steps)  # <-- AND ADD THIS LINE
-    raise ValueError(f"Unknown scheduler type: {sched_type}")
-
-
-def build_unet(unet_cfg):
-    return DualUNet.from_config(unet_cfg)
-
-
-# ---------------------------- Main ---------------------------- #
+from training.utils import (
+    build_autoencoder,
+    build_scheduler,
+    build_unet,
+    setup_experiment_directories,
+    save_experiment_config,
+    setup_training_environment
+)
 
 def main():
     parser = argparse.ArgumentParser(description="Run Latent Diffusion Experiment")
@@ -55,7 +20,6 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    # --- Parse experiment ---
     exp_cfg = cfg.get("experiment", {})
     exp_name = exp_cfg.get("name", "UnnamedDiffusion")
     base_path = exp_cfg.get("base_path", "./experiments")
@@ -63,10 +27,8 @@ def main():
 
     out_dir = os.path.join(exp_path, "output")
     ckpt_dir = os.path.join(exp_path, "checkpoints")
-    safe_mkdir(Path(out_dir))
-    safe_mkdir(Path(ckpt_dir))
+    out_dir, ckpt_dir = setup_experiment_directories(out_dir, ckpt_dir)
     
-    # --- Load configs ---
     dataset_cfg = cfg["dataset"]
     model_cfg = cfg["model"]
     training_cfg = cfg["training"]
@@ -115,11 +77,7 @@ def main():
         
     trainer.fit(train_loader, val_loader)
 
-    # --- Save unified experiment YAML ---
-    exp_save_path = os.path.join(out_dir, "experiment_config.yaml")
-    with open(exp_save_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f)
-    print(f"[Config] Saved experiment config to {exp_save_path}")
+    save_experiment_config(cfg, out_dir)
 
 
 if __name__ == "__main__":
