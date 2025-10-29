@@ -1,52 +1,72 @@
 #!/bin/bash
-#BSUB -J analyze_embeddings
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/visualization/hpc_scripts/logs/analyze_embeddings.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/visualization/hpc_scripts/logs/analyze_embeddings.%J.err
-#BSUB -n 4
-#BSUB -R "rusage[mem=16000]"
-#BSUB -W 2:00
+#BSUB -J create_zmap
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/visualization/hpc_scripts/logs/create_zmap.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/visualization/hpc_scripts/logs/create_zmap.%J.err
+#BSUB -n 8
+#BSUB -R "rusage[mem=32000]"
+#BSUB -W 10:00
 #BSUB -q hpc
+set -euo pipefail
 
-# ----------------------------------------------------------------------
-# Configuration
-# --- Paths ---
-SCRIPT_PATH="/work3/s233249/ImgiNav/ImgiNav/visualization/analyze_embeddings.py"
-EMBEDDINGS_DIR="/work3/s233249/ImgiNav/ImgiNav/visualization/saved_embeddings"
-OUTPUT_DIR="/work3/s233249/ImgiNav/ImgiNav/visualization/latent_analysis_results"
+# =============================================================================
+# PATHS
+# =============================================================================
+# --- Base project directory
+BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 
-# Optional: specify models to analyze (leave empty to analyze all)
-# MODELS=("VAE_512_64x64x4_MSE" "VAE_512_64x64x4_SegLoss")
-MODELS=()
+# --- The python script to run
+PYTHON_SCRIPT="${BASE_DIR}/visualization/lifting_utils.py"
 
-echo "Analyzing embeddings from: ${EMBEDDINGS_DIR}"
-echo "Outputting results to: ${OUTPUT_DIR}"
+# --- Directory containing all your scene/room parquet files
+# !!! PLEASE VERIFY THIS PATH !!!
+PARQUET_ROOT_DIR="/work3/s233249/ImgiNav/datasets/scenes" 
 
-# ----------------------------------------------------------------------
-# Conda environment
+# --- Input Taxonomy and Output Z-Map
+CONFIG_DIR="${BASE_DIR}/config"
+TAXONOMY_FILE="${CONFIG_DIR}/taxonomy.json"
+OUTPUT_ZMAP_FILE="${CONFIG_DIR}/zmap.json"
+
+# =============================================================================
+# MODULES
+# =============================================================================
+# Load modules required by the conda environment
+module load cuda/11.8
+module load cudnn/v8.6.0.163-prod-cuda-11.X
+export MKL_INTERFACE_LAYER=LP64
+
+# =============================================================================
+# CONDA ENV
+# =============================================================================
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate imginav || true
+  conda activate imginav || {
+    echo "Failed to activate conda environment 'imginav'" >&2
+    conda activate scenefactor || {
+      echo "Failed to activate any conda environment" >&2
+      exit 1
+    }
+  }
 fi
 
-# ----------------------------------------------------------------------
-# Create output directory
-mkdir -p "${OUTPUT_DIR}"
+# =============================================================================
+# RUN
+# =============================================================================
+echo "=========================================="
+echo "Running Z-Map Creation"
+echo "Taxonomy: ${TAXONOMY_FILE}"
+echo "Source: ${PARQUET_ROOT_DIR}"
+echo "Output: ${OUTPUT_ZMAP_FILE}"
+echo "Start: $(date)"
+echo "=========================================="
 
-# ----------------------------------------------------------------------
-# Run analysis
+python "${PYTHON_SCRIPT}" create-zmap \
+    --taxonomy "${TAXONOMY_FILE}" \
+    --parquets "${PARQUET_ROOT_DIR}/**/*.parquet" \
+    --output "${OUTPUT_ZMAP_FILE}" \
+    --hmin 0.1 \
+    --hmax 1.8
 
-# Build options array
-OPTS=(
-    --embeddings_dir "${EMBEDDINGS_DIR}"
-    --output_dir "${OUTPUT_DIR}"
-)
-
-# Add models if specified
-if [ ${#MODELS[@]} -gt 0 ]; then
-    OPTS+=(--models "${MODELS[@]}")
-fi
-
-# Run the script
-python "${SCRIPT_PATH}" "${OPTS[@]}"
-
-echo "Analysis completed successfully"
+echo "=========================================="
+echo "Z-Map creation COMPLETE"
+echo "End: $(date)"
+echo "=========================================="
