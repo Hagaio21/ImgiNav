@@ -297,6 +297,23 @@ class LatentDiffusion(nn.Module):
         if self.autoencoder is not None:
             self.autoencoder.to(device)
         return self
+    
+    def state_dict(self, trainable_only: bool = True):
+        """
+        Return state dict for saving.
+        By default, only returns trainable components (backbone).
+        Set trainable_only=False to include autoencoder and scheduler.
+        """
+        if trainable_only:
+            # Only save the trainable backbone
+            return self.backbone.state_dict()
+        else:
+            # Save all components (for full model checkpoint)
+            return {
+                "backbone": self.backbone.state_dict(),
+                "scheduler": self.scheduler.state_dict() if hasattr(self.scheduler, 'state_dict') else {},
+                "autoencoder": self.autoencoder.state_dict() if self.autoencoder is not None else {},
+            }
 
     # -------------------------
     #   Config Loader

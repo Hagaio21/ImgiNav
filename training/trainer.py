@@ -248,16 +248,13 @@ class Trainer(BaseTrainer):
         )
     
     def _get_model_state_dict(self):
-        """Extract state dict from model (handles wrapped models)."""
+        """Extract state dict from model - completely generic."""
+        # Try standard PyTorch model interface first
         if hasattr(self.model, 'state_dict'):
             return self.model.state_dict()
-        elif hasattr(self.model, 'backbone'):
-            # For LatentDiffusion, save backbone
-            return self.model.backbone.state_dict()
+        # Fallback: try to get state dict from any nn.Module
+        elif isinstance(self.model, torch.nn.Module):
+            return self.model.state_dict()
         else:
-            # Try to find a trainable submodule
-            for name, module in self.model.named_modules():
-                if len(list(module.parameters())) > 0:
-                    return module.state_dict()
-            raise ValueError("Could not extract state dict from model")
+            raise ValueError(f"Model {type(self.model)} does not support state_dict()")
 
