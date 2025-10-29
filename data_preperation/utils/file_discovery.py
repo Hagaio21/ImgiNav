@@ -153,17 +153,6 @@ def find_room_files(root: Path, manifest: Optional[Path] = None,
     return []
 
 
-def find_room_parquets(root: Path, manifest: Optional[Path] = None) -> List[Path]:
-    """Deprecated: Use find_room_files instead."""
-    return find_room_files(root, manifest)
-
-
-def discover_rooms(root: Path, pattern: Optional[str] = None,
-                  manifest: Optional[Path] = None) -> List[Path]:
-    """Deprecated: Use find_room_files instead."""
-    return find_room_files(root, manifest, pattern)
-
-
 def gather_paths_from_sources(file_path: Optional[str] = None, patterns: Optional[List[str]] = None,
                              list_file: Optional[str] = None) -> List[Path]:
     all_paths = []
@@ -209,10 +198,6 @@ def gather_paths_from_sources(file_path: Optional[str] = None, patterns: Optiona
     return unique
 
 
-# =============================================================================
-# ID Inference from Paths
-# =============================================================================
-
 def infer_ids_from_path(path: Path) -> Tuple[str, int]:
     stem = path.stem  # filename without extension
     
@@ -249,25 +234,9 @@ def infer_ids_from_path(path: Path) -> Tuple[str, int]:
     return stem, -1
 
 
-def infer_scene_id(path: Path) -> str:
-    """Deprecated: Use infer_ids_from_path(path)[0] instead."""
-    scene_id, _ = infer_ids_from_path(path)
-    return scene_id
-
-
-def infer_room_id(path: Path) -> int:
-    """Deprecated: Use infer_ids_from_path(path)[1] instead."""
-    _, room_id = infer_ids_from_path(path)
-    return room_id
-
-
-
 def discover_scenes(room_files: Optional[List[Path]] = None, 
                    manifest: Optional[Path] = None) -> List[str]:
-    """
-    Unified function to discover scene IDs from room files or manifest.
-    Replaces discover_scenes_from_rooms and discover_scenes_from_manifest.
-    """
+
     scene_ids = set()
     
     if room_files:
@@ -287,14 +256,4 @@ def discover_scenes(room_files: Optional[List[Path]] = None,
             print(f"Warning: Error reading manifest for scene discovery: {e}")
     
     return sorted(scene_ids)
-
-
-def discover_scenes_from_rooms(room_files: List[Path]) -> List[str]:
-    """Deprecated: Use discover_scenes instead."""
-    return discover_scenes(room_files=room_files)
-
-
-def discover_scenes_from_manifest(manifest: Path) -> List[str]:
-    """Deprecated: Use discover_scenes instead."""
-    return discover_scenes(manifest=manifest)
 
