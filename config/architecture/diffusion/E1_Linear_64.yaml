@@ -37,7 +37,7 @@ training:
   epochs: 50
   log_interval: 100
   eval_interval: 1000
-  sample_interval: 2000
+  sample_interval: 1000
   grad_clip: 1.0
   num_samples: 8
   output_dir: /work3/s233249/ImgiNav/experiments/Diffusion_Uncond\E1_Linear_64\output

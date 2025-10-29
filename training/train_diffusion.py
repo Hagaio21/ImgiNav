@@ -89,6 +89,8 @@ def build_scheduler(sched_cfg):
         return CosineScheduler(num_steps=num_steps)
     if sched_type == "linear":
         return LinearScheduler(num_steps=num_steps)
+    if sched_type == "quadratic":  # <-- ADD THIS LINE
+        return QuadraticScheduler(num_steps=num_steps)  # <-- AND ADD THIS LINE
     raise ValueError(f"Unknown scheduler type: {sched_type}")
 
 

@@ -176,7 +176,10 @@ class DiffusionTrainer:
         total, count = 0.0, 0
         for batch in val_loader:
             layout = self._get_layout_from_batch(batch, self.device)
-            z = self.autoencoder.encode_latent(layout)
+            if self.use_embeddings:
+                z = layout
+            else:
+                z = self.autoencoder.encode_latent(layout)
             pred, noise, _, _ = self.diffusion.forward_step(z)
             loss = self.loss_fn(pred, noise)
             total += loss.item() * z.size(0)
