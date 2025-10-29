@@ -268,7 +268,7 @@ def create_scene_layout(
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)
 # ---------- Discovery Helpers ----------
-from utils.file_discovery import discover_rooms, discover_scenes_from_rooms, discover_scenes_from_manifest
+from utils.file_discovery import find_room_files, discover_scenes
 
 # ---------- Main Processing ----------
 
@@ -299,7 +299,7 @@ def main():
 
     # Rooms
     if args.mode in ("room", "both"):
-        room_files = discover_rooms(in_root, args.pattern, manifest_path)
+        room_files = find_room_files(in_root, manifest_path, args.pattern)
         progress = create_progress_tracker(len(room_files), "room layouts")
         for i, parquet_path in enumerate(room_files, 1):
             scene_id, room_id = parquet_path.stem.split("_")[:2]
@@ -317,7 +317,7 @@ def main():
     if args.mode in ("scene", "both"):
         if manifest_path:
             # Use scene IDs from manifest
-            scene_ids = discover_scenes_from_manifest(manifest_path)
+            scene_ids = discover_scenes(manifest=manifest_path)
             scene_info_files = [in_root / sid / f"{sid}_scene_info.json" for sid in scene_ids]
         else:
             # Default discovery

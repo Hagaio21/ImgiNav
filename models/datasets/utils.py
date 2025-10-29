@@ -166,20 +166,15 @@ def build_dataloaders(dataset_cfg, transform=None):
     return train_ds, val_ds, train_loader, val_loader
 
 def save_split_csvs(train_ds, val_ds, output_dir):
-    """
-    Save train/val split information to CSV files.
-    
-    Args:
-        train_ds: Training dataset (Subset from random_split)
-        val_ds: Validation dataset (Subset from random_split)
-        output_dir: Directory to save CSV files
-    """
+
     train_paths = [train_ds.dataset.entries[i]["layout_path"] for i in train_ds.indices]
     val_paths = [val_ds.dataset.entries[i]["layout_path"] for i in val_ds.indices]
     
     train_df = pd.DataFrame({"layout_path": train_paths})
     val_df = pd.DataFrame({"layout_path": val_paths})
     
-    os.makedirs(output_dir, exist_ok=True)
+    from common.utils import safe_mkdir
+    from pathlib import Path
+    safe_mkdir(Path(output_dir))
     train_df.to_csv(os.path.join(output_dir, "trained_on.csv"), index=False)
     val_df.to_csv(os.path.join(output_dir, "evaluated_on.csv"), index=False)

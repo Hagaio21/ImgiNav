@@ -129,8 +129,8 @@ def create_zmap(
     # --- Save Z-Map ---
     if verbose:
         print(f"Saving z-map with {len(zmap)} classes to {output_path}")
-    with open(output_path, 'w') as f:
-        json.dump(zmap, f, indent=2)
+    from common.utils import write_json
+    write_json(zmap, output_path)
 
     if verbose:
         print("Z-Map creation complete.")

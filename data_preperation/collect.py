@@ -195,7 +195,8 @@ def collect_graphs(root_dir: Path, output_path: Path):
     scene_count = sum(1 for g in graphs if g['type'] == 'scene')
     room_count = sum(1 for g in graphs if g['type'] == 'room')
     
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    from common.utils import safe_mkdir
+    safe_mkdir(output_path.parent)
     
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         fieldnames = ['scene_id', 'type', 'room_id', 'layout_path', 'graph_path', 'is_empty']

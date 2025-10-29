@@ -1,22 +1,10 @@
 #!/usr/bin/env python3
-"""
-Analyze AE/VAE latent spaces for diffusion suitability and identity-risk diagnostics.
 
-Outputs:
-  latent_analysis_results/<exp_name>/
-      - metrics.json
-      - umap_continents.png
-      - umap_countries_<type>.png
-      - random_decoded.png
-      - interpolation.png
-  latent_analysis_results/results.csv
-  latent_analysis_results/summary_diffusion_fitness.png
-"""
 
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import json
+from pathlib import Path
 import torch
 import numpy as np
 import pandas as pd
@@ -37,10 +25,8 @@ sns.set_theme(style="darkgrid")
 
 # ----------------------------------------------------------------------
 def set_deterministic(seed: int = 0):
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    from common.utils import set_seeds
+    set_seeds(seed)
     torch.use_deterministic_algorithms(True)
 
 
@@ -80,7 +66,8 @@ def compute_latent_health_metrics(latents_np):
 # ----------------------------------------------------------------------
 def compute_identity_diagnostics(model, latents, room_ids, out_dir, device):
     results = {}
-    os.makedirs(out_dir, exist_ok=True)
+    from common.utils import safe_mkdir
+    safe_mkdir(Path(out_dir))
 
     # ----- Random latent decoding -----
     z_shape = latents.shape[1:]
@@ -254,8 +241,8 @@ def analyze_experiment(exp_path, exp_root, output_root, device):
         w1 * isotropy + w2 * (1 - collapse) + w3 * pca_uniformity + w4 * silhouette
     )
 
-    with open(os.path.join(out_dir, "metrics.json"), "w") as f:
-        json.dump(metrics, f, indent=2)
+    from common.utils import write_json
+    write_json(metrics, Path(out_dir) / "metrics.json")
 
     print(f"[OK] Completed {exp_name}")
     return dict(exp_name=exp_name, **metrics)
@@ -265,7 +252,9 @@ def analyze_experiment(exp_path, exp_root, output_root, device):
 def main(latent_root, exp_root, output_root):
     set_deterministic(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.makedirs(output_root, exist_ok=True)
+    from common.utils import safe_mkdir
+    from pathlib import Path
+    safe_mkdir(Path(output_root))
 
     latent_paths = []
     for exp_name in sorted(os.listdir(latent_root)):

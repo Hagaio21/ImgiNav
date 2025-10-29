@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""
-Analyze layout dataset statistics and diversity.
 
-Computes:
-  - Scene/room distribution
-  - Empty vs non-empty ratios
-  - Image dimension and intensity statistics
-  - Duplicate detection via perceptual hash
-  - Diversity visualizations
-  - Sample grids
-
-Outputs in dataset_analysis/:
-  dataset_stats.json
-  dataset_summary.csv
-  intensity_hist.png
-  room_scene_distribution.png
-  empty_ratio_pie.png
-  random_samples.png
-  duplicates_heatmap.png
-"""
 
 import os
 import json
@@ -38,10 +19,8 @@ import torchvision.transforms as T
 
 # ----------------------------------------------------------------------
 def set_deterministic(seed: int = 0):
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    from common.utils import set_seeds
+    set_seeds(seed)
     torch.use_deterministic_algorithms(True)
 
 
@@ -90,8 +69,10 @@ def sample_grid(paths, save_path, n=16):
 
 # ----------------------------------------------------------------------
 def analyze_dataset(manifest_path, output_dir):
+    from common.utils import safe_mkdir, write_json
+    from pathlib import Path
     set_deterministic(0)
-    os.makedirs(output_dir, exist_ok=True)
+    safe_mkdir(Path(output_dir))
 
     df = pd.read_csv(manifest_path)
     print(f"Loaded {len(df)} entries from manifest.")
@@ -144,8 +125,7 @@ def analyze_dataset(manifest_path, output_dir):
         mean_aspect_ratio=float(np.nanmean(df["aspect_ratio"])),
     )
 
-    with open(os.path.join(output_dir, "dataset_stats.json"), "w") as f:
-        json.dump(summary, f, indent=2)
+    write_json(summary, Path(output_dir) / "dataset_stats.json")
     df.to_csv(os.path.join(output_dir, "dataset_summary.csv"), index=False)
 
     # ------------------ Plots ------------------

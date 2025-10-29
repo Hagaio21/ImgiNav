@@ -17,27 +17,11 @@ from models.autoencoder import AutoEncoder
 from models.datasets import LayoutDataset, collate_skip_none
 
 #!/usr/bin/env python3
-"""
-Extract full-dataset AE/VAE latents and metadata for later analysis.
 
-Deterministic, single-GPU job.  Produces:
-  latent_analysis/<exp_name>/latents.pt
-  {
-      "latents": Tensor [N, C, H, W],
-      "scene_id": [...],
-      "type": [...],
-      "room_id": [...]
-  }
-
-"""
 # ----------------------------------------------------------------------
 def set_deterministic(seed: int = 0):
-    import random
-    import numpy as np
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    from common.utils import set_seeds
+    set_seeds(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True)
@@ -47,9 +31,11 @@ def set_deterministic(seed: int = 0):
 @torch.no_grad()
 def extract_experiment_latents(exp_path, dataloader, device, output_root, sample_vis=8):
     """Run encoder on entire dataset and save latents + metadata."""
+    from common.utils import safe_mkdir
+    from pathlib import Path
     exp_name = os.path.basename(os.path.normpath(exp_path))
-    out_dir = os.path.join(output_root, exp_name)
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = Path(output_root) / exp_name
+    safe_mkdir(out_dir)
 
     cfg_path = os.path.join(exp_path, "output", "autoencoder_config.yaml")
     ckpt_path = os.path.join(exp_path, "checkpoints", "ae_latest.pt")
@@ -136,9 +122,11 @@ def main(manifest, output_dir, exp_root, batch_size=32, num_workers=8):
         pin_memory=True,
     )
 
+    from common.utils import safe_mkdir
+    from pathlib import Path
     exp_paths = sorted(glob.glob(os.path.join(exp_root, "AEVAE_sweep", "*/")))
     print(f"Found {len(exp_paths)} experiments.")
-    os.makedirs(output_dir, exist_ok=True)
+    safe_mkdir(Path(output_dir))
 
     for i, exp_path in enumerate(exp_paths, 1):
         print(f"[{i}/{len(exp_paths)}] {exp_path}")

@@ -11,7 +11,9 @@ sns.set_style("darkgrid")
 
 
 def _ensure_dir(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    from common.utils import safe_mkdir
+    from pathlib import Path
+    safe_mkdir(Path(path).parent)
 
 
 @torch.no_grad()
