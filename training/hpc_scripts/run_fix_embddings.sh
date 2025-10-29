@@ -1,11 +1,11 @@
 #!/bin/bash
-#BSUB -J recompute_latents_robust
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/recompute_latents_robust.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/recompute_latents_robust.%J.err
+#BSUB -J fix_existing_latents
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/fix_existing_latents.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/fix_existing_latents.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=24000]"
+#BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
-#BSUB -W 10:00
+#BSUB -W 2:00
 #BSUB -q gpuv100
 
 set -euo pipefail
@@ -14,16 +14,13 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/training/precompute_embeddings.py"
+PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/training/fix_embeddings.py"
 
-# Input/Output paths
-MANIFEST_PATH="/work3/s233249/ImgiNav/datasets/layouts.csv"
-OUTPUT_LATENT_DIR="/work3/s233249/ImgiNav/datasets/layout_embeddings_fixed"
-NEW_MANIFEST_PATH="/work3/s233249/ImgiNav/datasets/layouts_with_embeddings_fixed.csv"
+# Manifest with existing embeddings
+MANIFEST_PATH="/work3/s233249/ImgiNav/datasets/layouts_with_embeddings.csv"
 
-# AutoEncoder paths
-AE_CONFIG="${BASE_DIR}/experiments/AEVAE_sweep/AE_large_latent_seg/output/autoencoder_config.yaml"
-AE_CKPT="${BASE_DIR}/experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints/ae_latest.pt"
+# Backup directory for original embeddings (optional but recommended)
+BACKUP_DIR="/work3/s233249/ImgiNav/datasets/layout_embeddings_backup"
 
 # Create log directory if it doesn't exist
 LOG_DIR="${BASE_DIR}/ImgiNav/training/hpc_scripts/logs"
@@ -54,37 +51,41 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Recomputing layout embeddings (robust version)..."
+echo "Fixing existing embeddings (removing batch dimension)..."
 echo "Manifest: ${MANIFEST_PATH}"
-echo "Output:   ${OUTPUT_LATENT_DIR}"
-echo "Config:   ${AE_CONFIG}"
-echo "Checkpoint: ${AE_CKPT}"
+echo "Backup:   ${BACKUP_DIR}"
 echo "Start: $(date)"
 echo "=========================================="
 
-# Create output directory
-mkdir -p "${OUTPUT_LATENT_DIR}"
-
-# First, copy the robust script to the correct location if it doesn't exist
-SCRIPT_SOURCE="/mnt/user-data/outputs/precompute_embeddings_robust.py"
+# First, copy the fix script to the correct location if it doesn't exist
+SCRIPT_SOURCE="/mnt/user-data/outputs/fix_existing_embeddings.py"
 if [ -f "${SCRIPT_SOURCE}" ]; then
     cp "${SCRIPT_SOURCE}" "${PYTHON_SCRIPT}"
-    echo "Copied robust script from ${SCRIPT_SOURCE}"
+    echo "Copied fix script from ${SCRIPT_SOURCE}"
 fi
 
-# Run the robust precomputation
+# First verify the current state
+echo "Verifying current embedding shapes..."
 python "${PYTHON_SCRIPT}" \
   --manifest "${MANIFEST_PATH}" \
-  --autoencoder_config "${AE_CONFIG}" \
-  --autoencoder_ckpt "${AE_CKPT}" \
-  --output_latent_dir "${OUTPUT_LATENT_DIR}" \
-  --new_manifest "${NEW_MANIFEST_PATH}" \
-  --drop_failed \
-  --verify
+  --verify_only
+
+# Ask for confirmation (in HPC, we'll skip this and proceed)
+echo "Proceeding with fix..."
+
+# Run the fix with backup
+python "${PYTHON_SCRIPT}" \
+  --manifest "${MANIFEST_PATH}" \
+  --backup_dir "${BACKUP_DIR}"
 
 echo "=========================================="
 echo "Completed at: $(date)"
-echo "New manifest saved to: ${NEW_MANIFEST_PATH}"
-echo "Embeddings saved to: ${OUTPUT_LATENT_DIR}"
-echo "Check encoding log at: ${OUTPUT_LATENT_DIR}/encoding_log.txt"
+echo "Original embeddings backed up to: ${BACKUP_DIR}"
+echo "Fixed embeddings remain in original locations"
 echo "=========================================="
+
+# Update the diffusion config to use the same manifest
+echo ""
+echo "IMPORTANT: Your embeddings are now fixed in-place."
+echo "Continue using the same manifest: ${MANIFEST_PATH}"
+echo "No need to change your diffusion training config."
