@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-stage3_create_room_scenes_layouts.py (refactored)
-
-Generate segmented top-down layout images per room and scene.
-"""
 
 import argparse
 import csv
@@ -30,7 +25,6 @@ TAXONOMY = None
 # ---------- Rendering Helpers ----------
 
 def draw_point(canvas: np.ndarray, x: int, y: int, color: np.ndarray, size: int = 1):
-    """Draw a square point on canvas with given size."""
     half = size // 2
     x0, x1 = max(x - half, 0), min(x + half, canvas.shape[1] - 1)
     y0, y1 = max(y - half, 0), min(y + half, canvas.shape[0] - 1)
@@ -39,7 +33,6 @@ def draw_point(canvas: np.ndarray, x: int, y: int, color: np.ndarray, size: int 
 def points_to_image_coords(u_vals: np.ndarray, v_vals: np.ndarray, 
                           uv_bounds: Tuple[float, float, float, float],
                           resolution: int, margin: int = 10) -> Tuple[np.ndarray, np.ndarray]:
-    """Convert UV coordinates to image pixel coordinates."""
     umin, umax, vmin, vmax = uv_bounds
     span = max(umax - umin, vmax - vmin, 1e-6)
     scale = (resolution - 2 * margin) / span
@@ -54,7 +47,6 @@ def points_to_image_coords(u_vals: np.ndarray, v_vals: np.ndarray,
     return x_img, y_img
 
 def load_taxonomy(taxonomy_path):
-    """Load taxonomy JSON once and prepare lookups."""
     with open(taxonomy_path, "r", encoding="utf-8") as f:
         taxonomy = json.load(f)
 
@@ -93,7 +85,6 @@ def create_room_layout(
     height_max: float = None,
     point_size: int = 1,
 ):
-    """Generate segmented layout image for a single room."""
     # Load room metadata
     meta = load_room_meta(parquet_path.parent)
     if meta is None:
@@ -240,7 +231,6 @@ def create_scene_layout(
     height_max: float = None,
     point_size: int = 1,
 ):
-    """Generate combined layout image for entire scene using taxonomy palette."""
     scene_id = scene_dir.name
     room_parquets = sorted(scene_dir.rglob("rooms/*/*.parquet"))
     if not room_parquets:
@@ -320,46 +310,7 @@ def create_scene_layout(
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)
 # ---------- Discovery Helpers ----------
-
-def discover_rooms(root: Path, pattern: str = None, manifest: Path = None) -> List[Path]:
-    """Discover room parquet files."""
-    if manifest:
-        # Match your manifest column header
-        return discover_files(root, pattern, manifest, "room_parquet_file_path")
-    
-    # Default discovery
-    files = list(root.rglob("part-*.parquet"))        # old format
-    files.extend(root.rglob("*_*[0-9].parquet"))      # new format
-    if not files:
-        files = list(root.rglob("rooms/*/*.parquet"))
-    
-    return sorted(files)
-
-
-def discover_scenes_from_rooms(room_files: List[Path]) -> List[str]:
-    """Extract unique scene IDs from room files."""
-    scene_ids = set()
-    for room_file in room_files:
-        parts = room_file.stem.split("_")
-        if len(parts) >= 2:
-            scene_ids.add(parts[0])  # <scene_id>_<room_id>
-        else:
-            for parent in room_file.parents:
-                if parent.name.startswith("scene_id="):
-                    scene_ids.add(parent.name.replace("scene_id=", ""))
-                    break
-    return sorted(scene_ids)
-
-
-def discover_scenes_from_manifest(manifest: Path) -> List[str]:
-    """Extract scene IDs from manifest CSV."""
-    scene_ids = set()
-    with open(manifest, newline='', encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if "scene_id" in row and row["scene_id"]:
-                scene_ids.add(row["scene_id"])
-    return sorted(scene_ids)
+from utils.file_discovery import discover_rooms, discover_scenes_from_rooms, discover_scenes_from_manifest
 
 # ---------- Main Processing ----------
 

@@ -13,9 +13,11 @@ from modules.condition_mixer import LinearConcatMixer, NonLinearConcatMixer
 from pipeline.pipeline import DiffusionPipeline
 from training.pipeline_trainer import PipelineTrainer
 from modules.scheduler import LinearScheduler, CosineScheduler
-from utils.utils import load_taxonomy
-import torch.nn as nn
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+from utils.semantic_utils import Taxonomy
+import torch.nn as nn
 from datetime import datetime
 import shutil
 
@@ -206,7 +208,7 @@ class EmbedderManager:
         self.graph_encoder.eval()
         
         # Taxonomy for graph processing (not used with text files)
-        self.taxonomy = load_taxonomy(taxonomy_path)
+        self.taxonomy = Taxonomy(taxonomy_path)
         
         # Text cache for graph paths
         self.cache = {}

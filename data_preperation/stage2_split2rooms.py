@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-stage2_split2rooms.py (refactored)
-
-Create partitioned Parquet dataset by room from scene-level semantic point clouds,
-and optionally compute per-room floor-aligned frames.
-"""
 
 import argparse
 import sys
@@ -14,39 +8,25 @@ import json
 from pathlib import Path
 from typing import Optional, Tuple, List
 from utils.utils import (
-    discover_files, infer_scene_id, find_semantic_maps_json, 
+    discover_files, find_semantic_maps_json, 
     get_floor_label_ids, safe_mkdir, write_json, 
     create_progress_tracker
 )
+from utils.file_discovery import infer_scene_id
 from utils.semantic_utils import Taxonomy
+from utils.geometry_utils import pca_plane_fit
 TAXONOMY: Taxonomy = None
 
 
 # ---------- Frame Computation ----------
 
-def pca_plane(points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (origin, unit normal) using PCA on candidate floor points."""
-    origin = points.mean(axis=0)
-    X = points - origin
-    if X.shape[0] < 3:
-        n = np.array([0, 0, 1.0], dtype=np.float64)
-        return origin.astype(np.float64), n
-    
-    C = np.cov(X.T)
-    w, V = np.linalg.eigh(C)  # ascending eigenvalues
-    n = V[:, 0]  # smallest eigenvalue = normal to plane
-    n = n / (np.linalg.norm(n) + 1e-12)
-    return origin.astype(np.float64), n
-
 def orient_normal_upward(normal: np.ndarray, all_xyz: np.ndarray, origin: np.ndarray) -> np.ndarray:
-    """Choose normal sign so most points have positive height along +normal."""
     heights = (all_xyz - origin) @ normal
     if (heights > 0).sum() < (heights < 0).sum():
         normal = -normal
     return normal / (np.linalg.norm(normal) + 1e-12)
 
 def build_orthonormal_frame(origin: np.ndarray, normal: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build coherent UVN frame: v=proj(+Y), u=n×v, re-orthonormalize."""
     Y = np.array([0, 1, 0], dtype=np.float64)
     X = np.array([1, 0, 0], dtype=np.float64)
     
@@ -66,12 +46,10 @@ def build_orthonormal_frame(origin: np.ndarray, normal: np.ndarray) -> Tuple[np.
     return u, v, normal
 
 def world_to_local(xyz: np.ndarray, origin: np.ndarray, u: np.ndarray, v: np.ndarray, n: np.ndarray) -> np.ndarray:
-    """Transform world coordinates to local UVH frame."""
     R = np.stack([u, v, n], axis=1)  # world -> local transformation
     return (xyz - origin) @ R
 
 def compute_room_frame(parquet_path: Path, floor_label_ids=None, height_band=(0.05, 0.50)) -> dict:
-    """Compute floor-aligned coordinate frame for room."""
     try:
         import pandas as pd
     except ImportError:
@@ -106,7 +84,7 @@ def compute_room_frame(parquet_path: Path, floor_label_ids=None, height_band=(0.
         raise RuntimeError(f"Too few floor points to compute plane (check floor_label_ids) point num = {floor_pts.shape[0]}")
     
     # Compute floor plane
-    origin, normal = pca_plane(floor_pts)
+    origin, normal = pca_plane_fit(floor_pts)
     normal = orient_normal_upward(normal, xyz, origin)
     u, v, n = build_orthonormal_frame(origin, normal)
     
@@ -131,7 +109,6 @@ def compute_room_frame(parquet_path: Path, floor_label_ids=None, height_band=(0.
 # ---------- Meta Writing ----------
 
 def write_room_meta_files(root: Path, layout: str, floor_label_ids=None, height_band=(0.05, 0.50)):
-    """Write meta.json files for all rooms based on layout type."""
     if layout == "inplace":
         pattern = "*/rooms/*/*.parquet"
     else:
@@ -161,7 +138,6 @@ def write_room_meta_files(root: Path, layout: str, floor_label_ids=None, height_
 # ---------- Main Processing ----------
 
 def split_scene_to_rooms(input_files: List[Path], output_config: dict, columns: List[str] = None) -> int:
-    """Split scene-level parquets into room-level parquets."""
     processed_count = 0
     progress = create_progress_tracker(len(input_files), "scene splits")
     

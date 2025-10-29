@@ -1,14 +1,11 @@
+#!/usr/bin/env python3
+
 import json
 from pathlib import Path
-
-def load_taxonomy(taxonomy_path: str):
-    """Load the full taxonomy JSON (includes id2color, id2room, etc.)."""
-    with open(taxonomy_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+from typing import Union
 
 
 def articleize(label: str) -> str:
-    """Add 'the', 'a', or 'an' before a label depending on plurality."""
     clean = label.strip().replace("_", " ")
     lower = clean.lower()
 
@@ -22,35 +19,7 @@ def articleize(label: str) -> str:
     return f"{article} {clean}"
 
 
-def load_valid_colors(taxonomy_path, include_background=True):
-    """
-    Return filtered id→color mapping for super-categories + structure surfaces.
-    Optionally add white background as class 9000.
-    """
-    with open(taxonomy_path, "r", encoding="utf-8") as f:
-        taxonomy = json.load(f)
-
-    valid_ids = [
-        1001, 1002, 1003, 1004, 1005,
-        1006, 1007, 1008, 1009,  # super categories
-        2051, 2052, 2053         # ceiling, floor, wall
-    ]
-
-    if include_background:
-        taxonomy["id2color"]["9000"] = [255, 255, 255]
-        valid_ids.append(9000)
-
-    filtered = {str(i): taxonomy["id2color"][str(i)] for i in valid_ids if str(i) in taxonomy["id2color"]}
-    return filtered, valid_ids
-
-
-
-def graph2text(graph_path: str, taxonomy: dict, max_edges: int = 10_000):
-    """
-    Converts either a 3D-FRONT room graph or scene graph JSON to text.
-    Uses taxonomy to decode room_id when available.
-    Removes underscores and adds articles ('the', 'a', 'an').
-    """
+def graph2text(graph_path: Union[str, Path], taxonomy: Union[dict, object], max_edges: int = 10_000) -> str:
     path = Path(graph_path)
     
     if not path.exists():
@@ -65,12 +34,25 @@ def graph2text(graph_path: str, taxonomy: dict, max_edges: int = 10_000):
 
     is_scene_graph = "room_a" in edges[0] or "room_b" in edges[0]
 
+    # Extract taxonomy dict if Taxonomy instance is provided
+    if hasattr(taxonomy, 'data'):
+        # Taxonomy class instance
+        id2room = taxonomy.data.get("id2room", {})
+    else:
+        # Already a dict
+        id2room = taxonomy if isinstance(taxonomy, dict) else {}
+
     # build node label map
     id_to_label = {}
     for n in nodes:
         if is_scene_graph:
             rid = n.get("room_id")
-            raw_label = taxonomy.get(rid, n.get("room_type", str(rid)))
+            if hasattr(taxonomy, 'id_to_name'):
+                # Taxonomy instance - use id_to_name
+                raw_label = taxonomy.id_to_name(rid) if rid else n.get("room_type", str(rid))
+            else:
+                # Dict lookup
+                raw_label = id2room.get(str(rid), id2room.get(rid, n.get("room_type", str(rid))))
         else:
             raw_label = n.get("label", n.get("id"))
         id_to_label[n["id"]] = articleize(raw_label)
@@ -110,3 +92,4 @@ def graph2text(graph_path: str, taxonomy: dict, max_edges: int = 10_000):
 
     text = " ".join(sentences)
     return text.replace("_", " ")
+

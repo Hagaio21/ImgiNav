@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-geometry_utils.py - Pure geometric utility functions
-
-Basic coordinate transformations and geometric calculations used across scripts.
-"""
 
 import math
 from typing import Tuple
@@ -13,7 +8,6 @@ import numpy as np
 
 def world_to_local_coords(points: np.ndarray, origin: np.ndarray, 
                          u: np.ndarray, v: np.ndarray, n: np.ndarray) -> np.ndarray:
-    """Transform world coordinates to local UVH frame."""
     R = np.stack([u, v, n], axis=1)
     return (points - origin) @ R
 
@@ -21,7 +15,6 @@ def world_to_local_coords(points: np.ndarray, origin: np.ndarray,
 def points_to_image_coords(u_vals: np.ndarray, v_vals: np.ndarray, 
                           uv_bounds: Tuple[float, float, float, float],
                           resolution: int, margin: int = 10) -> Tuple[np.ndarray, np.ndarray]:
-    """Convert UV coordinates to image pixel coordinates."""
     umin, umax, vmin, vmax = uv_bounds
     span = max(umax - umin, vmax - vmin, 1e-6)
     scale = (resolution - 2 * margin) / span
@@ -36,7 +29,6 @@ def points_to_image_coords(u_vals: np.ndarray, v_vals: np.ndarray,
 
 
 def pca_plane_fit(points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (origin, normal) of best-fit plane through points using PCA."""
     if points.shape[0] < 3:
         return points.mean(axis=0), np.array([0, 0, 1.0], dtype=np.float64)
     
@@ -49,7 +41,6 @@ def pca_plane_fit(points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def build_orthonormal_frame(normal: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Build orthonormal U,V vectors perpendicular to normal."""
     Y = np.array([0, 1, 0], dtype=np.float64)
     X = np.array([1, 0, 0], dtype=np.float64)
     
@@ -67,7 +58,6 @@ def build_orthonormal_frame(normal: np.ndarray) -> Tuple[np.ndarray, np.ndarray]
 
 
 def get_2d_bounds(points_2d: np.ndarray) -> Tuple[float, float, float, float]:
-    """Get 2D bounds (xmin, xmax, ymin, ymax) from 2D points."""
     if points_2d.shape[0] == 0:
         return (0.0, 1.0, 0.0, 1.0)
     
@@ -77,6 +67,11 @@ def get_2d_bounds(points_2d: np.ndarray) -> Tuple[float, float, float, float]:
 
 
 def angle_between_vectors(v1: np.ndarray, v2: np.ndarray) -> float:
-    """Angle in degrees between two vectors."""
     cos_angle = np.clip(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)), -1.0, 1.0)
     return math.degrees(math.acos(cos_angle))
+
+
+def angle_from_center(center: np.ndarray, point: np.ndarray) -> float:
+
+    v = point[:2] - center[:2]  # Use only XY components
+    return np.arctan2(v[1], v[0])

@@ -25,46 +25,9 @@ TILT_DEG = 10.0  # look slightly downward for better floor visibility
 SEED = 1
 
 # ----------- IO helpers -----------
-def infer_scene_id(p: Path) -> str:
-    # new filename format: <scene_id>_<room_id>.parquet
-    m = re.match(r"([0-9a-fA-F-]+)_\d+\.parquet$", p.name)
-    if m: return m.group(1)
-    # old path format: .../scene_id=<ID>/room_id=...
-    m = re.search(r"scene_id=([^/\\]+)", str(p))
-    if m: return m.group(1)
-    # fallback from data if present later
-    return p.stem
-
-def infer_room_id(p: Path) -> int:
-    # new filename format: ..._<room_id>.parquet
-    m = re.match(r".+_(\d+)\.parquet$", p.name)
-    if m: return int(m.group(1))
-    # old path format
-    m = re.search(r"room_id=(\d+)", str(p))
-    if m: return int(m.group(1))
-    return -1
-
-def find_room_files(root: Path, manifest: Optional[Path] = None) -> List[Path]:
-    """
-    Discover room parquet files either from a manifest CSV or by scanning the dataset root.
-    """
-    if manifest is not None:
-        rows = []
-        with open(manifest, newline='', encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if "room_parquet" in row:
-                    rows.append(Path(row["room_parquet"]))
-                elif "room_parquet_file_path" in row:
-                    rows.append(Path(row["room_parquet_file_path"]))
-
-        return rows
-
-    files = sorted(root.rglob("scene_id=*/room_id=*/*.parquet"))
-    return files or sorted(root.rglob("*.parquet"))
+from utils.file_discovery import infer_scene_id, infer_room_id, find_room_files
 
 def load_meta(parquet_path: Path):
-    """Load meta from room folder. Tries new '<scene>_<rid>_meta.json', then legacy 'meta.json'."""
     room_dir = parquet_path.parent
     cand = list(room_dir.glob("*_meta.json"))
     if cand:
@@ -96,11 +59,6 @@ def get_pov_locations(
     center_uv: Tuple[float, float],
     seed: int
 ):
-    """
-    Extract POVs from floor corners instead of clustering.
-    Works for convex and concave rooms (e.g. L-shaped).
-    """
-
     # --- Step 1: collect floor points ---
     floor_pts = uvh[is_floor, :2] if is_floor.any() else uvh[:, :2]
     if floor_pts.shape[0] < 4:
@@ -288,10 +246,6 @@ def process_room(parquet_path: Path, root_out_unused: Path, taxonomy: Taxonomy,
                  width=1280, height=800, fov_deg=70.0, eye_height=1.6,
                  point_size=2.0, bg_rgb=(0,0,0),
                  num_views: int = 6, seed: int = SEED, verbose=False) -> bool:
-    """
-    Process a single room and generate POV renders.
-    Now uses the Taxonomy class instead of hardcoded semantic_maps.json lookups.
-    """
     meta = load_meta(parquet_path)
     if meta is None:
         print(f"[skip] no meta.json → {parquet_path.parent}")

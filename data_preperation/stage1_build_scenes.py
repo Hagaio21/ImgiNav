@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-Stage 1: Build 3D-FRONT scenes into point clouds + metadata.
-"""
 
 import argparse
 import json
@@ -17,10 +14,10 @@ from scipy.spatial.transform import Rotation
 # --- imports ---
 from utils.semantic_utils import Taxonomy
 from utils.utils import (
-    gather_paths_from_sources, infer_ids_from_path,
     load_config_with_profile, create_progress_tracker,
     safe_mkdir, write_json
 )
+from utils.file_discovery import gather_paths_from_sources, infer_ids_from_path
 
 # --- Global Taxonomy Object ---
 TAXONOMY: Taxonomy = None
@@ -30,7 +27,6 @@ ARGS = None
 # Utility Functions
 # ---------------------------------------------------------------------
 def export_outputs(scene_id, output_dir, textured_scene, meshes_info, point_cloud, args, taxonomy):
-    """Export all requested formats and scene metadata."""
 
     # ----- Save GLB -----
     if args.save_glb and textured_scene:
@@ -101,7 +97,6 @@ def export_outputs(scene_id, output_dir, textured_scene, meshes_info, point_clou
 
 
 def get_point_colors(mesh, points, face_indices):
-    """Sample colors from mesh using UV/vertex colors."""
     N = len(points)
     if N == 0 or mesh is None or mesh.is_empty:
         return np.zeros((0, 3), dtype=np.uint8)
@@ -147,7 +142,6 @@ def get_point_colors(mesh, points, face_indices):
     return np.full((N, 3), 128, dtype=np.uint8)
 
 def load_mesh(model_dir: Path, jid: str):
-    """Load mesh from OBJ or GLB."""
     obj_path = model_dir / jid / "raw_model.obj"
     glb_path = model_dir / jid / "raw_model.glb"
 
@@ -162,7 +156,6 @@ def load_mesh(model_dir: Path, jid: str):
         raise FileNotFoundError(f"Model not found: {obj_path} or {glb_path}")
 
 def create_arch_mesh(arch: Dict):
-    """Create mesh from architectural JSON data."""
     vertices = np.array(arch["xyz"], dtype=np.float64).reshape(-1, 3)
     faces = np.array(arch["faces"], dtype=np.int64).reshape(-1, 3)
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
@@ -170,7 +163,6 @@ def create_arch_mesh(arch: Dict):
     return mesh
 
 def build_transform(child: Dict):
-    """Build transform matrix from child node."""
     pos = np.array(child.get("pos", [0, 0, 0]), dtype=np.float64)
     rot = np.array(child.get("rot", [0, 0, 0, 1]), dtype=np.float64)
     scl = np.array(child.get("scale", [1, 1, 1]), dtype=np.float64)
@@ -183,7 +175,6 @@ def build_transform(child: Dict):
     return T
 
 def sample_points(scene_objects):
-    """Sample points from scene objects and attach taxonomy info."""
     areas = [max(0.0, obj['mesh'].area) for obj in scene_objects]
     total_area = sum(a for a in areas if a > 0.0) or 1.0
 
@@ -285,7 +276,6 @@ def sample_points(scene_objects):
 # Main Processing
 # ---------------------------------------------------------------------
 def process_scene(scene_data, model_dir, model_info_map):
-    """Process scene into objects and point cloud."""
     failed_models = {}
     scene_objects = []
     furniture_map = {f['uid']: f for f in scene_data.get('furniture', [])}
@@ -361,7 +351,6 @@ def process_one_scene(
     scene_path: Path, model_dir: Path, model_info_file: Path, out_root: Path,
     args: argparse.Namespace
 ) -> bool:
-    """Process one scene into meshes, point cloud, and metadata."""
     scene_id = infer_ids_from_path(scene_path)
     if isinstance(scene_id, tuple):
         scene_id = scene_id[0]

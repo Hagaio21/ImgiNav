@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-taxonomy_builder.py
-
-Build a unified taxonomy for 3D-FRONT scenes and 3D-FUTURE models.
-
-- Scans scene JSON files for furniture, titles, and rooms
-- Resolves labels/categories/super-categories using model_info.json (Stage 1 logic)
-- Adds structural classes (floor/wall/ceiling)
-- Assigns IDs to supers, categories, rooms, labels, and titles in fixed ranges
-- Generates category→super mapping and a color palette
-"""
 
 from __future__ import annotations
 import argparse
@@ -364,6 +353,114 @@ class Taxonomy:
         final_color = self.get_color(original_val)
         print(f"Final color: {final_color}")
         print("--- End debug ---\n")
+
+    # ----------------------------
+    # Convenience methods for compatibility with old load_taxonomy() functions
+    # ----------------------------
+    def get_id2room_dict(self, int_keys: bool = True) -> dict:
+        """
+        Get id2room mapping as a dictionary compatible with old load_taxonomy() functions.
+        
+        Args:
+            int_keys: If True, convert string keys to int; if False, keep as strings
+        
+        Returns:
+            Dictionary mapping room_id -> room_name
+        """
+        id2room = self.data.get("id2room", {})
+        if int_keys:
+            return {int(k): v for k, v in id2room.items()}
+        return id2room
+    
+    def get_color_to_label_dict(self) -> dict:
+        """
+        Get color -> label mapping for graph building.
+        Returns dict mapping (r, g, b) tuples -> label names.
+        """
+        color_to_label = {}
+        id2color = self.data.get("id2color", {})
+        
+        # Map colors to labels
+        for label_id_str, label_name in self.data.get("id2label", {}).items():
+            color = id2color.get(label_id_str)
+            if color:
+                color_tuple = tuple(color) if isinstance(color, list) else color
+                color_to_label[color_tuple] = label_name
+        
+        return color_to_label
+    
+    def __getitem__(self, key):
+        """Allow dict-like access for backward compatibility."""
+        # First check if it's a top-level dict key (like "id2color", "id2super", etc.)
+        if isinstance(key, str) and key in self.data:
+            return self.data[key]
+        # Otherwise, treat as name/id conversion
+        if isinstance(key, int):
+            return self.id_to_name(key)
+        elif isinstance(key, str):
+            return self.name_to_id(key)
+        raise KeyError(f"Invalid key type: {type(key)}")
+    
+    def get(self, key, default=None):
+        """Dict-like .get() method for backward compatibility."""
+        # First check if it's a top-level dict key
+        if isinstance(key, str) and key in self.data:
+            return self.data[key]
+        # Otherwise, try name/id conversion
+        try:
+            if isinstance(key, int):
+                return self.id_to_name(key)
+            elif isinstance(key, str):
+                return self.name_to_id(key)
+        except (KeyError, ValueError):
+            pass
+        return default
+    
+    def as_dict(self):
+        """Return raw taxonomy dict for backward compatibility."""
+        return self.data
+
+# ------------------------------
+# Standalone Functions (for backward compatibility)
+# ------------------------------
+
+def load_taxonomy(taxonomy_path: str | Path):
+    """
+    Load the full taxonomy JSON as a dict.
+    For backward compatibility with code expecting dict.
+    Consider using Taxonomy class directly for new code.
+    """
+    with open(Path(taxonomy_path), "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_valid_colors(taxonomy_path: str | Path, include_background: bool = True):
+    """
+    Return filtered id→color mapping for super-categories + structure surfaces.
+    Optionally add white background as class 9000.
+    
+    Args:
+        taxonomy_path: Path to taxonomy.json
+        include_background: If True, add white background as class 9000
+    
+    Returns:
+        Tuple of (filtered_id_to_color_dict, valid_ids_list)
+    """
+    tax = Taxonomy(taxonomy_path)
+    
+    valid_ids = [
+        1001, 1002, 1003, 1004, 1005,
+        1006, 1007, 1008, 1009,  # super categories
+        2051, 2052, 2053         # ceiling, floor, wall
+    ]
+
+    if include_background:
+        tax.data["id2color"]["9000"] = [255, 255, 255]
+        valid_ids.append(9000)
+
+    filtered = {str(i): tax.data["id2color"][str(i)] for i in valid_ids if str(i) in tax.data["id2color"]}
+    return filtered, valid_ids
+
 # ------------------------------
 # Utilities
 # ------------------------------
@@ -583,6 +680,40 @@ def assign_colors(super2id: dict, category2id: dict, category2super: dict):
             id2color[str(cid)] = col
 
     return id2color
+
+
+def assign_colors_golden_ratio(label2id: dict) -> dict:
+
+    import colorsys
+    
+    ids = sorted(int(v) for v in label2id.values())
+    palette = {}
+    phi = 0.61803398875  # golden ratio
+    
+    for i, lid in enumerate(ids):
+        h = (lid * phi) % 1.0
+        r, g, b = colorsys.hsv_to_rgb(h, 0.65, 0.95)
+        palette[str(lid)] = [int(r*255), int(g*255), int(b*255)]
+    
+    return palette
+
+
+def generate_palette_for_labels(json_path: Path) -> bool:
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    
+    if "id2color" in data:
+        print("id2color already exists, skipping.")
+        return False
+    
+    if "label2id" not in data:
+        raise ValueError(f"'label2id' not found in {json_path}")
+    
+    palette = assign_colors_golden_ratio(data["label2id"])
+    data["id2color"] = palette
+    json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"✔ Added id2color to {json_path}")
+    return True
 
 # ------------------------------
 # Wrapper

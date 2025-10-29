@@ -6,7 +6,10 @@ from PIL import Image
 import torch
 import numpy as np
 import json
-from utils.utils import load_taxonomy
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+from utils.semantic_utils import Taxonomy
 # ---------- Base Utilities ----------
 
 def load_image(path, transform=None):
@@ -78,7 +81,7 @@ class LayoutDataset(Dataset):
 
         # --- taxonomy mapping ---
         if taxonomy_path is not None:
-            self.taxonomy = load_taxonomy(taxonomy_path)
+            self.taxonomy = Taxonomy(taxonomy_path)
             self._build_supercategory_mapping()
         else:
             self.COLOR_TO_CLASS = None

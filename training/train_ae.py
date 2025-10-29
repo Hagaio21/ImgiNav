@@ -15,7 +15,10 @@ from modules.datasets import LayoutDataset, collate_skip_none
 from modules.autoencoder import AutoEncoder
 from training.autoencoder_trainer import AutoEncoderTrainer
 from modules.custom_loss import StandardVAELoss, SegmentationVAELoss
-from utils.utils import load_valid_colors
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+from utils.semantic_utils import load_valid_colors
 
 def build_datasets(manifest_path, split_ratio, seed, transform, dataset_cfg):
     dataset = LayoutDataset(
