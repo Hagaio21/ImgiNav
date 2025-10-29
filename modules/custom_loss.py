@@ -209,3 +209,63 @@ class CorrLoss:
 
         # minimize (1 - correlation)
         return 1 - corr.mean()
+
+class VGGPerceptualLoss(nn.Module):
+    """
+    VGG16-based perceptual loss.
+    Assumes inputs are RGB tensors in [0, 1] range.
+    """
+    def __init__(self, layer_indices=None, resize=True):
+        super().__init__()
+        # Load VGG16 features
+        vgg = models.vgg16(pretrained=True).features.eval()
+        self.resize = resize
+        
+        # Use standard conv layers before max-pooling
+        if layer_indices is None:
+            # Corresponds to conv1_2, conv2_2, conv3_3, conv4_3
+            self.layer_indices = [3, 8, 15, 22] 
+        else:
+            self.layer_indices = layer_indices
+            
+        # Create a module list of VGG features
+        self.features = nn.ModuleList([vgg[i] for i in range(max(self.layer_indices) + 1)])
+        
+        # Freeze VGG parameters
+        for param in self.features.parameters():
+            param.requires_grad = False
+            
+        # VGG normalization
+        # VGG was trained on ImageNet, which has a specific mean and std
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def normalize(self, x):
+        """Normalize input for VGG."""
+        return (x - self.mean) / self.std
+
+    def forward(self, x, y):
+        """
+        x, y: Input tensors (B, 3, H, W) in [0, 1] range.
+        """
+        if self.resize:
+            # VGG expects 224x224
+            x = F.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+            y = F.interpolate(y, size=(224, 224), mode='bilinear', align_corners=False)
+
+        x = self.normalize(x)
+        y = self.normalize(y)
+
+        loss = 0.0
+        for i, layer in enumerate(self.features):
+            x = layer(x)
+            y = layer(y)
+            # Add L1 loss at specified layers
+            if i in self.layer_indices:
+                loss += F.l1_loss(x, y)
+        
+        return loss
+
+
+
+

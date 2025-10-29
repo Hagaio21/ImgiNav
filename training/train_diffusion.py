@@ -1,4 +1,3 @@
-# train_diffusion.py
 import os, sys, yaml, random, torch, argparse, pandas as pd
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -118,11 +117,14 @@ def main():
     ckpt_dir = os.path.join(exp_path, "checkpoints")
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
-
+    
     # --- Load configs ---
     dataset_cfg = cfg["dataset"]
     model_cfg = cfg["model"]
     training_cfg = cfg["training"]
+    
+    loss_cfg = training_cfg.get("loss", {"type": "mse"})
+
 
     autoencoder = build_autoencoder(model_cfg["autoencoder"])
     diff_cfg = model_cfg["diffusion"]
@@ -149,11 +151,20 @@ def main():
         num_samples=training_cfg.get("num_samples", 8),
         grad_clip=training_cfg.get("grad_clip"),
         use_embeddings=dataset_cfg["return_embeddings"],
+        loss_cfg=loss_cfg,
         ckpt_dir=ckpt_dir,
         output_dir=out_dir,
         experiment_name=exp_name,
     )
 
+    if loss_cfg.get("type") == "hybrid" and dataset_cfg["return_embeddings"]:
+        print("\n" + "="*60)
+        print("!! WARNING: 'hybrid' loss is set but 'return_embeddings' is true.")
+        print("   Perceptual (VGG) loss requires original RGB images to work.")
+        print("   VGG LOSS WILL BE SKIPPED. Training will only use MSE loss.")
+        print("   To fix, set 'return_embeddings: false' in your config file.")
+        print("="*60 + "\n")
+        
     trainer.fit(train_loader, val_loader)
 
     # --- Save unified experiment YAML ---
