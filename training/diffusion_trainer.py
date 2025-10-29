@@ -11,7 +11,7 @@ from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from common.utils import safe_mkdir
+from common.utils import safe_mkdir, set_seeds, extract_tensor_from_batch, MetricsLogger, save_checkpoint
 from models.diffusion import LatentDiffusion
 # *** ADD THIS: Import your new loss class ***
 from models.losses.custom_loss import VGGPerceptualLoss
@@ -102,6 +102,9 @@ class DiffusionTrainer:
         self.best_loss = float("inf")
         self.latest_ckpt = os.path.join(self.ckpt_dir, "unet_latest.pt") if self.ckpt_dir else None
         self.best_ckpt = os.path.join(self.ckpt_dir, "unet_best.pt") if self.ckpt_dir else None
+        
+        # metrics logging
+        self.metrics_logger = MetricsLogger(self.output_dir)
 
     # ---------------------------------------------------------
     # Training utilities
@@ -120,13 +123,7 @@ class DiffusionTrainer:
 
     @staticmethod
     def _get_layout_from_batch(batch, device):
-        if isinstance(batch, dict):
-            return batch["layout"].to(device)
-        if isinstance(batch, (list, tuple)):
-            return batch[0].to(device)
-        if torch.is_tensor(batch):
-            return batch.to(device)
-        raise TypeError(f"Unexpected batch type: {type(batch)}")
+        return extract_tensor_from_batch(batch, device=device, key="layout")
 
     # ---------------------------------------------------------
     # Fit loop
@@ -261,13 +258,14 @@ class DiffusionTrainer:
     def save_checkpoint(self, val_loss: float):
         if not self.ckpt_dir:
             return
-        state = {"state_dict": self.diffusion.backbone.state_dict()}
-        torch.save(state, self.latest_ckpt)
+        
+        metadata = {"val_loss": val_loss, "step": self.global_step}
+        save_checkpoint(self.diffusion.backbone.state_dict(), self.latest_ckpt, metadata)
         print(f"[Checkpoint] Latest model updated → {self.latest_ckpt}")
 
         if val_loss < self.best_loss:
             self.best_loss = val_loss
-            torch.save(state, self.best_ckpt)
+            save_checkpoint(self.diffusion.backbone.state_dict(), self.best_ckpt, metadata)
             print(f"[Checkpoint] New best model saved → {self.best_ckpt}")
 
     # ---------------------------------------------------------
@@ -298,10 +296,7 @@ class DiffusionTrainer:
         log["diversity"] = div
         log["div_ratio"] = div / self.dataset_div if hasattr(self, "dataset_div") else 0.0
 
-        if not hasattr(self, "metric_log"):
-            self.metric_log = []
-        self.metric_log.append(log)
-        self._write_metrics_log()
+        self.metrics_logger.log(log)
 
         # *** MODIFIED: Updated print log ***
         log_str = f"[{step}] loss={log['loss']:.4f}, mse={log.get('mse', log['mse_raw']):.4f}"
@@ -311,9 +306,8 @@ class DiffusionTrainer:
         print(log_str)
 
     def _write_metrics_log(self):
-        metrics_path = os.path.join(self.output_dir, "metrics.json")
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(self.metric_log, f, indent=2)
+        # Metrics are automatically saved by MetricsLogger
+        pass
 
     @torch.no_grad()
     def create_viz_artifacts(self, samples, step, losses):
@@ -332,9 +326,10 @@ class DiffusionTrainer:
             plt.close()
 
         # ---- MSE trend ----
-        if hasattr(self, "metric_log") and any("mse" in m for m in self.metric_log):
-            steps = [x["step"] for x in self.metric_log if "mse" in x]
-            mses = [x.get("mse") for x in self.metric_log if "mse" in x]
+        metric_log = self.metrics_logger.get_metrics()
+        if any("mse" in m for m in metric_log):
+            steps = [x["step"] for x in metric_log if "mse" in x]
+            mses = [x.get("mse") for x in metric_log if "mse" in x]
             plt.figure(figsize=(7, 4))
             sns.lineplot(x=steps, y=mses, linewidth=2, color=sns.color_palette("tab20")[2])
             plt.xlabel("Step")
@@ -345,9 +340,9 @@ class DiffusionTrainer:
             plt.close()
         
         # ---- VGG trend ----
-        if hasattr(self, "metric_log") and any("vgg" in m for m in self.metric_log):
-            steps = [x["step"] for x in self.metric_log if "vgg" in x]
-            vggs = [x.get("vgg") for x in self.metric_log if "vgg" in x]
+        if any("vgg" in m for m in metric_log):
+            steps = [x["step"] for x in metric_log if "vgg" in x]
+            vggs = [x.get("vgg") for x in metric_log if "vgg" in x]
             plt.figure(figsize=(7, 4))
             sns.lineplot(x=steps, y=vggs, linewidth=2, color=sns.color_palette("tab20")[3])
             plt.xlabel("Step")
@@ -358,9 +353,9 @@ class DiffusionTrainer:
             plt.close()
 
         # ---- Diversity curve ----
-        if hasattr(self, "metric_log"):
-            divs = [x["diversity"] for x in self.metric_log]
-            steps = [x["step"] for x in self.metric_log]
+        if metric_log:
+            divs = [x["diversity"] for x in metric_log]
+            steps = [x["step"] for x in metric_log]
             plt.figure(figsize=(7, 4))
             sns.lineplot(x=steps, y=divs, linewidth=2, color=sns.color_palette("tab20")[4], label="Model Diversity")
             if hasattr(self, "dataset_div"):

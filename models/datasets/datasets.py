@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from common.taxonomy import Taxonomy
 
-from .utils import load_image, load_embedding, load_graph_text, valid_path, compute_sample_weights
+from .utils import load_image, load_embedding, load_graph_text, valid_path, compute_sample_weights, load_data_with_embedding_fallback
 
 # ---------- Layout Dataset ----------
 
@@ -171,10 +171,11 @@ class PovDataset(Dataset):
         }
 
         if not row["is_empty"]:
-            if self.return_embeddings:
-                sample["pov"] = load_embedding(row["pov_path"])
-            else:
-                sample["pov"] = load_image(row["pov_path"], self.transform)
+            sample["pov"] = load_data_with_embedding_fallback(
+                row, "pov_embedding", "pov_path",
+                transform=self.transform, device=None,
+                use_embeddings=self.return_embeddings
+            )
         else:
             sample["pov"] = None
 
@@ -202,12 +203,11 @@ class GraphDataset(Dataset):
         }
 
         if not row["is_empty"]:
-            if self.return_embeddings:
-                sample["graph"] = load_embedding(row["graph_path"])
-            else:
-                # load raw graph here (JSON, adjacency, etc.)
-                with open(row["graph_path"], "r") as f:
-                    sample["graph"] = f.read()
+            sample["graph"] = load_data_with_embedding_fallback(
+                row, "graph_embedding", "graph_path",
+                transform=None, device=None,
+                use_embeddings=self.return_embeddings
+            )
         else:
             sample["graph"] = None
 
@@ -314,40 +314,25 @@ class UnifiedLayoutDataset(Dataset):
         # ----- POV (only for room samples) -----
         pov = None
         if is_room:
-            if self.use_embeddings:
-                pov_path = row["pov_embedding"]
-                if valid_path(pov_path):
-                    pov = load_embedding(pov_path)
-                    if self.device:
-                        pov = pov.to(self.device)
-            else:
-                pov_path = row["pov_image"]
-                if valid_path(pov_path):
-                    pov = load_image(pov_path, self.transform)
+            pov = load_data_with_embedding_fallback(
+                row, "pov_embedding", "pov_image", 
+                transform=self.transform, device=self.device, 
+                use_embeddings=self.use_embeddings
+            )
 
         # ----- Graph -----
-        if self.use_embeddings:
-            graph_path = row["graph_embedding"]
-            if valid_path(graph_path):
-                graph = load_embedding(graph_path)
-                if self.device:
-                    graph = graph.to(self.device)
-            else:
-                # Fallback to text if embedding not available
-                graph = load_graph_text(row["graph_text"])
-        else:
-            # Load as text
-            graph = load_graph_text(row["graph_text"])
+        graph = load_data_with_embedding_fallback(
+            row, "graph_embedding", "graph_text",
+            transform=None, device=self.device,
+            use_embeddings=self.use_embeddings
+        )
 
         # ----- Layout -----
-        if self.use_embeddings:
-            layout_path = row["layout_embedding"]
-            layout = load_embedding(layout_path)
-            if self.device:
-                layout = layout.to(self.device)
-        else:
-            layout_path = row["layout_image"]
-            layout = load_image(layout_path, self.transform)
+        layout = load_data_with_embedding_fallback(
+            row, "layout_embedding", "layout_image",
+            transform=self.transform, device=self.device,
+            use_embeddings=self.use_embeddings
+        )
 
         return {
             "sample_id": row["sample_id"],

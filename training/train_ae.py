@@ -18,7 +18,7 @@ from models.losses.custom_loss import StandardVAELoss, SegmentationVAELoss
 import sys
 from pathlib import Path
 from common.taxonomy import load_valid_colors
-from common.utils import safe_mkdir
+from common.utils import safe_mkdir, set_seeds
 
 
 def build_loss_function(loss_cfg):
@@ -103,24 +103,14 @@ def main():
 
     # --- Dataset setup ---
     seed = dataset_cfg.get("seed", 42)
-    random.seed(seed)
-    torch.manual_seed(seed)
+    set_seeds(seed)
     transform = T.ToTensor()
 
-    train_ds, val_ds = build_datasets(dataset_cfg, transform=transform)
-
-    batch_size = dataset_cfg.get("batch_size", 32)
-    num_workers = dataset_cfg.get("num_workers", 4)
-    shuffle = dataset_cfg.get("shuffle", True)
-
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=shuffle,
-        num_workers=num_workers, pin_memory=True, collate_fn=collate_skip_none
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=True, collate_fn=collate_skip_none
-    )
+    # Set pin_memory for better performance
+    dataset_cfg["pin_memory"] = True
+    
+    # Use build_dataloaders utility instead of manual creation
+    train_ds, val_ds, train_loader, val_loader = build_dataloaders(dataset_cfg, transform=transform)
 
     save_split_csvs(train_ds, val_ds, out_dir)
 

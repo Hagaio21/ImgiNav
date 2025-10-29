@@ -6,16 +6,19 @@ from PIL import Image
 # This transform will be used to convert layout images to tensors
 layout_transform = transforms.ToTensor()
 
+def _is_empty_batch(batch):
+    """Check if batch is empty or None."""
+    return not batch
+
 def collate_skip_none(batch):
     """Collate function that skips None values."""
-    if not batch:
+    if _is_empty_batch(batch):
         return None
     return default_collate(batch)
 
 def collate_fn(batch):
-
     # Check if batch is empty
-    if not batch:
+    if _is_empty_batch(batch):
         return {}
 
     # Separate items

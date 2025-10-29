@@ -10,7 +10,7 @@ from torchvision.utils import save_image
 import yaml
 from tqdm import tqdm
 from pathlib import Path
-from common.utils import safe_mkdir
+from common.utils import safe_mkdir, set_seeds, extract_tensor_from_batch, MetricsLogger, save_checkpoint
 
 
 class AutoEncoderTrainer:
@@ -43,17 +43,11 @@ class AutoEncoderTrainer:
         safe_mkdir(Path(self.output_dir) / "samples")
 
         self.optimizer = torch.optim.Adam(self.autoencoder.parameters(), lr=self.lr)
-        self.metric_log = []
+        self.metrics_logger = MetricsLogger(self.output_dir)
 
     def _get_batch(self, batch):
         """Helper to extract tensor from various batch types."""
-        if isinstance(batch, dict):
-            return batch["layout"].to(self.device)
-        if isinstance(batch, (list, tuple)):
-            return batch[0].to(self.device)
-        if torch.is_tensor(batch):
-            return batch.to(self.device)
-        raise TypeError(f"Unexpected batch type: {type(batch)}")
+        return extract_tensor_from_batch(batch, device=self.device, key="layout")
 
     def fit(self, train_loader: DataLoader, val_loader: DataLoader = None):
         self.autoencoder.train()
@@ -106,7 +100,7 @@ class AutoEncoderTrainer:
                         log_entry = {"epoch": epoch, "step": step}
                         for key, val in metrics.items():
                             log_entry[f"train_{key}"] = val
-                        self.metric_log.append(log_entry)
+                        self.metrics_logger.log(log_entry)
                         
                         # Format log message
                         metric_str = ", ".join([f"{k}={v:.5f}" for k, v in metrics.items()])
@@ -135,7 +129,7 @@ class AutoEncoderTrainer:
                 log_entry = {"epoch": epoch, "step": step}
                 for key, val in val_metrics.items():
                     log_entry[f"val_{key}"] = val
-                self.metric_log.append(log_entry)
+                self.metrics_logger.log(log_entry)
 
             self._save_checkpoint(epoch)
             self._save_metrics()
@@ -145,7 +139,7 @@ class AutoEncoderTrainer:
 
         # Save final model
         final_path = os.path.join(self.ckpt_dir, "ae_latest.pt")
-        torch.save(self.autoencoder.state_dict(), final_path)
+        save_checkpoint(self.autoencoder.state_dict(), final_path, metadata={"epoch": self.epochs, "final": True})
         print(f"[Checkpoint] Saved final model: {final_path}")
 
     @torch.no_grad()
@@ -184,23 +178,23 @@ class AutoEncoderTrainer:
 
     def _save_checkpoint(self, epoch):
         path = os.path.join(self.ckpt_dir, f"ae_epoch_{epoch}.pt")
-        torch.save(self.autoencoder.state_dict(), path)
+        save_checkpoint(self.autoencoder.state_dict(), path, metadata={"epoch": epoch})
         print(f"[Checkpoint] Saved: {path}")
 
     def _save_metrics(self):
-        metrics_path = os.path.join(self.output_dir, "metrics.json")
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(self.metric_log, f, indent=2)
+        # Metrics are automatically saved by MetricsLogger
+        pass
 
     def _plot_losses(self):
         """Dynamic plotting based on available metrics."""
-        if not self.metric_log:
+        metric_log = self.metrics_logger.get_metrics()
+        if not metric_log:
             return
 
         # Extract all unique metric keys
         train_keys = set()
         val_keys = set()
-        for entry in self.metric_log:
+        for entry in metric_log:
             for key in entry.keys():
                 if key.startswith("train_"):
                     train_keys.add(key)
@@ -225,15 +219,15 @@ class AutoEncoderTrainer:
             
             # Train data
             train_key = f"train_{metric}"
-            steps = [m["step"] for m in self.metric_log if train_key in m]
-            values = [m[train_key] for m in self.metric_log if train_key in m]
+            steps = [m["step"] for m in metric_log if train_key in m]
+            values = [m[train_key] for m in metric_log if train_key in m]
             if steps:
                 ax.plot(steps, values, label=f"Train {metric}", alpha=0.7)
             
             # Val data
             val_key = f"val_{metric}"
-            val_steps = [m["step"] for m in self.metric_log if val_key in m]
-            val_values = [m[val_key] for m in self.metric_log if val_key in m]
+            val_steps = [m["step"] for m in metric_log if val_key in m]
+            val_values = [m[val_key] for m in metric_log if val_key in m]
             if val_steps:
                 ax.plot(val_steps, val_values, label=f"Val {metric}", 
                        marker='o', linestyle='--')

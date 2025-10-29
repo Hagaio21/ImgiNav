@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as T
 import torch
 from pathlib import Path
-from common.utils import safe_mkdir
+from common.utils import safe_mkdir, set_seeds
 from models.datasets import LayoutDataset, collate_skip_none, build_datasets, build_dataloaders, save_split_csvs
 from models.autoencoder import AutoEncoder
 from models.components.unet import DualUNet

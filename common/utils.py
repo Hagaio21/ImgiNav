@@ -65,3 +65,95 @@ def ensure_columns_exist(df, required_columns: List[str], source: str = "datafra
     if missing:
         raise RuntimeError(f"Missing columns {missing} in {source}")
 
+
+def set_seeds(seed: int = 42):
+    """Set random seeds for reproducibility."""
+    import random
+    import torch
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
+def extract_tensor_from_batch(batch, device=None, key="layout"):
+    """
+    Extract tensor from various batch types.
+    
+    Args:
+        batch: Can be dict, list/tuple, or tensor
+        device: Optional device to move tensor to
+        key: Key to extract from dict (default: "layout")
+    
+    Returns:
+        torch.Tensor: Extracted tensor
+    """
+    import torch
+    
+    if isinstance(batch, dict):
+        tensor = batch[key]
+    elif isinstance(batch, (list, tuple)):
+        tensor = batch[0]
+    elif torch.is_tensor(batch):
+        tensor = batch
+    else:
+        raise TypeError(f"Unexpected batch type: {type(batch)}")
+    
+    if device is not None:
+        tensor = tensor.to(device)
+    
+    return tensor
+
+
+class MetricsLogger:
+    """Shared metrics logging utility for trainers."""
+    
+    def __init__(self, output_dir, filename="metrics.json"):
+        self.output_dir = Path(output_dir)
+        self.filename = filename
+        self.metrics_log = []
+        self.metrics_path = self.output_dir / filename
+        
+        # Ensure output directory exists
+        safe_mkdir(self.output_dir)
+    
+    def log(self, metrics_dict):
+        """Log a metrics dictionary."""
+        self.metrics_log.append(metrics_dict)
+        self._write_to_file()
+    
+    def _write_to_file(self):
+        """Write metrics to JSON file."""
+        try:
+            write_json(self.metrics_log, self.metrics_path)
+        except Exception as e:
+            print(f"Warning: Failed to write metrics to {self.metrics_path}: {e}")
+    
+    def get_metrics(self):
+        """Get all logged metrics."""
+        return self.metrics_log.copy()
+    
+    def clear(self):
+        """Clear all metrics."""
+        self.metrics_log = []
+        self._write_to_file()
+
+
+def save_checkpoint(state_dict, path, metadata=None):
+    """
+    Save model checkpoint with optional metadata.
+    
+    Args:
+        state_dict: Model state dictionary
+        path: Path to save checkpoint
+        metadata: Optional metadata dictionary to include
+    """
+    import torch
+    
+    checkpoint = {"state_dict": state_dict}
+    if metadata:
+        checkpoint.update(metadata)
+    
+    safe_mkdir(Path(path).parent)
+    torch.save(checkpoint, path)

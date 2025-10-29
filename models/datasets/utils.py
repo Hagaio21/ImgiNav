@@ -45,6 +45,30 @@ def valid_path(x):
     invalid = {"", "false", "0", "none"}
     return isinstance(x, str) and str(x).strip().lower() not in invalid
 
+def load_data_with_embedding_fallback(row, embedding_key, raw_key, transform=None, device=None, use_embeddings=False):
+
+    if use_embeddings and embedding_key in row:
+        embedding_path = row[embedding_key]
+        if valid_path(embedding_path):
+            data = load_embedding(embedding_path)
+            if device:
+                data = data.to(device)
+            return data
+    
+    # Fallback to raw data
+    if raw_key in row:
+        raw_path = row[raw_key]
+        if valid_path(raw_path):
+            if raw_path.endswith(('.txt', '.json')):
+                # Text data
+                with open(raw_path, "r", encoding="utf-8") as f:
+                    return f.read().strip()
+            else:
+                # Image data
+                return load_image(raw_path, transform=transform)
+    
+    return None
+
 def compute_sample_weights(df: pd.DataFrame) -> torch.DoubleTensor:
     """Create grouping key: scene uses 'scene', rooms use room_id"""
     keys = df.apply(lambda r: f"{r['type']}:{r['room_id']}" if r["type"] == "room" else "scene", axis=1)
@@ -102,27 +126,19 @@ def build_datasets(dataset_cfg, transform=None):
     return train_ds, val_ds
 
 def build_dataloaders(dataset_cfg, transform=None):
-    """
-    Build train/val datasets and dataloaders from configuration.
-    
-    Args:
-        dataset_cfg: Dictionary with dataset configuration (see build_datasets)
-        transform: Optional transform (see build_datasets)
-    
-    Returns:
-        train_ds, val_ds, train_loader, val_loader: Datasets and dataloaders
-    """
+
     import random
     from torch.utils.data import DataLoader
     from .collate import collate_skip_none
+    from common.utils import set_seeds
     
     seed = dataset_cfg.get("seed", 42)
     batch_size = dataset_cfg.get("batch_size", 16)
     num_workers = dataset_cfg.get("num_workers", 4)
     shuffle = dataset_cfg.get("shuffle", True)
+    pin_memory = dataset_cfg.get("pin_memory", False)
     
-    random.seed(seed)
-    torch.manual_seed(seed)
+    set_seeds(seed)
     
     train_ds, val_ds = build_datasets(dataset_cfg, transform=transform)
     train_loader = DataLoader(
@@ -130,6 +146,7 @@ def build_dataloaders(dataset_cfg, transform=None):
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
+        pin_memory=pin_memory,
         collate_fn=collate_skip_none
     )
     val_loader = DataLoader(
@@ -137,6 +154,7 @@ def build_dataloaders(dataset_cfg, transform=None):
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
+        pin_memory=pin_memory,
         collate_fn=collate_skip_none
     )
     return train_ds, val_ds, train_loader, val_loader

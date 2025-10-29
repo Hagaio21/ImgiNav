@@ -12,10 +12,8 @@ from common.utils import safe_mkdir
 from models.autoencoder import AutoEncoder
 
 
-def load_image(path):
-    """Load image and convert to tensor."""
-    img = Image.open(path).convert("RGB")
-    return transforms.ToTensor()(img)
+# Import load_image from utils instead of defining locally
+from models.datasets.utils import load_image
 
 
 def validate_embedding_shape(z, expected_dims=3):
@@ -86,7 +84,7 @@ def main(args):
             
             try:
                 # Load and encode
-                img = load_image(layout_path).unsqueeze(0).to(device)
+                img = load_image(layout_path, transform=transforms.ToTensor()).unsqueeze(0).to(device)
                 
                 with torch.no_grad():
                     z = ae.encode_latent(img, deterministic=True)  # Use deterministic encoding
