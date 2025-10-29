@@ -64,10 +64,7 @@ class Taxonomy:
         return None
 
     def get_floor_ids(self) -> list[int]:
-        """
-        Return taxonomy IDs that correspond to 'floor' surfaces.
-        Includes both category and label definitions.
-        """
+
         floor_ids = []
         for name, idx in self.data.get("category2id", {}).items():
             if name.lower() == "floor":
@@ -81,12 +78,7 @@ class Taxonomy:
     # Super-category
     # ----------------------------
     def get_sup(self, val, output: str = "name"):
-        """
-        Get super-category for a given category/title/etc.
-        Args:
-            val: str name or int id
-            output: 'name' or 'id'
-        """
+
         if isinstance(val, int):
             name = self.id_to_name(val)
         else:
@@ -109,12 +101,7 @@ class Taxonomy:
         return self.data.get("room2id", {}).get(room_type, 0)
 
     def get_color(self, val, mode: str = "none"):
-        """
-        Get color for any taxonomy ID or name.
-        For structural elements (floor/wall/ceiling), always returns category color (2000 range).
-        For other elements, returns super-category color.
-        Returns RGB tuple.
-        """
+
         default_color = (127, 127, 127)  # gray fallback
 
         if val is None:
@@ -153,6 +140,39 @@ class Taxonomy:
         # Look up color by super-category ID in id2color
         color = self.data.get("id2color", {}).get(str(super_id), default_color)
         return tuple(color) if isinstance(color, list) else default_color
+
+    def get_color_to_label_dict(self) -> dict:
+
+        color_to_label = {}
+        id2color = self.data.get("id2color", {})
+        
+        for sid_str, rgb in id2color.items():
+            sid_int = int(sid_str)
+            
+            if 1000 <= sid_int <= 1999:
+                # Super categories
+                super_label = self.id_to_name(sid_int)
+                color_to_label[tuple(rgb)] = {
+                    "label_id": sid_int,
+                    "label": super_label
+                }
+            elif sid_int == 2053:
+                # Wall - get category name first, then map to super
+                category_name = self.id_to_name(sid_int)
+                super_label = self.get_sup(category_name, output="name")
+                color_to_label[tuple(rgb)] = {
+                    "label_id": sid_int,
+                    "label": super_label
+                }
+        
+        return color_to_label
+
+    def get_room_mappings(self) -> tuple[dict, dict]:
+        """
+        Get room ID mappings as tuple (id2room, room2id).
+        Convenience method for graph building.
+        """
+        return self.data.get("id2room", {}), self.data.get("room2id", {})
 
 
 # Additional helper method for debugging specific failures
@@ -356,36 +376,11 @@ class Taxonomy:
     # Convenience methods for compatibility with old load_taxonomy() functions
     # ----------------------------
     def get_id2room_dict(self, int_keys: bool = True) -> dict:
-        """
-        Get id2room mapping as a dictionary compatible with old load_taxonomy() functions.
-        
-        Args:
-            int_keys: If True, convert string keys to int; if False, keep as strings
-        
-        Returns:
-            Dictionary mapping room_id -> room_name
-        """
+
         id2room = self.data.get("id2room", {})
         if int_keys:
             return {int(k): v for k, v in id2room.items()}
         return id2room
-    
-    def get_color_to_label_dict(self) -> dict:
-        """
-        Get color -> label mapping for graph building.
-        Returns dict mapping (r, g, b) tuples -> label names.
-        """
-        color_to_label = {}
-        id2color = self.data.get("id2color", {})
-        
-        # Map colors to labels
-        for label_id_str, label_name in self.data.get("id2label", {}).items():
-            color = id2color.get(label_id_str)
-            if color:
-                color_tuple = tuple(color) if isinstance(color, list) else color
-                color_to_label[color_tuple] = label_name
-        
-        return color_to_label
     
     def __getitem__(self, key):
         """Allow dict-like access for backward compatibility."""
@@ -423,27 +418,13 @@ class Taxonomy:
 # ------------------------------
 
 def load_taxonomy(taxonomy_path: str | Path):
-    """
-    Load the full taxonomy JSON as a dict.
-    For backward compatibility with code expecting dict.
-    Consider using Taxonomy class directly for new code.
-    """
+
     with open(Path(taxonomy_path), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_valid_colors(taxonomy_path: str | Path, include_background: bool = True):
-    """
-    Return filtered id→color mapping for super-categories + structure surfaces.
-    Optionally add white background as class 9000.
-    
-    Args:
-        taxonomy_path: Path to taxonomy.json
-        include_background: If True, add white background as class 9000
-    
-    Returns:
-        Tuple of (filtered_id_to_color_dict, valid_ids_list)
-    """
+
     tax = Taxonomy(taxonomy_path)
     
     valid_ids = [
@@ -480,12 +461,6 @@ def _invert_mapping(mapping: dict) -> dict:
 # ------------------------------
 
 def build_taxonomy_full(model_info_path: Path, scenes_dir: Path):
-    """
-    Build taxonomy by scanning scene JSONs with Stage 1 resolution logic.
-    - Supers come only from model_info.json (+Structure).
-    - Collects labels, categories, and titles from furniture + room children.
-    - Returns one dict with id mappings and category→super mapping.
-    """
 
     # --- load model_info.json ---
     with open(model_info_path, "r", encoding="utf-8") as f:
@@ -592,13 +567,6 @@ def build_room_taxonomy(scenes_dir: Path):
 # Color Palette
 # ------------------------------
 def assign_colors(super2id: dict, category2id: dict, category2super: dict):
-    """
-    Assign colors:
-      - Structural (floor, wall, ceiling) -> fixed distinct colors
-      - Unknown -> gray
-      - Supers -> anchor hues
-      - Categories -> variations of super hue
-    """
 
     id2color = {}
 

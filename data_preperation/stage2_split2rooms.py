@@ -11,7 +11,7 @@ from utils.file_discovery import discover_files
 from utils.common import safe_mkdir, write_json, create_progress_tracker
 from utils.file_discovery import infer_scene_id
 from utils.semantic_utils import Taxonomy
-from utils.geometry_utils import pca_plane_fit
+from utils.geometry_utils import pca_plane_fit, world_to_local_coords, build_orthonormal_frame
 TAXONOMY: Taxonomy = None
 
 
@@ -23,28 +23,7 @@ def orient_normal_upward(normal: np.ndarray, all_xyz: np.ndarray, origin: np.nda
         normal = -normal
     return normal / (np.linalg.norm(normal) + 1e-12)
 
-def build_orthonormal_frame(origin: np.ndarray, normal: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    Y = np.array([0, 1, 0], dtype=np.float64)
-    X = np.array([1, 0, 0], dtype=np.float64)
-    
-    # Project Y onto plane perpendicular to normal
-    v = Y - (Y @ normal) * normal
-    if np.linalg.norm(v) < 1e-9:
-        # Y is parallel to normal, use X instead
-        v = X - (X @ normal) * normal
-    v = v / (np.linalg.norm(v) + 1e-12)
-    
-    # Complete right-handed frame
-    u = np.cross(normal, v)
-    u = u / (np.linalg.norm(u) + 1e-12)
-    v = np.cross(u, normal)
-    v = v / (np.linalg.norm(v) + 1e-12)
-    
-    return u, v, normal
 
-def world_to_local(xyz: np.ndarray, origin: np.ndarray, u: np.ndarray, v: np.ndarray, n: np.ndarray) -> np.ndarray:
-    R = np.stack([u, v, n], axis=1)  # world -> local transformation
-    return (xyz - origin) @ R
 
 def compute_room_frame(parquet_path: Path, floor_label_ids=None, height_band=(0.05, 0.50)) -> dict:
     try:
@@ -83,10 +62,11 @@ def compute_room_frame(parquet_path: Path, floor_label_ids=None, height_band=(0.
     # Compute floor plane
     origin, normal = pca_plane_fit(floor_pts)
     normal = orient_normal_upward(normal, xyz, origin)
-    u, v, n = build_orthonormal_frame(origin, normal)
+    u, v = build_orthonormal_frame(normal)
+    n = normal
     
     # Transform all points to local coordinates
-    uvh = world_to_local(xyz, origin, u, v, n)
+    uvh = world_to_local_coords(xyz, origin, u, v, n)
     umin, umax = float(uvh[:, 0].min()), float(uvh[:, 0].max())
     vmin, vmax = float(uvh[:, 1].min()), float(uvh[:, 1].max())
     

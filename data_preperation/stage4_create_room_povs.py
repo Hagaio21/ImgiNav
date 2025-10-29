@@ -14,7 +14,8 @@ from sklearn.cluster import KMeans
 from utils.common import create_progress_tracker
 from shapely.geometry import MultiPoint
 import alphashape
-from utils.semantic_utils import Taxonomy  # Import our taxonomy class
+from utils.semantic_utils import Taxonomy
+from utils.geometry_utils import load_room_meta, extract_frame_from_meta
 
 # only for HPC
 # from xvfbwrapper import Xvfb
@@ -26,26 +27,6 @@ SEED = 1
 
 # ----------- IO helpers -----------
 from utils.file_discovery import infer_scene_id, infer_room_id, find_room_files
-
-def load_meta(parquet_path: Path):
-    room_dir = parquet_path.parent
-    cand = list(room_dir.glob("*_meta.json"))
-    if cand:
-        mpath = cand[0]
-    else:
-        mpath = room_dir / "meta.json"
-        if not mpath.exists():
-            return None
-    j = json.loads(mpath.read_text(encoding="utf-8"))
-    to_arr = lambda k: np.array(j[k], dtype=np.float32)
-    origin = to_arr("origin_world")
-    u = to_arr("u_world")
-    v = to_arr("v_world")
-    n = to_arr("n_world")
-    uv_bounds = tuple(j["uv_bounds"])         # (umin, umax, vmin, vmax)
-    yaw_auto = float(j.get("yaw_auto", 0.0))
-    map_band = tuple(j.get("map_band_m", [0.05, 0.50]))
-    return origin, u, v, n, uv_bounds, yaw_auto, map_band
 
 def get_pov_locations(
     u: np.ndarray,
@@ -230,7 +211,9 @@ def draw_cam_arrows_on_minimap_uv(img, uv_bounds, cams_uv: np.ndarray, angles_de
     L = max(umax-umin, vmax-vmin, 1e-6); scale = (res-2*margin)/L
     draw = ImageDraw.Draw(img)
     Lp = max(16, res//10); head = max(6, res//40); r = max(3, res//90)
+
     for (cu,cv), ang in zip(cams_uv, angles_deg):
+        
         cx = (cu-umin)*scale + margin
         cy = (cv-vmin)*scale + margin; cy = (res-1)-cy
         draw.ellipse([cx-r,cy-r,cx+r,cy+r], fill=(220,30,30), outline=(20,20,20), width=1)
@@ -246,11 +229,11 @@ def process_room(parquet_path: Path, root_out_unused: Path, taxonomy: Taxonomy,
                  width=1280, height=800, fov_deg=70.0, eye_height=1.6,
                  point_size=2.0, bg_rgb=(0,0,0),
                  num_views: int = 6, seed: int = SEED, verbose=False) -> bool:
-    meta = load_meta(parquet_path)
+    meta = load_room_meta(parquet_path.parent)
     if meta is None:
         print(f"[skip] no meta.json → {parquet_path.parent}")
-        return 0
-    origin, u, v, n, uv_bounds_all, yaw_auto, _band = meta
+        return False
+    origin, u, v, n, uv_bounds_all, yaw_auto, _band = extract_frame_from_meta(meta)
 
     # Get floor IDs from taxonomy instead of semantic_maps.json
     floor_ids = taxonomy.get_floor_ids()
@@ -259,11 +242,17 @@ def process_room(parquet_path: Path, root_out_unused: Path, taxonomy: Taxonomy,
         floor_ids = []
 
     df = pd.read_parquet(parquet_path)
+
     xyz = df[["x","y","z"]].to_numpy(np.float32)
+
     raw = df[["r","g","b"]].to_numpy()
+
     rgb = (raw.astype(np.float32)/255.0) if not np.issubdtype(raw.dtype, np.floating) else raw.astype(np.float32)
+    
     labels = df["label_id"].to_numpy() if "label_id" in df.columns else None
+    
     scene_id = df["scene_id"].iloc[0] if "scene_id" in df.columns else infer_scene_id(parquet_path)
+    
     room_id  = int(df["room_id"].iloc[0]) if "room_id" in df.columns else infer_room_id(parquet_path)
 
     if labels is None:

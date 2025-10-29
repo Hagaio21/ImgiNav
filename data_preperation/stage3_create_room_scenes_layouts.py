@@ -28,46 +28,6 @@ def draw_point(canvas: np.ndarray, x: int, y: int, color: np.ndarray, size: int 
     y0, y1 = max(y - half, 0), min(y + half, canvas.shape[0] - 1)
     canvas[y0:y1 + 1, x0:x1 + 1] = color
 
-def points_to_image_coords(u_vals: np.ndarray, v_vals: np.ndarray, 
-                          uv_bounds: Tuple[float, float, float, float],
-                          resolution: int, margin: int = 10) -> Tuple[np.ndarray, np.ndarray]:
-    umin, umax, vmin, vmax = uv_bounds
-    span = max(umax - umin, vmax - vmin, 1e-6)
-    scale = (resolution - 2 * margin) / span
-    
-    u_pix = (u_vals - umin) * scale + margin
-    v_pix = (v_vals - vmin) * scale + margin
-    
-    # Flip V for image coordinates (origin at top-left)
-    x_img = np.clip(np.round(u_pix).astype(np.int32), 0, resolution - 1)
-    y_img = np.clip(np.round((resolution - 1) - v_pix).astype(np.int32), 0, resolution - 1)
-    
-    return x_img, y_img
-
-def load_taxonomy(taxonomy_path):
-    with open(taxonomy_path, "r", encoding="utf-8") as f:
-        taxonomy = json.load(f)
-
-    category2color = {}
-    super2color = {}
-
-    # Structural categories (direct mapping)
-    if "structural" in taxonomy:
-        for cat, info in taxonomy["structural"].items():
-            if "color" in info:
-                category2color[cat.lower()] = tuple(info["color"])
-
-    # Furniture categories (nested under super)
-    if "furniture" in taxonomy:
-        for super_name, super_info in taxonomy["furniture"].items():
-            if "color" in super_info:
-                super2color[super_name.lower()] = tuple(super_info["color"])
-            if "categories" in super_info:
-                for cat, info in super_info["categories"].items():
-                    if "color" in info:
-                        category2color[cat.lower()] = tuple(info["color"])
-
-    return category2color, super2color
 
 
 # ---------- Room Layout Generation ----------

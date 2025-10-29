@@ -24,30 +24,7 @@ from utils.geometry_utils import angle_from_center
 def load_taxonomy_colors(tax_path: Path) -> Dict:
     from utils.semantic_utils import Taxonomy
     tax = Taxonomy(tax_path)
-    color_to_label = {}
-    
-    # Load super-category colors (1000-1999) and wall category (2053)
-    id2color = tax.data.get("id2color", {})
-    
-    for sid_str, rgb in id2color.items():
-        sid_int = int(sid_str)
-        
-        if 1000 <= sid_int <= 1999:
-            # Super categories
-            super_label = tax.id_to_name(sid_int)
-            color_to_label[tuple(rgb)] = {
-                "label_id": sid_int,
-                "label": super_label
-            }
-        elif sid_int == 2053:
-            # Wall - get category name first, then map to super
-            category_name = tax.id_to_name(sid_int)
-            super_label = tax.get_sup(category_name, output="name")
-            color_to_label[tuple(rgb)] = {
-                "label_id": sid_int,
-                "label": super_label
-            }
-    
+    color_to_label = tax.get_color_to_label_dict()
     print(f"Loaded {len(color_to_label)} taxonomy colors (super categories + wall)", flush=True)
     return color_to_label
 
@@ -55,7 +32,7 @@ def load_taxonomy_colors(tax_path: Path) -> Dict:
 def load_taxonomy_rooms(tax_path: Path) -> Tuple[Dict, Dict]:
     from utils.semantic_utils import Taxonomy
     tax = Taxonomy(tax_path)
-    return tax.data.get("id2room", {}), tax.data.get("room2id", {})
+    return tax.get_room_mappings()
 
 
 # =============================================================================

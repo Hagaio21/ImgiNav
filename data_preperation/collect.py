@@ -12,9 +12,7 @@ from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
-# =============================================================================
-# All-Type Collection (from collect_all.py)
-# =============================================================================
+ 
 
 def collect_all(data_root: Path, output_manifest: Path):
     if not data_root.exists():
@@ -153,10 +151,6 @@ def collect_all(data_root: Path, output_manifest: Path):
     print(f"[INFO] Wrote manifest → {output_manifest}")
 
 
-# =============================================================================
-# Graphs Collection (from collect_graphs.py)
-# =============================================================================
-
 def collect_graphs(root_dir: Path, output_path: Path):
     graphs = []
     
@@ -214,10 +208,6 @@ def collect_graphs(root_dir: Path, output_path: Path):
     print(f"Room graphs:  {room_count}")
     print(f"\nManifest: {output_path}")
 
-
-# =============================================================================
-# Layouts Collection (from layout_collection.py)
-# =============================================================================
 
 def analyze_layout(img_path: Path, white_vals: set, gray_vals: set) -> dict:
     stem = img_path.stem
@@ -282,11 +272,6 @@ def collect_layouts(root: Path, output_path: Path, workers: int = None):
         writer.writerows(rows)
 
     print(f"[INFO] Wrote {len(rows)} rows to {output_path}", flush=True)
-
-
-# =============================================================================
-# Dataset Collection (from collect_dataset.py)
-# =============================================================================
 
 def load_empty_map(layouts_csv: Path) -> Dict[Tuple[str, str], int]:
     empty_map = {}
@@ -428,10 +413,6 @@ def collect_dataset(root: Path, out_dir: Path, layouts_csv: Path):
     collect_povs(root, povs_csv, empty_map)
     collect_dataset_files(root, data_csv)
 
-
-# =============================================================================
-# Main Entry Point
-# =============================================================================
 
 def main():
     parser = argparse.ArgumentParser()
