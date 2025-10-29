@@ -9,7 +9,9 @@ import argparse
 from pathlib import Path
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from modules.autoencoder import AutoEncoder
+sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+from utils.common import safe_mkdir
+from models.autoencoder import AutoEncoder
 
 
 def load_image(path):
@@ -35,7 +37,7 @@ def validate_embedding_shape(z, expected_dims=3):
 
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    os.makedirs(args.output_latent_dir, exist_ok=True)
+    safe_mkdir(Path(args.output_latent_dir))
     
     # Create log file
     log_path = os.path.join(args.output_latent_dir, "encoding_log.txt")
@@ -65,8 +67,8 @@ def main(args):
     print(f"    Expected latent shape: {expected_shape}")
     
     # Pre-create directory structure
-    os.makedirs(os.path.join(args.output_latent_dir, "rooms"), exist_ok=True)
-    os.makedirs(os.path.join(args.output_latent_dir, "scenes"), exist_ok=True)
+    safe_mkdir(Path(args.output_latent_dir) / "rooms")
+    safe_mkdir(Path(args.output_latent_dir) / "scenes")
     
     latent_paths = []
     success_count = 0

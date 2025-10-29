@@ -78,6 +78,20 @@ def angle_from_center(center: np.ndarray, point: np.ndarray) -> float:
     return np.arctan2(v[1], v[0])
 
 
+def compute_directional_relations(angle_a: float, angle_b: float) -> Tuple[str, str]:
+
+    d_ang = np.rad2deg((angle_b - angle_a + np.pi*2) % (np.pi*2))
+    
+    if d_ang < 45 or d_ang > 315:
+        return "front_of", "behind"
+    elif 45 <= d_ang < 135:
+        return "right_of", "left_of"
+    elif 135 <= d_ang < 225:
+        return "behind", "front_of"
+    else:
+        return "left_of", "right_of"
+
+
 def load_room_meta(room_dir: Path):
     candidates = list(room_dir.glob("*_meta.json"))
     if not candidates:

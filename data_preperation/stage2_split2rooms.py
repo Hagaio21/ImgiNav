@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 from utils.file_discovery import discover_files
 from utils.common import safe_mkdir, write_json, create_progress_tracker
-from utils.file_discovery import infer_scene_id
+from utils.file_discovery import infer_ids_from_path
 from utils.semantic_utils import Taxonomy
 from utils.geometry_utils import pca_plane_fit, world_to_local_coords, build_orthonormal_frame
 TAXONOMY: Taxonomy = None
@@ -132,7 +132,7 @@ def split_scene_to_rooms(input_files: List[Path], output_config: dict, columns: 
 
     for i, input_path in enumerate(input_files, 1):
         try:
-            scene_id = infer_scene_id(input_path)
+            scene_id, _ = infer_ids_from_path(input_path)
             scene_dir = input_path.parent
             
             if engine == "dataset":

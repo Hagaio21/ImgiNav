@@ -10,9 +10,12 @@ from tqdm import tqdm
 from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 import seaborn as sns
-from modules.diffusion import LatentDiffusion
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+from utils.common import safe_mkdir
+from models.diffusion import LatentDiffusion
 # *** ADD THIS: Import your new loss class ***
-from modules.custom_loss import VGGPerceptualLoss
+from models.losses.custom_loss import VGGPerceptualLoss
 
 
 # Global Seaborn style
@@ -56,11 +59,11 @@ class DiffusionTrainer:
         self.global_step = 0
         self.use_embeddings = use_embeddings
 
-        os.makedirs(self.output_dir, exist_ok=True)
+        safe_mkdir(Path(self.output_dir))
         self.samples_dir = os.path.join(self.output_dir, "samples")
-        os.makedirs(self.samples_dir, exist_ok=True)
+        safe_mkdir(Path(self.samples_dir))
         if self.ckpt_dir:
-            os.makedirs(self.ckpt_dir, exist_ok=True)
+            safe_mkdir(Path(self.ckpt_dir))
 
         # model setup
         self.unet = unet.to(device)
@@ -315,7 +318,7 @@ class DiffusionTrainer:
 
     @torch.no_grad()
     def create_viz_artifacts(self, samples, step, losses):
-        os.makedirs(self.output_dir, exist_ok=True)
+        safe_mkdir(Path(self.output_dir))
         exp = self.experiment_name
 
         # ---- Loss curve ----

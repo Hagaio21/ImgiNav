@@ -13,7 +13,7 @@ import json
 
 from utils.file_discovery import discover_files
 from utils.geometry_utils import load_room_meta, extract_frame_from_meta
-from utils.common import create_progress_tracker, safe_mkdir
+from utils.common import create_progress_tracker, safe_mkdir, write_json
 from utils.semantic_utils import Taxonomy
 from utils.geometry_utils import (
     world_to_local_coords, points_to_image_coords
@@ -217,7 +217,7 @@ def create_scene_layout(
     scene_info["n_world"] = n.tolist()
     
     # Save updated scene_info
-    scene_info_path.write_text(json.dumps(scene_info, indent=2), encoding="utf-8")
+    write_json(scene_info, scene_info_path)
 
     # Collect global bounds
     all_u_bounds, all_v_bounds = [], []

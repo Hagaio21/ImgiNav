@@ -11,14 +11,15 @@ from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as T
 
 # Add project root to path
-from modules.datasets import LayoutDataset, collate_skip_none
-from modules.autoencoder import AutoEncoder
+from models.datasets import LayoutDataset, collate_skip_none
+from models.autoencoder import AutoEncoder
 from training.autoencoder_trainer import AutoEncoderTrainer
-from modules.custom_loss import StandardVAELoss, SegmentationVAELoss
+from models.losses.custom_loss import StandardVAELoss, SegmentationVAELoss
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
 from utils.semantic_utils import load_valid_colors
+from utils.common import safe_mkdir
 
 def build_datasets(manifest_path, split_ratio, seed, transform, dataset_cfg):
     dataset = LayoutDataset(
@@ -121,8 +122,8 @@ def main():
     # --- Experiment setup ---
     out_dir = training_cfg.get("output_dir", "ae_outputs")
     ckpt_dir = training_cfg.get("ckpt_dir", os.path.join(out_dir, "checkpoints"))
-    os.makedirs(out_dir, exist_ok=True)
-    os.makedirs(ckpt_dir, exist_ok=True)
+    safe_mkdir(Path(out_dir))
+    safe_mkdir(Path(ckpt_dir))
 
     # Save experiment config
     model_cfg_path = os.path.join(out_dir, "experiment_config.yaml")

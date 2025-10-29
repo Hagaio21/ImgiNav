@@ -3,7 +3,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
 import torch.nn as nn
-from modules.blocks import TimeEmbedding, DownBlock, UpBlock, ResidualBlock
+from .blocks import TimeEmbedding, DownBlock, UpBlock, ResidualBlock
 
 class ConditionFusion(nn.Module):
     """Implements F(x, cond) with selectable mode."""

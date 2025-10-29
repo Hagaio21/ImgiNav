@@ -4,10 +4,13 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from torch.utils.data import DataLoader, random_split
 import torchvision.transforms as T
 import torch
-from modules.datasets import LayoutDataset, collate_skip_none
-from modules.autoencoder import AutoEncoder
-from modules.unet import DualUNet
-from modules.scheduler import LinearScheduler, CosineScheduler, QuadraticScheduler
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+from utils.common import safe_mkdir
+from models.datasets import LayoutDataset, collate_skip_none
+from models.autoencoder import AutoEncoder
+from models.components.unet import DualUNet
+from models.components.scheduler import LinearScheduler, CosineScheduler, QuadraticScheduler
 from training.diffusion_trainer import DiffusionTrainer
 
 
@@ -115,8 +118,8 @@ def main():
 
     out_dir = os.path.join(exp_path, "output")
     ckpt_dir = os.path.join(exp_path, "checkpoints")
-    os.makedirs(out_dir, exist_ok=True)
-    os.makedirs(ckpt_dir, exist_ok=True)
+    safe_mkdir(Path(out_dir))
+    safe_mkdir(Path(ckpt_dir))
     
     # --- Load configs ---
     dataset_cfg = cfg["dataset"]

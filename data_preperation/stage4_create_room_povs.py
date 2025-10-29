@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional, List
 from sklearn.cluster import KMeans
-from utils.common import create_progress_tracker
+from utils.common import create_progress_tracker, write_json
 from shapely.geometry import MultiPoint
 import alphashape
 from utils.semantic_utils import Taxonomy
@@ -26,7 +26,7 @@ TILT_DEG = 10.0  # look slightly downward for better floor visibility
 SEED = 1
 
 # ----------- IO helpers -----------
-from utils.file_discovery import infer_scene_id, infer_room_id, find_room_files
+from utils.file_discovery import infer_ids_from_path, find_room_files
 
 def get_pov_locations(
     u: np.ndarray,
@@ -251,9 +251,11 @@ def process_room(parquet_path: Path, root_out_unused: Path, taxonomy: Taxonomy,
     
     labels = df["label_id"].to_numpy() if "label_id" in df.columns else None
     
-    scene_id = df["scene_id"].iloc[0] if "scene_id" in df.columns else infer_scene_id(parquet_path)
+    scene_id_from_df = df["scene_id"].iloc[0] if "scene_id" in df.columns else None
+    scene_id = scene_id_from_df if scene_id_from_df else infer_ids_from_path(parquet_path)[0]
     
-    room_id  = int(df["room_id"].iloc[0]) if "room_id" in df.columns else infer_room_id(parquet_path)
+    room_id_from_df = df["room_id"].iloc[0] if "room_id" in df.columns else None
+    room_id = int(room_id_from_df) if room_id_from_df else infer_ids_from_path(parquet_path)[1]
 
     if labels is None:
         raise RuntimeError(f"'label_id' column missing in {parquet_path}")
@@ -364,8 +366,7 @@ def process_room(parquet_path: Path, root_out_unused: Path, taxonomy: Taxonomy,
 
     # --- save pov meta ---
     pov_meta_path = out_dir / f"{scene_id}_{room_id}_pov_meta.json"
-    with open(pov_meta_path, "w", encoding="utf-8") as f:
-        json.dump(pov_meta, f, indent=2)
+    write_json(pov_meta, pov_meta_path)
     print(f"  ✔ {pov_meta_path}", flush=True)
 
     return len(pov_locs)

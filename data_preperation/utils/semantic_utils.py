@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from utils.common import write_json, safe_mkdir
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -64,7 +65,6 @@ class Taxonomy:
         return None
 
     def get_floor_ids(self) -> list[int]:
-
         floor_ids = []
         for name, idx in self.data.get("category2id", {}).items():
             if name.lower() == "floor":
@@ -73,6 +73,59 @@ class Taxonomy:
             if name.lower() == "floor":
                 floor_ids.append(int(idx))
         return floor_ids
+
+    # ----------------------------
+    # Internal Helper Methods
+    # ----------------------------
+    def _is_structural(self, name: str) -> bool:
+        """Check if a name represents a structural category."""
+        return name.lower() in self.structural_categories
+
+    def _normalize_to_id(self, val):
+        """Convert val (int/str) to int ID, or None if invalid."""
+        if isinstance(val, int):
+            return val if val != 0 else None
+        if isinstance(val, str):
+            if val.isdigit():
+                return int(val) if int(val) != 0 else None
+            return self.name_to_id(val) if self.name_to_id(val) != 0 else None
+        return None
+
+    def _lookup_super_id(self, super_name: str) -> int | None:
+        """Internal: Convert super_name to super_id with case-insensitive fallback."""
+        if not super_name:
+            return None
+        
+        super2id = self.data.get("super2id", {})
+        
+        # Exact match first
+        super_id = super2id.get(super_name)
+        if super_id:
+            return super_id
+        
+        # Case-insensitive search
+        super_name_lower = super_name.lower()
+        for key in super2id:
+            if key.lower() == super_name_lower:
+                return super2id[key]
+        
+        # "others"/"other" variations
+        if super_name_lower in ["others", "other"]:
+            for variant in ["Others", "Other", "others", "other", "UnknownSuper"]:
+                super_id = super2id.get(variant)
+                if super_id:
+                    return super_id
+        
+        return None
+
+    def _resolve_category_to_super_id(self, category_name: str) -> int | None:
+        """Internal: Resolve category_name → super_name → super_id."""
+        if not category_name:
+            return None
+        super_name = self.data.get("category2super", {}).get(category_name)
+        if not super_name:
+            return None
+        return self._lookup_super_id(super_name)
 
     # ----------------------------
     # Super-category
@@ -101,28 +154,21 @@ class Taxonomy:
         return self.data.get("room2id", {}).get(room_type, 0)
 
     def get_color(self, val, mode: str = "none"):
-
-        default_color = (127, 127, 127)  # gray fallback
+        default_color = (127, 127, 127)
 
         if val is None:
             return default_color
 
-        # Convert to int ID if it's a string
-        if isinstance(val, str):
-            if val.isdigit():
-                val = int(val)
-            else:
-                # Convert name to ID
-                val = self.name_to_id(val)
-                if val == 0:  # name_to_id returns 0 for unknown
-                    return default_color
+        # Normalize to ID
+        val = self._normalize_to_id(val)
+        if val is None:
+            return default_color
 
         # Get the name to check if it's structural
         name = self.id_to_name(val)
         
         # Special handling for structural elements - ALWAYS use category color (2000 range)
-        if name.lower() in self.structural_categories:
-            # Find the corresponding category ID (2000 range) for this structural element
+        if self._is_structural(name):
             category_id = self.data.get("category2id", {}).get(name.lower())
             if category_id is not None:
                 color = self.data.get("id2color", {}).get(str(category_id), default_color)
@@ -209,12 +255,8 @@ class Taxonomy:
         print("--- End debug ---\n")
 
 
-    # Fixed resolve_super method with better case handling and fallbacks
     def resolve_super(self, val: int) -> int | None:
-        """
-        Resolve any ID (title, label, category, super) to its super-category ID.
-        Returns the super-category ID or None if not found.
-        """
+        """Resolve any ID (title, label, category, super) to its super-category ID."""
         if val is None or val == 0:
             return None
         
@@ -229,89 +271,55 @@ class Taxonomy:
             # Try direct title → super mapping (using title ID as key)
             super_name = self.data.get("title2super", {}).get(val_str)
             if super_name:
-                # Try exact match first
-                super_id = self.data.get("super2id", {}).get(super_name)
+                super_id = self._lookup_super_id(super_name)
                 if super_id:
                     return super_id
-                
-                # Try case variations
-                for key in self.data.get("super2id", {}):
-                    if key.lower() == super_name.lower():
-                        return self.data["super2id"][key]
-                
-                # If "others", try common variations
-                if super_name.lower() in ["others", "other"]:
-                    for variant in ["Others", "Other", "others", "other", "UnknownSuper"]:
-                        super_id = self.data.get("super2id", {}).get(variant)
-                        if super_id:
-                            return super_id
             
             # Fallback: title → category → super (using title ID as key)
             category_name = self.data.get("title2category", {}).get(val_str)
             if category_name:
-                super_name = self.data.get("category2super", {}).get(category_name)
-                if super_name:
-                    super_id = self.data.get("super2id", {}).get(super_name)
-                    if super_id:
-                        return super_id
-                    
-                    # Try case variations for category→super lookup too
-                    for key in self.data.get("super2id", {}):
-                        if key.lower() == super_name.lower():
-                            return self.data["super2id"][key]
+                super_id = self._resolve_category_to_super_id(category_name)
+                if super_id:
+                    return super_id
             
             # Additional fallback: try using title name as key (legacy support)
             title_name = self.id_to_name(val)
             super_name = self.data.get("title2super", {}).get(title_name)
             if super_name:
-                super_id = self.data.get("super2id", {}).get(super_name)
+                super_id = self._lookup_super_id(super_name)
                 if super_id:
                     return super_id
-                
-                # Try case variations
-                for key in self.data.get("super2id", {}):
-                    if key.lower() == super_name.lower():
-                        return self.data["super2id"][key]
             
             category_name = self.data.get("title2category", {}).get(title_name)
             if category_name:
-                super_name = self.data.get("category2super", {}).get(category_name)
-                if super_name:
-                    super_id = self.data.get("super2id", {}).get(super_name)
-                    if super_id:
-                        return super_id
+                super_id = self._resolve_category_to_super_id(category_name)
+                if super_id:
+                    return super_id
 
         # Label ID → category → super-category
         if self.ranges["label"][0] <= val <= self.ranges["label"][1]:
-            # Get label name, then find its category
             label_name = self.id_to_name(val)
-            if label_name.lower() in self.structural_categories:
+            if self._is_structural(label_name):
                 # For structural labels, find the corresponding category
-                category_name = label_name.lower()  # floor label -> floor category
-                super_name = self.data.get("category2super", {}).get(category_name)
-                if super_name:
-                    super_id = self.data.get("super2id", {}).get(super_name)
-                    if super_id:
-                        return super_id
+                category_name = label_name.lower()
+                super_id = self._resolve_category_to_super_id(category_name)
+                if super_id:
+                    return super_id
             else:
                 # For non-structural labels, use label2category mapping if it exists
                 category_id = self.data.get("label2category", {}).get(val_str)
                 if category_id:
                     category_name = self.id_to_name(int(category_id))
-                    super_name = self.data.get("category2super", {}).get(category_name)
-                    if super_name:
-                        super_id = self.data.get("super2id", {}).get(super_name)
-                        if super_id:
-                            return super_id
+                    super_id = self._resolve_category_to_super_id(category_name)
+                    if super_id:
+                        return super_id
 
         # Category ID → super-category
         if self.ranges["category"][0] <= val <= self.ranges["category"][1]:
             category_name = self.id_to_name(val)
-            super_name = self.data.get("category2super", {}).get(category_name)
-            if super_name:
-                super_id = self.data.get("super2id", {}).get(super_name)
-                if super_id:
-                    return super_id
+            super_id = self._resolve_category_to_super_id(category_name)
+            if super_id:
+                return super_id
 
         # Room IDs don't have super-categories
         if self.ranges["room"][0] <= val <= self.ranges["room"][1]:
@@ -320,24 +328,18 @@ class Taxonomy:
         return None
 
 
-    # Additional helper method for debugging
     def debug_color_resolution(self, val):
-        """
-        Debug method to trace color resolution process.
-        """
+        """Debug method to trace color resolution process."""
         print(f"\n--- Debug color resolution for: {val} ---")
         
-        # Convert to ID if needed
         original_val = val
-        if isinstance(val, str) and not val.isdigit():
-            val = self.name_to_id(val)
-            print(f"Converted '{original_val}' to ID: {val}")
-        elif isinstance(val, str):
-            val = int(val)
+        val = self._normalize_to_id(val)
         
-        if val == 0:
+        if val is None:
             print("Result: Unknown item, using default color")
             return
+        
+        print(f"Converted '{original_val}' to ID: {val}")
         
         name = self.id_to_name(val)
         print(f"ID {val} → Name: '{name}'")
@@ -349,7 +351,7 @@ class Taxonomy:
                 break
         
         # Check if structural
-        if name.lower() in self.structural_categories:
+        if self._is_structural(name):
             print(f"Structural element detected: {name}")
             category_id = self.data.get("category2id", {}).get(name.lower())
             print(f"Corresponding category ID (2000 range): {category_id}")
@@ -677,7 +679,7 @@ def generate_palette_for_labels(json_path: Path) -> bool:
     
     palette = assign_colors_golden_ratio(data["label2id"])
     data["id2color"] = palette
-    json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    write_json(data, json_path)
     print(f"✔ Added id2color to {json_path}")
     return True
 
@@ -722,9 +724,8 @@ def build_taxonomy(model_info_path: str, scenes_dir: str, out_path: str) -> None
     }
 
     out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(taxonomy, f, indent=2)
+    safe_mkdir(out_path.parent)
+    write_json(taxonomy, out_path)
 
     print(f"[INFO] Saved taxonomy to {out_path}")
     print(f"  {len(taxonomy_dict['label2id'])} labels, "

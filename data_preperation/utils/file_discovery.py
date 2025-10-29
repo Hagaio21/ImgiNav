@@ -120,8 +120,48 @@ def find_scene_pointclouds(root: Path, manifest: Optional[Path] = None) -> List[
     return scenes
 
 
+def find_room_files(root: Path, manifest: Optional[Path] = None, 
+                     pattern: Optional[str] = None) -> List[Path]:
+    """
+    Unified function to find room parquet files from manifest or filesystem scan.
+    Replaces find_room_parquets, find_room_files (old), and discover_rooms.
+    """
+    if manifest is not None and manifest.exists():
+        files = discover_files('parquet', root, manifest, column_name='room_parquet_file_path')
+        if files:
+            return files
+    
+    if pattern:
+        files = sorted(root.rglob(pattern))
+        if files:
+            return files
+    
+    # Try multiple filesystem patterns in order
+    patterns = [
+        "scene_id=*/room_id=*/*.parquet",  # old structured format
+        "part-*.parquet",                  # old naming
+        "*_*[0-9].parquet",                # new format
+        "rooms/*/*.parquet",               # structured dirs
+        "*.parquet"                        # fallback
+    ]
+    
+    for pat in patterns:
+        files = sorted(root.rglob(pat))
+        if files:
+            return files
+    
+    return []
+
+
 def find_room_parquets(root: Path, manifest: Optional[Path] = None) -> List[Path]:
-    return discover_files('parquet', root, manifest, column_name='room_parquet_file_path')
+    """Deprecated: Use find_room_files instead."""
+    return find_room_files(root, manifest)
+
+
+def discover_rooms(root: Path, pattern: Optional[str] = None,
+                  manifest: Optional[Path] = None) -> List[Path]:
+    """Deprecated: Use find_room_files instead."""
+    return find_room_files(root, manifest, pattern)
 
 
 def gather_paths_from_sources(file_path: Optional[str] = None, patterns: Optional[List[str]] = None,
@@ -210,78 +250,51 @@ def infer_ids_from_path(path: Path) -> Tuple[str, int]:
 
 
 def infer_scene_id(path: Path) -> str:
+    """Deprecated: Use infer_ids_from_path(path)[0] instead."""
     scene_id, _ = infer_ids_from_path(path)
     return scene_id
 
 
 def infer_room_id(path: Path) -> int:
+    """Deprecated: Use infer_ids_from_path(path)[1] instead."""
     _, room_id = infer_ids_from_path(path)
     return room_id
 
 
-# =============================================================================
-# Additional Discovery Functions
-# =============================================================================
 
-def find_room_files(root: Path, manifest: Optional[Path] = None) -> List[Path]:
-    if manifest is not None and manifest.exists():
-        files = []
-        with open(manifest, newline='', encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                # Try multiple column name variations
-                for col_name in ["room_parquet", "room_parquet_file_path"]:
-                    if col_name in row and row[col_name]:
-                        try:
-                            path = Path(row[col_name]).expanduser().resolve()
-                            if path.exists():
-                                files.append(path)
-                        except Exception:
-                            pass
-        if files:
-            return files
+def discover_scenes(room_files: Optional[List[Path]] = None, 
+                   manifest: Optional[Path] = None) -> List[str]:
+    """
+    Unified function to discover scene IDs from room files or manifest.
+    Replaces discover_scenes_from_rooms and discover_scenes_from_manifest.
+    """
+    scene_ids = set()
     
-    # Filesystem scan with multiple patterns
-    files = sorted(root.rglob("scene_id=*/room_id=*/*.parquet"))
-    if not files:
-        files = sorted(root.rglob("*.parquet"))
-    return files
-
-
-def discover_rooms(root: Path, pattern: Optional[str] = None,
-                  manifest: Optional[Path] = None) -> List[Path]:
-    if manifest:
-        return discover_files('parquet', root, manifest, column_name='room_parquet_file_path')
+    if room_files:
+        for room_file in room_files:
+            scene_id, _ = infer_ids_from_path(room_file)
+            if scene_id:
+                scene_ids.add(scene_id)
     
-    # Default discovery patterns
-    if pattern:
-        files = sorted(root.rglob(pattern))
-        if files:
-            return files
+    if manifest and manifest.exists():
+        try:
+            with open(manifest, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if "scene_id" in row and row["scene_id"]:
+                        scene_ids.add(row["scene_id"])
+        except Exception as e:
+            print(f"Warning: Error reading manifest for scene discovery: {e}")
     
-    files = list(root.rglob("part-*.parquet"))        # old format
-    files.extend(root.rglob("*_*[0-9].parquet"))      # new format
-    if not files:
-        files = list(root.rglob("rooms/*/*.parquet"))
-    
-    return sorted(files)
+    return sorted(scene_ids)
 
 
 def discover_scenes_from_rooms(room_files: List[Path]) -> List[str]:
-    scene_ids = set()
-    for room_file in room_files:
-        scene_id, _ = infer_ids_from_path(room_file)
-        if scene_id:
-            scene_ids.add(scene_id)
-    return sorted(scene_ids)
+    """Deprecated: Use discover_scenes instead."""
+    return discover_scenes(room_files=room_files)
 
 
 def discover_scenes_from_manifest(manifest: Path) -> List[str]:
-    scene_ids = set()
-    with open(manifest, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if "scene_id" in row and row["scene_id"]:
-                scene_ids.add(row["scene_id"])
-    return sorted(scene_ids)
+    """Deprecated: Use discover_scenes instead."""
+    return discover_scenes(manifest=manifest)
 

@@ -1,5 +1,5 @@
 import os, sys
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
@@ -8,49 +8,10 @@ import numpy as np
 import json
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "data_preperation"))
 from utils.semantic_utils import Taxonomy
-# ---------- Base Utilities ----------
 
-def load_image(path, transform=None):
-    img = Image.open(path).convert("RGB")
-    if transform:
-        img = transform(img)
-    return img
-
-
-def load_embedding(path):
-    path = path.strip()
-    lower = path.lower()
-
-    if lower.endswith(".pt") or lower.endswith(".pth"):
-        data = torch.load(path, map_location="cpu")
-        if isinstance(data, dict):  # handles rare case if AE ever saves dicts
-            for k in ("latent", "z", "embedding"):
-                if k in data:
-                    data = data[k]
-                    break
-        if not isinstance(data, torch.Tensor):
-            raise TypeError(f"Invalid embedding type: {type(data)} in {path}")
-        return data.float()
-
-    elif lower.endswith(".npy"):
-        return torch.from_numpy(np.load(path, allow_pickle=True)).float()
-
-    else:
-        raise ValueError(f"Unsupported embedding file type: {path}")
-
-
-
-
-
-def compute_sample_weights(df: pd.DataFrame) -> torch.DoubleTensor:
-    # create grouping key: scene uses 'scene', rooms use room_id
-    keys = df.apply(lambda r: f"{r['type']}:{r['room_id']}" if r["type"] == "room" else "scene", axis=1)
-    counts = keys.value_counts()
-    weights = keys.map(lambda k: 1.0 / counts[k])
-    weights = weights / weights.sum()
-    return torch.DoubleTensor(weights.values)
+from .utils import load_image, load_embedding, load_graph_text, valid_path, compute_sample_weights
 
 # ---------- Layout Dataset ----------
 
@@ -171,7 +132,6 @@ class LayoutDataset(Dataset):
             "layout": layout,
         }
 
-
     def rgb_to_class_index(self, tensor_img):
         """Convert RGB tensor (3,H,W) ∈ [0,1] to (H,W) long indices."""
         img = (tensor_img.permute(1, 2, 0) * 255).byte()
@@ -255,6 +215,155 @@ class GraphDataset(Dataset):
 
         return sample
 
+# ---------- Unified Layout Dataset ----------
+
+class UnifiedLayoutDataset(Dataset):
+    """
+    Unified dataset for conditional diffusion training.
+    Each item returns dict(pov, graph, layout) for diffusion training.
+    - Room samples: pov, graph, layout all valid.
+    - Scene samples: pov=None, graph+layout valid.
+    
+    Args:
+        manifest_path: Path to training_manifest.csv (from collect_all.py)
+        use_embeddings: If True, load embeddings instead of raw data
+        sample_type: 'room', 'scene', or 'both' - which samples to include
+        pov_type: 'seg', 'tex', or None - filter by POV type for room samples
+        transform: Optional transform for images
+        device: Device to load tensors to
+    """
+
+    def __init__(
+        self, 
+        manifest_path,
+        use_embeddings=False,
+        sample_type="both",  # 'room', 'scene', or 'both'
+        pov_type=None,  # 'seg', 'tex', or None (use both)
+        transform=None,
+        device=None
+    ):
+        self.use_embeddings = use_embeddings
+        self.sample_type = sample_type
+        self.pov_type = pov_type
+        self.transform = transform 
+        self.device = device
+        
+        # Load manifest
+        df = pd.read_csv(manifest_path)
+        
+        # Filter by sample type
+        if sample_type == "room":
+            df = df[df["sample_type"] == "room"].reset_index(drop=True)
+            print(f"Filtered to room samples only: {len(df)} samples", flush=True)
+        elif sample_type == "scene":
+            df = df[df["sample_type"] == "scene"].reset_index(drop=True)
+            print(f"Filtered to scene samples only: {len(df)} samples", flush=True)
+        elif sample_type == "both":
+            print(f"Using both room and scene samples: {len(df)} samples", flush=True)
+        else:
+            raise ValueError(f"Invalid sample_type: {sample_type}. Must be 'room', 'scene', or 'both'")
+        
+        # Filter by POV type (only for room samples)
+        if pov_type is not None:
+            if pov_type not in ['seg', 'tex']:
+                raise ValueError(f"Invalid pov_type: {pov_type}. Must be 'seg', 'tex', or None")
+            
+            # Keep scenes (pov_type is empty) OR rooms with matching pov_type
+            mask = (df["sample_type"] == "scene") | (df["pov_type"] == pov_type)
+            df = df[mask].reset_index(drop=True)
+            print(f"Filtered to pov_type='{pov_type}': {len(df)} samples", flush=True)
+        
+        # Filter out samples with invalid required paths
+        valid_mask = (
+            df["graph_text"].apply(valid_path) &
+            df["layout_image"].apply(valid_path)
+        )
+        
+        # For embeddings mode, also check embedding paths
+        if use_embeddings:
+            valid_mask = valid_mask & df["layout_embedding"].apply(valid_path)
+        
+        df = df[valid_mask].reset_index(drop=True)
+        
+        self.df = df
+        self.entries = df.to_dict("records")
+        
+        # Print dataset statistics
+        room_count = (df["sample_type"] == "room").sum()
+        scene_count = (df["sample_type"] == "scene").sum()
+        
+        if pov_type:
+            pov_type_count = (df["pov_type"] == pov_type).sum()
+            print(f"Dataset loaded: {len(df)} total samples", flush=True)
+            print(f"  - Room samples ({pov_type} POVs): {pov_type_count}", flush=True)
+            print(f"  - Scene samples: {scene_count}", flush=True)
+        else:
+            seg_count = (df["pov_type"] == "seg").sum()
+            tex_count = (df["pov_type"] == "tex").sum()
+            print(f"Dataset loaded: {len(df)} total samples", flush=True)
+            print(f"  - Room samples (seg POVs): {seg_count}", flush=True)
+            print(f"  - Room samples (tex POVs): {tex_count}", flush=True)
+            print(f"  - Scene samples: {scene_count}", flush=True)
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __getitem__(self, idx):
+        row = self.entries[idx]
+        
+        is_room = row["sample_type"] == "room"
+        
+        # ----- POV (only for room samples) -----
+        pov = None
+        if is_room:
+            if self.use_embeddings:
+                pov_path = row["pov_embedding"]
+                if valid_path(pov_path):
+                    pov = load_embedding(pov_path)
+                    if self.device:
+                        pov = pov.to(self.device)
+            else:
+                pov_path = row["pov_image"]
+                if valid_path(pov_path):
+                    pov = load_image(pov_path, self.transform)
+
+        # ----- Graph -----
+        if self.use_embeddings:
+            graph_path = row["graph_embedding"]
+            if valid_path(graph_path):
+                graph = load_embedding(graph_path)
+                if self.device:
+                    graph = graph.to(self.device)
+            else:
+                # Fallback to text if embedding not available
+                graph = load_graph_text(row["graph_text"])
+        else:
+            # Load as text
+            graph = load_graph_text(row["graph_text"])
+
+        # ----- Layout -----
+        if self.use_embeddings:
+            layout_path = row["layout_embedding"]
+            layout = load_embedding(layout_path)
+            if self.device:
+                layout = layout.to(self.device)
+        else:
+            layout_path = row["layout_image"]
+            layout = load_image(layout_path, self.transform)
+
+        return {
+            "sample_id": row["sample_id"],
+            "scene_id": row["scene_id"],
+            "room_id": row["room_id"] if is_room else None,
+            "sample_type": row["sample_type"],
+            "pov_type": row.get("pov_type", None),
+            "pov": pov,
+            "graph": graph,
+            "layout": layout
+        }
+
+# ---------- Helper Functions ----------
+
 def make_dataloaders(layout_manifest, pov_manifest, graph_manifest, batch_size=32, transform=None):
     layout_ds = LayoutDataset(layout_manifest, transform=transform, mode="all")
     pov_ds = PovDataset(pov_manifest, transform=transform, pov_type="seg")
@@ -265,14 +374,6 @@ def make_dataloaders(layout_manifest, pov_manifest, graph_manifest, batch_size=3
     graph_loader = DataLoader(graph_ds, batch_size=batch_size, shuffle=True)
 
     return layout_loader, pov_loader, graph_loader
-
-from torch.utils.data._utils.collate import default_collate
-
-def collate_skip_none(batch):
-    batch = [b for b in batch if b is not None and b.get("layout") is not None]
-    if not batch:
-        return None
-    return default_collate(batch)
 
 def main():
     import os

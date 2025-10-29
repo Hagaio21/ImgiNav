@@ -30,7 +30,7 @@ import umap
 import yaml
 from torchvision.utils import make_grid, save_image
 
-from modules.autoencoder import AutoEncoder
+from models.autoencoder import AutoEncoder
 
 sns.set_theme(style="darkgrid")
 

@@ -9,6 +9,9 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 import yaml
 from tqdm import tqdm
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "data_preperation"))
+from utils.common import safe_mkdir
 
 
 class AutoEncoderTrainer:
@@ -36,9 +39,9 @@ class AutoEncoderTrainer:
         self.lr = lr
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        os.makedirs(self.output_dir, exist_ok=True)
-        os.makedirs(self.ckpt_dir, exist_ok=True)
-        os.makedirs(os.path.join(self.output_dir, "samples"), exist_ok=True)
+        safe_mkdir(Path(self.output_dir))
+        safe_mkdir(Path(self.ckpt_dir))
+        safe_mkdir(Path(self.output_dir) / "samples")
 
         self.optimizer = torch.optim.Adam(self.autoencoder.parameters(), lr=self.lr)
         self.metric_log = []

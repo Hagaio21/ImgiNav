@@ -13,8 +13,8 @@ import matplotlib
 matplotlib.use("Agg")  # headless backend for HPC
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from modules.autoencoder import AutoEncoder
-from modules.datasets import LayoutDataset, collate_skip_none
+from models.autoencoder import AutoEncoder
+from models.datasets import LayoutDataset, collate_skip_none
 
 #!/usr/bin/env python3
 """

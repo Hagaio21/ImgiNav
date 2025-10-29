@@ -217,7 +217,7 @@ class LatentDiffusion(nn.Module):
             cfg = yaml.safe_load(f)
 
         # Scheduler
-        from modules.scheduler import LinearScheduler, CosineScheduler
+        from .components.scheduler import LinearScheduler, CosineScheduler
         sched_cfg = cfg["scheduler"]
         sched_map = {"LinearScheduler": LinearScheduler, "CosineScheduler": CosineScheduler}
         scheduler = sched_map[sched_cfg["type"]](num_steps=sched_cfg["num_steps"]).to(device)

@@ -20,7 +20,7 @@ from sentence_transformers import SentenceTransformer
 # Add parent directory to path for module imports
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 try:
-    from modules.autoencoder import AutoEncoder
+    from models.autoencoder import AutoEncoder
 except ImportError:
     AutoEncoder = None  # Will fail gracefully if not available
 

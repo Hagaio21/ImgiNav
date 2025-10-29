@@ -14,31 +14,15 @@ import pandas as pd
 from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN
 
-from utils.geometry_utils import angle_from_center
-
-
-# =============================================================================
-# Taxonomy Loading
-# =============================================================================
-
-def load_taxonomy_colors(tax_path: Path) -> Dict:
-    from utils.semantic_utils import Taxonomy
-    tax = Taxonomy(tax_path)
-    color_to_label = tax.get_color_to_label_dict()
-    print(f"Loaded {len(color_to_label)} taxonomy colors (super categories + wall)", flush=True)
-    return color_to_label
-
-
-def load_taxonomy_rooms(tax_path: Path) -> Tuple[Dict, Dict]:
-    from utils.semantic_utils import Taxonomy
-    tax = Taxonomy(tax_path)
-    return tax.get_room_mappings()
+from utils.geometry_utils import angle_from_center, compute_directional_relations
+from utils.common import write_json
 
 
 # =============================================================================
 # File Discovery - Imported from utils.file_discovery
 # =============================================================================
 from utils.file_discovery import find_layouts, find_scene_pointclouds
+from utils.semantic_utils import Taxonomy
 
 
 # =============================================================================
@@ -250,21 +234,7 @@ def build_room_graph_from_layout(scene_id: str, room_id: str, layout_path: Path,
             # Directional relations
             ang_a = angle_from_center(room_center, ca)
             ang_b = angle_from_center(room_center, cb)
-            d_ang = np.rad2deg((ang_b - ang_a + np.pi*2) % (np.pi*2))
-            
-            # Direction from A to B
-            if d_ang < 45 or d_ang > 315:
-                dir_a_to_b = "front_of"
-                dir_b_to_a = "behind"
-            elif 45 <= d_ang < 135:
-                dir_a_to_b = "right_of"
-                dir_b_to_a = "left_of"
-            elif 135 <= d_ang < 225:
-                dir_a_to_b = "behind"
-                dir_b_to_a = "front_of"
-            else:
-                dir_a_to_b = "left_of"
-                dir_b_to_a = "right_of"
+            dir_a_to_b, dir_b_to_a = compute_directional_relations(ang_a, ang_b)
             
             edges.append({
                 "obj_a": a["id"], 
@@ -289,7 +259,7 @@ def build_room_graph_from_layout(scene_id: str, room_id: str, layout_path: Path,
     
     out_json = layout_path.with_name(f"{scene_id}_{room_id}_graph.json")
     out_vis = layout_path.with_name(f"{scene_id}_{room_id}_graph_vis.png")
-    out_json.write_text(json.dumps(graph, indent=2), encoding="utf-8")
+    write_json(graph, out_json)
     visualize_room_graph(img, room_center, nodes, edges, out_vis)
     print(f"✔ wrote {out_json}", flush=True)
     
@@ -408,16 +378,7 @@ def build_scene_graph_from_pointcloud(scene_id: str, pc_path: Path, id2room: Dic
             
             ang_a = angle_from_center(scene_center, a["centroid_xy"])
             ang_b = angle_from_center(scene_center, b["centroid_xy"])
-            d_ang = np.rad2deg((ang_b - ang_a + np.pi*2) % (np.pi*2))
-            
-            if d_ang < 45 or d_ang > 315:
-                dir_a_to_b, dir_b_to_a = "front_of", "behind"
-            elif 45 <= d_ang < 135:
-                dir_a_to_b, dir_b_to_a = "right_of", "left_of"
-            elif 135 <= d_ang < 225:
-                dir_a_to_b, dir_b_to_a = "behind", "front_of"
-            else:
-                dir_a_to_b, dir_b_to_a = "left_of", "right_of"
+            dir_a_to_b, dir_b_to_a = compute_directional_relations(ang_a, ang_b)
             
             edges.append({
                 "room_a": f"room_{a['room_id']}",
@@ -441,7 +402,7 @@ def build_scene_graph_from_pointcloud(scene_id: str, pc_path: Path, id2room: Dic
     
     # Save
     output_json = pc_path.parent / f"{scene_id}_scene_graph.json"
-    output_json.write_text(json.dumps(scene_graph, indent=2), encoding="utf-8")
+    write_json(scene_graph, output_json)
     print(f"  ✔ Saved scene graph", flush=True)
     
     return scene_graph
@@ -489,7 +450,9 @@ def main():
     args = parser.parse_args()
     
     if args.type == "room":
-        color_to_label = load_taxonomy_colors(Path(args.taxonomy))
+        tax = Taxonomy(Path(args.taxonomy))
+        color_to_label = tax.get_color_to_label_dict()
+        print(f"Loaded {len(color_to_label)} taxonomy colors (super categories + wall)", flush=True)
         
         if args.layout:
             layout_path = Path(args.layout)
@@ -515,7 +478,8 @@ def main():
             gc.collect()
     
     elif args.type == "scene":
-        id2room, _ = load_taxonomy_rooms(Path(args.taxonomy))
+        tax = Taxonomy(Path(args.taxonomy))
+        id2room, _ = tax.get_room_mappings()
         
         if not args.in_dir:
             parser.error("--in_dir is required for scene type")
