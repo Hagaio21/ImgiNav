@@ -27,109 +27,7 @@ from training.trainer import Trainer
 import torchvision.transforms as T
 
 
-class TestExperimentUtils:
-    """Utility functions for experiment tests."""
-    
-    @staticmethod
-    def load_config(config_name):
-        """Load a test config by name."""
-        config_path = f"tests/configs/{config_name}.yaml"
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    
-    @staticmethod
-    def get_autoencoder_latent_shape(config):
-        """Extract latent shape from autoencoder config."""
-        latent_channels = config['model']['latent_channels']
-        latent_base = config['model']['latent_base']
-        return (latent_channels, latent_base, latent_base)
-    
-    @staticmethod
-    def create_mock_layout_embeddings(batch_size, latent_shape):
-        """Create mock layout embeddings matching autoencoder latent space."""
-        return torch.randn(batch_size, *latent_shape)
-    
-    @staticmethod
-    def create_mock_embeddings_manifest(temp_dir, num_samples=10, latent_shape=(8, 8, 8)):
-        """Create a mock manifest with embedding paths for testing."""
-        manifest_data = []
-        
-        for i in range(num_samples):
-            # Create mock embedding file
-            embedding_path = os.path.join(temp_dir, f"embedding_{i:04d}.pt")
-            mock_embedding = torch.randn(*latent_shape)
-            torch.save(mock_embedding, embedding_path)
-            
-            # Add to manifest
-            manifest_data.append({
-                'image_path': f"test_image_{i:04d}.png",  # Dummy image path
-                'embedding_path': embedding_path,
-                'scene_id': f"test_scene_{i:04d}",
-                'room_id': f"test_room_{i:04d}",
-                'pov_id': f"test_pov_{i:04d}"
-            })
-        
-        # Save manifest
-        manifest_path = os.path.join(temp_dir, "test_embeddings_manifest.csv")
-        manifest_df = pd.DataFrame(manifest_data)
-        manifest_df.to_csv(manifest_path, index=False)
-        
-        return manifest_path, manifest_data
-    
-    @staticmethod
-    def build_autoencoder_from_config(config):
-        """Build autoencoder from config."""
-        return AutoEncoder.from_shape(
-            in_channels=3,
-            out_channels=3,
-            latent_channels=config['model']['latent_channels'],
-            latent_base=config['model']['latent_base'],
-            base_channels=config['model']['base_channels'],
-            image_size=config['model']['image_size']
-        )
-    
-    @staticmethod
-    def build_diffusion_from_config(config, autoencoder=None):
-        """Build diffusion model from config."""
-        # Load autoencoder if not provided
-        if autoencoder is None:
-            ae_config = TestExperimentUtils.load_config(config['autoencoder']['config'])
-            autoencoder = TestExperimentUtils.build_autoencoder_from_config(ae_config)
-        
-        # Get latent shape from autoencoder
-        latent_shape = TestExperimentUtils.get_autoencoder_latent_shape(ae_config)
-        
-        # Build UNet
-        unet_config = config['model']['unet']
-        unet = DualUNet(
-            in_channels=unet_config['in_channels'],
-            out_channels=unet_config['out_channels'],
-            base_channels=unet_config['base_channels'],
-            num_layers=unet_config['num_layers'],
-            time_embed_dim=unet_config['time_embed_dim']
-        )
-        
-        # Build scheduler
-        scheduler_config = config['model']['scheduler']
-        scheduler_type = scheduler_config['type']
-        if scheduler_type == 'linear':
-            scheduler = LinearScheduler(num_steps=scheduler_config['num_steps'])
-        elif scheduler_type == 'cosine':
-            scheduler = CosineScheduler(num_steps=scheduler_config['num_steps'])
-        elif scheduler_type == 'quadratic':
-            scheduler = QuadraticScheduler(num_steps=scheduler_config['num_steps'])
-        else:
-            raise ValueError(f"Unknown scheduler type: {scheduler_type}")
-        
-        # Build diffusion model
-        diffusion = LatentDiffusion(
-            unet=unet,
-            autoencoder=autoencoder,
-            scheduler=scheduler,
-            latent_shape=latent_shape
-        )
-        
-        return diffusion
+from test_utils import TestUtils
 
 
 class TestConfigLoading(unittest.TestCase):
@@ -154,7 +52,7 @@ class TestConfigLoading(unittest.TestCase):
         
         for config_name in all_configs:
             with self.subTest(config=config_name):
-                config = TestExperimentUtils.load_config(config_name)
+                config = TestUtils.load_config(config_name)
                 self.assertIsInstance(config, dict)
                 self.assertIn('model', config)
     
@@ -167,7 +65,7 @@ class TestConfigLoading(unittest.TestCase):
         
         for config_name in ae_configs:
             with self.subTest(config=config_name):
-                config = TestExperimentUtils.load_config(config_name)
+                config = TestUtils.load_config(config_name)
                 
                 # Check required fields
                 self.assertIn('model', config)
@@ -177,7 +75,7 @@ class TestConfigLoading(unittest.TestCase):
                 self.assertIn('image_size', config['model'])
                 
                 # Check latent shape can be extracted
-                latent_shape = TestExperimentUtils.get_autoencoder_latent_shape(config)
+                latent_shape = TestUtils.get_autoencoder_latent_shape(config)
                 self.assertIsInstance(latent_shape, tuple)
                 self.assertEqual(len(latent_shape), 3)
     
@@ -191,7 +89,7 @@ class TestConfigLoading(unittest.TestCase):
         
         for config_name in diffusion_configs:
             with self.subTest(config=config_name):
-                config = TestExperimentUtils.load_config(config_name)
+                config = TestUtils.load_config(config_name)
                 
                 # Check required fields
                 self.assertIn('model', config)
@@ -213,8 +111,8 @@ class TestModelBuilding(unittest.TestCase):
         
         for config_name in ae_configs:
             with self.subTest(config=config_name):
-                config = TestExperimentUtils.load_config(config_name)
-                model = TestExperimentUtils.build_autoencoder_from_config(config)
+                config = TestUtils.load_config(config_name)
+                model = TestUtils.build_autoencoder_from_config(config)
                 
                 # Test model structure
                 self.assertIsInstance(model, AutoEncoder)
@@ -222,7 +120,7 @@ class TestModelBuilding(unittest.TestCase):
                 self.assertIsNotNone(model.decoder)
                 
                 # Test forward pass
-                latent_shape = TestExperimentUtils.get_autoencoder_latent_shape(config)
+                latent_shape = TestUtils.get_autoencoder_latent_shape(config)
                 input_tensor = torch.randn(2, 3, 64, 64)
                 
                 with torch.no_grad():
@@ -243,8 +141,8 @@ class TestModelBuilding(unittest.TestCase):
         
         for config_name in diffusion_configs:
             with self.subTest(config=config_name):
-                config = TestExperimentUtils.load_config(config_name)
-                diffusion = TestExperimentUtils.build_diffusion_from_config(config)
+                config = TestUtils.load_config(config_name)
+                diffusion = TestUtils.build_diffusion_from_config(config)
                 
                 # Test model structure
                 self.assertIsInstance(diffusion, LatentDiffusion)
@@ -261,16 +159,16 @@ class TestModelBuilding(unittest.TestCase):
     def test_embeddings_true_false_configs(self):
         """Test both embeddings true and false configurations."""
         # Test with embeddings=True
-        config_with_emb = TestExperimentUtils.load_config('test_E1_Linear_64')
+        config_with_emb = TestUtils.load_config('test_E1_Linear_64')
         config_with_emb['data']['return_embeddings'] = True
         
         # Test with embeddings=False
-        config_without_emb = TestExperimentUtils.load_config('test_E1_Linear_64')
+        config_without_emb = TestUtils.load_config('test_E1_Linear_64')
         config_without_emb['data']['return_embeddings'] = False
         
         # Both should build successfully
-        diffusion_with_emb = TestExperimentUtils.build_diffusion_from_config(config_with_emb)
-        diffusion_without_emb = TestExperimentUtils.build_diffusion_from_config(config_without_emb)
+        diffusion_with_emb = TestUtils.build_diffusion_from_config(config_with_emb)
+        diffusion_without_emb = TestUtils.build_diffusion_from_config(config_without_emb)
         
         self.assertIsInstance(diffusion_with_emb, LatentDiffusion)
         self.assertIsInstance(diffusion_without_emb, LatentDiffusion)
@@ -287,12 +185,12 @@ class TestDatasetLoading(unittest.TestCase):
     def test_autoencoder_dataset_loading(self):
         """Test dataset loading for autoencoder configs."""
         # Create mock image dataset
-        manifest_path, _ = TestExperimentUtils.create_mock_embeddings_manifest(
+        manifest_path, _ = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=10, latent_shape=(3, 64, 64)  # RGB images
         )
         
         # Load autoencoder config
-        config = TestExperimentUtils.load_config('test_AE_dropout')
+        config = TestUtils.load_config('test_AE_dropout')
         config['data']['manifest'] = manifest_path
         config['data']['return_embeddings'] = False
         
@@ -308,16 +206,16 @@ class TestDatasetLoading(unittest.TestCase):
     def test_diffusion_dataset_loading_with_embeddings(self):
         """Test dataset loading for diffusion configs with embeddings."""
         # Load autoencoder config to get latent shape
-        ae_config = TestExperimentUtils.load_config('test_AE_large_latent_seg')
-        latent_shape = TestExperimentUtils.get_autoencoder_latent_shape(ae_config)
+        ae_config = TestUtils.load_config('test_AE_large_latent_seg')
+        latent_shape = TestUtils.get_autoencoder_latent_shape(ae_config)
         
         # Create mock embeddings manifest
-        manifest_path, _ = TestExperimentUtils.create_mock_embeddings_manifest(
+        manifest_path, _ = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=10, latent_shape=latent_shape
         )
         
         # Load diffusion config
-        config = TestExperimentUtils.load_config('test_E1_Linear_64')
+        config = TestUtils.load_config('test_E1_Linear_64')
         config['data']['manifest'] = manifest_path
         config['data']['return_embeddings'] = True
         
@@ -336,12 +234,12 @@ class TestDatasetLoading(unittest.TestCase):
     def test_diffusion_dataset_loading_without_embeddings(self):
         """Test dataset loading for diffusion configs without embeddings."""
         # Create mock image dataset
-        manifest_path, _ = TestExperimentUtils.create_mock_embeddings_manifest(
+        manifest_path, _ = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=10, latent_shape=(3, 64, 64)  # RGB images
         )
         
         # Load diffusion config
-        config = TestExperimentUtils.load_config('test_E1_Linear_64')
+        config = TestUtils.load_config('test_E1_Linear_64')
         config['data']['manifest'] = manifest_path
         config['data']['return_embeddings'] = False
         
@@ -369,11 +267,11 @@ class TestEndToEndTraining(unittest.TestCase):
     def test_autoencoder_end_to_end_training(self):
         """Test end-to-end autoencoder training."""
         # Load config
-        config = TestExperimentUtils.load_config('test_AE_dropout')
+        config = TestUtils.load_config('test_AE_dropout')
         
         # Create mock data
-        latent_shape = TestExperimentUtils.get_autoencoder_latent_shape(config)
-        manifest_path, _ = TestExperimentUtils.create_mock_embeddings_manifest(
+        latent_shape = TestUtils.get_autoencoder_latent_shape(config)
+        manifest_path, _ = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=20, latent_shape=(3, 64, 64)  # RGB images
         )
         
@@ -384,7 +282,7 @@ class TestEndToEndTraining(unittest.TestCase):
         config['training']['batch_size'] = 4
         
         # Build model
-        model = TestExperimentUtils.build_autoencoder_from_config(config)
+        model = TestUtils.build_autoencoder_from_config(config)
         
         # Build datasets
         train_dataset, val_dataset = build_datasets(config)
@@ -409,14 +307,14 @@ class TestEndToEndTraining(unittest.TestCase):
     def test_diffusion_end_to_end_training(self):
         """Test end-to-end diffusion training with sampling."""
         # Load config
-        config = TestExperimentUtils.load_config('test_E2_Cosine_64')
+        config = TestUtils.load_config('test_E2_Cosine_64')
         
         # Load autoencoder config to get latent shape
-        ae_config = TestExperimentUtils.load_config(config['autoencoder']['config'])
-        latent_shape = TestExperimentUtils.get_autoencoder_latent_shape(ae_config)
+        ae_config = TestUtils.load_config(config['autoencoder']['config'])
+        latent_shape = TestUtils.get_autoencoder_latent_shape(ae_config)
         
         # Create mock embeddings data
-        manifest_path, _ = TestExperimentUtils.create_mock_embeddings_manifest(
+        manifest_path, _ = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=20, latent_shape=latent_shape
         )
         
@@ -427,8 +325,8 @@ class TestEndToEndTraining(unittest.TestCase):
         config['training']['batch_size'] = 4
         
         # Build models
-        autoencoder = TestExperimentUtils.build_autoencoder_from_config(ae_config)
-        diffusion = TestExperimentUtils.build_diffusion_from_config(config, autoencoder)
+        autoencoder = TestUtils.build_autoencoder_from_config(ae_config)
+        diffusion = TestUtils.build_diffusion_from_config(config, autoencoder)
         
         # Build datasets
         train_dataset, val_dataset = build_datasets(config)
@@ -474,7 +372,7 @@ class TestExperimentOrchestration(unittest.TestCase):
         
         for config_name in valid_configs:
             with self.subTest(config=config_name):
-                config = TestExperimentUtils.load_config(config_name)
+                config = TestUtils.load_config(config_name)
                 
                 # Validate required fields exist
                 if 'latent_channels' in config.get('model', {}):
@@ -500,11 +398,11 @@ class TestExperimentOrchestration(unittest.TestCase):
         for ae_config_name, diff_config_name in test_pairs:
             with self.subTest(pair=(ae_config_name, diff_config_name)):
                 # Load configs
-                ae_config = TestExperimentUtils.load_config(ae_config_name)
-                diff_config = TestExperimentUtils.load_config(diff_config_name)
+                ae_config = TestUtils.load_config(ae_config_name)
+                diff_config = TestUtils.load_config(diff_config_name)
                 
                 # Get latent shapes
-                ae_latent_shape = TestExperimentUtils.get_autoencoder_latent_shape(ae_config)
+                ae_latent_shape = TestUtils.get_autoencoder_latent_shape(ae_config)
                 diff_latent_shape = (diff_config['model']['unet']['in_channels'], 
                                    ae_latent_shape[1], ae_latent_shape[2])
                 
@@ -516,14 +414,14 @@ class TestExperimentOrchestration(unittest.TestCase):
     def test_experiment_workflow(self):
         """Test complete experiment workflow from config to training."""
         # Load autoencoder config
-        ae_config = TestExperimentUtils.load_config('test_AE_dropout')
+        ae_config = TestUtils.load_config('test_AE_dropout')
         
         # Load diffusion config
-        diff_config = TestExperimentUtils.load_config('test_E1_Linear_64')
+        diff_config = TestUtils.load_config('test_E1_Linear_64')
         
         # Build models
-        autoencoder = TestExperimentUtils.build_autoencoder_from_config(ae_config)
-        diffusion = TestExperimentUtils.build_diffusion_from_config(diff_config, autoencoder)
+        autoencoder = TestUtils.build_autoencoder_from_config(ae_config)
+        diffusion = TestUtils.build_diffusion_from_config(diff_config, autoencoder)
         
         # Test that models are compatible
         self.assertIsNotNone(autoencoder)

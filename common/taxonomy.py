@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from common.utils import write_json, safe_mkdir
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import numpy as np
 import colorsys
 
@@ -199,6 +197,7 @@ class Taxonomy:
         return self.data.get("room2id", {}).get(room_type, 0)
 
     def get_color(self, val, mode: str = "none"):
+        """Get color for a given value, with fallback to default color."""
         default_color = (127, 127, 127)
 
         if val is None:
@@ -218,9 +217,7 @@ class Taxonomy:
             if category_id is not None:
                 color = self.data.get("id2color", {}).get(str(category_id), default_color)
                 return tuple(color) if isinstance(color, list) else default_color
-            else:
-                print(f"DEBUG: No category found for structural element '{name}'")
-                return default_color
+            return default_color
 
         # Handle mode: "category" vs "super"/"none" (default)
         if mode == "category":
@@ -237,17 +234,16 @@ class Taxonomy:
                 return tuple(color) if isinstance(color, list) else default_color
             return default_color
         else:
-            # Default/super mode: use super-category color (same behavior for "super", "none", or any other value)
+            # Default/super mode: use super-category color
             super_id = self.resolve_super(val)
             
             if super_id is None:
-                # FALLBACK: If we can't resolve to super, check if it's a category with direct color assignment
-                # (Some categories might have colors assigned directly in id2color)
+                # FALLBACK: Check if it's a category with direct color assignment
                 if self.ranges["category"][0] <= val <= self.ranges["category"][1]:
                     color = self.data.get("id2color", {}).get(str(val), None)
                     if color is not None:
                         return tuple(color) if isinstance(color, list) else default_color
-                    # Also try resolving category name → super manually
+                    # Try resolving category name → super manually
                     category_name = self.id_to_name(val)
                     super_name = self.data.get("category2super", {}).get(category_name)
                     if super_name:
@@ -255,14 +251,6 @@ class Taxonomy:
                         if super_id_fallback:
                             color = self.data.get("id2color", {}).get(str(super_id_fallback), default_color)
                             return tuple(color) if isinstance(color, list) else default_color
-                
-                # Debug output for troubleshooting
-                if self.ranges["category"][0] <= val <= self.ranges["category"][1]:
-                    category_name = self.id_to_name(val)
-                    super_name = self.data.get("category2super", {}).get(category_name)
-                    print(f"DEBUG get_color: category {val} ({category_name}) → super_name={super_name}", flush=True)
-                
-                print(f"DEBUG get_color: could not resolve super for {val} ({name}), returning default", flush=True)
                 return default_color
 
             # Look up color by super-category ID in id2color
@@ -303,39 +291,45 @@ class Taxonomy:
         return self.data.get("id2room", {}), self.data.get("room2id", {})
 
 
-# Additional helper method for debugging specific failures
-    def debug_title_resolution(self, title_id):
-        """
-        Debug why a specific title ID can't resolve to super-category.
-        """
-        print(f"\n--- Debug title resolution for ID: {title_id} ---")
-        
-        title_name = self.id_to_name(title_id)
-        print(f"Title ID {title_id} → Name: '{title_name}'")
-        
-        # Check title2super mapping
-        title2super_direct = self.data.get("title2super", {}).get(str(title_id))
-        print(f"Direct title2super lookup: {title2super_direct}")
-        
-        # Check title2category mapping
-        title2category = self.data.get("title2category", {}).get(str(title_id))
-        print(f"title2category lookup: {title2category}")
-        
-        if title2category:
-            # Check if category has super mapping
-            category2super = self.data.get("category2super", {}).get(title2category)
-            print(f"category2super for '{title2category}': {category2super}")
-            
-            if category2super:
-                super_id = self.data.get("super2id", {}).get(category2super)
-                print(f"super2id for '{category2super}': {super_id}")
-        
-        # Check available mappings for debugging
-        print(f"\nAvailable title2super keys (first 10): {list(self.data.get('title2super', {}).keys())[:10]}")
-        print(f"Available title2category keys (first 10): {list(self.data.get('title2category', {}).keys())[:10]}")
-        
-        print("--- End debug ---\n")
 
+
+    def _try_super_lookup(self, name: str, val_str: str) -> int | None:
+        """Helper method to try super-category lookup by name and ID."""
+        # Try by name first
+        if name and name != "UnknownTitle":
+            super_name = self.data.get("title2super", {}).get(name)
+            if super_name:
+                super_id = self._lookup_super_id(super_name)
+                if super_id:
+                    return super_id
+        
+        # Try by ID as fallback
+        super_name = self.data.get("title2super", {}).get(val_str)
+        if super_name:
+            super_id = self._lookup_super_id(super_name)
+            if super_id:
+                return super_id
+        
+        return None
+
+    def _try_category_to_super_lookup(self, name: str, val_str: str) -> int | None:
+        """Helper method to try category → super-category lookup."""
+        # Try by name first
+        if name and name != "UnknownTitle":
+            category_name = self.data.get("title2category", {}).get(name)
+            if category_name:
+                super_id = self._resolve_category_to_super_id(category_name)
+                if super_id:
+                    return super_id
+        
+        # Try by ID as fallback
+        category_name = self.data.get("title2category", {}).get(val_str)
+        if category_name:
+            super_id = self._resolve_category_to_super_id(category_name)
+            if super_id:
+                return super_id
+        
+        return None
 
     def resolve_super(self, val: int) -> int | None:
         """Resolve any ID (title, label, category, super) to its super-category ID."""
@@ -350,35 +344,15 @@ class Taxonomy:
 
         # Title ID → super-category ID
         if self.ranges["title"][0] <= val <= self.ranges["title"][1]:
-            # PRIMARY: Use title name as key (taxonomy stores title2super/category with names as keys)
             title_name = self.id_to_name(val)
-            if title_name and title_name != "UnknownTitle":
-                # Try title name → super
-                super_name = self.data.get("title2super", {}).get(title_name)
-                if super_name:
-                    super_id = self._lookup_super_id(super_name)
-                    if super_id:
-                        return super_id
-                
-                # Try title name → category → super
-                category_name = self.data.get("title2category", {}).get(title_name)
-                if category_name:
-                    super_id = self._resolve_category_to_super_id(category_name)
-                    if super_id:
-                        return super_id
-            
-            # FALLBACK: Try using title ID as key (some taxonomies might use IDs)
-            super_name = self.data.get("title2super", {}).get(val_str)
-            if super_name:
-                super_id = self._lookup_super_id(super_name)
-                if super_id:
-                    return super_id
-            
-            category_name = self.data.get("title2category", {}).get(val_str)
-            if category_name:
-                super_id = self._resolve_category_to_super_id(category_name)
-                if super_id:
-                    return super_id
+            # Try direct super lookup
+            super_id = self._try_super_lookup(title_name, val_str)
+            if super_id:
+                return super_id
+            # Try category → super lookup
+            super_id = self._try_category_to_super_lookup(title_name, val_str)
+            if super_id:
+                return super_id
 
         # Label ID → category → super-category
         if self.ranges["label"][0] <= val <= self.ranges["label"][1]:
@@ -412,51 +386,6 @@ class Taxonomy:
         return None
 
 
-    def debug_color_resolution(self, val):
-        """Debug method to trace color resolution process."""
-        print(f"\n--- Debug color resolution for: {val} ---")
-        
-        original_val = val
-        val = self._normalize_to_id(val)
-        
-        if val is None:
-            print("Result: Unknown item, using default color")
-            return
-        
-        print(f"Converted '{original_val}' to ID: {val}")
-        
-        name = self.id_to_name(val)
-        print(f"ID {val} → Name: '{name}'")
-        
-        # Check range
-        for range_name, (start, end) in self.ranges.items():
-            if start <= val <= end:
-                print(f"Range: {range_name} ({start}-{end})")
-                break
-        
-        # Check if structural
-        if self._is_structural(name):
-            print(f"Structural element detected: {name}")
-            category_id = self.data.get("category2id", {}).get(name.lower())
-            print(f"Corresponding category ID (2000 range): {category_id}")
-            if category_id:
-                color = self.data.get("id2color", {}).get(str(category_id))
-                print(f"Category color: {color}")
-            return
-        
-        # Resolve super for non-structural
-        super_id = self.resolve_super(val)
-        print(f"Resolved super ID: {super_id}")
-        
-        if super_id:
-            super_name = self.id_to_name(super_id)
-            print(f"Super name: {super_name}")
-            color = self.data.get("id2color", {}).get(str(super_id))
-            print(f"Super color: {color}")
-        
-        final_color = self.get_color(original_val)
-        print(f"Final color: {final_color}")
-        print("--- End debug ---\n")
 
     # ----------------------------
     # Convenience methods for compatibility with old load_taxonomy() functions

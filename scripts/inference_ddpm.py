@@ -235,12 +235,6 @@ def load_experiment_and_model(experiment_path: str, checkpoint_path: str = None,
         else:
             print("Warning: No checkpoint found")
     
-    # Debug: Print model info
-    print(f"Model type: {type(model)}")
-    print(f"Model scheduler: {type(model.scheduler)}")
-    print(f"Scheduler num_steps: {model.scheduler.num_steps}")
-    print(f"Model latent_shape: {model.latent_shape}")
-    print(f"Autoencoder type: {type(autoencoder)}")
     
     # Check if model parameters are actually loaded
     total_params = sum(p.numel() for p in model.parameters())

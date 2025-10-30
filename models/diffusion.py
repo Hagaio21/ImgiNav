@@ -356,9 +356,6 @@ class LatentDiffusion(nn.Module):
                 "autoencoder": self.autoencoder.state_dict() if self.autoencoder is not None else {},
             }
 
-    # -------------------------
-    #   Config Loader
-    # -------------------------
     @classmethod
     def from_config(
         cls,

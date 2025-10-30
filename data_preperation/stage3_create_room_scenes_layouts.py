@@ -89,7 +89,6 @@ def create_room_layout(
     uvh = world_to_local_coords(xyz, origin, u, v, n)
 
     # Apply height filtering
-    #print("DEBUG layout:", height_min, height_max)
     height_mask = (uvh[:, 2] >= height_min) & (uvh[:, 2] <= height_max)
     if height_mask.sum() == 0:
         print(f"[warn] no points in height band [{height_min},{height_max}] m in {parquet_path}",flush=True)

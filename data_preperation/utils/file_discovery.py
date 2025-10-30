@@ -8,37 +8,41 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
+def _read_manifest_files(manifest: Path, column_name: str, 
+                        filter_func: Optional[callable] = None) -> List[Path]:
+    """Helper function to read files from manifest with optional filtering."""
+    files = []
+    try:
+        from common.file_io import read_manifest
+        rows = read_manifest(manifest)
+        for row_num, row in enumerate(rows, start=2):
+            if column_name in row and row[column_name]:
+                try:
+                    path = Path(row[column_name]).expanduser().resolve()
+                    if path.exists() and (filter_func is None or filter_func(row)):
+                        files.append(path)
+                    elif not path.exists():
+                        print(f"Warning: File in manifest row {row_num} doesn't exist: {path}")
+                except Exception as e:
+                    print(f"Warning: Invalid path in manifest row {row_num}: {row[column_name]} - {e}")
+    except Exception as e:
+        print(f"Error reading manifest {manifest}: {e}")
+    return files
+
+
 def discover_files(data_type: str, root: Path, manifest: Optional[Path] = None,
                    pattern: Optional[str] = None, column_name: str = None) -> List[Path]:
 
     # Method 1: From manifest
     if manifest and manifest.exists():
-        files = []
-        # Auto-infer column name if not provided
         if column_name is None:
             column_name = _get_default_column_name(data_type)
         
-        try:
-            with open(manifest, newline='', encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row_num, row in enumerate(reader, start=2):
-                    if column_name in row and row[column_name]:
-                        try:
-                            path = Path(row[column_name]).expanduser().resolve()
-                            if path.exists():
-                                files.append(path)
-                            else:
-                                print(f"Warning: File in manifest row {row_num} doesn't exist: {path}")
-                        except Exception as e:
-                            print(f"Warning: Invalid path in manifest row {row_num}: {row[column_name]} - {e}")
-            
-            if files:
-                return files
-            else:
-                print(f"Warning: No valid files found in manifest {manifest} using column '{column_name}'")
-        except Exception as e:
-            print(f"Error reading manifest {manifest}: {e}")
-            # Fall through to other methods
+        files = _read_manifest_files(manifest, column_name)
+        if files:
+            return files
+        else:
+            print(f"Warning: No valid files found in manifest {manifest} using column '{column_name}'")
     
     # Method 2: Pattern-based
     if pattern:
@@ -82,17 +86,19 @@ def _get_default_column_name(data_type: str) -> str:
 def find_layouts(root: Optional[Path], manifest: Optional[Path]) -> List[Tuple[str, str, Path]]:
     layouts = []
     if manifest and manifest.exists():
-        with open(manifest, newline='', encoding='utf-8') as f:
-            for row in csv.DictReader(f):
-                # Skip scene-level layouts
-                if row.get("room_id") == "scene":
-                    continue
-                
-                layout_path = Path(row.get("layout_path", ""))
-                if layout_path.exists():
-                    sid = row.get("scene_id", "")
-                    rid = row.get("room_id", "")
-                    layouts.append((sid, rid, layout_path))
+        def filter_func(row):
+            return row.get("room_id") != "scene"
+        
+        files = _read_manifest_files(manifest, "layout_path", filter_func)
+        for layout_path in files:
+            # Re-read manifest to get scene_id and room_id
+            with open(manifest, newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    if Path(row.get("layout_path", "")).resolve() == layout_path:
+                        sid = row.get("scene_id", "")
+                        rid = row.get("room_id", "")
+                        layouts.append((sid, rid, layout_path))
+                        break
     elif root:
         for p in root.rglob("*_room_seg_layout.png"):
             parts = p.stem.split("_")
@@ -107,12 +113,15 @@ def find_layouts(root: Optional[Path], manifest: Optional[Path]) -> List[Tuple[s
 def find_scene_pointclouds(root: Path, manifest: Optional[Path] = None) -> List[Tuple[str, Path]]:
     scenes = []
     if manifest and manifest.exists():
-        with open(manifest, newline='', encoding='utf-8') as f:
-            for row in csv.DictReader(f):
-                scene_id = row.get("scene_id", "")
-                pc_path = Path(row.get("parquet_file_path", ""))
-                if pc_path.exists():
-                    scenes.append((scene_id, pc_path))
+        files = _read_manifest_files(manifest, "parquet_file_path")
+        for pc_path in files:
+            # Re-read manifest to get scene_id
+            with open(manifest, newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    if Path(row.get("parquet_file_path", "")).resolve() == pc_path:
+                        scene_id = row.get("scene_id", "")
+                        scenes.append((scene_id, pc_path))
+                        break
     else:
         for pc_path in root.rglob("*_sem_pointcloud.parquet"):
             scene_id = pc_path.stem.replace("_sem_pointcloud", "")

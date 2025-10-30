@@ -363,9 +363,6 @@ class AutoEncoder(nn.Module):
             with open(cfg, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
 
-        print(f"DEBUG from_config: cfg keys = {list(cfg.keys())}")
-        print(f"DEBUG from_config: 'encoder' in cfg = {'encoder' in cfg}")
-        print(f"DEBUG from_config: 'decoder' in cfg = {'decoder' in cfg}")
         
         if "encoder" not in cfg and "decoder" not in cfg:
             # Old format: flat config with direct parameters for from_shape

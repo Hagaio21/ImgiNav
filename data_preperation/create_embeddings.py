@@ -24,7 +24,7 @@ try:
 except ImportError:
     AutoEncoder = None  # Will fail gracefully if not available
 
-from utils.text_utils import articleize, graph2text
+from utils.text_utils import graph2text
 from common.taxonomy import Taxonomy
 
 
@@ -39,6 +39,37 @@ def batched(iterable: Iterator, n: int):
         if not batch:
             break
         yield batch
+
+
+def _process_batch_with_model(batch_items, model, transform, device, process_item_fn, encode_fn):
+
+    batch_imgs = []
+    valid_items = []
+    
+    for item in batch_items:
+        try:
+            img, metadata = process_item_fn(item)
+            if img is not None:
+                batch_imgs.append(transform(img))
+                valid_items.append(metadata)
+        except Exception as e:
+            print(f"Error processing item: {e}")
+            continue
+    
+    if not valid_items:
+        return []
+    
+    # Process batch
+    imgs_tensor = torch.stack(batch_imgs).to(device)
+    with torch.no_grad():
+        embeddings = encode_fn(imgs_tensor)
+    
+    # Return results
+    results = []
+    for metadata, emb in zip(valid_items, embeddings):
+        results.append((metadata, emb.cpu()))
+    
+    return results
 
 
 # =============================================================================
@@ -167,30 +198,29 @@ def create_layout_embeddings(model, data_root: Path, device: str = "cuda",
     failed_load = 0
     
     print(f"[INFO] Found {total_to_encode} layouts to encode.")
-    with torch.no_grad():
-        for i in tqdm(range(0, total_to_encode, batch_size), desc="Encoding layouts", unit="batch"):
-            batch_job_paths = paths_to_encode[i:i + batch_size]
-            imgs, valid_out_paths = [], []
-            
-            for in_path, out_path in batch_job_paths:
-                try:
-                    img = Image.open(in_path).convert("RGB")
-                    imgs.append(transform(img))
-                    valid_out_paths.append(out_path)
-                except Exception as e:
-                    print(f"[WARN] Failed to load {in_path}: {e}")
-                    failed_load += 1
-            
-            if not imgs:
-                continue
-            
-            imgs_tensor = torch.stack(imgs).to(device)
-            z = model.encode_latent(imgs_tensor, deterministic=True)
-            
-            for j, out_path in enumerate(valid_out_paths):
-                emb = z[j].cpu()
-                torch.save(emb, out_path)
-                success += 1
+    
+    def process_layout_item(item):
+        in_path, out_path = item
+        try:
+            img = Image.open(in_path).convert("RGB")
+            return img, out_path
+        except Exception as e:
+            print(f"[WARN] Failed to load {in_path}: {e}")
+            return None, None
+    
+    def encode_layouts(imgs_tensor):
+        return model.encode_latent(imgs_tensor, deterministic=True)
+    
+    for i in tqdm(range(0, total_to_encode, batch_size), desc="Encoding layouts", unit="batch"):
+        batch_job_paths = paths_to_encode[i:i + batch_size]
+        results = _process_batch_with_model(
+            batch_job_paths, model, transform, device, 
+            process_layout_item, encode_layouts
+        )
+        
+        for out_path, emb in results:
+            torch.save(emb, out_path)
+            success += 1
     
     print("\n[SUMMARY]")
     print(f"  Total layouts found: {len(layout_paths)}")
@@ -221,9 +251,8 @@ def create_pov_embeddings(manifest_path: Path, output_manifest: Path,
     ])
     
     # Read manifest
-    with open(manifest_path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    from common.file_io import read_manifest, create_manifest
+    rows = read_manifest(manifest_path)
     
     print(f"Found {len(rows)} POV images to process")
     
@@ -231,76 +260,66 @@ def create_pov_embeddings(manifest_path: Path, output_manifest: Path,
     skipped = 0
     processed = 0
     
+    def process_pov_item(row):
+        pov_path = row.get('pov_path') or row.get('pov_image', '')
+        if not pov_path:
+            return None, None
+        
+        # Check if empty flag exists
+        is_empty = int(row.get('is_empty', 0))
+        if is_empty or not Path(pov_path).exists():
+            return None, None
+            
+        try:
+            img = Image.open(pov_path).convert("RGB")
+            return img, row
+        except Exception as e:
+            print(f"Error reading {pov_path}: {e}")
+            return None, None
+    
+    def encode_povs(imgs_tensor):
+        with torch.cuda.amp.autocast():
+            return model(imgs_tensor)
+    
     for batch_rows in tqdm(batched(rows, batch_size),
                            total=len(rows)//batch_size + 1,
                            desc="Processing POV images"):
-        batch_imgs = []
-        valid_rows = []
-        
+        # Process items that don't need encoding
         for row in batch_rows:
             pov_path = row.get('pov_path') or row.get('pov_image', '')
-            if not pov_path:
-                out = row.copy()
-                out['embedding_path'] = ''
-                output_rows.append(out)
-                skipped += 1
-                continue
-            
-            # Check if empty flag exists
-            is_empty = int(row.get('is_empty', 0))
-            if is_empty or not Path(pov_path).exists():
-                out = row.copy()
-                out['embedding_path'] = ''
-                output_rows.append(out)
-                skipped += 1
-                continue
-                
-            try:
-                img = Image.open(pov_path).convert("RGB")
-                x = transform(img)
-                batch_imgs.append(x)
-                valid_rows.append(row)
-            except Exception as e:
-                print(f"Error reading {pov_path}: {e}")
+            if not pov_path or int(row.get('is_empty', 0)) or not Path(pov_path).exists():
                 out = row.copy()
                 out['embedding_path'] = ''
                 output_rows.append(out)
                 skipped += 1
         
-        if not valid_rows:
-            continue
+        # Process batch with model
+        results = _process_batch_with_model(
+            batch_rows, model, transform, device,
+            process_pov_item, encode_povs
+        )
         
-        x = torch.stack(batch_imgs).to(device)
-        with torch.no_grad(), torch.cuda.amp.autocast():
-            emb = model(x).cpu()  # [B,512]
-        
-        for r, e in zip(valid_rows, emb):
-            pov_path_obj = Path(r.get('pov_path') or r.get('pov_image', ''))
+        for row, emb in results:
+            pov_path_obj = Path(row.get('pov_path') or row.get('pov_image', ''))
             embedding_path = pov_path_obj.with_suffix('.pt')
             
             if save_format == "pt":
-                torch.save(e, embedding_path)
+                torch.save(emb, embedding_path)
             else:  # npy
-                np.save(embedding_path.with_suffix('.npy'), e.numpy())
+                np.save(embedding_path.with_suffix('.npy'), emb.numpy())
             
-            out = r.copy()
+            out = row.copy()
             out['embedding_path'] = str(embedding_path)
             output_rows.append(out)
             processed += 1
     
     # Write output manifest
-    output_path = Path(output_manifest)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
     fieldnames = list(rows[0].keys()) + ['embedding_path']
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(output_rows)
+    create_manifest(output_rows, output_manifest, fieldnames)
     
     print(f"\n✓ Processed {processed}/{len(rows)} POV images successfully")
     print(f"✓ Skipped {skipped} images (empty or errors)")
-    print(f"✓ Output manifest: {output_path}")
+    print(f"✓ Output manifest: {output_manifest}")
 
 
 # =============================================================================
@@ -322,9 +341,8 @@ def create_graph_embeddings(manifest_path: Path, taxonomy_path: Path,
     
     # Read manifest
     print(f"Reading manifest: {manifest_path}")
-    with open(manifest_path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    from common.file_io import read_manifest, create_manifest
+    rows = read_manifest(manifest_path)
     
     print(f"Found {len(rows)} graphs to process")
     
@@ -377,32 +395,22 @@ def create_graph_embeddings(manifest_path: Path, taxonomy_path: Path,
             output_rows.append(output_row)
     
     # Write output manifest
-    output_path = Path(output_manifest)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+    from common.file_io import create_manifest
     fieldnames = list(rows[0].keys()) + ['embedding_path']
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(output_rows)
+    create_manifest(output_rows, output_manifest, fieldnames)
     
     print(f"\n✓ Processed {len(rows) - skipped}/{len(rows)} graphs successfully")
     print(f"✓ Skipped {skipped} graphs")
-    print(f"✓ Output manifest: {output_path}")
+    print(f"✓ Output manifest: {output_manifest}")
 
-
-# =============================================================================
-# Graph Text Generation (from create_graph_text.py)
-# =============================================================================
 
 def create_graph_text_files(manifest_path: Path, taxonomy_path: Path):
     print(f"Loading taxonomy from {taxonomy_path}")
     taxonomy = Taxonomy(taxonomy_path)
     
     print(f"Reading manifest: {manifest_path}")
-    with open(manifest_path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    from common.file_io import read_manifest
+    rows = read_manifest(manifest_path)
     
     print(f"Found {len(rows)} graphs to process")
     

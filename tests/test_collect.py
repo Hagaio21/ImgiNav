@@ -67,15 +67,13 @@ def validate_layouts_manifest(manifest_path: Path) -> tuple[bool, str]:
     required_cols = {"scene_id", "type", "room_id", "layout_path", "is_empty"}
     
     try:
-        with open(manifest_path, 'r', encoding='utf-8', newline='') as f:
-            reader = csv.DictReader(f)
-            cols = set(reader.fieldnames or [])
-            
-            if not required_cols.issubset(cols):
-                missing = required_cols - cols
-                return False, f"Missing required columns: {missing}"
-            
-            rows = list(reader)
+        from common.file_io import read_manifest
+        rows = read_manifest(manifest_path)
+        cols = set(rows[0].keys()) if rows else set()
+        
+        if not required_cols.issubset(cols):
+            missing = required_cols - cols
+            return False, f"Missing required columns: {missing}"
             if len(rows) == 0:
                 return False, "Manifest is empty"
             
@@ -110,15 +108,13 @@ def validate_graphs_manifest(manifest_path: Path) -> tuple[bool, str]:
     required_cols = {"scene_id", "type", "room_id", "layout_path", "graph_path", "is_empty"}
     
     try:
-        with open(manifest_path, 'r', encoding='utf-8', newline='') as f:
-            reader = csv.DictReader(f)
-            cols = set(reader.fieldnames or [])
-            
-            if not required_cols.issubset(cols):
-                missing = required_cols - cols
-                return False, f"Missing required columns: {missing}"
-            
-            rows = list(reader)
+        from common.file_io import read_manifest
+        rows = read_manifest(manifest_path)
+        cols = set(rows[0].keys()) if rows else set()
+        
+        if not required_cols.issubset(cols):
+            missing = required_cols - cols
+            return False, f"Missing required columns: {missing}"
             if len(rows) == 0:
                 return False, "Manifest is empty"
             
@@ -148,15 +144,13 @@ def validate_all_manifest(manifest_path: Path) -> tuple[bool, str]:
     }
     
     try:
-        with open(manifest_path, 'r', encoding='utf-8', newline='') as f:
-            reader = csv.DictReader(f)
-            cols = set(reader.fieldnames or [])
-            
-            if not required_cols.issubset(cols):
-                missing = required_cols - cols
-                return False, f"Missing required columns: {missing}"
-            
-            rows = list(reader)
+        from common.file_io import read_manifest
+        rows = read_manifest(manifest_path)
+        cols = set(rows[0].keys()) if rows else set()
+        
+        if not required_cols.issubset(cols):
+            missing = required_cols - cols
+            return False, f"Missing required columns: {missing}"
             if len(rows) == 0:
                 return False, "Manifest is empty"
             

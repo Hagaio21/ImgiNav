@@ -225,11 +225,9 @@ def collect_graphs(root_dir: Path, output_path: Path):
     from common.utils import safe_mkdir
     safe_mkdir(output_path.parent)
     
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
-        fieldnames = ['scene_id', 'type', 'room_id', 'layout_path', 'graph_path', 'is_empty']
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(graphs)
+    from common.file_io import create_manifest
+    fieldnames = ['scene_id', 'type', 'room_id', 'layout_path', 'graph_path', 'is_empty']
+    create_manifest(graphs, output_path, fieldnames)
     
     print(f"\nTotal graphs: {len(graphs)}")
     print(f"Scene graphs: {scene_count}")
@@ -294,10 +292,9 @@ def collect_layouts(root: Path, output_path: Path, workers: int = None):
             if completed % 500 == 0 or completed == total:
                 print(f"[PROGRESS] {completed}/{total} files ({100*completed/total:.1f}%)", flush=True)
 
-    with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["scene_id", "type", "room_id", "layout_path", "is_empty"])
-        writer.writeheader()
-        writer.writerows(rows)
+    from common.file_io import create_manifest
+    fieldnames = ["scene_id", "type", "room_id", "layout_path", "is_empty"]
+    create_manifest(rows, output_path, fieldnames)
 
     print(f"[INFO] Wrote {len(rows)} rows to {output_path}", flush=True)
 
@@ -305,9 +302,9 @@ def load_empty_map(layouts_csv: Path) -> Dict[Tuple[str, str], int]:
     empty_map = {}
     if not layouts_csv.exists():
         return empty_map
-    with open(layouts_csv, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
+    from common.file_io import read_manifest
+    rows = read_manifest(layouts_csv)
+    for row in rows:
             sid = row.get("scene_id", "")
             rid = row.get("room_id", "")
             try:

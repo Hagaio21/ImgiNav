@@ -21,80 +21,7 @@ from models.autoencoder import AutoEncoder
 import torchvision.transforms as T
 
 
-class TestDataPipelineUtils:
-    """Utility functions for data pipeline tests."""
-    
-    @staticmethod
-    def load_config(config_name):
-        """Load a test config by name."""
-        config_path = f"tests/configs/{config_name}.yaml"
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    
-    @staticmethod
-    def get_autoencoder_latent_shape(config):
-        """Extract latent shape from autoencoder config."""
-        latent_channels = config['model']['latent_channels']
-        latent_base = config['model']['latent_base']
-        return (latent_channels, latent_base, latent_base)
-    
-    @staticmethod
-    def create_mock_embeddings_manifest(temp_dir, num_samples=10, latent_shape=(8, 8, 8)):
-        """Create a mock manifest with embedding paths for testing."""
-        manifest_data = []
-        
-        for i in range(num_samples):
-            # Create mock embedding file
-            embedding_path = os.path.join(temp_dir, f"embedding_{i:04d}.pt")
-            mock_embedding = torch.randn(*latent_shape)
-            torch.save(mock_embedding, embedding_path)
-            
-            # Add to manifest
-            manifest_data.append({
-                'image_path': f"test_image_{i:04d}.png",  # Dummy image path
-                'embedding_path': embedding_path,
-                'scene_id': f"test_scene_{i:04d}",
-                'room_id': f"test_room_{i:04d}",
-                'pov_id': f"test_pov_{i:04d}"
-            })
-        
-        # Save manifest
-        manifest_path = os.path.join(temp_dir, "test_embeddings_manifest.csv")
-        manifest_df = pd.DataFrame(manifest_data)
-        manifest_df.to_csv(manifest_path, index=False)
-        
-        return manifest_path, manifest_data
-    
-    @staticmethod
-    def create_mock_image_dataset(temp_dir, num_samples=10, image_size=(64, 64)):
-        """Create a mock image dataset for testing."""
-        manifest_data = []
-        
-        for i in range(num_samples):
-            # Create mock image file
-            image_path = os.path.join(temp_dir, f"image_{i:04d}.png")
-            mock_image = torch.randn(3, *image_size) * 255
-            mock_image = torch.clamp(mock_image, 0, 255).byte()
-            
-            # Convert to PIL and save
-            from PIL import Image
-            pil_image = Image.fromarray(mock_image.permute(1, 2, 0).numpy())
-            pil_image.save(image_path)
-            
-            # Add to manifest
-            manifest_data.append({
-                'image_path': image_path,
-                'scene_id': f"test_scene_{i:04d}",
-                'room_id': f"test_room_{i:04d}",
-                'pov_id': f"test_pov_{i:04d}"
-            })
-        
-        # Save manifest
-        manifest_path = os.path.join(temp_dir, "test_images_manifest.csv")
-        manifest_df = pd.DataFrame(manifest_data)
-        manifest_df.to_csv(manifest_path, index=False)
-        
-        return manifest_path, manifest_data
+from test_utils import TestUtils
 
 
 class TestDatasetLoading(unittest.TestCase):
@@ -109,7 +36,7 @@ class TestDatasetLoading(unittest.TestCase):
         """Test LayoutDataset with embeddings=True."""
         # Create mock embeddings manifest
         latent_shape = (8, 8, 8)  # Example latent shape
-        manifest_path, manifest_data = TestDataPipelineUtils.create_mock_embeddings_manifest(
+        manifest_path, manifest_data = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=5, latent_shape=latent_shape
         )
         
@@ -137,7 +64,7 @@ class TestDatasetLoading(unittest.TestCase):
     def test_layout_dataset_without_embeddings(self):
         """Test LayoutDataset with embeddings=False."""
         # Create mock image dataset
-        manifest_path, manifest_data = TestDataPipelineUtils.create_mock_image_dataset(
+        manifest_path, manifest_data = TestUtils.create_mock_image_dataset(
             self.temp_dir, num_samples=5, image_size=(64, 64)
         )
         
@@ -172,11 +99,11 @@ class TestDatasetLoading(unittest.TestCase):
     def test_dataset_with_autoencoder_config(self):
         """Test dataset loading with autoencoder config to determine latent shape."""
         # Load autoencoder config
-        config = TestDataPipelineUtils.load_config('test_AE_large_latent_seg')
-        latent_shape = TestDataPipelineUtils.get_autoencoder_latent_shape(config)
+        config = TestUtils.load_config('test_AE_large_latent_seg')
+        latent_shape = TestUtils.get_autoencoder_latent_shape(config)
         
         # Create mock embeddings with correct latent shape
-        manifest_path, manifest_data = TestDataPipelineUtils.create_mock_embeddings_manifest(
+        manifest_path, manifest_data = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=3, latent_shape=latent_shape
         )
         
@@ -194,7 +121,7 @@ class TestDatasetLoading(unittest.TestCase):
     def test_build_datasets_function(self):
         """Test the build_datasets utility function."""
         # Create mock data
-        manifest_path, _ = TestDataPipelineUtils.create_mock_image_dataset(
+        manifest_path, _ = TestUtils.create_mock_image_dataset(
             self.temp_dir, num_samples=10, image_size=(64, 64)
         )
         
@@ -221,7 +148,7 @@ class TestDatasetLoading(unittest.TestCase):
     def test_build_dataloaders_function(self):
         """Test the build_dataloaders utility function."""
         # Create mock data
-        manifest_path, _ = TestDataPipelineUtils.create_mock_image_dataset(
+        manifest_path, _ = TestUtils.create_mock_image_dataset(
             self.temp_dir, num_samples=10, image_size=(64, 64)
         )
         
@@ -253,7 +180,6 @@ class TestDatasetLoading(unittest.TestCase):
         self.assertIn('layout', train_batch)
         self.assertIn('layout', val_batch)
         self.assertEqual(train_batch['layout'].shape[0], 2)  # batch_size
-
 
 class TestDataPreprocessing(unittest.TestCase):
     """Test data preprocessing and transformation pipelines."""
@@ -299,7 +225,6 @@ class TestDataPreprocessing(unittest.TestCase):
         # Cleanup
         os.remove(embedding_path)
 
-
 class TestDataFlow(unittest.TestCase):
     """Test data flow through the pipeline."""
     
@@ -312,7 +237,7 @@ class TestDataFlow(unittest.TestCase):
         """Test data flow from embeddings to model input."""
         # Create mock embeddings
         latent_shape = (8, 8, 8)
-        manifest_path, _ = TestDataPipelineUtils.create_mock_embeddings_manifest(
+        manifest_path, _ = TestUtils.create_mock_embeddings_manifest(
             self.temp_dir, num_samples=3, latent_shape=latent_shape
         )
         
@@ -343,13 +268,13 @@ class TestDataFlow(unittest.TestCase):
     def test_images_to_embeddings_flow(self):
         """Test data flow from images to embeddings (via autoencoder)."""
         # Create mock image dataset
-        manifest_path, _ = TestDataPipelineUtils.create_mock_image_dataset(
+        manifest_path, _ = TestUtils.create_mock_image_dataset(
             self.temp_dir, num_samples=3, image_size=(64, 64)
         )
         
         # Load autoencoder config
-        config = TestDataPipelineUtils.load_config('test_AE_small_latent')
-        latent_shape = TestDataPipelineUtils.get_autoencoder_latent_shape(config)
+        config = TestUtils.load_config('test_AE_small_latent')
+        latent_shape = TestUtils.get_autoencoder_latent_shape(config)
         
         # Create autoencoder
         autoencoder = AutoEncoder.from_shape(
@@ -383,7 +308,6 @@ class TestDataFlow(unittest.TestCase):
         
         # Test encoded shape matches expected latent shape
         self.assertEqual(encoded.shape, torch.Size([1] + list(latent_shape)))
-
 
 if __name__ == '__main__':
     unittest.main()

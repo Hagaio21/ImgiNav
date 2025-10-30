@@ -21,27 +21,7 @@ from models.components.scheduler import LinearScheduler, CosineScheduler, Quadra
 from models.losses.custom_loss import StandardVAELoss, DiffusionLoss, VGGPerceptualLoss
 
 
-class TestComponentUtils:
-    """Utility functions for component tests."""
-    
-    @staticmethod
-    def load_config(config_name):
-        """Load a test config by name."""
-        config_path = f"tests/configs/{config_name}.yaml"
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    
-    @staticmethod
-    def get_autoencoder_latent_shape(config):
-        """Extract latent shape from autoencoder config."""
-        latent_channels = config['model']['latent_channels']
-        latent_base = config['model']['latent_base']
-        return (latent_channels, latent_base, latent_base)
-    
-    @staticmethod
-    def create_test_tensor(shape, device='cpu'):
-        """Create a test tensor with given shape."""
-        return torch.randn(shape, device=device)
+from test_utils import TestUtils
 
 
 class TestAutoEncoderComponents(unittest.TestCase):
@@ -119,7 +99,7 @@ class TestAutoEncoderComponents(unittest.TestCase):
                 
                 # Test forward pass
                 batch_size = 2
-                input_tensor = TestComponentUtils.create_test_tensor(
+                input_tensor = TestUtils.create_test_tensor(
                     (batch_size, 3, config['image_size'], config['image_size'])
                 )
                 
@@ -142,7 +122,7 @@ class TestAutoEncoderComponents(unittest.TestCase):
         )
         
         # Test input
-        input_tensor = TestComponentUtils.create_test_tensor((1, 3, 64, 64))
+        input_tensor = TestUtils.create_test_tensor((1, 3, 64, 64))
         
         with torch.no_grad():
             # Test encoding
@@ -156,7 +136,7 @@ class TestAutoEncoderComponents(unittest.TestCase):
     
     def test_autoencoder_with_config(self):
         """Test AutoEncoder creation from config file."""
-        config = TestComponentUtils.load_config('test_AE_large_latent_seg')
+        config = TestUtils.load_config('test_AE_large_latent_seg')
         
         autoencoder = AutoEncoder.from_shape(
             in_channels=3,
@@ -168,8 +148,8 @@ class TestAutoEncoderComponents(unittest.TestCase):
         )
         
         # Test with config-specified latent shape
-        latent_shape = TestComponentUtils.get_autoencoder_latent_shape(config)
-        input_tensor = TestComponentUtils.create_test_tensor((1, 3, 64, 64))
+        latent_shape = TestUtils.get_autoencoder_latent_shape(config)
+        input_tensor = TestUtils.create_test_tensor((1, 3, 64, 64))
         
         with torch.no_grad():
             encoded = autoencoder.encode(input_tensor)
@@ -271,7 +251,7 @@ class TestUNetComponents(unittest.TestCase):
         
         for shape in test_shapes:
             with self.subTest(shape=shape):
-                input_tensor = TestComponentUtils.create_test_tensor(shape)
+                input_tensor = TestUtils.create_test_tensor(shape)
                 timesteps = torch.randint(0, 1000, (shape[0],))
                 
                 with torch.no_grad():
@@ -292,8 +272,8 @@ class TestUNetComponents(unittest.TestCase):
         )
         
         # Test input with conditioning
-        input_tensor = TestComponentUtils.create_test_tensor((2, 8, 8, 8))
-        cond_tensor = TestComponentUtils.create_test_tensor((2, 16, 8, 8))
+        input_tensor = TestUtils.create_test_tensor((2, 8, 8, 8))
+        cond_tensor = TestUtils.create_test_tensor((2, 16, 8, 8))
         timesteps = torch.randint(0, 1000, (2,))
         
         with torch.no_grad():
@@ -354,12 +334,11 @@ class TestSchedulerComponents(unittest.TestCase):
         self.assertTrue(torch.all(timesteps < 1000))
         
         # Test add_noise
-        x = TestComponentUtils.create_test_tensor((batch_size, 8, 8, 8))
-        noise = TestComponentUtils.create_test_tensor((batch_size, 8, 8, 8))
+        x = TestUtils.create_test_tensor((batch_size, 8, 8, 8))
+        noise = TestUtils.create_test_tensor((batch_size, 8, 8, 8))
         
         noisy_x = scheduler.add_noise(x, noise, timesteps)
         self.assertEqual(noisy_x.shape, x.shape)
-
 
 class TestLossComponents(unittest.TestCase):
     """Test loss function components."""
@@ -392,10 +371,10 @@ class TestLossComponents(unittest.TestCase):
         
         for shape in test_shapes:
             with self.subTest(shape=shape):
-                x = TestComponentUtils.create_test_tensor(shape)
-                x_recon = TestComponentUtils.create_test_tensor(shape)
-                mu = TestComponentUtils.create_test_tensor(shape)
-                logvar = TestComponentUtils.create_test_tensor(shape)
+                x = TestUtils.create_test_tensor(shape)
+                x_recon = TestUtils.create_test_tensor(shape)
+                mu = TestUtils.create_test_tensor(shape)
+                logvar = TestUtils.create_test_tensor(shape)
                 
                 loss = loss_fn(x, x_recon, mu, logvar)
                 
@@ -416,8 +395,8 @@ class TestLossComponents(unittest.TestCase):
         
         for shape in test_shapes:
             with self.subTest(shape=shape):
-                pred_noise = TestComponentUtils.create_test_tensor(shape)
-                target_noise = TestComponentUtils.create_test_tensor(shape)
+                pred_noise = TestUtils.create_test_tensor(shape)
+                target_noise = TestUtils.create_test_tensor(shape)
                 
                 loss = loss_fn(pred_noise, target_noise)
                 
@@ -437,15 +416,14 @@ class TestLossComponents(unittest.TestCase):
         
         for shape in test_shapes:
             with self.subTest(shape=shape):
-                x = TestComponentUtils.create_test_tensor(shape)
-                x_recon = TestComponentUtils.create_test_tensor(shape)
+                x = TestUtils.create_test_tensor(shape)
+                x_recon = TestUtils.create_test_tensor(shape)
                 
                 loss = loss_fn(x, x_recon)
                 
                 self.assertIsInstance(loss, torch.Tensor)
                 self.assertEqual(loss.shape, ())
                 self.assertGreaterEqual(loss.item(), 0)
-
 
 class TestComponentIntegration(unittest.TestCase):
     """Test integration between different components."""
@@ -472,7 +450,7 @@ class TestComponentIntegration(unittest.TestCase):
                 )
                 
                 # Test forward pass
-                input_tensor = TestComponentUtils.create_test_tensor((1, 3, 64, 64))
+                input_tensor = TestUtils.create_test_tensor((1, 3, 64, 64))
                 
                 with torch.no_grad():
                     output = autoencoder(input_tensor)
@@ -504,7 +482,7 @@ class TestComponentIntegration(unittest.TestCase):
                 
                 # Test forward pass
                 input_shape = (2, config['in_channels'], 8, 8)
-                input_tensor = TestComponentUtils.create_test_tensor(input_shape)
+                input_tensor = TestUtils.create_test_tensor(input_shape)
                 timesteps = torch.randint(0, 1000, (2,))
                 
                 with torch.no_grad():
