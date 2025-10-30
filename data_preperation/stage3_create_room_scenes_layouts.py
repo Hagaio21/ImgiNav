@@ -26,6 +26,18 @@ def draw_point(canvas: np.ndarray, x: int, y: int, color: np.ndarray, size: int 
     half = size // 2
     x0, x1 = max(x - half, 0), min(x + half, canvas.shape[1] - 1)
     y0, y1 = max(y - half, 0), min(y + half, canvas.shape[0] - 1)
+    
+    # Ensure color is a proper numpy array
+    if isinstance(color, (tuple, list)):
+        color = np.array(color, dtype=np.uint8)
+    elif color.ndim == 1 and color.shape[0] == 3:
+        # Color is (3,) - explicitly assign to each channel
+        canvas[y0:y1 + 1, x0:x1 + 1, 0] = color[0]
+        canvas[y0:y1 + 1, x0:x1 + 1, 1] = color[1]
+        canvas[y0:y1 + 1, x0:x1 + 1, 2] = color[2]
+        return
+    
+    # For multi-dimensional color arrays, assign directly
     canvas[y0:y1 + 1, x0:x1 + 1] = color
 
 
@@ -91,11 +103,21 @@ def create_room_layout(
 
     # Render to canvas
     canvas = np.full((resolution, resolution, 3), 240, dtype=np.uint8)
+    
     for lbl, x, y in zip(filtered_labels, x_img, y_img):
         if lbl is None:
             raise ValueError(f"Unexpected None label in {parquet_path}")
-        color = TAXONOMY.get_color(lbl, mode=color_mode)
-        draw_point(canvas, x, y, np.array(color, dtype=np.uint8), size=point_size)
+        # Convert numpy int32 to Python int (same as POV does)
+        lbl_int = int(lbl)
+        # Only pass mode if it's "category", otherwise use default (super) to match POV behavior
+        if color_mode == "category":
+            color_tuple = TAXONOMY.get_color(lbl_int, mode=color_mode)
+        else:
+            color_tuple = TAXONOMY.get_color(lbl_int)  # Default mode for super colors
+        
+        # Convert tuple to numpy array with proper shape
+        color = np.array(color_tuple, dtype=np.uint8)
+        draw_point(canvas, x, y, color, size=point_size)
 
     # Save image
     safe_mkdir(output_path.parent)
@@ -183,9 +205,19 @@ def create_scene_layout(
             f_labels = labels[mask]
 
             x_img, y_img = points_to_image_coords(u_vals, v_vals, global_uv_bounds, resolution, margin)
+            
             for lbl, x, y in zip(f_labels, x_img, y_img):
-                color = TAXONOMY.get_color(lbl, mode=color_mode)
-                draw_point(canvas, x, y, np.array(color, dtype=np.uint8), size=point_size)
+                # Convert numpy int32 to Python int (same as POV does)
+                lbl_int = int(lbl)
+                # Only pass mode if it's "category", otherwise use default (super) to match POV behavior
+                if color_mode == "category":
+                    color_tuple = TAXONOMY.get_color(lbl_int, mode=color_mode)
+                else:
+                    color_tuple = TAXONOMY.get_color(lbl_int)  # Default mode for super colors
+                
+                # Convert tuple to numpy array with proper shape
+                color = np.array(color_tuple, dtype=np.uint8)
+                draw_point(canvas, x, y, color, size=point_size)
         except Exception as e:
             print(f"[warn] skipping {parquet_path}: {e}",flush=True)
 

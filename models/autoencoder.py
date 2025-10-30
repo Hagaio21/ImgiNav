@@ -182,6 +182,7 @@ class AutoEncoder(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
+        self.deterministic = deterministic
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)

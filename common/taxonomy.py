@@ -126,6 +126,51 @@ class Taxonomy:
         if not super_name:
             return None
         return self._lookup_super_id(super_name)
+    
+    def _resolve_category(self, val: int) -> int | None:
+        """Resolve any ID (title, label, category) to its category ID."""
+        if val is None or val == 0:
+            return None
+        
+        val_str = str(val)
+        
+        # Already a category ID
+        if self.ranges["category"][0] <= val <= self.ranges["category"][1]:
+            return val
+        
+        # Title ID → category ID
+        if self.ranges["title"][0] <= val <= self.ranges["title"][1]:
+            # PRIMARY: Use title name as key (taxonomy stores title2category with names as keys)
+            title_name = self.id_to_name(val)
+            if title_name and title_name != "UnknownTitle":
+                category_name = self.data.get("title2category", {}).get(title_name)
+                if category_name:
+                    category_id = self.data.get("category2id", {}).get(category_name)
+                    if category_id is not None:
+                        return int(category_id)
+            
+            # FALLBACK: Try using title ID as key
+            category_name = self.data.get("title2category", {}).get(val_str)
+            if category_name:
+                category_id = self.data.get("category2id", {}).get(category_name)
+                if category_id is not None:
+                    return int(category_id)
+        
+        # Label ID → category ID
+        if self.ranges["label"][0] <= val <= self.ranges["label"][1]:
+            label_name = self.id_to_name(val)
+            if self._is_structural(label_name):
+                # For structural labels, the category ID should match the label name
+                category_id = self.data.get("category2id", {}).get(label_name.lower())
+                if category_id is not None:
+                    return int(category_id)
+            else:
+                # For non-structural labels, try label2category mapping
+                category_id = self.data.get("label2category", {}).get(val_str)
+                if category_id:
+                    return int(category_id) if isinstance(category_id, (int, str)) else None
+        
+        return None
 
     # ----------------------------
     # Super-category
@@ -177,15 +222,52 @@ class Taxonomy:
                 print(f"DEBUG: No category found for structural element '{name}'")
                 return default_color
 
-        # For non-structural items, resolve to super-category and get color
-        super_id = self.resolve_super(val)
-        if super_id is None:
-            print(f"DEBUG get_color: could not resolve super for {val} ({name})")
+        # Handle mode: "category" vs "super"/"none" (default)
+        if mode == "category":
+            # Try to resolve to category ID first
+            category_id = self._resolve_category(val)
+            if category_id is not None:
+                color = self.data.get("id2color", {}).get(str(category_id), None)
+                if color is not None:
+                    return tuple(color) if isinstance(color, list) else default_color
+            # Fallback to super if category color not found
+            super_id = self.resolve_super(val)
+            if super_id is not None:
+                color = self.data.get("id2color", {}).get(str(super_id), default_color)
+                return tuple(color) if isinstance(color, list) else default_color
             return default_color
+        else:
+            # Default/super mode: use super-category color (same behavior for "super", "none", or any other value)
+            super_id = self.resolve_super(val)
+            
+            if super_id is None:
+                # FALLBACK: If we can't resolve to super, check if it's a category with direct color assignment
+                # (Some categories might have colors assigned directly in id2color)
+                if self.ranges["category"][0] <= val <= self.ranges["category"][1]:
+                    color = self.data.get("id2color", {}).get(str(val), None)
+                    if color is not None:
+                        return tuple(color) if isinstance(color, list) else default_color
+                    # Also try resolving category name → super manually
+                    category_name = self.id_to_name(val)
+                    super_name = self.data.get("category2super", {}).get(category_name)
+                    if super_name:
+                        super_id_fallback = self._lookup_super_id(super_name)
+                        if super_id_fallback:
+                            color = self.data.get("id2color", {}).get(str(super_id_fallback), default_color)
+                            return tuple(color) if isinstance(color, list) else default_color
+                
+                # Debug output for troubleshooting
+                if self.ranges["category"][0] <= val <= self.ranges["category"][1]:
+                    category_name = self.id_to_name(val)
+                    super_name = self.data.get("category2super", {}).get(category_name)
+                    print(f"DEBUG get_color: category {val} ({category_name}) → super_name={super_name}", flush=True)
+                
+                print(f"DEBUG get_color: could not resolve super for {val} ({name}), returning default", flush=True)
+                return default_color
 
-        # Look up color by super-category ID in id2color
-        color = self.data.get("id2color", {}).get(str(super_id), default_color)
-        return tuple(color) if isinstance(color, list) else default_color
+            # Look up color by super-category ID in id2color
+            color = self.data.get("id2color", {}).get(str(super_id), default_color)
+            return tuple(color) if isinstance(color, list) else default_color
 
     def get_color_to_label_dict(self) -> dict:
 
@@ -268,29 +350,31 @@ class Taxonomy:
 
         # Title ID → super-category ID
         if self.ranges["title"][0] <= val <= self.ranges["title"][1]:
-            # Try direct title → super mapping (using title ID as key)
+            # PRIMARY: Use title name as key (taxonomy stores title2super/category with names as keys)
+            title_name = self.id_to_name(val)
+            if title_name and title_name != "UnknownTitle":
+                # Try title name → super
+                super_name = self.data.get("title2super", {}).get(title_name)
+                if super_name:
+                    super_id = self._lookup_super_id(super_name)
+                    if super_id:
+                        return super_id
+                
+                # Try title name → category → super
+                category_name = self.data.get("title2category", {}).get(title_name)
+                if category_name:
+                    super_id = self._resolve_category_to_super_id(category_name)
+                    if super_id:
+                        return super_id
+            
+            # FALLBACK: Try using title ID as key (some taxonomies might use IDs)
             super_name = self.data.get("title2super", {}).get(val_str)
             if super_name:
                 super_id = self._lookup_super_id(super_name)
                 if super_id:
                     return super_id
             
-            # Fallback: title → category → super (using title ID as key)
             category_name = self.data.get("title2category", {}).get(val_str)
-            if category_name:
-                super_id = self._resolve_category_to_super_id(category_name)
-                if super_id:
-                    return super_id
-            
-            # Additional fallback: try using title name as key (legacy support)
-            title_name = self.id_to_name(val)
-            super_name = self.data.get("title2super", {}).get(title_name)
-            if super_name:
-                super_id = self._lookup_super_id(super_name)
-                if super_id:
-                    return super_id
-            
-            category_name = self.data.get("title2category", {}).get(title_name)
             if category_name:
                 super_id = self._resolve_category_to_super_id(category_name)
                 if super_id:

@@ -1,0 +1,43 @@
+# Test configuration for VAE_small_KL_seg
+experiment:
+  name: test_VAE_small_KL_seg
+  base_path: tests/experiment_test
+
+dataset:
+  batch_size: 4
+  manifest: test_dataset/manifests/layouts_manifest.csv
+  num_workers: 0
+  seed: 42
+  shuffle: true
+  split_ratio: 0.8
+  taxonomy_path: config/taxonomy.json
+
+model:
+  type: vae
+  in_channels: 3
+  out_channels: 3
+  base_channels: 16
+  latent_channels: 2
+  latent_base: 8
+  image_size: 64
+  act: relu
+  norm: batch
+  dropout: 0.0
+  num_classes: 13
+  use_sigmoid: true
+
+training:
+  epochs: 2
+  eval_interval: 1
+  log_interval: 1
+  lr: 0.001
+  sample_interval: 1
+  output_dir: tests/experiment_test/VAE_small_KL_seg/output
+  ckpt_dir: tests/experiment_test/VAE_small_KL_seg/checkpoints
+  loss:
+    type: segmentation
+    kl_weight: 0.000001
+    lambda_mse: 1.0
+    lambda_seg: 1.0
+    taxonomy_path: config/taxonomy.json
+    include_background: true

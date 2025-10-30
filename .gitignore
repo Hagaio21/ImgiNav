@@ -20,6 +20,7 @@ env/
 # Project-specific ignores
 
 # Ignore large data and output files from version control
+test_dataset/
 dataset/
 dataset_v2/
 data_preprocessing/

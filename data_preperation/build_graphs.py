@@ -15,6 +15,7 @@ from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN
 
 from utils.geometry_utils import angle_from_center, compute_directional_relations
+from utils.text_utils import graph2text
 from common.utils import write_json
 
 
@@ -160,7 +161,7 @@ def visualize_room_graph(img: np.ndarray, room_center: np.ndarray,
 
 
 def build_room_graph_from_layout(scene_id: str, room_id: str, layout_path: Path, 
-                                 color_to_label: Dict):
+                                 color_to_label: Dict, taxonomy=None):
     img = cv2.imread(str(layout_path))
     if img is None:
         print(f"[warn] cannot read {layout_path}", flush=True)
@@ -258,8 +259,20 @@ def build_room_graph_from_layout(scene_id: str, room_id: str, layout_path: Path,
     }
     
     out_json = layout_path.with_name(f"{scene_id}_{room_id}_graph.json")
+    out_txt = layout_path.with_name(f"{scene_id}_{room_id}_graph.txt")
     out_vis = layout_path.with_name(f"{scene_id}_{room_id}_graph_vis.png")
     write_json(graph, out_json)
+    
+    # Generate text version if taxonomy is available
+    if taxonomy is not None:
+        try:
+            text = graph2text(out_json, taxonomy)
+            if text:
+                out_txt.write_text(text, encoding="utf-8")
+                print(f"✔ wrote {out_txt}", flush=True)
+        except Exception as e:
+            print(f"  [warn] Failed to generate text for {out_json}: {e}", flush=True)
+    
     visualize_room_graph(img, room_center, nodes, edges, out_vis)
     print(f"✔ wrote {out_json}", flush=True)
     
@@ -341,7 +354,8 @@ def compute_scene_center(room_centers: List) -> np.ndarray:
 
 
 def build_scene_graph_from_pointcloud(scene_id: str, pc_path: Path, id2room: Dict, 
-                                     dataset_root: Path, adjacency_thresh: float = 0.3):
+                                     dataset_root: Path, adjacency_thresh: float = 0.3,
+                                     taxonomy=None):
     print(f"\nProcessing: {scene_id}", flush=True)
     
     rooms = extract_room_data(pc_path, id2room)
@@ -402,7 +416,19 @@ def build_scene_graph_from_pointcloud(scene_id: str, pc_path: Path, id2room: Dic
     
     # Save
     output_json = pc_path.parent / f"{scene_id}_scene_graph.json"
+    output_txt = pc_path.parent / f"{scene_id}_scene_graph.txt"
     write_json(scene_graph, output_json)
+    
+    # Generate text version if taxonomy is available
+    if taxonomy is not None:
+        try:
+            text = graph2text(output_json, taxonomy)
+            if text:
+                output_txt.write_text(text, encoding="utf-8")
+                print(f"  ✔ Saved scene graph text", flush=True)
+        except Exception as e:
+            print(f"  [warn] Failed to generate text for {output_json}: {e}", flush=True)
+    
     print(f"  ✔ Saved scene graph", flush=True)
     
     return scene_graph
@@ -461,7 +487,7 @@ def main():
                 sid, rid = parts[0], parts[1]
             else:
                 sid, rid = "unknown_scene", "unknown_room"
-            build_room_graph_from_layout(sid, rid, layout_path, color_to_label)
+            build_room_graph_from_layout(sid, rid, layout_path, color_to_label, taxonomy=tax)
             return
         
         # Find layouts from manifest or directory
@@ -474,12 +500,12 @@ def main():
             return
         
         for sid, rid, layout_path in layouts:
-            build_room_graph_from_layout(sid, rid, layout_path, color_to_label)
+            build_room_graph_from_layout(sid, rid, layout_path, color_to_label, taxonomy=tax)
             gc.collect()
     
     elif args.type == "scene":
-        tax = Taxonomy(Path(args.taxonomy))
-        id2room, _ = tax.get_room_mappings()
+        taxonomy = Taxonomy(Path(args.taxonomy))
+        id2room, _ = taxonomy.get_room_mappings()
         
         if not args.in_dir:
             parser.error("--in_dir is required for scene type")
@@ -494,7 +520,8 @@ def main():
             try:
                 build_scene_graph_from_pointcloud(
                     scene_id, pc_path, id2room, dataset_root,
-                    adjacency_thresh=args.adjacency_thresh
+                    adjacency_thresh=args.adjacency_thresh,
+                    taxonomy=taxonomy
                 )
             except Exception as e:
                 print(f"[error] {scene_id}: {e}", flush=True)

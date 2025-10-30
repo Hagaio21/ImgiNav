@@ -1,3 +1,7 @@
+experiment:
+  name: VAE_large_KL_seg
+  base_path: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/VAE_large_KL_seg
+
 dataset:
   batch_size: 32
   manifest: /work3/s233249/ImgiNav/datasets/layouts.csv

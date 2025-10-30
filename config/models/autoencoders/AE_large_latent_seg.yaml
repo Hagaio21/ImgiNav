@@ -1,3 +1,7 @@
+experiment:
+  name: AE_large_latent_seg
+  base_path: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg
+
 dataset:
   batch_size: 32
   manifest: /work3/s233249/ImgiNav/datasets/layouts.csv
@@ -7,11 +11,11 @@ dataset:
   split_ratio: 0.9
   taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
 model:
-  type: vae
+  type: ae
   in_channels: 3
   out_channels: 3
   base_channels: 64
-  latent_channels: 4
+  latent_channels: 8
   latent_base: 32
   image_size: 512
   act: relu
@@ -25,11 +29,11 @@ training:
   log_interval: 10
   lr: 0.0001
   sample_interval: 200
-  output_dir: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/VAE_small_KL_seg/output
-  ckpt_dir: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/VAE_small_KL_seg/checkpoints
+  output_dir: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/output
+  ckpt_dir: /work3/s233249/ImgiNav/experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints
   loss:
     type: segmentation
-    kl_weight: 0.000001
+    kl_weight: 0.0
     lambda_mse: 1.0
     lambda_seg: 1.0
     taxonomy_path: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json

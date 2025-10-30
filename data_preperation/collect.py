@@ -31,7 +31,7 @@ def collect_all(data_root: Path, output_manifest: Path):
     n_valid_scene = n_valid_room = 0
     n_skipped_room = n_skipped_scene = 0
 
-    scene_dirs = sorted([d for d in data_root.iterdir() if d.is_dir() and d.name.startswith("scene")])
+    scene_dirs = sorted([d for d in data_root.iterdir() if d.is_dir()])
     if not scene_dirs:
         raise RuntimeError(f"No scene directories found under {data_root}")
 
@@ -41,7 +41,10 @@ def collect_all(data_root: Path, output_manifest: Path):
         rooms_root = scene_dir / "rooms"
         layouts_root = scene_dir / "layouts"
         scene_layout_path = layouts_root / f"{scene_id}_scene_layout.png"
-        scene_graph_path = scene_dir / f"{scene_id}_scene_graph.txt"
+        # Try .json first (from build_graphs), fallback to .txt (from create_graph_text_files)
+        scene_graph_path = scene_dir / f"{scene_id}_scene_graph.json"
+        if not scene_graph_path.exists():
+            scene_graph_path = scene_dir / f"{scene_id}_scene_graph.txt"
 
         # Scene-level sample
         scene_ok = True
@@ -90,7 +93,10 @@ def collect_all(data_root: Path, output_manifest: Path):
 
             n_rooms += 1
             layout_path = room_dir / "layouts" / f"{scene_id}_{room_id}_room_seg_layout.png"
-            graph_path = room_dir / "layouts" / f"{scene_id}_{room_id}_graph.txt"
+            # Try .json first (from build_graphs), fallback to .txt (from create_graph_text_files)
+            graph_path = room_dir / "layouts" / f"{scene_id}_{room_id}_graph.json"
+            if not graph_path.exists():
+                graph_path = room_dir / "layouts" / f"{scene_id}_{room_id}_graph.txt"
 
             if not layout_path.exists() or not graph_path.exists():
                 n_skipped_room += 1
@@ -102,14 +108,17 @@ def collect_all(data_root: Path, output_manifest: Path):
 
             n_valid_room += 1
             layout_emb = layout_path.with_name(f"{scene_id}_{room_id}_layout_emb.pt")
+            graph_emb = graph_path.with_suffix(".pt")
 
             # Find POVs
+            povs_found = False
             for pov_type in ["seg", "tex"]:
                 pov_dir = room_dir / "povs" / pov_type
                 if not pov_dir.exists():
                     continue
 
                 for pov_img in sorted(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_{pov_type}.png")):
+                    povs_found = True
                     n_povs += 1
                     fname = pov_img.stem
                     parts = fname.split("_")
@@ -118,7 +127,6 @@ def collect_all(data_root: Path, output_manifest: Path):
                     sample_id = f"{scene_id}_{room_id}_{pov_type}_{viewpoint}"
 
                     pov_emb = pov_img.with_suffix(".pt")
-                    graph_emb = graph_path.with_suffix(".pt")
 
                     manifest_rows.append({
                         "sample_id": sample_id,
@@ -135,6 +143,25 @@ def collect_all(data_root: Path, output_manifest: Path):
                         "layout_embedding": str(layout_emb.resolve()) if layout_emb.exists() else "",
                         "is_empty": 0,
                     })
+            
+            # If no POVs found, still add a room-level entry with empty POV fields
+            if not povs_found:
+                sample_id = f"{scene_id}_{room_id}_room"
+                manifest_rows.append({
+                    "sample_id": sample_id,
+                    "sample_type": "room",
+                    "scene_id": scene_id,
+                    "room_id": room_id_int,
+                    "pov_type": "",
+                    "viewpoint": "",
+                    "pov_image": "",
+                    "pov_embedding": "",
+                    "graph_text": str(graph_path.resolve()),
+                    "graph_embedding": str(graph_emb.resolve()) if graph_emb.exists() else "",
+                    "layout_image": str(layout_path.resolve()),
+                    "layout_embedding": str(layout_emb.resolve()) if layout_emb.exists() else "",
+                    "is_empty": 0,
+                })
 
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(manifest_rows, columns=fieldnames).to_csv(output_manifest, index=False)
