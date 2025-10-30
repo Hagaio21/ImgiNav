@@ -43,8 +43,6 @@ def load_valid_colors(taxonomy_path, include_background=True):
     filtered = {str(i): taxonomy["id2color"][str(i)] for i in valid_ids if str(i) in taxonomy["id2color"]}
     return filtered, valid_ids
 
-
-
 def graph2text(graph_path: str, taxonomy: dict, max_edges: int = 10_000):
     """
     Converts either a 3D-FRONT room graph or scene graph JSON to text.

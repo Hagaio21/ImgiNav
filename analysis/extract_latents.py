@@ -17,19 +17,7 @@ from modules.autoencoder import AutoEncoder
 from modules.datasets import LayoutDataset, collate_skip_none
 
 #!/usr/bin/env python3
-"""
-Extract full-dataset AE/VAE latents and metadata for later analysis.
 
-Deterministic, single-GPU job.  Produces:
-  latent_analysis/<exp_name>/latents.pt
-  {
-      "latents": Tensor [N, C, H, W],
-      "scene_id": [...],
-      "type": [...],
-      "room_id": [...]
-  }
-
-"""
 # ----------------------------------------------------------------------
 def set_deterministic(seed: int = 0):
     import random

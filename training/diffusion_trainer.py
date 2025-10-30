@@ -11,7 +11,6 @@ from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 import seaborn as sns
 from modules.diffusion import LatentDiffusion
-# *** ADD THIS: Import your new loss class ***
 from modules.custom_loss import VGGPerceptualLoss
 
 
