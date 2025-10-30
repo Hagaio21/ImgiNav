@@ -14,7 +14,7 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/training/precompute_embeddings.py"
+PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/data_preperation/create_embeddings.py"
 
 # Input/Output paths
 MANIFEST_PATH="/work3/s233249/ImgiNav/datasets/layouts.csv"
@@ -65,22 +65,17 @@ echo "=========================================="
 # Create output directory
 mkdir -p "${OUTPUT_LATENT_DIR}"
 
-# First, copy the robust script to the correct location if it doesn't exist
-SCRIPT_SOURCE="/mnt/user-data/outputs/precompute_embeddings_robust.py"
-if [ -f "${SCRIPT_SOURCE}" ]; then
-    cp "${SCRIPT_SOURCE}" "${PYTHON_SCRIPT}"
-    echo "Copied robust script from ${SCRIPT_SOURCE}"
-fi
-
-# Run the robust precomputation
+# Run the embedding creation using data preparation script
 python "${PYTHON_SCRIPT}" \
-  --manifest "${MANIFEST_PATH}" \
-  --autoencoder_config "${AE_CONFIG}" \
-  --autoencoder_ckpt "${AE_CKPT}" \
-  --output_latent_dir "${OUTPUT_LATENT_DIR}" \
-  --new_manifest "${NEW_MANIFEST_PATH}" \
-  --drop_failed \
-  --verify
+  --type layout \
+  --config "${AE_CONFIG}" \
+  --ckpt "${AE_CKPT}" \
+  --data_root "/work3/s233249/ImgiNav/datasets" \
+  --output "${OUTPUT_LATENT_DIR}" \
+  --manifest_out "layouts_with_embeddings_fixed.csv" \
+  --batch_size 32 \
+  --format pt \
+  --overwrite
 
 echo "=========================================="
 echo "Completed at: $(date)"
