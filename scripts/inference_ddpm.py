@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Inference script for diffusion experiments.
+DDPM inference script for diffusion experiments.
 
-This script loads a diffusion experiment and generates images from it.
+This script loads a diffusion experiment and generates images using DDPM sampling.
 """
 
 import argparse
@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 import numpy as np
+import time
 
 # Add the project root to the path
 import sys
@@ -139,10 +140,25 @@ def load_checkpoint(model, checkpoint_path: Path, device: str) -> bool:
     return True
 
 
-def generate_image(model, autoencoder, device: str, num_steps: int = 50, method: str = 'ddim') -> Image.Image:
-    """Generate an image using the diffusion model."""
-    import time
+def find_latest_checkpoint(experiment_path: Path) -> Path:
+    """Find the latest checkpoint in the experiment directory."""
+    checkpoint_dir = experiment_path / "checkpoints"
     
+    # Look for common checkpoint patterns
+    patterns = ['unet_latest.pt', 'unet_best.pt', '*.pt']
+    
+    for pattern in patterns:
+        checkpoints = list(checkpoint_dir.glob(pattern))
+        if checkpoints:
+            # Sort by modification time and return the latest
+            checkpoints.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            return checkpoints[0]
+            
+    return None
+
+
+def generate_image(model, autoencoder, device: str, num_steps: int = None) -> Image.Image:
+    """Generate an image using DDPM sampling."""
     model.eval()
     autoencoder.eval()
     
@@ -152,11 +168,11 @@ def generate_image(model, autoencoder, device: str, num_steps: int = 50, method:
             # Time the generation
             start_time = time.time()
             
-            # Generate image using the model's sample method
+            # Generate image using DDPM sampling
             image = model.sample(
                 batch_size=1, 
                 num_steps=num_steps, 
-                method=method.lower(),
+                method='ddpm',
                 device=device,
                 image=True,  # This will automatically decode using the autoencoder
                 verbose=True
@@ -164,7 +180,7 @@ def generate_image(model, autoencoder, device: str, num_steps: int = 50, method:
             
             end_time = time.time()
             generation_time = end_time - start_time
-            print(f"Generation time: {generation_time:.2f} seconds ({generation_time/num_steps:.3f} seconds per step)")
+            print(f"DDPM generation time: {generation_time:.2f} seconds ({generation_time/num_steps:.3f} seconds per step)")
         else:
             raise AttributeError("Model does not support sampling")
         
@@ -184,23 +200,6 @@ def generate_image(model, autoencoder, device: str, num_steps: int = 50, method:
         image_np = (image_np * 255).astype(np.uint8)
         
         return Image.fromarray(image_np)
-
-
-def find_latest_checkpoint(experiment_path: Path) -> Path:
-    """Find the latest checkpoint in the experiment directory."""
-    checkpoint_dir = experiment_path / "checkpoints"
-    
-    # Look for common checkpoint patterns
-    patterns = ['unet_latest.pt', 'unet_best.pt', '*.pt']
-    
-    for pattern in patterns:
-        checkpoints = list(checkpoint_dir.glob(pattern))
-        if checkpoints:
-            # Sort by modification time and return the latest
-            checkpoints.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            return checkpoints[0]
-            
-    return None
 
 
 def load_experiment_and_model(experiment_path: str, checkpoint_path: str = None, device: str = "cpu"):
@@ -261,12 +260,11 @@ def load_experiment_and_model(experiment_path: str, checkpoint_path: str = None,
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate images from diffusion experiments')
+    parser = argparse.ArgumentParser(description='Generate images from diffusion experiments using DDPM')
     parser.add_argument('experiment_path', type=str, help='Path to the diffusion experiment directory')
     parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint file (default: latest checkpoint)')
-    parser.add_argument('--output', type=str, default='generated_image.png', help='Output image path')
+    parser.add_argument('--output', type=str, default='ddpm_generated.png', help='Output image path')
     parser.add_argument('--num_steps', type=int, default=None, help='Number of sampling steps (uses scheduler default if not specified)')
-    parser.add_argument('--method', type=str, default='ddim', choices=['ddim', 'ddpm'], help='Sampling method')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use')
     
     args = parser.parse_args()
@@ -277,7 +275,7 @@ def main():
     
     print(f"Loading experiment from: {experiment_path}")
     
-    # Load experiment and build model using your existing classes
+    # Load experiment and build model
     print("Building diffusion model...")
     model, autoencoder = load_experiment_and_model(
         str(experiment_path), 
@@ -285,46 +283,25 @@ def main():
         args.device
     )
     
-    # Generate images with both methods for comparison
-    print(f"Generating images with both DDIM and DDPM methods...")
-    
-    # Use different step counts for different methods
+    # Use scheduler's default steps if not specified
     if args.num_steps is None:
-        # DDPM uses full training schedule for best quality
-        ddpm_steps = model.scheduler.num_steps
-        # DDIM can use fewer steps (more efficient) - but need enough for quality
-        ddim_steps = min(100, model.scheduler.num_steps)  # More steps for better DDIM quality
-        print(f"Using DDPM steps: {ddpm_steps} (full training schedule)")
-        print(f"Using DDIM steps: {ddim_steps} (efficient sampling)")
+        num_steps = model.scheduler.num_steps
+        print(f"Using scheduler's default steps: {num_steps}")
     else:
-        # If user specifies steps, use the same for both
-        ddpm_steps = args.num_steps
-        ddim_steps = args.num_steps
-        print(f"Using user-specified steps: {args.num_steps}")
+        num_steps = args.num_steps
+        print(f"Using user-specified steps: {num_steps}")
     
-    # Generate DDIM sample
-    print(f"\n=== Generating DDIM sample with {ddim_steps} steps ===")
-    image_ddim = generate_image(model, autoencoder, args.device, ddim_steps, 'ddim')
+    # Generate image
+    print(f"Generating image using DDPM with {num_steps} steps...")
+    image = generate_image(model, autoencoder, args.device, num_steps)
     
-    # Generate DDPM sample  
-    print(f"\n=== Generating DDPM sample with {ddpm_steps} steps ===")
-    image_ddpm = generate_image(model, autoencoder, args.device, ddpm_steps, 'ddpm')
-    
-    # Save images
+    # Save image
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path)
     
-    # Save DDIM image
-    ddim_path = output_path.parent / f"{output_path.stem}_ddim{output_path.suffix}"
-    image_ddim.save(ddim_path)
-    print(f"DDIM image saved to: {ddim_path}")
-    print(f"DDIM image size: {image_ddim.size}")
-    
-    # Save DDPM image
-    ddpm_path = output_path.parent / f"{output_path.stem}_ddpm{output_path.suffix}"
-    image_ddpm.save(ddpm_path)
-    print(f"DDPM image saved to: {ddpm_path}")
-    print(f"DDPM image size: {image_ddpm.size}")
+    print(f"DDPM image saved to: {output_path}")
+    print(f"Image size: {image.size}")
 
 
 if __name__ == "__main__":

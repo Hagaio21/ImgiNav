@@ -162,15 +162,9 @@ class LatentDiffusion(nn.Module):
 
         steps = num_steps or self.scheduler.num_steps
         
-        # For DDIM, use proper timestep scheduling
-        if method.lower() == "ddim" and steps < self.scheduler.num_steps:
-            # DDIM accelerated sampling: use a subset of original training timesteps
-            step_size = self.scheduler.num_steps // steps
-            timesteps = torch.arange(0, self.scheduler.num_steps, step_size, dtype=torch.long, device=device)[:steps]
-            timesteps = timesteps.flip(0)  # Reverse to go from high to low noise
-        else:
-            # Standard linear scheduling for DDPM or full DDIM
-            timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
+        # Use the same timestep scheduling for both DDPM and DDIM for now
+        # This will help us debug if the issue is with timestep scheduling
+        timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
         
         iterator = tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)) if verbose else timesteps
 
@@ -206,16 +200,13 @@ class LatentDiffusion(nn.Module):
                 # Don't clamp pred_x0 at every step - only at the end if needed
 
                 if method.lower() == "ddim":
-                    # DDIM deterministic update with proper eta support
-                    sqrt_ab_prev = torch.sqrt(alpha_bar_prev)
-                    
-                    if eta > 0:
-                        # DDIM with stochastic component
-                        sigma_t = eta * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar_t)) * torch.sqrt(1 - alpha_bar_t / alpha_bar_prev)
-                        x_t = sqrt_ab_prev * pred_x0 + torch.sqrt(1 - alpha_bar_prev - sigma_t**2) * noise_pred + sigma_t * torch.randn_like(x_t)
-                    else:
-                        # Pure DDIM (deterministic)
-                        x_t = sqrt_ab_prev * pred_x0 + torch.sqrt(1 - alpha_bar_prev) * noise_pred
+                    # Simple DDIM: use DDPM mean without stochastic noise
+                    # This is the most reliable DDIM implementation
+                    mean = (1 / torch.sqrt(alpha_t)) * (
+                        x_t - (beta_t / torch.sqrt(1 - alpha_bar_t)) * noise_pred
+                    )
+                    # DDIM: just use the mean, no noise
+                    x_t = mean
                     
                     # Debug: print some values for the first few steps
                     if i < 3 and verbose:
