@@ -1,0 +1,35 @@
+decoder:
+  global_act: relu
+  global_dropout: 0.0
+  global_norm: batch
+  image_size: 64
+  latent_base: 4
+  latent_channels: 2
+  num_classes: 13
+  out_channels: 3
+  use_sigmoid: true
+encoder:
+  global_act: relu
+  global_dropout: 0.0
+  global_norm: batch
+  image_size: 64
+  in_channels: 3
+  latent_base: 4
+  latent_channels: 2
+  layers:
+  - kernel_size: 3
+    out_channels: 16
+    padding: 1
+    stride: 2
+  - kernel_size: 3
+    out_channels: 32
+    padding: 1
+    stride: 2
+  - kernel_size: 3
+    out_channels: 64
+    padding: 1
+    stride: 2
+  - kernel_size: 3
+    out_channels: 128
+    padding: 1
+    stride: 2

@@ -11,7 +11,8 @@ dataset:
   num_workers: 0
   shuffle: true
   taxonomy_path: config/taxonomy.json
-  return_embeddings: true
+  return_embeddings: false
+  image_size: 64
 
 model:
   autoencoder:

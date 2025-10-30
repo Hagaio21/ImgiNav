@@ -123,6 +123,7 @@ class ConvDecoder(nn.Module):
         self.num_classes = num_classes
         self.use_sigmoid = use_sigmoid
 
+        # Calculate the size after encoder downsampling
         start_size = image_size
         for cfg in encoder_layers_cfg:
             start_size //= cfg.get("stride", 1)
@@ -326,7 +327,7 @@ class AutoEncoder(nn.Module):
         return cfg
 
     @classmethod
-    def from_config(cls, cfg: dict | str):
+    def from_config(cls, cfg: dict | str, legacy_mode: bool = False):
         if isinstance(cfg, str):
             with open(cfg, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
@@ -340,7 +341,7 @@ class AutoEncoder(nn.Module):
                 'stride', 'padding', 'num_classes'
             }
             filtered_cfg = {k: v for k, v in cfg.items() if k in valid_keys}
-            return cls.from_shape(**filtered_cfg)
+            return cls.from_shape(**filtered_cfg, legacy_mode=legacy_mode)
         else:
             # New format: separate encoder/decoder sections
             enc_cfg = cfg["encoder"]
@@ -376,7 +377,7 @@ class AutoEncoder(nn.Module):
             model_type = cfg.get("type", "vae").lower()
             deterministic = model_type == "ae"
 
-            return cls(encoder, decoder, deterministic=deterministic, legacy_mode=True)  # Enable legacy mode for old experiments
+            return cls(encoder, decoder, deterministic=deterministic, legacy_mode=legacy_mode)
 
     @classmethod
     def from_shape(cls,
@@ -392,7 +393,8 @@ class AutoEncoder(nn.Module):
                    kernel_size: int = 3,
                    stride: int = 2,
                    padding: int = 1,
-                   num_classes: Optional[int] = None):
+                   num_classes: Optional[int] = None,
+                   legacy_mode: bool = False):
         ratio = image_size // latent_base
         depth = int(torch.log2(torch.tensor(ratio)).item())
         if 2 ** depth != ratio:
@@ -438,4 +440,4 @@ class AutoEncoder(nn.Module):
             num_classes=num_classes,
         )
 
-        return cls(encoder, decoder, deterministic=True, legacy_mode=True)  # Enable legacy mode for old experiments
+        return cls(encoder, decoder, deterministic=True, legacy_mode=legacy_mode)

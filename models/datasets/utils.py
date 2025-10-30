@@ -70,9 +70,18 @@ def build_datasets(dataset_cfg, transform=None):
     split_ratio = dataset_cfg.get("split_ratio", 0.9)
     seed = dataset_cfg.get("seed", 42)
     
-    # Set transform: use provided transform, or ToTensor() unless using embeddings
+    # Set transform: use provided transform, or create default transform
     if transform is None:
-        transform = transforms.ToTensor() if not dataset_cfg.get("return_embeddings", False) else None
+        if dataset_cfg.get("return_embeddings", False):
+            transform = None
+        else:
+            # Create transform with optional resize
+            transform_list = []
+            if "image_size" in dataset_cfg:
+                image_size = dataset_cfg["image_size"]
+                transform_list.append(transforms.Resize((image_size, image_size)))
+            transform_list.append(transforms.ToTensor())
+            transform = transforms.Compose(transform_list)
     
     dataset = LayoutDataset(
         manifest_path=manifest_path,

@@ -1,243 +1,135 @@
-#!/usr/bin/env python3
-"""
-LatentDiffusion training script.
-"""
-
-import argparse
-import os
-import sys
-import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision.utils import save_image
-from pathlib import Path
-
-# Add project root to path
+import os, sys, yaml, random, torch, argparse, pandas as pd
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from models.diffusion import LatentDiffusion
-from models.losses.custom_loss import DiffusionLoss, VGGPerceptualLoss
-from models.datasets import build_dataloaders
-from training.training_utils import (
-    load_config, setup_device, setup_experiment_directories, 
-    save_experiment_config, create_progress_bar, save_model_checkpoint,
-    TrainingLogger
-)
+from torch.utils.data import DataLoader, random_split
+import torchvision.transforms as T
+import torch
+from models.datasets import LayoutDataset, collate_skip_none
+from models.datasets.utils import build_datasets, save_split_csvs, build_dataloaders
+from models.autoencoder import AutoEncoder
+from models.components.unet import DualUNet
+from models.components.scheduler import LinearScheduler, CosineScheduler, QuadraticScheduler
+from training.diffusion_trainer import DiffusionTrainer
 
 
-def build_loss_function(loss_cfg):
-    """Build loss function from config."""
-    loss_type = loss_cfg.get("type", "diffusion").lower()
+# ---------------------------- Dataset ---------------------------- #
+
+
+
+
+
+# ---------------------------- Builders ---------------------------- #
+
+def build_autoencoder(ae_cfg):
+    ae_cfg_path = ae_cfg["config"]
+    ae_ckpt_path = ae_cfg["checkpoint"]
     
-    if loss_type in ("diffusion", "mse", "hybrid"):
-        # Handle VGG loss if specified
-        vgg_loss_fn = None
-        if loss_cfg.get("lambda_vgg", 0) > 0:
-            vgg_loss_fn = VGGPerceptualLoss()
-        
-        return DiffusionLoss(
-            lambda_mse=loss_cfg.get("lambda_mse", 1.0),
-            lambda_vgg=loss_cfg.get("lambda_vgg", 0.0),
-            vgg_loss_fn=vgg_loss_fn,
-        )
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
-
-
-def build_optimizer(model, training_cfg):
-    """Build optimizer from config (only train backbone)."""
-    lr = training_cfg.get("lr", 1e-4)
-    opt_type = training_cfg.get("optimizer", {}).get("type", "adam").lower()
-    weight_decay = training_cfg.get("optimizer", {}).get("weight_decay", 0.0)
+    # Load the full config and extract just the model section
+    with open(ae_cfg_path, "r", encoding="utf-8") as f:
+        full_cfg = yaml.safe_load(f)
+    model_cfg = full_cfg["model"]
     
-    # Only train the backbone (UNet), not the autoencoder
-    params = model.backbone.parameters()
+    ae = AutoEncoder.from_config(model_cfg, legacy_mode=False)
     
-    if opt_type == "adam":
-        return optim.Adam(params, lr=lr, weight_decay=weight_decay)
-    elif opt_type == "adamw":
-        return optim.AdamW(params, lr=lr, weight_decay=weight_decay)
-    else:
-        return optim.Adam(params, lr=lr, weight_decay=weight_decay)
-
-
-def train_epoch(model, train_loader, loss_fn, optimizer, epoch, device, training_logger, training_cfg):
-    """Train for one epoch."""
-    model.train()
-    training_logger.start_epoch(epoch)
+    if ae_ckpt_path and ae_ckpt_path != "null":
+        state = torch.load(ae_ckpt_path, map_location="cpu")
+        ae.load_state_dict(state.get("model", state))
     
-    with create_progress_bar(train_loader, epoch, training_cfg.get("epochs", 10)) as pbar:
-        for batch_idx, batch in enumerate(pbar):
-            # Move batch to device
-            if isinstance(batch, dict):
-                batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-            else:
-                batch = batch.to(device)
-            
-            # Forward pass
-            optimizer.zero_grad()
-            outputs = model(batch)
-            
-            # Compute loss
-            loss_result = loss_fn(outputs)
-            
-            if isinstance(loss_result, tuple):
-                loss = loss_result[0]
-                metrics = loss_result[1] if len(loss_result) > 1 else {}
-            else:
-                loss = loss_result
-                metrics = {}
-            
-            # Backward pass
-            loss.backward()
-            
-            # Gradient clipping if specified
-            if training_cfg.get("grad_clip"):
-                torch.nn.utils.clip_grad_norm_(model.backbone.parameters(), training_cfg["grad_clip"])
-            
-            optimizer.step()
-            
-            # Log batch metrics
-            metrics["loss"] = loss.item()
-            training_logger.log_batch(metrics, batch_idx, "train")
-            
-            # Update progress bar
-            if training_logger.should_log(batch_idx):
-                epoch_metrics = training_logger.get_epoch_metrics("train")
-                pbar.set_postfix_str(training_logger.format_metric_string(epoch_metrics))
-            
-            # Generate samples
-            if training_logger.should_sample(batch_idx):
-                generate_samples(model, device, epoch, batch_idx, training_cfg.get("output_dir", "outputs"))
-    
-    return training_logger.get_epoch_metrics("train")
+    ae.eval()
+    return ae
 
 
-def evaluate(model, val_loader, loss_fn, device, training_logger):
-    """Evaluate model on validation set."""
-    model.eval()
-    training_logger.start_epoch(training_logger.current_epoch)  # Reset for validation
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            # Move batch to device
-            if isinstance(batch, dict):
-                batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-            else:
-                batch = batch.to(device)
-            
-            # Forward pass
-            outputs = model(batch)
-            
-            # Compute loss
-            loss_result = loss_fn(outputs)
-            
-            if isinstance(loss_result, tuple):
-                loss = loss_result[0]
-                metrics = loss_result[1] if len(loss_result) > 1 else {}
-            else:
-                loss = loss_result
-                metrics = {}
-            
-            # Log batch metrics
-            metrics["loss"] = loss.item()
-            training_logger.log_batch(metrics, 0, "val")  # Use 0 as step for validation
-    
-    return training_logger.get_epoch_metrics("val")
+def build_scheduler(sched_cfg):
+    sched_type = sched_cfg.get("type", "cosine").lower()
+    num_steps = sched_cfg.get("num_steps", 1000)
+    if sched_type == "cosine":
+        return CosineScheduler(num_steps=num_steps)
+    if sched_type == "linear":
+        return LinearScheduler(num_steps=num_steps)
+    if sched_type == "quadratic":  # <-- ADD THIS LINE
+        return QuadraticScheduler(num_steps=num_steps)  # <-- AND ADD THIS LINE
+    raise ValueError(f"Unknown scheduler type: {sched_type}")
 
 
-def generate_samples(model, device, epoch, step, output_dir):
-    """Generate sample images using diffusion sampling."""
-    model.eval()
-    with torch.no_grad():
-        # Generate samples using DDIM sampling
-        samples = model.sample(
-            batch_size=4,
-            image=True,  # Return decoded images
-            num_steps=50,  # Fast sampling for training
-            device=device,
-            verbose=False
-        )
-        
-        # Save samples
-        samples_dir = Path(output_dir) / "samples"
-        samples_dir.mkdir(exist_ok=True)
-        
-        # Normalize to [0, 1] if needed
-        if samples.min() < 0:
-            samples = (samples + 1) / 2
-        samples = torch.clamp(samples, 0, 1)
-        
-        save_image(samples, samples_dir / f"epoch_{epoch}_step_{step}.png", nrow=2)
+def build_unet(unet_cfg):
+    return DualUNet.from_config(unet_cfg)
 
+
+# ---------------------------- Main ---------------------------- #
 
 def main():
-    parser = argparse.ArgumentParser(description="Train LatentDiffusion")
-    parser.add_argument("--config", required=True, help="Path to config YAML")
+    parser = argparse.ArgumentParser(description="Run Latent Diffusion Experiment")
+    parser.add_argument("--config", required=True, help="Path to diffusion experiment config YAML")
     args = parser.parse_args()
+
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    # --- Parse experiment ---
+    exp_cfg = cfg.get("experiment", {})
+    exp_name = exp_cfg.get("name", "UnnamedDiffusion")
+    base_path = exp_cfg.get("base_path", "./experiments")
+    exp_path = os.path.join(base_path, exp_name)
+
+    out_dir = os.path.join(exp_path, "output")
+    ckpt_dir = os.path.join(exp_path, "checkpoints")
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(ckpt_dir, exist_ok=True)
     
-    # Load config
-    config = load_config(args.config)
+    # --- Load configs ---
+    dataset_cfg = cfg["dataset"]
+    model_cfg = cfg["model"]
+    training_cfg = cfg["training"]
     
-    # Setup
-    device = setup_device(config.get("dataset", {}).get("seed", 42))
-    output_dir, ckpt_dir = setup_experiment_directories(config)
-    save_experiment_config(config, output_dir)
-    
-    # Build model
-    model = LatentDiffusion.from_config(config, device=device)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Backbone parameters: {sum(p.numel() for p in model.backbone.parameters()):,}")
-    
-    # Build loss function
-    loss_cfg = config["training"].get("loss", {"type": "diffusion"})
-    loss_fn = build_loss_function(loss_cfg)
-    
-    # Build optimizer
-    optimizer = build_optimizer(model, config["training"])
-    
-    # Build dataloaders
-    train_loader, val_loader = build_dataloaders(config["dataset"])
-    
-    # Setup training logger
-    training_cfg = config["training"]
-    training_logger = TrainingLogger(
-        output_dir=output_dir,
-        log_interval=training_cfg.get("log_interval", 10),
-        sample_interval=training_cfg.get("sample_interval", 100),
-        eval_interval=training_cfg.get("eval_interval", 1)
+    loss_cfg = training_cfg.get("loss", {"type": "mse"})
+
+
+    autoencoder = build_autoencoder(model_cfg["autoencoder"])
+    diff_cfg = model_cfg["diffusion"]
+
+    unet_cfg = diff_cfg["unet"]
+    scheduler_cfg = diff_cfg["scheduler"]
+
+    scheduler = build_scheduler(scheduler_cfg)
+    unet = build_unet(unet_cfg)
+
+    # --- Data ---
+    train_ds, val_ds, train_loader, val_loader = build_dataloaders(dataset_cfg)
+    save_split_csvs(train_ds, val_ds, out_dir)
+
+    # --- Trainer ---
+    trainer = DiffusionTrainer(
+        unet=unet,
+        autoencoder=autoencoder,
+        scheduler=scheduler,
+        epochs=training_cfg.get("epochs", 50),
+        log_interval=training_cfg.get("log_interval", 100),
+        eval_interval=training_cfg.get("eval_interval", 1000),
+        sample_interval=training_cfg.get("sample_interval", 2000),
+        num_samples=training_cfg.get("num_samples", 8),
+        grad_clip=training_cfg.get("grad_clip"),
+        use_embeddings=dataset_cfg["return_embeddings"],
+        loss_cfg=loss_cfg,
+        ckpt_dir=ckpt_dir,
+        output_dir=out_dir,
+        experiment_name=exp_name,
     )
-    
-    # Training loop
-    epochs = training_cfg.get("epochs", 10)
-    best_loss = float('inf')
-    
-    print(f"Starting training for {epochs} epochs on {device}")
-    
-    for epoch in range(1, epochs + 1):
-        # Train
-        train_metrics = train_epoch(model, train_loader, loss_fn, optimizer, epoch, device, training_logger, training_cfg)
+
+    if loss_cfg.get("type") == "hybrid" and dataset_cfg["return_embeddings"]:
+        print("\n" + "="*60)
+        print("!! WARNING: 'hybrid' loss is set but 'return_embeddings' is true.")
+        print("   Perceptual (VGG) loss requires original RGB images to work.")
+        print("   VGG LOSS WILL BE SKIPPED. Training will only use MSE loss.")
+        print("   To fix, set 'return_embeddings: false' in your config file.")
+        print("="*60 + "\n")
         
-        # Evaluate
-        val_metrics = None
-        if training_logger.should_validate(epoch) and val_loader is not None:
-            val_metrics = evaluate(model, val_loader, loss_fn, device, training_logger)
-            
-            # Save best model
-            val_loss = val_metrics.get("loss", float('inf'))
-            if val_loss < best_loss:
-                best_loss = val_loss
-                save_model_checkpoint(model.backbone, os.path.join(ckpt_dir, "unet_best.pt"), 
-                                    {"epoch": epoch, "val_loss": val_loss})
-        
-        # Log epoch summary and generate plots
-        training_logger.log_epoch_summary(epoch, train_metrics, val_metrics)
-        
-        # Save latest model
-        save_model_checkpoint(model.backbone, os.path.join(ckpt_dir, "unet_latest.pt"), 
-                            {"epoch": epoch})
-    
-    print("Training complete!")
+    trainer.fit(train_loader, val_loader)
+
+    # --- Save unified experiment YAML ---
+    exp_save_path = os.path.join(out_dir, "experiment_config.yaml")
+    with open(exp_save_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f)
+    print(f"[Config] Saved experiment config to {exp_save_path}")
 
 
 if __name__ == "__main__":
