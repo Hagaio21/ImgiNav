@@ -14,40 +14,25 @@ from PIL import Image
 from pathlib import Path
 from typing import List, Union, Tuple, Dict
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import argparse
 
 # --- Constants from your scripts ---
-# Default height slice
-DEFAULT_HEIGHT_RANGE = (0.1, 1.8) 
+# Default height slice - use much wider range to capture real height variation
+DEFAULT_HEIGHT_RANGE = (-2.0, 5.0) 
 # Default background color
 DEFAULT_BG_COLOR = (240, 240, 240) 
-# "wall" category ID from taxonomy
-WALL_CATEGORY_ID = 2053 
+# "wall" category ID from taxonomy - actually 4003 in the parquet files
+WALL_CATEGORY_ID = 4003 
 
 
 def create_zmap(
     taxonomy_path: Union[str, Path],
     parquet_files: List[Union[str, Path]],
     output_path: Union[str, Path],
-    height_range: Tuple[float, float] = DEFAULT_HEIGHT_RANGE,
     verbose: bool = True
 ):
-    """
-    Analyzes Z distributions for each semantic class from parquet files.
-    
-    Creates a zmap.json mapping semantic layout colors (from taxonomy)
-    to the mean and std of their z-values.
-    
-    This function implements the "super categories + wall" logic.
-    
-    Args:
-        taxonomy_path: Path to your taxonomy.json file.
-        parquet_files: A list of paths to your .parquet point cloud files.
-        output_path: Path to save the resulting zmap.json.
-        height_range: The (min_z, max_z) tuple to filter points, same as your
-                      projection slice.
-        verbose: Print progress.
-    """
     taxonomy_path = Path(taxonomy_path)
     output_path = Path(output_path)
     
@@ -64,6 +49,12 @@ def create_zmap(
     # This dict will store { "semantic_id_str": [z1, z2, ...] }
     z_data_by_id = {str(id_val): [] for id_val in id_to_color.keys()}
     
+    # Also add wall category 2053 to ensure it's included
+    z_data_by_id["2053"] = []
+    
+    # Track min/max heights from actual data (for fallback)
+    all_heights = []
+    
     if verbose:
         print(f"Processing {len(parquet_files)} parquet files...")
         
@@ -73,84 +64,200 @@ def create_zmap(
 
     for file_path in iterator:
         try:
-            # Load the required semantic IDs and z value
-            df = pd.read_parquet(file_path, columns=['z', 'category_id', 'super_id'])
+            # Load the required semantic IDs and y value (y is actually the height/z-axis)
+            df = pd.read_parquet(file_path, columns=['y', 'category_id', 'super_id'])
             
-            # Filter by the same height range used for 2D projection
-            df = df[
-                (df['z'] >= height_range[0]) & (df['z'] <= height_range[1])
-            ]
+            # Collect all heights for min/max calculation (for fallback)
+            # Note: y-axis is actually the vertical height in this coordinate system
+            all_heights.extend(df['y'].tolist())
             
             # --- Apply "super categories + wall" logic ---
+            wall_count = 0
+            total_points = 0
+            unique_cats = set()
+            
             for row in df.itertuples(index=False):
-                z = row.z
+                z = row.y  # y is actually the height/z-axis
                 cat_id = row.category_id
                 super_id = row.super_id
+                total_points += 1
+                unique_cats.add(cat_id)
 
                 semantic_id_str = None
-                if cat_id == WALL_CATEGORY_ID:
-                    semantic_id_str = str(WALL_CATEGORY_ID)
+                if cat_id == 4003:  # 4003 is wall in parquet files
+                    semantic_id_str = "2053"  # Map to 2053 for color lookup
+                    wall_count += 1
+                    # Wall point found
                 else:
                     semantic_id_str = str(super_id)
                 
                 # Store the z-value if the ID is one we have a color for
                 if semantic_id_str in z_data_by_id:
                     z_data_by_id[semantic_id_str].append(z)
-                    
+            
+            if verbose and wall_count > 0:
+                print(f"Found {wall_count} wall points in {file_path}")
+                        
         except Exception as e:
             if verbose:
                 print(f"Warning: Could not process {file_path}. Error: {e}")
 
-    # --- Compute Stats ---
-    if verbose:
-        print("Computing Z-statistics for each class...")
+    # --- Compute Stats --- [MODIFIED SECTION]
+    
+    # Find floor and ceiling height based on the 'wall' category (ID 2053)
+    # Walls define the min/max of the entire scene, handling outliers robustly
+    floor_z_values = z_data_by_id.get("2053")
+
+    if not floor_z_values:
+        if verbose:
+            print("Error: No 'wall' (ID 2053) points found. Cannot determine floor height.")
+            print("Using global min as a fallback, but this may be incorrect.")
+        # Fallback to original (problematic) logic if no wall points exist
+        floor_height = min(all_heights) if all_heights else 0.0
+        scene_max_height = max(all_heights) if all_heights else 5.0
+    else:
+        # Use walls to define scene bounds, handling outliers with percentiles
+        wall_array = np.array(floor_z_values)
+        # Use 1st percentile for floor (robust to outliers) and 99th percentile for ceiling
+        floor_height = float(np.percentile(wall_array, 1))
+        scene_max_height = float(np.percentile(wall_array, 99))
         
+        if verbose:
+            wall_min = float(np.min(wall_array))
+            wall_max = float(np.max(wall_array))
+            print(f"Wall heights: min={wall_min:.2f}, max={wall_max:.2f}")
+            print(f"Using robust floor height (1st percentile of walls): {floor_height:.2f}")
+            print(f"Using robust ceiling height (99th percentile of walls): {scene_max_height:.2f}")
+    
+    # Ensure all heights are within wall-defined bounds
+    # Clip any outliers that go beyond the scene bounds defined by walls
+    scene_min_height = floor_height  # Floor is the minimum reference
+    
     zmap = {}
+    missing_colors = []
     for semantic_id_str, z_list in z_data_by_id.items():
         if not z_list:
+            if verbose:
+                print(f"  Warning: Semantic ID {semantic_id_str} has no data points")
+            continue
+            
+        # Get the corresponding layout color first - skip if no color mapping
+        color_rgb = id_to_color.get(semantic_id_str)
+        if not color_rgb:
+            if verbose:
+                missing_colors.append(semantic_id_str)
             continue
             
         z_array = np.array(z_list)
-        z_mean = float(np.mean(z_array))
-        z_std = float(np.std(z_array))
+        # Clip heights to wall-defined scene bounds (handle outliers)
+        z_array_clipped = np.clip(z_array, scene_min_height, scene_max_height)
         
-        # Get the corresponding layout color
-        color_rgb = id_to_color.get(semantic_id_str)
-        if color_rgb:
-            # Use a "rgb(r,g,b)" string as the key for the JSON
-            color_key = f"rgb({color_rgb[0]},{color_rgb[1]},{color_rgb[2]})"
-            zmap[color_key] = {
-                "mean": z_mean,
-                "std": z_std,
-                "semantic_id": int(semantic_id_str),
-                "samples": len(z_list)
-            }
+        # Make heights relative to floor (floor becomes 0)
+        z_array_relative = z_array_clipped - floor_height
+        
+        # Check for invalid/empty array after processing
+        if len(z_array_relative) == 0:
+            if verbose:
+                print(f"  Warning: Semantic ID {semantic_id_str} has no valid points after processing")
+            continue
+        
+        # Use percentiles instead of min/max to handle outliers robustly
+        # This prevents categories from "exploding" due to a few extreme outliers
+        z_p5 = float(np.percentile(z_array_relative, 5))   # 5th percentile instead of min
+        z_p95 = float(np.percentile(z_array_relative, 95))  # 95th percentile instead of max
+        z_mean = float(np.mean(z_array_relative))
+        z_std = float(np.std(z_array_relative))
+        
+        # Check for NaN or invalid values
+        if np.isnan(z_p5) or np.isnan(z_p95) or np.isnan(z_mean) or np.isnan(z_std):
+            if verbose:
+                print(f"  Warning: Semantic ID {semantic_id_str} produced NaN values (array shape: {z_array_relative.shape})")
+            # Fall back to min/max if percentiles fail
+            z_p5 = float(np.min(z_array_relative))
+            z_p95 = float(np.max(z_array_relative))
+            if np.isnan(z_p5) or np.isnan(z_p95):
+                if verbose:
+                    print(f"  Error: Cannot compute stats for semantic ID {semantic_id_str}, skipping")
+                continue
+        
+        # Clamp min/max to be reasonable relative to mean (within 1.5 std for tighter bounds)
+        # This ensures the range isn't too wide due to outliers
+        # Use 1.5 std for conservative bounds to prevent exploding
+        z_min = max(z_p5, z_mean - 1.5 * z_std)  # At least mean - 1.5*std, but respect 5th percentile
+        z_max = min(z_p95, z_mean + 1.5 * z_std)  # At most mean + 1.5*std, but respect 95th percentile
+        
+        # Additional safeguard: use even tighter bounds if range is still too wide
+        # For categories that span full height, use tighter percentiles
+        if z_max - z_min > 1.0:  # If range > 1.0, it's probably too wide
+            z_p10 = float(np.percentile(z_array_relative, 10))
+            z_p90 = float(np.percentile(z_array_relative, 90))
+            z_min = max(z_p10, z_mean - 1.0 * z_std)
+            z_max = min(z_p90, z_mean + 1.0 * z_std)
+            
+            # Final check: if still too wide, use even tighter bounds
+            if z_max - z_min > 1.0:
+                z_min = max(z_p10, z_mean - 0.75 * z_std)
+                z_max = min(z_p90, z_mean + 0.75 * z_std)
+        
+        # Ensure min <= max
+        if z_min > z_max:
+            z_min, z_max = min(z_p5, z_p95), max(z_p5, z_p95)
+        
+        # Final NaN check
+        if np.isnan(z_min) or np.isnan(z_max) or np.isnan(z_mean) or np.isnan(z_std):
+            if verbose:
+                print(f"  Error: Semantic ID {semantic_id_str} still has NaN values after processing, skipping")
+            continue
+        
+        # Log if outliers were clipped
+        if verbose and len(z_array) > 0:
+            n_clipped = np.sum((z_array < scene_min_height) | (z_array > scene_max_height))
+            original_min = float(np.min(z_array_relative))
+            original_max = float(np.max(z_array_relative))
+            if n_clipped > 0 or abs(original_min - z_min) > 0.01 or abs(original_max - z_max) > 0.01:
+                print(f"  Semantic ID {semantic_id_str}: clipped {n_clipped} outliers, "
+                      f"bounds: [{original_min:.2f}, {original_max:.2f}] -> [{z_min:.2f}, {z_max:.2f}]")
+        
+        # Use a "rgb(r,g,b)" string as the key for the JSON
+        color_key = f"rgb({color_rgb[0]},{color_rgb[1]},{color_rgb[2]})"
+        zmap[color_key] = {
+            "min": z_min,
+            "max": z_max,
+            "mean": z_mean,
+            "std": z_std,
+            "semantic_id": int(semantic_id_str),
+            "samples": len(z_list)
+        }
+    
+    # Report missing color mappings
+    if verbose and missing_colors:
+        print(f"Warning: {len(missing_colors)} semantic IDs have data but no color mapping: {missing_colors}")
 
     # --- Save Z-Map ---
-    if verbose:
-        print(f"Saving z-map with {len(zmap)} classes to {output_path}")
-    from common.utils import write_json
-    write_json(zmap, output_path)
-
-    if verbose:
-        print("Z-Map creation complete.")
+    output_path.parent.mkdir(parents=True, exist_ok=True) # Ensure dir exists
+    with open(output_path, 'w') as f:
+        json.dump(zmap, f, indent=2)
 
 
 def lift_layout(
     layout_path: Union[str, Path],
     zmap_path: Union[str, Path],
     bg_color: Tuple[int, int, int] = DEFAULT_BG_COLOR,
-    point_density: float = 1.0
+    point_density: float = 1.0,
+    height_samples: int = 5
 ) -> np.ndarray:
     """
-    Lifts a 2D segmented layout PNG to a 3D point cloud using a z-map.
-    (This function is unchanged, as it was already correct)
+    Lifts a 2D segmented layout PNG to a 3D extruded point cloud using a z-map.
+    
+    Creates an extruded volume by sampling multiple heights per pixel along
+    the min-max height range from the z-map statistics.
     
     Args:
         layout_path: Path to the layout.png to lift.
         zmap_path: Path to the zmap.json created by create_zmap.
         bg_color: The RGB tuple of the background color to ignore.
         point_density: Fraction of pixels to sample (1.0 = all, 0.5 = 50%).
+        height_samples: Number of height samples per pixel to create extrusion (default: 5).
     
     Returns:
         A NumPy array of shape (N, 6) with columns [x, y, z, r, g, b].
@@ -185,7 +292,7 @@ def lift_layout(
 
     lifted_points = []
     
-    # 5. Iterate through pixels and "lift" them
+    # 5. Create EXTRUDED point clouds by sampling multiple heights per pixel
     for y, x in zip(fg_coords_y, fg_coords_x):
         # Get pixel color
         r, g, b = layout_np[y, x]
@@ -195,20 +302,113 @@ def lift_layout(
         stats = zmap.get(color_key)
         
         if stats:
-            # Sample Z value from the learned distribution
-            z_mean = stats["mean"]
-            z_std = stats["std"]
-            # Set a minimum std deviation to avoid all points landing on one plane
-            z_std = max(z_std, 0.01) 
-            z_world = np.random.normal(z_mean, z_std)
+            # COORDINATE SCALING for better 3D visualization
+            coord_scale = 0.1  # Scale down coordinates
             
             # We reverse the Y-axis flip from stage3
-            x_world = x
-            y_world = (H - 1) - y 
+            x_world = x * coord_scale
+            y_world = ((H - 1) - y) * coord_scale
             
-            lifted_points.append([x_world, y_world, z_world, r, g, b])
+            # Create extrusion by randomly sampling heights from the distribution
+            z_min = stats["min"]
+            z_max = stats["max"]
+            z_mean = stats["mean"]
+            z_std = stats.get("std", 0.1)  # Use std if available, otherwise small default
+            
+            # Safety clamp: Ensure bounds are reasonable relative to mean
+            # This prevents "exploding" even if zmap has extreme outliers
+            # Use tighter bounds: mean ± 1.5*std, but respect the provided min/max
+            safe_min = max(z_min, z_mean - 1.5 * z_std)
+            safe_max = min(z_max, z_mean + 1.5 * z_std)
+            
+            # If the range is still too wide, use even tighter bounds
+            if safe_max - safe_min > 1.0:  # If range > 1.0, it's probably too wide
+                safe_min = max(z_min, z_mean - 1.0 * z_std)
+                safe_max = min(z_max, z_mean + 1.0 * z_std)
+            
+            # Ensure safe bounds are valid
+            if safe_max <= safe_min:
+                safe_min, safe_max = z_min, z_max
+            
+            # Sample heights randomly to create actual point cloud (not layers)
+            # Use normal distribution centered at mean with std, clamped to safe range
+            if safe_max > safe_min:
+                # Sample from normal distribution to match the actual distribution
+                # Clamp to safe bounds to prevent exploding
+                heights = np.random.normal(z_mean, z_std, height_samples)
+                heights = np.clip(heights, safe_min, safe_max)
+            else:
+                # If min == max (flat surface), use that single value
+                heights = np.full(height_samples, z_mean)
+            
+            # Create a point for each height sample to create the extrusion
+            for height in heights:
+                lifted_points.append([x_world, y_world, height, r, g, b])
 
     return np.array(lifted_points, dtype=np.float64)
+
+
+def load_ply_as_points(ply_path: Union[str, Path]) -> np.ndarray:
+    """Load a PLY file and return as numpy array of points [x,y,z,r,g,b]."""
+    points = []
+    with open(ply_path, 'r') as f:
+        lines = f.readlines()
+    
+    # Find the start of vertex data
+    vertex_start = None
+    vertex_count = 0
+    for i, line in enumerate(lines):
+        if line.startswith('element vertex'):
+            vertex_count = int(line.split()[-1])
+        elif line.startswith('end_header'):
+            vertex_start = i + 1
+            break
+    
+    if vertex_start is None:
+        raise ValueError("Could not find vertex data in PLY file")
+    
+    # Read vertex data
+    for i in range(vertex_start, vertex_start + vertex_count):
+        parts = lines[i].strip().split()
+        if len(parts) >= 6:
+            x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+            r, g, b = int(parts[3]), int(parts[4]), int(parts[5])
+            points.append([x, y, z, r, g, b])
+    
+    return np.array(points, dtype=np.float64)
+
+
+def plot_point_cloud_3d(points: np.ndarray, title: str = "3D Point Cloud"):
+    """Plot the 3D point cloud using matplotlib."""
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Extract coordinates and colors
+    x = points[:, 0]
+    y = points[:, 1] 
+    z = points[:, 2]
+    colors = points[:, 3:6] / 255.0  # Normalize RGB to [0,1]
+    
+    # Plot points with their colors
+    ax.scatter(x, y, z, c=colors, s=1, alpha=0.6)
+    
+    # Set labels and title
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.set_title(title)
+    
+    # Set equal aspect ratio
+    max_range = np.array([x.max()-x.min(), y.max()-y.min(), z.max()-z.min()]).max() / 2.0
+    mid_x = (x.max()+x.min()) * 0.5
+    mid_y = (y.max()+y.min()) * 0.5
+    mid_z = (z.max()+z.min()) * 0.5
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_y - max_range, mid_y + max_range)
+    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    
+    plt.tight_layout()
+    plt.show()
 
 
 def save_point_cloud_as_ply(
@@ -224,21 +424,22 @@ def save_point_cloud_as_ply(
         output_ply_path: Path to save the .ply file.
     """
     output_ply_path = Path(output_ply_path)
+    output_ply_path.parent.mkdir(parents=True, exist_ok=True) # Ensure dir exists
     num_points = points.shape[0]
     
     # Create the PLY header
     header = f"""ply
-format ascii 1.0
-element vertex {num_points}
-property float x
-property float y
-property float z
-property uchar red
-property uchar green
-property uchar blue
-end_header
-"""
-    
+                format ascii 1.0
+                element vertex {num_points}
+                property float x
+                property float y
+                property float z
+                property uchar red
+                property uchar green
+                property uchar blue
+                end_header
+                """
+                    
     # Format the data
     data = np.zeros((num_points, 6))
     data[:, :3] = points[:, :3] # x, y, z
@@ -272,19 +473,17 @@ if __name__ == "__main__":
     parser_map.add_argument(
         "--output", required=True, help="Path to save the zmap.json"
     )
-    parser_map.add_argument(
-        "--hmin", type=float, default=DEFAULT_HEIGHT_RANGE[0], 
-        help="Minimum Z height to analyze"
-    )
-    parser_map.add_argument(
-        "--hmax", type=float, default=DEFAULT_HEIGHT_RANGE[1], 
-        help="Maximum Z height to analyze"
-    )
 
     # --- lift-layout command ---
     parser_lift = subparsers.add_parser(
         "lift-layout", 
         help="Lift a 2D layout.png to a 3D .ply point cloud."
+    )
+    
+    # --- plot-3d command ---
+    parser_plot = subparsers.add_parser(
+        "plot-3d",
+        help="Plot a 3D point cloud from a .ply file"
     )
     parser_lift.add_argument(
         "--layout", required=True, help="Path to the 2D layout.png"
@@ -298,6 +497,17 @@ if __name__ == "__main__":
     parser_lift.add_argument(
         "--density", type=float, default=1.0, 
         help="Point density (1.0 = all pixels, 0.5 = 50% random sample)"
+    )
+    parser_lift.add_argument(
+        "--height-samples", type=int, default=5,
+        help="Number of height samples per pixel for extrusion (default: 5)"
+    )
+    
+    parser_plot.add_argument(
+        "--ply", required=True, help="Path to the .ply file to plot"
+    )
+    parser_plot.add_argument(
+        "--title", default="3D Point Cloud", help="Title for the plot"
     )
 
     args = parser.parse_args()
@@ -318,8 +528,7 @@ if __name__ == "__main__":
         create_zmap(
             taxonomy_path=args.taxonomy,
             parquet_files=parquet_files,
-            output_path=args.output,
-            height_range=(args.hmin, args.hmax)
+            output_path=args.output
         )
 
     elif args.command == "lift-layout":
@@ -327,7 +536,8 @@ if __name__ == "__main__":
         lifted_points = lift_layout(
             layout_path=args.layout,
             zmap_path=args.zmap,
-            point_density=args.density
+            point_density=args.density,
+            height_samples=args.height_samples
         )
         
         if lifted_points.shape[0] > 0:
@@ -337,3 +547,10 @@ if __name__ == "__main__":
             )
         else:
             print("No points were generated. Output .ply file not saved.")
+
+    elif args.command == "plot-3d":
+        print(f"Loading point cloud from {args.ply}...")
+        # Load PLY file and convert to numpy array
+        points = load_ply_as_points(args.ply)
+        print(f"Loaded {len(points)} points")
+        plot_point_cloud_3d(points, args.title)

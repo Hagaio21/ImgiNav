@@ -104,7 +104,6 @@ class LatentDiffusion(nn.Module):
         # Optionally compute pred_x0 for visualization/metrics
         alpha_bar_t = self.scheduler.alpha_bars[timesteps].view(-1, 1, 1, 1)
         pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * pred_noise) / torch.sqrt(alpha_bar_t)
-        pred_x0 = torch.clamp(pred_x0, -3, 3)
         
         return {
             "pred_noise": pred_noise,
@@ -214,8 +213,9 @@ class LatentDiffusion(nn.Module):
             # --- REMOVED old alpha_bar_prev calculation ---
 
             # predict x0
-            pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
-            
+            sqrt_alpha_bar_t_clamped = torch.sqrt(torch.clamp(alpha_bar_t, min=1e-8))
+            pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / sqrt_alpha_bar_t_clamped            
+            pred_x0 = torch.clamp(pred_x0, -3.0, 3.0)
             # --- START: MODIFIED DDIM/DDPM BLOCKS ---
             if method.lower() == "ddim":
                 
@@ -240,14 +240,15 @@ class LatentDiffusion(nn.Module):
                     sigma_t = torch.sqrt(sigma_t_sq)
 
                     # 3. Coefficient for "direction to x_t" (noise_pred)
-                    pred_dir_coeff = torch.sqrt(1 - alpha_bar_prev - sigma_t_sq)
-                    pred_dir_coeff = torch.clamp(pred_dir_coeff, min=0.0) # Ensure non-negative
+                    variance_term = 1 - alpha_bar_prev - sigma_t_sq
+                    pred_dir_coeff = torch.sqrt(torch.clamp(variance_term, min=0.0)) # Ensure non-negative
                     pred_dir_xt = pred_dir_coeff * noise_pred # This is the "direction" component
 
                     # 4. Stochastic noise
                     noise = torch.randn_like(x_t) if eta > 0 else torch.zeros_like(x_t)
                     
                     x_t = pred_x0_coeff + pred_dir_xt + sigma_t * noise
+                    
             
             else:
                 # --- Corrected DDPM stochastic update ---
@@ -274,7 +275,8 @@ class LatentDiffusion(nn.Module):
             assert self.autoencoder is not None, "AutoEncoder required for image decoding"
             if verbose:
                 print("Decoding...")
-            rgb_out, _ = self.autoencoder.decoder(x_t)
+            # Use decode method with from_latent=True (consistent with training code)
+            rgb_out, _ = self.autoencoder.decode(x_t, from_latent=True)
             x_t = rgb_out
 
         if return_latents or return_full_history:
