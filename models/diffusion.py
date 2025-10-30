@@ -135,7 +135,7 @@ class LatentDiffusion(nn.Module):
         return_latents: bool = False,
         return_full_history: bool = False,
         method: str = "ddpm",
-        eta: float = 0.0,
+        eta: float = 0.0, # This will now be used for DDIM
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         guidance_scale: float = 1.0,
         uncond_cond: Optional[torch.Tensor] = None,
@@ -162,11 +162,30 @@ class LatentDiffusion(nn.Module):
 
         steps = num_steps or self.scheduler.num_steps
         
-        # Use the same timestep scheduling for both DDPM and DDIM for now
-        # This will help us debug if the issue is with timestep scheduling
-        timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
+        if method.lower() == "ddim" and steps <= self.scheduler.num_steps:
+            # --- CORRECTED DDIM TIMESTEP GENERATION ---
+            # We need a sequence of [T-1, ..., 0] to subsample from
+            original_timesteps = torch.arange(self.scheduler.num_steps - 1, -1, -1, dtype=torch.long, device=device)
+            
+            # Create a uniform subsampling of the original timesteps
+            # Example: 1000 steps -> 50 steps: [999, 979, 959, ..., 19, 0]
+            if steps < self.scheduler.num_steps:
+                indices = torch.linspace(0, self.scheduler.num_steps - 1, steps, dtype=torch.long, device=device)
+                timesteps = original_timesteps[indices]
+            else:
+                timesteps = original_timesteps
+            
+            # Add a -1 tensor to the end to signify the last step
+            timesteps = torch.cat([timesteps, torch.tensor([-1], device=device, dtype=torch.long)])
+            # Now timesteps are [t_i, t_{i-1}, ..., t_0, -1]
+        else:
+            # Use linear spacing for DDPM
+            timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
+            # Add a -1 tensor to the end
+            timesteps = torch.cat([timesteps, torch.tensor([-1], device=device, dtype=torch.long)])
+
         
-        iterator = tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)) if verbose else timesteps
+        iterator = tqdm(timesteps[:-1], desc="Diffusion sampling", total=len(timesteps) - 1) if verbose else timesteps[:-1]
 
         noise_history, latents_history = [], []
 
@@ -175,6 +194,13 @@ class LatentDiffusion(nn.Module):
 
         for i, t in enumerate(iterator):
             t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
+            
+            # --- Get prev timestep ---
+            # t is the current timestep (e.g., t_i)
+            # We need the previous timestep (e.g., t_{i-1})
+            t_prev_val = timesteps[i+1].item()
+            t_prev_batch = torch.full((batch_size,), t_prev_val, device=device, dtype=torch.long)
+            # --------------------------
 
             # guidance
             if guidance_scale == 1.0 or uncond_cond is None:
@@ -187,42 +213,66 @@ class LatentDiffusion(nn.Module):
             if return_full_history:
                 noise_history.append(noise_pred.clone())
 
-            # Fix tensor indexing - use proper broadcasting
+            # --- Get scheduler params for t ---
             alpha_t = self.scheduler.alphas[t_batch].view(-1, 1, 1, 1)
             alpha_bar_t = self.scheduler.alpha_bars[t_batch].view(-1, 1, 1, 1)
             beta_t = self.scheduler.betas[t_batch].view(-1, 1, 1, 1)
+            
+            # --- REMOVED old alpha_bar_prev calculation ---
 
-            if t > 0:
-                alpha_bar_prev = self.scheduler.alpha_bars[t_batch - 1].view(-1, 1, 1, 1)
-
-                # predict x0
-                pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
-                # Don't clamp pred_x0 at every step - only at the end if needed
-
-                if method.lower() == "ddim":
-                    # Simple DDIM: use DDPM mean without stochastic noise
-                    # This is the most reliable DDIM implementation
-                    mean = (1 / torch.sqrt(alpha_t)) * (
-                        x_t - (beta_t / torch.sqrt(1 - alpha_bar_t)) * noise_pred
-                    )
-                    # DDIM: just use the mean, no noise
-                    x_t = mean
-                    
-                    # Debug: print some values for the first few steps
-                    if i < 3 and verbose:
-                        print(f"DDIM step {i}: t={t.item()}, pred_x0_mean={pred_x0.mean().item():.4f}, noise_pred_mean={noise_pred.mean().item():.4f}, x_t_mean={x_t.mean().item():.4f}")
+            # predict x0
+            pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+            
+            # --- START: MODIFIED DDIM/DDPM BLOCKS ---
+            if method.lower() == "ddim":
+                
+                if t_prev_val < 0:
+                    # This is the last step (t_prev = -1)
+                    x_t = pred_x0
                 else:
-                    # Corrected DDPM stochastic update
+                    # --- Get alpha_bar_prev using the CORRECT t_prev_batch ---
+                    alpha_bar_prev = self.scheduler.alpha_bars[t_prev_batch].view(-1, 1, 1, 1)
+                    
+                    # --- Full DDIM update (with eta) ---
+                    # 1. Coefficient for pred_x0
+                    pred_x0_coeff = torch.sqrt(alpha_bar_prev) * pred_x0
+                    
+                    # 2. Calculate sigma_t
+                    # sigma_t^2 = eta^2 * (1 - alpha_bar_prev) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_prev)
+                    ratio = alpha_bar_t / alpha_bar_prev
+                    variance = (1 - alpha_bar_prev) / (1 - alpha_bar_t) * (1 - ratio)
+                    
+                    # Clamp variance to avoid numerical instability
+                    sigma_t_sq = torch.clamp(eta**2 * variance, min=0.0)
+                    sigma_t = torch.sqrt(sigma_t_sq)
+
+                    # 3. Coefficient for "direction to x_t" (noise_pred)
+                    pred_dir_coeff = torch.sqrt(1 - alpha_bar_prev - sigma_t_sq)
+                    pred_dir_coeff = torch.clamp(pred_dir_coeff, min=0.0) # Ensure non-negative
+                    pred_dir_xt = pred_dir_coeff * noise_pred # This is the "direction" component
+
+                    # 4. Stochastic noise
+                    noise = torch.randn_like(x_t) if eta > 0 else torch.zeros_like(x_t)
+                    
+                    x_t = pred_x0_coeff + pred_dir_xt + sigma_t * noise
+            
+            else:
+                # --- Corrected DDPM stochastic update ---
+                
+                if t_prev_val < 0:
+                    # Last step
+                    x_t = pred_x0
+                else:
+                    # --- Get alpha_bar_prev using t-1 (which is t_prev_val for DDPM) ---
+                    alpha_bar_prev = self.scheduler.alpha_bars[t_prev_batch].view(-1, 1, 1, 1)
+                
                     mean = (1 / torch.sqrt(alpha_t)) * (
                         x_t - (beta_t / torch.sqrt(1 - alpha_bar_t)) * noise_pred
                     )
                     variance = beta_t * (1 - alpha_bar_prev) / (1 - alpha_bar_t)
                     noise = torch.randn_like(x_t)
                     x_t = mean + torch.sqrt(variance) * noise
-
-            else:
-                # final denoising step
-                x_t = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
+            # --- END: MODIFIED DDIM/DDPM BLOCKS ---
 
             if return_full_history:
                 latents_history.append(x_t.clone())
@@ -238,7 +288,7 @@ class LatentDiffusion(nn.Module):
             return x_t, history
 
         return x_t
-
+        
     @torch.no_grad()
     def training_sample(self, batch_size: int = 8, cond: Optional[torch.Tensor] = None, 
                        device=None, num_steps: Optional[int] = None):
