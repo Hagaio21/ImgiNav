@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from common.taxonomy import Taxonomy
 
-from .utils import load_image, load_embedding, load_graph_text, valid_path, compute_sample_weights, load_data_with_embedding_fallback
+from .utils import load_embedding, load_graph_text, compute_sample_weights, load_data_with_embedding_fallback
 
 # ---------- Layout Dataset ----------
 
@@ -112,7 +112,10 @@ class LayoutDataset(Dataset):
                 layout = load_embedding(path)
             else:
                 path = row["layout_path"]
-                layout_rgb = load_image(path, self.transform)
+                img = Image.open(path).convert("RGB")
+                if self.transform:
+                    img = self.transform(img)
+                layout_rgb = img
                 if self.one_hot and self.COLOR_TO_CLASS is not None:
                     layout = self.rgb_to_class_index(layout_rgb)
                 else:
@@ -273,13 +276,13 @@ class UnifiedLayoutDataset(Dataset):
         
         # Filter out samples with invalid required paths
         valid_mask = (
-            df["graph_text"].apply(valid_path) &
-            df["layout_image"].apply(valid_path)
+            df["graph_text"].apply(lambda x: isinstance(x, str) and str(x).strip().lower() not in {"", "false", "0", "none"}) &
+            df["layout_image"].apply(lambda x: isinstance(x, str) and str(x).strip().lower() not in {"", "false", "0", "none"})
         )
         
         # For embeddings mode, also check embedding paths
         if use_embeddings:
-            valid_mask = valid_mask & df["layout_embedding"].apply(valid_path)
+            valid_mask = valid_mask & df["layout_embedding"].apply(lambda x: isinstance(x, str) and str(x).strip().lower() not in {"", "false", "0", "none"})
         
         df = df[valid_mask].reset_index(drop=True)
         

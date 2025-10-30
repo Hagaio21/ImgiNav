@@ -10,7 +10,7 @@ from pathlib import Path
 
 from common.utils import safe_mkdir
 from models.autoencoder import AutoEncoder
-from models.datasets.utils import load_image
+from PIL import Image
 from training.utils import validate_embedding_shape
 
 
@@ -67,7 +67,8 @@ def main(args):
             
             try:
                 # Load and encode
-                img = load_image(layout_path, transform=transforms.ToTensor()).unsqueeze(0).to(device)
+                img = Image.open(layout_path).convert("RGB")
+                img = transforms.ToTensor()(img).unsqueeze(0).to(device)
                 
                 with torch.no_grad():
                     z = ae.encode_latent(img, deterministic=True)  # Use deterministic encoding

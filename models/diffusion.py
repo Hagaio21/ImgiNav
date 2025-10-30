@@ -16,12 +16,6 @@ class DiffusionBackbone(nn.Module):
         raise NotImplementedError
 
 
-class LatentDecoder(nn.Module):
-    """Abstract interface for latent-to-image decoders."""
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
-
-
 # -----------------------------
 #   Latent Diffusion Wrapper
 # -----------------------------
@@ -32,7 +26,7 @@ class LatentDiffusion(nn.Module):
         self,
         backbone: DiffusionBackbone,
         scheduler,
-        autoencoder: Optional[LatentDecoder] = None,
+        autoencoder: Optional[nn.Module] = None,
         latent_shape: Optional[Tuple[int, int, int]] = None,
     ):
         super().__init__()
@@ -140,8 +134,7 @@ class LatentDiffusion(nn.Module):
         guidance_scale: float = 1.0,
         uncond_cond: Optional[torch.Tensor] = None,
         start_noise: Optional[torch.Tensor] = None,
-        verbose: bool = True,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, dict]]:
+        verbose: bool = True,) -> Union[torch.Tensor, Tuple[torch.Tensor, dict]]:
 
         assert self.latent_shape is not None, "latent_shape must be set"
 
@@ -281,7 +274,8 @@ class LatentDiffusion(nn.Module):
             assert self.autoencoder is not None, "AutoEncoder required for image decoding"
             if verbose:
                 print("Decoding...")
-            x_t = self.autoencoder.decode_latent(x_t)
+            rgb_out, _ = self.autoencoder.decoder(x_t)
+            x_t = rgb_out
 
         if return_latents or return_full_history:
             history = {"latents": latents_history, "noise": noise_history}
@@ -289,24 +283,6 @@ class LatentDiffusion(nn.Module):
 
         return x_t
         
-    @torch.no_grad()
-    def training_sample(self, batch_size: int = 8, cond: Optional[torch.Tensor] = None, 
-                       device=None, num_steps: Optional[int] = None):
-
-        if device is None:
-            device = next(self.backbone.parameters()).device
-        
-        # Generate samples using the inference sample() method
-        samples = self.sample(
-            batch_size=batch_size,
-            image=True,  # Decode to images
-            cond=cond,
-            num_steps=num_steps,
-            device=device,
-            verbose=False,
-        )
-        return samples
-
     # -------------------------
     #   Save / Load Configs
     # -------------------------

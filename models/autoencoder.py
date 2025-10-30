@@ -221,7 +221,6 @@ class AutoEncoder(nn.Module):
         return {"recon": rgb_out, "seg_logits": seg_logits, "mu": mu, "logvar": logvar, "input": x}
 
 
-
     def decode(self, x, from_latent: bool = False):
         """
         Decode either directly from latent space or from an input image.
@@ -245,21 +244,14 @@ class AutoEncoder(nn.Module):
             return rgb_out
         return rgb_out, seg_logits
 
-    @torch.no_grad()
-    def decode_latent(self, z):
-        rgb_out, _ = self.decoder(z)
-        return rgb_out
-
 
     @torch.no_grad()
     def sample(self, z):
-        self.eval()
         rgb_out, seg_logits = self.decoder(z)
         return rgb_out, seg_logits
 
     @torch.no_grad()
     def encode(self, x):
-        self.eval()
         mu, logvar = self.encoder(x)
         # Backward compatibility: return just mu for old experiments
         if self.legacy_mode:
@@ -268,32 +260,8 @@ class AutoEncoder(nn.Module):
 
     @torch.no_grad()
     def encode_latent(self, x, deterministic: bool = True):
-        self.eval()
         mu, logvar = self.encoder(x)
         return mu if deterministic else self.reparameterize(mu, logvar)
-
-    @torch.no_grad()
-    def training_sample(self, batch_size: int = 4, device=None):
-        """
-        Generate samples for training visualization.
-        Samples random latents from the prior distribution.
-        Args:
-            batch_size: Number of samples to generate
-            device: Device to generate on (uses model's device if None)
-        Returns:
-            Tensor of generated images (B, C, H, W)
-        """
-        self.eval()
-        if device is None:
-            device = next(self.parameters()).device
-        
-        # Sample from prior (standard normal)
-        latent_dim = self.encoder.latent_channels
-        latent_base = self.encoder.latent_base
-        z = torch.randn(batch_size, latent_dim, latent_base, latent_base, device=device)
-        
-        rgb_out, _ = self.decoder(z)
-        return rgb_out
 
     def to_config(self):
         """Return YAML-compatible config that fully reproduces architecture."""

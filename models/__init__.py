@@ -1,6 +1,6 @@
 # Main models package
 from .autoencoder import AutoEncoder, ConvEncoder, ConvDecoder
-from .diffusion import LatentDiffusion, DiffusionBackbone, LatentDecoder
+from .diffusion import LatentDiffusion, DiffusionBackbone
 
 # Components
 from .components.blocks import TimeEmbedding, ResidualBlock, DownBlock, UpBlock
@@ -21,14 +21,14 @@ from .datasets.datasets import (
     LayoutDataset, PovDataset, GraphDataset, UnifiedLayoutDataset, make_dataloaders
 )
 from .datasets.utils import (
-    load_image, load_embedding, load_graph_text, valid_path, compute_sample_weights
+    load_embedding, load_graph_text, compute_sample_weights
 )
 from .datasets.collate import collate_skip_none, collate_fn
 
 __all__ = [
     # Main models
     'AutoEncoder', 'ConvEncoder', 'ConvDecoder',
-    'LatentDiffusion', 'DiffusionBackbone', 'LatentDecoder',
+    'LatentDiffusion', 'DiffusionBackbone',
     
     # Components
     'TimeEmbedding', 'ResidualBlock', 'DownBlock', 'UpBlock',
@@ -42,6 +42,6 @@ __all__ = [
     
     # Datasets
     'LayoutDataset', 'PovDataset', 'GraphDataset', 'UnifiedLayoutDataset', 'make_dataloaders',
-    'load_image', 'load_embedding', 'load_graph_text', 'valid_path', 'compute_sample_weights',
+    'load_embedding', 'load_graph_text', 'compute_sample_weights',
     'collate_skip_none', 'collate_fn',
 ]

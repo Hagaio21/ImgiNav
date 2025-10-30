@@ -6,12 +6,6 @@ from PIL import Image
 import numpy as np
 from torchvision import transforms
 
-def load_image(path, transform=None):
-    """Load and optionally transform an image."""
-    img = Image.open(path).convert("RGB")
-    if transform:
-        img = transform(img)
-    return img
 
 def load_embedding(path):
     """Load embedding from .pt, .pth, or .npy file."""
@@ -40,10 +34,6 @@ def load_graph_text(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read().strip()
 
-def valid_path(x):
-    """Check if a path string is valid (not empty, not placeholder)."""
-    invalid = {"", "false", "0", "none"}
-    return isinstance(x, str) and str(x).strip().lower() not in invalid
 
 def load_data_with_embedding_fallback(row, embedding_key, raw_key, transform=None, device=None, use_embeddings=False):
 
@@ -53,7 +43,7 @@ def load_data_with_embedding_fallback(row, embedding_key, raw_key, transform=Non
             raise KeyError(f"Embedding key '{embedding_key}' not found in row when use_embeddings=True")
         
         embedding_path = row[embedding_key]
-        if not valid_path(embedding_path):
+        if not (isinstance(embedding_path, str) and str(embedding_path).strip().lower() not in {"", "false", "0", "none"}):
             raise ValueError(f"Invalid embedding path '{embedding_path}' when use_embeddings=True")
         
         data = load_embedding(embedding_path)
@@ -64,14 +54,17 @@ def load_data_with_embedding_fallback(row, embedding_key, raw_key, transform=Non
     # When use_embeddings=False, load raw data
     if raw_key in row:
         raw_path = row[raw_key]
-        if valid_path(raw_path):
+        if isinstance(raw_path, str) and str(raw_path).strip().lower() not in {"", "false", "0", "none"}:
             if raw_path.endswith(('.txt', '.json')):
                 # Text data
                 with open(raw_path, "r", encoding="utf-8") as f:
                     return f.read().strip()
             else:
                 # Image data
-                return load_image(raw_path, transform=transform)
+                img = Image.open(raw_path).convert("RGB")
+                if transform:
+                    img = transform(img)
+                return img
     
     return None
 
