@@ -21,6 +21,7 @@ env/
 
 # Ignore large data and output files from version control
 test_dataset/
+experiments/
 dataset/
 dataset_v2/
 data_preprocessing/

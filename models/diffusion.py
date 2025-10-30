@@ -26,12 +26,7 @@ class LatentDecoder(nn.Module):
 #   Latent Diffusion Wrapper
 # -----------------------------
 class LatentDiffusion(nn.Module):
-    """
-    Latent diffusion wrapper for inference and sampling.
 
-    Compatible with any backbone (UNet, Transformer, etc.)
-    and any autoencoder-style decoder.
-    """
 
     def __init__(
         self,
@@ -166,7 +161,17 @@ class LatentDiffusion(nn.Module):
             x_t = start_noise.to(device)
 
         steps = num_steps or self.scheduler.num_steps
-        timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
+        
+        # For DDIM, use proper timestep scheduling
+        if method.lower() == "ddim" and steps < self.scheduler.num_steps:
+            # DDIM accelerated sampling: use a subset of original training timesteps
+            step_size = self.scheduler.num_steps // steps
+            timesteps = torch.arange(0, self.scheduler.num_steps, step_size, dtype=torch.long, device=device)[:steps]
+            timesteps = timesteps.flip(0)  # Reverse to go from high to low noise
+        else:
+            # Standard linear scheduling for DDPM or full DDIM
+            timesteps = torch.linspace(steps - 1, 0, steps, dtype=torch.long, device=device)
+        
         iterator = tqdm(timesteps, desc="Diffusion sampling", total=len(timesteps)) if verbose else timesteps
 
         noise_history, latents_history = [], []
@@ -174,7 +179,7 @@ class LatentDiffusion(nn.Module):
         if verbose:
             print(f"Sampling method: {method.upper()} ({steps} steps)")
 
-        for t in iterator:
+        for i, t in enumerate(iterator):
             t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
 
             # guidance
@@ -188,30 +193,39 @@ class LatentDiffusion(nn.Module):
             if return_full_history:
                 noise_history.append(noise_pred.clone())
 
-            alpha_t = self.scheduler.alphas[t]
-            alpha_bar_t = self.scheduler.alpha_bars[t]
-            beta_t = self.scheduler.betas[t]
+            # Fix tensor indexing - use proper broadcasting
+            alpha_t = self.scheduler.alphas[t_batch].view(-1, 1, 1, 1)
+            alpha_bar_t = self.scheduler.alpha_bars[t_batch].view(-1, 1, 1, 1)
+            beta_t = self.scheduler.betas[t_batch].view(-1, 1, 1, 1)
 
             if t > 0:
-                alpha_bar_prev = self.scheduler.alpha_bars[t - 1]
+                alpha_bar_prev = self.scheduler.alpha_bars[t_batch - 1].view(-1, 1, 1, 1)
 
                 # predict x0
                 pred_x0 = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t)
-                pred_x0 = torch.clamp(pred_x0, -3, 3)
+                # Don't clamp pred_x0 at every step - only at the end if needed
 
                 if method.lower() == "ddim":
-                    # deterministic DDIM update
+                    # DDIM deterministic update with proper eta support
                     sqrt_ab_prev = torch.sqrt(alpha_bar_prev)
-                    sqrt_ab_t = torch.sqrt(alpha_bar_t)
-                    x_t = sqrt_ab_prev * pred_x0 + torch.sqrt(1 - alpha_bar_prev - eta ** 2) * (
-                        x_t - sqrt_ab_t * pred_x0
-                    ) / torch.sqrt(1 - alpha_bar_t)
+                    
+                    if eta > 0:
+                        # DDIM with stochastic component
+                        sigma_t = eta * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar_t)) * torch.sqrt(1 - alpha_bar_t / alpha_bar_prev)
+                        x_t = sqrt_ab_prev * pred_x0 + torch.sqrt(1 - alpha_bar_prev - sigma_t**2) * noise_pred + sigma_t * torch.randn_like(x_t)
+                    else:
+                        # Pure DDIM (deterministic)
+                        x_t = sqrt_ab_prev * pred_x0 + torch.sqrt(1 - alpha_bar_prev) * noise_pred
+                    
+                    # Debug: print some values for the first few steps
+                    if i < 3 and verbose:
+                        print(f"DDIM step {i}: t={t.item()}, pred_x0_mean={pred_x0.mean().item():.4f}, noise_pred_mean={noise_pred.mean().item():.4f}, x_t_mean={x_t.mean().item():.4f}")
                 else:
-                    # stochastic DDPM update
-                    coef1 = torch.sqrt(alpha_bar_prev) * beta_t / (1 - alpha_bar_t)
-                    coef2 = torch.sqrt(alpha_t) * (1 - alpha_bar_prev) / (1 - alpha_bar_t)
-                    mean = coef1 * pred_x0 + coef2 * x_t
-                    variance = ((1 - alpha_bar_prev) / (1 - alpha_bar_t)) * beta_t
+                    # Corrected DDPM stochastic update
+                    mean = (1 / torch.sqrt(alpha_t)) * (
+                        x_t - (beta_t / torch.sqrt(1 - alpha_bar_t)) * noise_pred
+                    )
+                    variance = beta_t * (1 - alpha_bar_prev) / (1 - alpha_bar_t)
                     noise = torch.randn_like(x_t)
                     x_t = mean + torch.sqrt(variance) * noise
 
@@ -237,17 +251,7 @@ class LatentDiffusion(nn.Module):
     @torch.no_grad()
     def training_sample(self, batch_size: int = 8, cond: Optional[torch.Tensor] = None, 
                        device=None, num_steps: Optional[int] = None):
-        """
-        Generate samples during training for visualization.
-        Uses the model's sample() method internally.
-        Args:
-            batch_size: Number of samples to generate
-            cond: Optional condition tensor
-            device: Device to generate on
-            num_steps: Number of diffusion steps (uses scheduler default if None)
-        Returns:
-            Decoded RGB images (B, C, H, W)
-        """
+
         if device is None:
             device = next(self.backbone.parameters()).device
         
@@ -299,11 +303,7 @@ class LatentDiffusion(nn.Module):
         return self
     
     def state_dict(self, trainable_only: bool = True):
-        """
-        Return state dict for saving.
-        By default, only returns trainable components (backbone).
-        Set trainable_only=False to include autoencoder and scheduler.
-        """
+
         if trainable_only:
             # Only save the trainable backbone
             return self.backbone.state_dict()
@@ -324,12 +324,7 @@ class LatentDiffusion(nn.Module):
         config: Union[str, Path, dict],
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
-        """
-        Load LatentDiffusion from config.
-        Args:
-            config: Either a file path (str/Path) or config dict
-            device: Device to load models to
-        """
+
         import importlib
         
         # Backward compatibility: accept string path or dict

@@ -178,11 +178,12 @@ class ConvDecoder(nn.Module):
 
 # --- AutoEncoder wrapper (VAE + optional segmentation) ---
 class AutoEncoder(nn.Module):
-    def __init__(self, encoder: nn.Module, decoder: nn.Module, deterministic: bool = True):
+    def __init__(self, encoder: nn.Module, decoder: nn.Module, deterministic: bool = True, legacy_mode: bool = False):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.deterministic = deterministic
+        self.legacy_mode = legacy_mode  # For backward compatibility with old experiments
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -196,7 +197,7 @@ class AutoEncoder(nn.Module):
             batch: Either a tensor (B,C,H,W) or dict with "layout" key
             deterministic: If None, uses self.deterministic attribute
         Returns:
-            dict with "recon", "seg_logits", "mu", "logvar"
+            dict with "recon", "seg_logits", "mu", "logvar" (or just tensor in legacy_mode)
         """
         # Extract input from batch if it's a dict
         if isinstance(batch, dict):
@@ -212,6 +213,11 @@ class AutoEncoder(nn.Module):
         mu, logvar = self.encoder(x)
         z = mu if deterministic else self.reparameterize(mu, logvar)
         rgb_out, seg_logits = self.decoder(z)
+        
+        # Backward compatibility: return just the reconstruction tensor for old experiments
+        if self.legacy_mode:
+            return rgb_out
+        
         return {"recon": rgb_out, "seg_logits": seg_logits, "mu": mu, "logvar": logvar, "input": x}
 
 
@@ -225,12 +231,18 @@ class AutoEncoder(nn.Module):
         if from_latent:
             # Direct latent decoding (used in analysis scripts)
             rgb_out, seg_logits = self.decoder(x)
+            # Backward compatibility: return just rgb_out for old experiments
+            if self.legacy_mode:
+                return rgb_out
             return rgb_out, seg_logits
 
         # Standard image-to-latent-to-image decode (used during training)
         mu, logvar = self.encoder(x)
         z = self.reparameterize(mu, logvar)
         rgb_out, seg_logits = self.decoder(z)
+        # Backward compatibility: return just rgb_out for old experiments
+        if self.legacy_mode:
+            return rgb_out
         return rgb_out, seg_logits
 
     @torch.no_grad()
@@ -249,6 +261,9 @@ class AutoEncoder(nn.Module):
     def encode(self, x):
         self.eval()
         mu, logvar = self.encoder(x)
+        # Backward compatibility: return just mu for old experiments
+        if self.legacy_mode:
+            return mu
         return mu, logvar
 
     @torch.no_grad()
@@ -348,43 +363,55 @@ class AutoEncoder(nn.Module):
             with open(cfg, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
 
+        print(f"DEBUG from_config: cfg keys = {list(cfg.keys())}")
+        print(f"DEBUG from_config: 'encoder' in cfg = {'encoder' in cfg}")
+        print(f"DEBUG from_config: 'decoder' in cfg = {'decoder' in cfg}")
+        
         if "encoder" not in cfg and "decoder" not in cfg:
-            return cls.from_shape(**cfg)
+            # Old format: flat config with direct parameters for from_shape
+            valid_keys = {
+                'in_channels', 'out_channels', 'base_channels', 'latent_channels', 
+                'latent_base', 'image_size', 'norm', 'act', 'dropout', 'kernel_size', 
+                'stride', 'padding', 'num_classes'
+            }
+            filtered_cfg = {k: v for k, v in cfg.items() if k in valid_keys}
+            return cls.from_shape(**filtered_cfg)
+        else:
+            # New format: separate encoder/decoder sections
+            enc_cfg = cfg["encoder"]
+            dec_cfg = cfg["decoder"]
 
-        enc_cfg = cfg["encoder"]
-        dec_cfg = cfg["decoder"]
+            encoder = ConvEncoder(
+                in_channels=enc_cfg["in_channels"],
+                layers_cfg=enc_cfg["layers"],
+                latent_dim=enc_cfg.get("latent_dim", 0),
+                image_size=enc_cfg["image_size"],
+                latent_channels=enc_cfg["latent_channels"],
+                latent_base=enc_cfg["latent_base"],
+                global_norm=enc_cfg.get("global_norm"),
+                global_act=enc_cfg.get("global_act"),
+                global_dropout=enc_cfg.get("global_dropout", 0.0),
+            )
 
-        encoder = ConvEncoder(
-            in_channels=enc_cfg["in_channels"],
-            layers_cfg=enc_cfg["layers"],
-            latent_dim=enc_cfg.get("latent_dim", 0),
-            image_size=enc_cfg["image_size"],
-            latent_channels=enc_cfg["latent_channels"],
-            latent_base=enc_cfg["latent_base"],
-            global_norm=enc_cfg.get("global_norm"),
-            global_act=enc_cfg.get("global_act"),
-            global_dropout=enc_cfg.get("global_dropout", 0.0),
-        )
+            decoder = ConvDecoder(
+                out_channels=dec_cfg["out_channels"],
+                latent_dim=dec_cfg.get("latent_dim", 0),
+                encoder_layers_cfg=enc_cfg["layers"],
+                image_size=dec_cfg["image_size"],
+                latent_channels=dec_cfg["latent_channels"],
+                latent_base=dec_cfg["latent_base"],
+                global_norm=dec_cfg.get("global_norm"),
+                global_act=dec_cfg.get("global_act"),
+                global_dropout=dec_cfg.get("global_dropout", 0.0),
+                use_sigmoid=dec_cfg.get("use_sigmoid", False),
+                num_classes=dec_cfg.get("num_classes", None),
+            )
 
-        decoder = ConvDecoder(
-            out_channels=dec_cfg["out_channels"],
-            latent_dim=dec_cfg.get("latent_dim", 0),
-            encoder_layers_cfg=enc_cfg["layers"],
-            image_size=dec_cfg["image_size"],
-            latent_channels=dec_cfg["latent_channels"],
-            latent_base=dec_cfg["latent_base"],
-            global_norm=dec_cfg.get("global_norm"),
-            global_act=dec_cfg.get("global_act"),
-            global_dropout=dec_cfg.get("global_dropout", 0.0),
-            use_sigmoid=dec_cfg.get("use_sigmoid", False),
-            num_classes=dec_cfg.get("num_classes", None),
-        )
+            # read type if present (default to vae)
+            model_type = cfg.get("type", "vae").lower()
+            deterministic = model_type == "ae"
 
-        # read type if present (default to vae)
-        model_type = cfg.get("type", "vae").lower()
-        deterministic = model_type == "ae"
-
-        return cls(encoder, decoder, deterministic=deterministic)
+            return cls(encoder, decoder, deterministic=deterministic, legacy_mode=True)  # Enable legacy mode for old experiments
 
     @classmethod
     def from_shape(cls,
@@ -446,4 +473,4 @@ class AutoEncoder(nn.Module):
             num_classes=num_classes,
         )
 
-        return cls(encoder, decoder)
+        return cls(encoder, decoder, deterministic=True, legacy_mode=True)  # Enable legacy mode for old experiments

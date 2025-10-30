@@ -18,17 +18,7 @@ from models.components.scheduler import LinearScheduler, CosineScheduler, Quadra
 
 
 def build_model(model_cfg: Dict[str, Any], device: str = "cpu") -> Tuple[torch.nn.Module, Optional[torch.nn.Module]]:
-    """
-    Build model from config based on model type.
-    
-    Args:
-        model_cfg: Configuration dictionary with model specification
-        device: Device to move model to
-        
-    Returns:
-        Tuple of (model, auxiliary_model) where auxiliary_model is used for frozen components
-        (e.g., autoencoder for diffusion models). Returns (model, None) for standalone models.
-    """
+
     model_type = model_cfg.get("type", "autoencoder").lower()
     
     if model_type in ("autoencoder", "ae", "vae"):
@@ -63,7 +53,12 @@ def build_model(model_cfg: Dict[str, Any], device: str = "cpu") -> Tuple[torch.n
             raise ValueError("Diffusion model requires 'autoencoder' config")
         
         # Build autoencoder (frozen)
-        autoencoder = build_autoencoder(model_cfg["autoencoder"])
+        if isinstance(model_cfg["autoencoder"], dict):
+            # It's a config dict, build the autoencoder
+            autoencoder = build_autoencoder(model_cfg["autoencoder"])
+        else:
+            # It's already a built autoencoder object
+            autoencoder = model_cfg["autoencoder"]
         
         # Build diffusion components
         diff_cfg = model_cfg.get("diffusion", {})
@@ -120,7 +115,14 @@ def build_autoencoder(ae_cfg: Dict[str, Any]) -> AutoEncoder:
         raise ValueError("Autoencoder config must be provided")
     
     # Build model from config (handles both file path and dict)
-    ae = AutoEncoder.from_config(ae_cfg_path)
+    if isinstance(ae_cfg_path, str):
+        # It's a file path
+        ae = AutoEncoder.from_config(ae_cfg_path)
+    elif isinstance(ae_cfg_path, dict):
+        # It's a config dict - pass it directly
+        ae = AutoEncoder.from_config(ae_cfg_path)
+    else:
+        raise ValueError(f"Autoencoder config must be a string (file path) or dict, got {type(ae_cfg_path)}")
     
     # Load checkpoint if provided
     if ae_ckpt_path and Path(ae_ckpt_path).exists():
