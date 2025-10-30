@@ -18,7 +18,7 @@ from .losses.custom_loss import (
 
 # Datasets
 from .datasets.datasets import (
-    LayoutDataset, PovDataset, GraphDataset, UnifiedLayoutDataset, make_dataloaders
+    LayoutDataset, UnifiedLayoutDataset, make_dataloaders
 )
 from .datasets.utils import (
     load_embedding, load_graph_text, compute_sample_weights
@@ -41,7 +41,7 @@ __all__ = [
     'VAELoss', 'StandardVAELoss', 'SegmentationVAELoss', 'VGGPerceptualLoss',
     
     # Datasets
-    'LayoutDataset', 'PovDataset', 'GraphDataset', 'UnifiedLayoutDataset', 'make_dataloaders',
+    'LayoutDataset', 'UnifiedLayoutDataset', 'make_dataloaders',
     'load_embedding', 'load_graph_text', 'compute_sample_weights',
     'collate_skip_none', 'collate_fn',
 ]

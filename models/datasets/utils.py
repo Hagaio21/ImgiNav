@@ -35,38 +35,6 @@ def load_graph_text(path):
         return f.read().strip()
 
 
-def load_data_with_embedding_fallback(row, embedding_key, raw_key, transform=None, device=None, use_embeddings=False):
-
-    if use_embeddings:
-        # When use_embeddings=True, we MUST have embeddings - no fallback
-        if embedding_key not in row:
-            raise KeyError(f"Embedding key '{embedding_key}' not found in row when use_embeddings=True")
-        
-        embedding_path = row[embedding_key]
-        if not (isinstance(embedding_path, str) and str(embedding_path).strip().lower() not in {"", "false", "0", "none"}):
-            raise ValueError(f"Invalid embedding path '{embedding_path}' when use_embeddings=True")
-        
-        data = load_embedding(embedding_path)
-        if device:
-            data = data.to(device)
-        return data
-    
-    # When use_embeddings=False, load raw data
-    if raw_key in row:
-        raw_path = row[raw_key]
-        if isinstance(raw_path, str) and str(raw_path).strip().lower() not in {"", "false", "0", "none"}:
-            if raw_path.endswith(('.txt', '.json')):
-                # Text data
-                with open(raw_path, "r", encoding="utf-8") as f:
-                    return f.read().strip()
-            else:
-                # Image data
-                img = Image.open(raw_path).convert("RGB")
-                if transform:
-                    img = transform(img)
-                return img
-    
-    return None
 
 def compute_sample_weights(df: pd.DataFrame) -> torch.DoubleTensor:
     """Create grouping key: scene uses 'scene', rooms use room_id"""

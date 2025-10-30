@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from common.taxonomy import Taxonomy
 
-from .utils import load_embedding, load_graph_text, compute_sample_weights, load_data_with_embedding_fallback
+from .utils import load_embedding, load_graph_text, compute_sample_weights
 
 # ---------- Layout Dataset ----------
 
@@ -143,78 +143,6 @@ class LayoutDataset(Dataset):
             class_map[mask] = idx
         return class_map
 
-# ---------- POV Dataset ----------
-
-class PovDataset(Dataset):
-    def __init__(self, manifest_path, transform=None, pov_type="seg", skip_empty=True, return_embeddings=False):
-        self.df = pd.read_csv(manifest_path)
-        self.transform = transform
-        self.pov_type = pov_type
-        self.skip_empty = skip_empty
-        self.return_embeddings = return_embeddings
-
-        self.df = self.df[self.df["type"] == pov_type]
-
-        if self.skip_empty:
-            self.df = self.df[self.df["is_empty"] == 0]
-
-        self.entries = self.df.to_dict("records")
-
-    def __len__(self):
-        return len(self.entries)
-
-    def __getitem__(self, idx):
-        row = self.entries[idx]
-        sample = {
-            "scene_id": row["scene_id"],
-            "room_id": row["room_id"],
-            "type": row["type"],
-            "is_empty": row["is_empty"],
-            "path": row["pov_path"]
-        }
-
-        if not row["is_empty"]:
-            sample["pov"] = load_data_with_embedding_fallback(
-                row, "pov_embedding", "pov_path",
-                transform=self.transform, device=None,
-                use_embeddings=self.return_embeddings
-            )
-        else:
-            sample["pov"] = None
-
-        return sample
-
-# ---------- Graph Dataset ----------
-
-class GraphDataset(Dataset):
-    def __init__(self, manifest_path, return_embeddings=False):
-        self.df = pd.read_csv(manifest_path)
-        self.return_embeddings = return_embeddings
-        self.entries = self.df.to_dict("records")
-
-    def __len__(self):
-        return len(self.entries)
-
-    def __getitem__(self, idx):
-        row = self.entries[idx]
-        sample = {
-            "scene_id": row["scene_id"],
-            "room_id": row["room_id"],
-            "type": row["type"],
-            "is_empty": row["is_empty"],
-            "path": row["graph_path"]  # assuming your manifest has this
-        }
-
-        if not row["is_empty"]:
-            sample["graph"] = load_data_with_embedding_fallback(
-                row, "graph_embedding", "graph_path",
-                transform=None, device=None,
-                use_embeddings=self.return_embeddings
-            )
-        else:
-            sample["graph"] = None
-
-        return sample
 
 # ---------- Unified Layout Dataset ----------
 
@@ -308,6 +236,35 @@ class UnifiedLayoutDataset(Dataset):
 
     def __len__(self):
         return len(self.entries)
+    
+    def _load_data(self, row, embedding_key, raw_key, is_image=True):
+        """Load data from row, either embedding or raw data based on use_embeddings flag."""
+        if self.use_embeddings:
+            # Load embedding
+            if embedding_key not in row:
+                raise KeyError(f"Embedding key '{embedding_key}' not found in row when use_embeddings=True")
+            
+            embedding_path = row[embedding_key]
+            if not (isinstance(embedding_path, str) and str(embedding_path).strip().lower() not in {"", "false", "0", "none"}):
+                raise ValueError(f"Invalid embedding path '{embedding_path}' when use_embeddings=True")
+            
+            data = load_embedding(embedding_path)
+            if self.device:
+                data = data.to(self.device)
+            return data
+        else:
+            # Load raw data
+            if raw_key in row:
+                raw_path = row[raw_key]
+                if isinstance(raw_path, str) and str(raw_path).strip().lower() not in {"", "false", "0", "none"}:
+                    if is_image:
+                        img = Image.open(raw_path).convert("RGB")
+                        if self.transform:
+                            img = self.transform(img)
+                        return img
+                    else:
+                        return load_graph_text(raw_path)
+            return None
 
     def __getitem__(self, idx):
         row = self.entries[idx]
@@ -317,25 +274,13 @@ class UnifiedLayoutDataset(Dataset):
         # ----- POV (only for room samples) -----
         pov = None
         if is_room:
-            pov = load_data_with_embedding_fallback(
-                row, "pov_embedding", "pov_image", 
-                transform=self.transform, device=self.device, 
-                use_embeddings=self.use_embeddings
-            )
+            pov = self._load_data(row, "pov_embedding", "pov_image", is_image=True)
 
         # ----- Graph -----
-        graph = load_data_with_embedding_fallback(
-            row, "graph_embedding", "graph_text",
-            transform=None, device=self.device,
-            use_embeddings=self.use_embeddings
-        )
+        graph = self._load_data(row, "graph_embedding", "graph_text", is_image=False)
 
         # ----- Layout -----
-        layout = load_data_with_embedding_fallback(
-            row, "layout_embedding", "layout_image",
-            transform=self.transform, device=self.device,
-            use_embeddings=self.use_embeddings
-        )
+        layout = self._load_data(row, "layout_embedding", "layout_image", is_image=True)
 
         return {
             "sample_id": row["sample_id"],
@@ -350,75 +295,16 @@ class UnifiedLayoutDataset(Dataset):
 
 # ---------- Helper Functions ----------
 
-def make_dataloaders(layout_manifest, pov_manifest, graph_manifest, batch_size=32, transform=None):
-    layout_ds = LayoutDataset(layout_manifest, transform=transform, mode="all")
-    pov_ds = PovDataset(pov_manifest, transform=transform, pov_type="seg")
-    graph_ds = GraphDataset(graph_manifest)
+def make_dataloaders(manifest_path, batch_size=32, transform=None, use_embeddings=False, sample_type="both", pov_type=None):
+    """Create dataloaders using UnifiedLayoutDataset."""
+    dataset = UnifiedLayoutDataset(
+        manifest_path=manifest_path,
+        use_embeddings=use_embeddings,
+        sample_type=sample_type,
+        pov_type=pov_type,
+        transform=transform
+    )
+    
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return dataloader
 
-    layout_loader = DataLoader(layout_ds, batch_size=batch_size, shuffle=True)
-    pov_loader = DataLoader(pov_ds, batch_size=batch_size, shuffle=True)
-    graph_loader = DataLoader(graph_ds, batch_size=batch_size, shuffle=True)
-
-    return layout_loader, pov_loader, graph_loader
-
-def main():
-    import os
-    import torchvision.transforms as T
-
-    layout_manifest = r"C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\indexes\layouts.csv"
-    pov_manifest = r"C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImagiNav\indexes\povs.csv"
-    graph_manifest = "path/to/graph_manifest.csv"  # not required yet
-
-    transform = T.Compose([
-        T.Resize((128, 128)),
-        T.ToTensor()
-    ])
-
-    # --- Layout Dataset ---
-    print("Testing LayoutDataset...")
-    layout_ds = LayoutDataset(layout_manifest, transform=transform, mode="all")
-    print(f"Loaded {len(layout_ds)} layout samples")
-    sample = layout_ds[0]
-    for k, v in sample.items():
-        if hasattr(v, "shape"):
-            print(k, v.shape)
-        else:
-            print(k, v)
-
-    # --- POV Dataset (seg) ---
-    print("\nTesting PovDataset (seg)...")
-    pov_ds = PovDataset(pov_manifest, transform=transform, pov_type="seg")
-    print(f"Loaded {len(pov_ds)} pov samples (seg)")
-    sample = pov_ds[0]
-    for k, v in sample.items():
-        if hasattr(v, "shape"):
-            print(k, v.shape)
-        else:
-            print(k, v)
-
-    # --- Graph Dataset (optional) ---
-    if os.path.exists(graph_manifest):
-        print("\nTesting GraphDataset...")
-        graph_ds = GraphDataset(graph_manifest, return_embeddings=False)
-        print(f"Loaded {len(graph_ds)} graph samples")
-        sample = graph_ds[0]
-        for k, v in sample.items():
-            if isinstance(v, str) and len(v) > 60:
-                print(k, v[:60] + "...")
-            else:
-                print(k, v)
-    else:
-        print("\nGraph manifest not found, skipping GraphDataset test.")
-
-    # --- Dataloaders (layout + pov only) ---
-    print("\nTesting Dataloaders...")
-    layout_loader = DataLoader(layout_ds, batch_size=4, shuffle=True)
-    pov_loader = DataLoader(pov_ds, batch_size=4, shuffle=True)
-
-    batch = next(iter(layout_loader))
-    print("Layout batch keys:", batch.keys())
-    if "layout" in batch:
-        print("Layout batch tensor shape:", batch["layout"].shape)
-
-if __name__ == "__main__":
-    main()

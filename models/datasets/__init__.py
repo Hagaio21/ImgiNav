@@ -1,6 +1,6 @@
 # Datasets package
 from .datasets import (
-    LayoutDataset, PovDataset, GraphDataset, UnifiedLayoutDataset, make_dataloaders
+    LayoutDataset, UnifiedLayoutDataset, make_dataloaders
 )
 from .utils import (
     load_embedding, load_graph_text, compute_sample_weights,
@@ -9,7 +9,7 @@ from .utils import (
 from .collate import collate_skip_none, collate_fn
 
 __all__ = [
-    'LayoutDataset', 'PovDataset', 'GraphDataset', 'UnifiedLayoutDataset', 'make_dataloaders',
+    'LayoutDataset', 'UnifiedLayoutDataset', 'make_dataloaders',
     'load_embedding', 'load_graph_text', 'compute_sample_weights',
     'build_datasets', 'build_dataloaders', 'save_split_csvs',
     'collate_skip_none', 'collate_fn',
