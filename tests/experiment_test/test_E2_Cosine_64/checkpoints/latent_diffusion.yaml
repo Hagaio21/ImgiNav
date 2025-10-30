@@ -1,0 +1,12 @@
+autoencoder:
+  checkpoint: tests/experiment_test/test_E2_Cosine_64/checkpoints/ae_latest.pt
+  config: tests/experiment_test/test_E2_Cosine_64/checkpoints/autoencoder_config.yaml
+latent:
+  base: 8
+  channels: 8
+scheduler:
+  num_steps: 100
+  type: CosineScheduler
+unet:
+  checkpoint: tests/experiment_test/test_E2_Cosine_64/checkpoints/unet_latest.pt
+  config: tests/experiment_test/test_E2_Cosine_64/checkpoints/unet_config.yaml

@@ -125,11 +125,24 @@ def main():
         
     trainer.fit(train_loader, val_loader)
 
-    # --- Save unified experiment YAML ---
+    # --- Save config files ---
+    # 1. Save full experiment config
     exp_save_path = os.path.join(out_dir, "experiment_config.yaml")
     with open(exp_save_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
     print(f"[Config] Saved experiment config to {exp_save_path}")
+    
+    # 2. Save autoencoder config
+    ae_save_path = os.path.join(out_dir, "autoencoder_config.yaml")
+    with open(ae_save_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(model_cfg["autoencoder"], f)
+    print(f"[Config] Saved autoencoder config to {ae_save_path}")
+    
+    # 3. Save diffusion config
+    diff_save_path = os.path.join(out_dir, "diffusion_config.yaml")
+    with open(diff_save_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(diff_cfg, f)
+    print(f"[Config] Saved diffusion config to {diff_save_path}")
 
 
 if __name__ == "__main__":
