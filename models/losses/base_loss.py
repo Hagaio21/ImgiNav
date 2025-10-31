@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from ..components.base_component import BaseComponent
 
-# === Global registry =========================================================
 LOSS_REGISTRY = {}
 
 def register_loss(cls):
@@ -10,8 +10,6 @@ def register_loss(cls):
     LOSS_REGISTRY[cls.__name__] = cls
     return cls
 
-
-# === Base classes ============================================================
 class LossComponent(BaseComponent):
     def _build(self):
         self.key = self._init_kwargs.get("key", None)
@@ -27,7 +25,7 @@ class LossComponent(BaseComponent):
         return cls(**cfg)
 
 
-# === Individual loss implementations =========================================
+
 @register_loss
 class L1Loss(LossComponent):
     def _build(self):
@@ -77,13 +75,27 @@ class CrossEntropyLoss(LossComponent):
         self.criterion = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
 
     def forward(self, preds, targets):
-        if self.key not in preds or self.target_key not in targets:
-            device = next(self.criterion.parameters(), torch.zeros(1)).device
-            return torch.tensor(0.0, device=device), {}
         pred = preds[self.key]
-        tgt = targets[self.target_key].long()
+        tgt = targets[self.target_key]
+
+        # Convert RGB layout to segmentation mask
+        if tgt.ndim == 4 and tgt.shape[1] == 3:
+            from .loss_utils import create_seg_mask
+            tgt = create_seg_mask(tgt, ignore_index=self.ignore_index).to(tgt.device)
+        elif tgt.ndim == 4 and tgt.shape[1] == 1:
+            tgt = tgt.squeeze(1)
+        # Convert room_id to class index for classification
+        elif tgt.ndim == 0 or (tgt.ndim == 1 and tgt.numel() > 0):
+            # Check if values are in room_id range (3000-3999)
+            if tgt.numel() > 0 and torch.all((tgt >= 3000) & (tgt < 4000)):
+                from .loss_utils import room_id_to_class_index
+                tgt = room_id_to_class_index(tgt, ignore_index=self.ignore_index)
+        if tgt.dtype != torch.long:
+            tgt = tgt.long()
+
         loss = self.criterion(pred, tgt) * self.weight
-        return loss, {f"CE_{self.key}": loss.detach()}
+        logs = {f"CE_{self.key}": loss.detach()}
+        return loss, logs
 
 
 @register_loss

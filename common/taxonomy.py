@@ -10,9 +10,7 @@ import numpy as np
 import colorsys
 
 
-# ------------------------------
-# Class
-# ------------------------------
+
 class Taxonomy:
 
     def __init__(self, taxonomy_path: str | Path):
@@ -20,10 +18,26 @@ class Taxonomy:
             self.data = json.load(f)
         self.ranges = self.data.get("ranges", {})
         self.structural_categories = {'wall', 'floor', 'ceiling'}
+        
+        # Precompute frequently used mappings for performance
+        self._init_quick_lookups()
+    
+    def _init_quick_lookups(self):
+        """Precompute direct mappings for super-categories + walls and rooms."""
+        # Super-category + wall color mappings (main use case)
+        self.color_to_super_id = {}
+        self.super_id_to_color = {}
+        id2color = self.data.get("id2color", {})
+        
+        for sid_str, rgb in id2color.items():
+            sid = int(sid_str)
+            # Only super categories (1000-1999) and wall (2053)
+            if (1000 <= sid <= 1999) or sid == 2053:
+                rgb_t = tuple(rgb) if isinstance(rgb, list) else tuple(rgb)
+                self.color_to_super_id[rgb_t] = sid
+                self.super_id_to_color[sid] = rgb_t
 
-    # ----------------------------
-    # Core name ↔ id
-    # ----------------------------
+
     def id_to_name(self, val: int) -> str:
         val_str = str(val)
         if self.ranges["super"][0] <= val <= self.ranges["super"][1]:
@@ -48,7 +62,6 @@ class Taxonomy:
             or 0
         )
 
-
     def translate(self, val, output: str = "id"):
         """
         Generic translator.
@@ -63,18 +76,12 @@ class Taxonomy:
         return None
 
     def get_floor_ids(self) -> list[int]:
-        floor_ids = []
-        for name, idx in self.data.get("category2id", {}).items():
-            if name.lower() == "floor":
-                floor_ids.append(int(idx))
-        for name, idx in self.data.get("label2id", {}).items():
-            if name.lower() == "floor":
-                floor_ids.append(int(idx))
-        return floor_ids
+        """Get all IDs for floor (category or label)."""
+        ids = []
+        for mapping in [self.data.get("category2id", {}), self.data.get("label2id", {})]:
+            ids.extend([int(idx) for name, idx in mapping.items() if name.lower() == "floor"])
+        return ids
 
-    # ----------------------------
-    # Internal Helper Methods
-    # ----------------------------
     def _is_structural(self, name: str) -> bool:
         """Check if a name represents a structural category."""
         return name.lower() in self.structural_categories
@@ -170,9 +177,6 @@ class Taxonomy:
         
         return None
 
-    # ----------------------------
-    # Super-category
-    # ----------------------------
     def get_sup(self, val, output: str = "name"):
 
         if isinstance(val, int):
@@ -189,12 +193,6 @@ class Taxonomy:
         if output == "name":
             return super_name
         return self.data["super2id"].get(super_name, 0)
-    
-    def get_category(self, title: str) -> str:
-        return self.data.get("title2category", {}).get(title, "UnknownCategory")
-
-    def get_room_id(self, room_type: str) -> int:
-        return self.data.get("room2id", {}).get(room_type, 0)
 
     def get_color(self, val, mode: str = "none"):
         """Get color for a given value, with fallback to default color."""
@@ -229,13 +227,19 @@ class Taxonomy:
                     return tuple(color) if isinstance(color, list) else default_color
             # Fallback to super if category color not found
             super_id = self.resolve_super(val)
-            if super_id is not None:
+            if super_id and super_id in self.super_id_to_color:
+                return self.super_id_to_color[super_id]
+            if super_id:
                 color = self.data.get("id2color", {}).get(str(super_id), default_color)
                 return tuple(color) if isinstance(color, list) else default_color
             return default_color
         else:
             # Default/super mode: use super-category color
             super_id = self.resolve_super(val)
+            
+            if super_id and super_id in self.super_id_to_color:
+                # Use precomputed mapping for fast lookup
+                return self.super_id_to_color[super_id]
             
             if super_id is None:
                 # FALLBACK: Check if it's a category with direct color assignment
@@ -248,40 +252,55 @@ class Taxonomy:
                     super_name = self.data.get("category2super", {}).get(category_name)
                     if super_name:
                         super_id_fallback = self._lookup_super_id(super_name)
-                        if super_id_fallback:
-                            color = self.data.get("id2color", {}).get(str(super_id_fallback), default_color)
-                            return tuple(color) if isinstance(color, list) else default_color
+                        if super_id_fallback and super_id_fallback in self.super_id_to_color:
+                            return self.super_id_to_color[super_id_fallback]
                 return default_color
 
-            # Look up color by super-category ID in id2color
+            # Fallback to id2color lookup if not in precomputed map
             color = self.data.get("id2color", {}).get(str(super_id), default_color)
             return tuple(color) if isinstance(color, list) else default_color
 
     def get_color_to_label_dict(self) -> dict:
-
+        """Get color -> label mapping for super-categories + wall (uses precomputed mappings)."""
         color_to_label = {}
-        id2color = self.data.get("id2color", {})
         
-        for sid_str, rgb in id2color.items():
-            sid_int = int(sid_str)
-            
-            if 1000 <= sid_int <= 1999:
+        # Use precomputed super_id_to_color for faster iteration
+        for sid, rgb in self.super_id_to_color.items():
+            if 1000 <= sid <= 1999:
                 # Super categories
-                super_label = self.id_to_name(sid_int)
-                color_to_label[tuple(rgb)] = {
-                    "label_id": sid_int,
+                super_label = self.id_to_name(sid)
+                color_to_label[rgb] = {
+                    "label_id": sid,
                     "label": super_label
                 }
-            elif sid_int == 2053:
+            elif sid == 2053:
                 # Wall - get category name first, then map to super
-                category_name = self.id_to_name(sid_int)
+                category_name = self.id_to_name(sid)
                 super_label = self.get_sup(category_name, output="name")
-                color_to_label[tuple(rgb)] = {
-                    "label_id": sid_int,
+                color_to_label[rgb] = {
+                    "label_id": sid,
                     "label": super_label
                 }
         
         return color_to_label
+
+    def get_color_to_class_dict(self, class_ids: list[int]) -> dict:
+        """
+        Get RGB tuple -> class index mapping for given IDs.
+        
+        Args:
+            class_ids: List of IDs (can be any mix of label/title/category/super IDs)
+        
+        Returns:
+            dict mapping (R, G, B) tuple -> class_index (0 to len(class_ids)-1)
+        """
+        rgb_to_class = {}
+        for class_idx, val in enumerate(class_ids):
+            # Resolve to super ID or use directly if already super/wall
+            sid = self.resolve_super(val) if val not in self.super_id_to_color else val
+            if sid and sid in self.super_id_to_color:
+                rgb_to_class[self.super_id_to_color[sid]] = class_idx
+        return rgb_to_class
 
     def get_room_mappings(self) -> tuple[dict, dict]:
         """
@@ -289,9 +308,19 @@ class Taxonomy:
         Convenience method for graph building.
         """
         return self.data.get("id2room", {}), self.data.get("room2id", {})
-
-
-
+    
+    def id2room(self, room_id: int | str) -> str:
+        """Get room name from room ID. Convenience method for Tax.id2room(room_id)."""
+        room_id_str = str(room_id)
+        return self.data.get("id2room", {}).get(room_id_str, f"UnknownRoom_{room_id}")
+    
+    def get_color_from_super_id(self, super_id: int) -> tuple[int, int, int] | None:
+        """Fast lookup: Get RGB color for super-category ID or wall (2053)."""
+        return self.super_id_to_color.get(super_id)
+    
+    def get_super_id_from_color(self, rgb: tuple[int, int, int]) -> int | None:
+        """Fast lookup: Get super-category ID or wall ID from RGB color."""
+        return self.color_to_super_id.get(rgb)
 
     def _try_super_lookup(self, name: str, val_str: str) -> int | None:
         """Helper method to try super-category lookup by name and ID."""
@@ -385,59 +414,6 @@ class Taxonomy:
 
         return None
 
-
-
-    # ----------------------------
-    # Convenience methods for compatibility with old load_taxonomy() functions
-    # ----------------------------
-    def get_id2room_dict(self, int_keys: bool = True) -> dict:
-
-        id2room = self.data.get("id2room", {})
-        if int_keys:
-            return {int(k): v for k, v in id2room.items()}
-        return id2room
-    
-    def __getitem__(self, key):
-        """Allow dict-like access for backward compatibility."""
-        # First check if it's a top-level dict key (like "id2color", "id2super", etc.)
-        if isinstance(key, str) and key in self.data:
-            return self.data[key]
-        # Otherwise, treat as name/id conversion
-        if isinstance(key, int):
-            return self.id_to_name(key)
-        elif isinstance(key, str):
-            return self.name_to_id(key)
-        raise KeyError(f"Invalid key type: {type(key)}")
-    
-    def get(self, key, default=None):
-        """Dict-like .get() method for backward compatibility."""
-        # First check if it's a top-level dict key
-        if isinstance(key, str) and key in self.data:
-            return self.data[key]
-        # Otherwise, try name/id conversion
-        try:
-            if isinstance(key, int):
-                return self.id_to_name(key)
-            elif isinstance(key, str):
-                return self.name_to_id(key)
-        except (KeyError, ValueError):
-            pass
-        return default
-    
-    def as_dict(self):
-        """Return raw taxonomy dict for backward compatibility."""
-        return self.data
-
-# ------------------------------
-# Standalone Functions (for backward compatibility)
-# ------------------------------
-
-def load_taxonomy(taxonomy_path: str | Path):
-
-    with open(Path(taxonomy_path), "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
 def load_valid_colors(taxonomy_path: str | Path, include_background: bool = True):
 
     tax = Taxonomy(taxonomy_path)
@@ -455,10 +431,6 @@ def load_valid_colors(taxonomy_path: str | Path, include_background: bool = True
     filtered = {str(i): tax.data["id2color"][str(i)] for i in valid_ids if str(i) in tax.data["id2color"]}
     return filtered, valid_ids
 
-# ------------------------------
-# Utilities
-# ------------------------------
-
 def _make_flat_mapping(items, base=0, unknown_name="Unknown"):
     """Return mapping {name: id} with explicit 0 reserved for Unknown."""
     items = sorted(list(items))
@@ -466,14 +438,9 @@ def _make_flat_mapping(items, base=0, unknown_name="Unknown"):
     mapping.update({name: base + i + 1 for i, name in enumerate(items)})
     return mapping, list(mapping.values())
 
-
 def _invert_mapping(mapping: dict) -> dict:
     """Build reverse dict {id: name}."""
     return {v: k for k, v in mapping.items()}
-
-# ------------------------------
-# Taxonomy Builder
-# ------------------------------
 
 def build_taxonomy_full(model_info_path: Path, scenes_dir: Path):
 
@@ -578,9 +545,6 @@ def build_room_taxonomy(scenes_dir: Path):
     return room2id, room_ids, empty_count
 
 
-# ------------------------------
-# Color Palette
-# ------------------------------
 def assign_colors(super2id: dict, category2id: dict, category2super: dict):
 
     id2color = {}
@@ -696,9 +660,6 @@ def generate_palette_for_labels(json_path: Path) -> bool:
     print(f"✔ Added id2color to {json_path}")
     return True
 
-# ------------------------------
-# Wrapper
-# ------------------------------
 
 def build_taxonomy(model_info_path: str, scenes_dir: str, out_path: str) -> None:
     model_info_path = Path(model_info_path)
@@ -746,11 +707,6 @@ def build_taxonomy(model_info_path: str, scenes_dir: str, out_path: str) -> None
           f"{len(taxonomy_dict['super2id'])} super-categories, "
           f"{len(room2id)} room types, "
           f"{len(taxonomy_dict['title2id'])} titles")
-
-
-# ------------------------------
-# CLI
-# ------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Build taxonomy from 3D-FUTURE and 3D-FRONT.")

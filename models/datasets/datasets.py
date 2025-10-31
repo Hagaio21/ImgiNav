@@ -13,6 +13,7 @@ class ManifestDataset(BaseComponent, Dataset):
             raise FileNotFoundError(f"Manifest not found: {manifest}")
 
         self.df = pd.read_csv(manifest)
+        self.manifest_dir = manifest.parent  # Store manifest directory for relative path resolution
         self.transform = self._init_kwargs.get("transform", None)
         self.return_path = self._init_kwargs.get("return_path", False)
 
@@ -92,8 +93,20 @@ class ManifestDataset(BaseComponent, Dataset):
     # ------------------------
     def _load_value(self, val):
         """Auto-load image, tensor, or numeric."""
+        # Handle NaN values from pandas
+        if pd.isna(val):
+            raise ValueError(f"NaN value in manifest")
+        
         if isinstance(val, str):
+            # Handle empty strings
+            if not val or val.strip() == "":
+                raise ValueError(f"Empty path in manifest")
             p = Path(val)
+            # Resolve relative paths relative to manifest directory
+            if not p.is_absolute():
+                p = self.manifest_dir / p
+            if not p.exists():
+                raise FileNotFoundError(f"File not found: {p}")
             ext = p.suffix.lower()
             if ext in [".png", ".jpg", ".jpeg", ".bmp"]:
                 img = Image.open(p).convert("RGB")
@@ -106,9 +119,17 @@ class ManifestDataset(BaseComponent, Dataset):
                     # Convert from HWC to CHW format
                     if img.ndim == 3:
                         img = img.permute(2, 0, 1) / 255.0
+                    else:
+                        raise ValueError(f"Unexpected image shape after conversion: {img.shape}")
                 return img
             if ext == ".pt":
                 return torch.load(p)
+        # For numeric values (like room_id), return as-is
+        if isinstance(val, (int, float)):
+            return torch.tensor(val)
+        # Try to convert string to number if it's numeric
+        if isinstance(val, str) and val.replace('.', '').replace('-', '').isdigit():
+            return torch.tensor(float(val))
         return torch.tensor(val)
 
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4):
