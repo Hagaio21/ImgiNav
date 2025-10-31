@@ -209,7 +209,13 @@ def gather_paths_from_sources(file_path: Optional[str] = None, patterns: Optiona
 
 def infer_ids_from_path(path: Path) -> Tuple[str, int]:
     stem = path.stem  # filename without extension
-    
+
+    # Normalize known modality suffixes (ignore sem/rgb variants)
+    for token in ("_sem_pointcloud", "_pointcloud", "_sem", "_rgb"):
+        if stem.endswith(token):
+            stem = stem.replace(token, "")
+            break
+
     # Strategy 1: Simple split on first underscore
     parts = stem.split("_", 1)
     if len(parts) >= 1:
@@ -224,12 +230,12 @@ def infer_ids_from_path(path: Path) -> Tuple[str, int]:
             match = re.match(r"(\d+)", remaining)
             if match:
                 return scene_id, int(match.group(1))
-    
+
     # Strategy 2: Regex for parquet files (new format)
     match = re.match(r"([0-9a-fA-F-]+)_(\d+)\.parquet$", path.name)
     if match:
         return match.group(1), int(match.group(2))
-    
+
     # Strategy 3: Path-based (old format: scene_id=<ID>/room_id=<ID>/)
     path_str = str(path)
     scene_match = re.search(r"scene_id=([^/\\]+)", path_str)
@@ -238,7 +244,7 @@ def infer_ids_from_path(path: Path) -> Tuple[str, int]:
         scene_id = scene_match.group(1)
         room_id = int(room_match.group(1)) if room_match else -1
         return scene_id, room_id
-    
+
     # Fallback: return stem as scene_id
     return stem, -1
 

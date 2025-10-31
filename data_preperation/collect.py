@@ -10,172 +10,146 @@ from tqdm import tqdm
 import pandas as pd
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import re
 
 
- 
-
-def collect_all(data_root: Path, output_manifest: Path):
-    if not data_root.exists():
-        raise FileNotFoundError(f"Dataset root not found: {data_root}")
+def collect_all(data_root: Path, output_csv: Path):
+    """
+    Recursively scan a dataset root and collect scene, room, and POV entries
+    into a unified manifest CSV. Works for both flat and nested scene structures.
+    """
+    import csv
+    from tqdm import tqdm
 
     manifest_rows = []
-    fieldnames = [
-        "sample_id", "sample_type", "scene_id", "room_id",
-        "pov_type", "viewpoint", "pov_image", "pov_embedding",
-        "graph_text", "graph_embedding", "layout_image", "layout_embedding",
-        "is_empty",
-    ]
 
-    n_scenes = n_rooms = n_povs = 0
-    n_missing_layout = n_missing_graph = 0
-    n_valid_scene = n_valid_room = 0
-    n_skipped_room = n_skipped_scene = 0
+    scene_dirs = [p for p in data_root.iterdir() if p.is_dir()]
 
-    scene_dirs = sorted([d for d in data_root.iterdir() if d.is_dir()])
-    if not scene_dirs:
-        raise RuntimeError(f"No scene directories found under {data_root}")
+    print(f"[INFO] Scanning {len(scene_dirs)} scenes under {data_root}")
+    for scene_path in tqdm(scene_dirs, desc="Scenes"):
+        scene_id = scene_path.name
 
-    for scene_dir in tqdm(scene_dirs, desc="Scanning scenes"):
-        scene_id = scene_dir.name
-        n_scenes += 1
-        rooms_root = scene_dir / "rooms"
-        layouts_root = scene_dir / "layouts"
-        scene_layout_path = layouts_root / f"{scene_id}_scene_layout.png"
-        # Try .json first (from build_graphs), fallback to .txt (from create_graph_text_files)
-        scene_graph_path = scene_dir / f"{scene_id}_scene_graph.json"
-        if not scene_graph_path.exists():
-            scene_graph_path = scene_dir / f"{scene_id}_scene_graph.txt"
+        # ----------- Scene-level -----------
+        scene_graph = next(scene_path.glob(f"{scene_id}_scene_graph.json"), None)
+        layout_img = next(scene_path.glob(f"layouts/{scene_id}_scene_layout.png"), None)
 
-        # Scene-level sample
-        scene_ok = True
-        if not scene_layout_path.exists():
-            n_missing_layout += 1
-            scene_ok = False
-        if not scene_graph_path.exists():
-            n_missing_graph += 1
-            scene_ok = False
+        manifest_rows.append({
+            "sample_id": f"{scene_id}_scene",
+            "sample_type": "scene",
+            "scene_id": scene_id,
+            "room_id": "0000",
+            "pov_type": "",
+            "viewpoint": "",
+            "pov_image": "",
+            "pov_embedding": "",
+            "graph_text": str(scene_graph) if scene_graph and scene_graph.exists() else "",
+            "graph_embedding": "",
+            "layout_image": str(layout_img) if layout_img and layout_img.exists() else "",
+            "layout_embedding": "",
+            "is_empty": 0,
+        })
 
-        if scene_ok:
-            n_valid_scene += 1
-            layout_emb = scene_layout_path.with_name(f"{scene_id}_scene_layout_emb.pt")
+        # ----------- Room-level -----------
+        rooms_root = scene_path / "rooms"
+        if not rooms_root.exists():
+            continue
+
+        for room_dir in sorted(p for p in rooms_root.iterdir() if p.is_dir()):
+            parquet_file = next(room_dir.glob(f"{scene_id}_*.parquet"), None)
+            if parquet_file:
+                # extract room id from filename like <scene_id>_<room>.parquet
+                match = re.search(r"_(\d+)\.parquet$", parquet_file.name)
+                room_id = match.group(1).zfill(4) if match else "0000"
+            else:
+                # fallback to folder name if no parquet
+                match = re.search(r"\d+", room_dir.name)
+                room_id = match.group(0).zfill(4) if match else "0000"
+
+            layout_img = None
+            layout_patterns = [
+                f"layouts/{scene_id}_{room_id}_*layout.png",
+                f"**/layouts/{scene_id}_{room_id}_*layout.png",
+                f"**/{scene_id}_{room_id}_room_seg_layout.png",
+                f"**/{scene_id}_{room_id}_room_layout.png",
+                f"**/{scene_id}_{room_id}_layout.png",
+                f"rooms/{room_id}/layouts/{scene_id}_sem_room_seg_layout.png",
+                f"rooms/{room_id}/layouts/*_sem_room_seg_layout.png"
+            ]
+            for pat in layout_patterns:
+                found = next(room_dir.glob(pat), None)
+                if found and "graph_vis" not in found.name.lower():
+                    layout_img = found
+                    break
+            graph_json = next(room_dir.glob(f"**/{scene_id}_{room_id}_graph.json"), None)
+            graph_pt = next(room_dir.glob(f"**/{scene_id}_{room_id}_graph.pt"), None)
+            layout_emb = next(room_dir.glob(f"**/{scene_id}_{room_id}_layout_emb.pt"), None)
+
             manifest_rows.append({
-                "sample_id": f"{scene_id}_scene",
-                "sample_type": "scene",
+                "sample_id": f"{scene_id}_{room_id}",
+                "sample_type": "room",
                 "scene_id": scene_id,
-                "room_id": "",
+                "room_id": room_id,
                 "pov_type": "",
                 "viewpoint": "",
                 "pov_image": "",
                 "pov_embedding": "",
-                "graph_text": str(scene_graph_path.resolve()),
-                "graph_embedding": str(scene_graph_path.with_suffix(".pt").resolve())
-                    if scene_graph_path.with_suffix(".pt").exists() else "",
-                "layout_image": str(scene_layout_path.resolve()),
-                "layout_embedding": str(layout_emb.resolve()) if layout_emb.exists() else "",
+                "graph_text": str(graph_json) if graph_json and graph_json.exists() else "",
+                "graph_embedding": str(graph_pt) if graph_pt and graph_pt.exists() else "",
+                "layout_image": str(layout_img) if layout_img and layout_img.exists() else "",
+                "layout_embedding": str(layout_emb) if layout_emb and layout_emb.exists() else "",
                 "is_empty": 0,
             })
-        else:
-            n_skipped_scene += 1
 
-        # Room-level samples
-        if not rooms_root.exists():
-            continue
-
-        for room_dir in sorted(rooms_root.iterdir()):
-            if not room_dir.is_dir():
+            # ----------- POV-level -----------
+            pov_root = room_dir / "povs"
+            if not pov_root.exists():
                 continue
 
-            room_id = room_dir.name
-            try:
-                room_id_int = int(room_id)
-            except ValueError:
-                room_id_int = room_id
-
-            n_rooms += 1
-            layout_path = room_dir / "layouts" / f"{scene_id}_{room_id}_room_seg_layout.png"
-            # Try .json first (from build_graphs), fallback to .txt (from create_graph_text_files)
-            graph_path = room_dir / "layouts" / f"{scene_id}_{room_id}_graph.json"
-            if not graph_path.exists():
-                graph_path = room_dir / "layouts" / f"{scene_id}_{room_id}_graph.txt"
-
-            if not layout_path.exists() or not graph_path.exists():
-                n_skipped_room += 1
-                if not layout_path.exists():
-                    n_missing_layout += 1
-                if not graph_path.exists():
-                    n_missing_graph += 1
-                continue
-
-            n_valid_room += 1
-            layout_emb = layout_path.with_name(f"{scene_id}_{room_id}_layout_emb.pt")
-            graph_emb = graph_path.with_suffix(".pt")
-
-            # Find POVs
-            povs_found = False
-            for pov_type in ["seg", "tex"]:
-                pov_dir = room_dir / "povs" / pov_type
-                if not pov_dir.exists():
+            for tex_path in sorted(pov_root.glob("**/*_pov_tex.png")):
+                base = tex_path.stem.replace("_pov_tex", "")
+                match = re.search(r"_(\d+)_v(\d+)", base)
+                if not match:
                     continue
+                room_id, view_id = match.groups()
+                view_id = f"v{view_id.zfill(2)}"
 
-                for pov_img in sorted(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_{pov_type}.png")):
-                    povs_found = True
-                    n_povs += 1
-                    fname = pov_img.stem
-                    parts = fname.split("_")
-                    view_token = [p for p in parts if p.startswith("v")]
-                    viewpoint = view_token[0] if view_token else "v00"
-                    sample_id = f"{scene_id}_{room_id}_{pov_type}_{viewpoint}"
+                seg_img = next(pov_root.glob(f"**/{scene_id}_{room_id}_{view_id}_pov_seg.png"), None)
+                tex_emb = next(pov_root.glob(f"**/{scene_id}_{room_id}_{view_id}_pov_tex.pt"), None)
+                seg_emb = next(pov_root.glob(f"**/{scene_id}_{room_id}_{view_id}_pov_seg.pt"), None)
 
-                    pov_emb = pov_img.with_suffix(".pt")
-
-                    manifest_rows.append({
-                        "sample_id": sample_id,
-                        "sample_type": "room",
-                        "scene_id": scene_id,
-                        "room_id": room_id_int,
-                        "pov_type": pov_type,
-                        "viewpoint": viewpoint,
-                        "pov_image": str(pov_img.resolve()),
-                        "pov_embedding": str(pov_emb.resolve()) if pov_emb.exists() else "",
-                        "graph_text": str(graph_path.resolve()),
-                        "graph_embedding": str(graph_emb.resolve()) if graph_emb.exists() else "",
-                        "layout_image": str(layout_path.resolve()),
-                        "layout_embedding": str(layout_emb.resolve()) if layout_emb.exists() else "",
-                        "is_empty": 0,
-                    })
-            
-            # If no POVs found, still add a room-level entry with empty POV fields
-            if not povs_found:
-                sample_id = f"{scene_id}_{room_id}_room"
                 manifest_rows.append({
-                    "sample_id": sample_id,
-                    "sample_type": "room",
+                    "sample_id": f"{scene_id}_{room_id}_{view_id}",
+                    "sample_type": "pov",
                     "scene_id": scene_id,
-                    "room_id": room_id_int,
-                    "pov_type": "",
-                    "viewpoint": "",
-                    "pov_image": "",
-                    "pov_embedding": "",
-                    "graph_text": str(graph_path.resolve()),
-                    "graph_embedding": str(graph_emb.resolve()) if graph_emb.exists() else "",
-                    "layout_image": str(layout_path.resolve()),
-                    "layout_embedding": str(layout_emb.resolve()) if layout_emb.exists() else "",
+                    "room_id": room_id,
+                    "pov_type": "tex",
+                    "viewpoint": view_id,
+                    "pov_image": str(tex_path),
+                    "pov_embedding": str(tex_emb) if tex_emb and tex_emb.exists() else "",
+                    "graph_text": "",
+                    "graph_embedding": str(seg_emb) if seg_emb and seg_emb.exists() else "",
+                    "layout_image": str(seg_img) if seg_img and seg_img.exists() else "",
+                    "layout_embedding": "",
                     "is_empty": 0,
                 })
 
-    output_manifest.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(manifest_rows, columns=fieldnames).to_csv(output_manifest, index=False)
+    # ----------- Write CSV -----------
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "sample_id", "sample_type", "scene_id", "room_id",
+            "pov_type", "viewpoint",
+            "pov_image", "pov_embedding",
+            "graph_text", "graph_embedding",
+            "layout_image", "layout_embedding",
+            "is_empty",
+        ])
+        writer.writeheader()
+        writer.writerows(manifest_rows)
 
-    print("\n[SUMMARY]")
-    print(f"Scenes total: {n_scenes}")
-    print(f"Rooms total:  {n_rooms}")
-    print(f"POVs total:   {n_povs}")
-    print(f"Valid scenes: {n_valid_scene}, Skipped scenes: {n_skipped_scene}")
-    print(f"Valid rooms:  {n_valid_room}, Skipped rooms:  {n_skipped_room}")
-    print(f"Missing graphs:  {n_missing_graph}")
-    print(f"Missing layouts: {n_missing_layout}")
-    print(f"Final manifest entries: {len(manifest_rows)}")
-    print(f"[INFO] Wrote manifest → {output_manifest}")
+    print(f"[INFO] Wrote manifest → {output_csv} ({len(manifest_rows)} entries)")
+
+
 
 
 def collect_graphs(root_dir: Path, output_path: Path):
@@ -440,51 +414,87 @@ def collect_dataset(root: Path, out_dir: Path, layouts_csv: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--type", required=True,
-                       choices=["all", "graphs", "layouts", "dataset", "povs"],
-                       help="Collection type")
-    
+    import time
+    parser = argparse.ArgumentParser(
+        description="Dataset collection utility: builds manifests for scenes, rooms, layouts, graphs, or POVs."
+    )
+    parser.add_argument(
+        "--type", required=True,
+        choices=["all", "graphs", "layouts", "dataset", "povs"],
+        help="Collection type to run. "
+             "'all' = full manifest, 'graphs' = collect graph files, "
+             "'layouts' = collect layout images, 'dataset' = collect dataset file structure, 'povs' = collect POV metadata."
+    )
+
     # Common arguments
-    parser.add_argument("--root", help="Dataset root directory (for graphs, layouts, dataset)")
-    parser.add_argument("--data_root", help="Dataset root directory (for 'all' type)")
+    parser.add_argument("--root", help="Dataset root directory (for graphs, layouts, dataset, or povs)")
+    parser.add_argument("--data_root", help="Dataset root directory (for 'all' mode only)")
     parser.add_argument("--output", help="Output manifest CSV path")
     parser.add_argument("--out", help="Output directory (for 'dataset' type)")
-    
-    # Type-specific arguments
-    parser.add_argument("--layouts", help="Path to layouts.csv (for dataset type, provides is_empty info)")
+
+    # Type-specific
+    parser.add_argument("--layouts", help="Path to layouts.csv (for dataset or povs mode)")
     parser.add_argument("--workers", type=int, default=multiprocessing.cpu_count(),
-                       help="Number of parallel workers (for layouts type)")
-    
+                       help="Number of parallel workers (for 'layouts' type)")
+
     args = parser.parse_args()
-    
-    if args.type == "all":
-        if not args.data_root or not args.output:
-            parser.error("--type all requires --data_root and --output")
-        collect_all(Path(args.data_root), Path(args.output))
-    
-    elif args.type == "graphs":
-        if not args.root or not args.output:
-            parser.error("--type graphs requires --root and --output")
-        collect_graphs(Path(args.root), Path(args.output))
-    
-    elif args.type == "layouts":
-        if not args.root or not args.output:
-            parser.error("--type layouts requires --root and --output")
-        collect_layouts(Path(args.root), Path(args.output), args.workers)
-    
-    elif args.type == "dataset":
-        if not args.root or not args.out or not args.layouts:
-            parser.error("--type dataset requires --root, --out, and --layouts")
-        collect_dataset(Path(args.root), Path(args.out), Path(args.layouts))
-    
-    elif args.type == "povs":
-        if not args.root or not args.output or not args.layouts:
-            parser.error("--type povs requires --root, --output, and --layouts")
-        empty_map = load_empty_map(Path(args.layouts))
-        collect_povs(Path(args.root), Path(args.output), empty_map)
+
+    start_time = time.time()
+    print("=" * 70)
+    print(f"[INFO] Starting collection")
+    print(f"[INFO] Mode       : {args.type}")
+    print(f"[INFO] Data root  : {args.data_root or args.root}")
+    print(f"[INFO] Output     : {args.output or args.out}")
+    print("=" * 70)
+
+    try:
+        if args.type == "all":
+            if not args.data_root or not args.output:
+                parser.error("--type all requires --data_root and --output")
+            print("[STEP] Collecting complete dataset manifest...")
+            collect_all(Path(args.data_root), Path(args.output))
+
+        elif args.type == "graphs":
+            if not args.root or not args.output:
+                parser.error("--type graphs requires --root and --output")
+            print("[STEP] Collecting graph metadata...")
+            collect_graphs(Path(args.root), Path(args.output))
+
+        elif args.type == "layouts":
+            if not args.root or not args.output:
+                parser.error("--type layouts requires --root and --output")
+            print(f"[STEP] Scanning layouts with {args.workers} workers...")
+            collect_layouts(Path(args.root), Path(args.output), args.workers)
+
+        elif args.type == "dataset":
+            if not args.root or not args.out or not args.layouts:
+                parser.error("--type dataset requires --root, --out, and --layouts")
+            print("[STEP] Collecting dataset structure and layout metadata...")
+            collect_dataset(Path(args.root), Path(args.out), Path(args.layouts))
+
+        elif args.type == "povs":
+            if not args.root or not args.output or not args.layouts:
+                parser.error("--type povs requires --root, --output, and --layouts")
+            print("[STEP] Collecting POV metadata and linking layouts...")
+            empty_map = load_empty_map(Path(args.layouts))
+            collect_povs(Path(args.root), Path(args.output), empty_map)
+
+        else:
+            parser.error(f"Unknown collection type: {args.type}")
+
+    except Exception as e:
+        import traceback
+        print("\n[ERROR] Collection failed:")
+        print(traceback.format_exc())
+        raise e
+
+    elapsed = time.time() - start_time
+    print("=" * 70)
+    print(f"[DONE] Completed collection type '{args.type}' in {elapsed:.1f} seconds")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
     main()
+
 

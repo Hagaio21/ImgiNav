@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .base_component import BaseComponent
+from models.components.base_component import BaseComponent
 from .encoder import Encoder
 from .decoder import Decoder
 
