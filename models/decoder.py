@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from components.base_component import BaseComponent
-from models.components.heads import HEAD_REGISTRY
+from .components.base_component import BaseComponent
+from .components.heads import HEAD_REGISTRY
 
 
 class Decoder(BaseComponent):

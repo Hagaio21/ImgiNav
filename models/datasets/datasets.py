@@ -24,6 +24,14 @@ class ManifestDataset(BaseComponent, Dataset):
         self.path_col = self._init_kwargs.get("path_col", "path")
         self.label_col = self._init_kwargs.get("label_col", None)
 
+        # Filter out rows with NaN values in required columns before applying filters
+        if self.outputs:
+            required_cols = list(self.outputs.values())
+            if self.label_col:
+                required_cols.append(self.label_col)
+            # Drop rows where any required column has NaN
+            self.df = self.df.dropna(subset=required_cols)
+
         # optional filters
         filters = self._init_kwargs.get("filters", None)
         if filters:

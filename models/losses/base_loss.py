@@ -78,18 +78,18 @@ class CrossEntropyLoss(LossComponent):
         pred = preds[self.key]
         tgt = targets[self.target_key]
 
-        # Convert RGB layout to segmentation mask
+        # Convert RGB layout to segmentation mask (4D with 3 channels = RGB image)
         if tgt.ndim == 4 and tgt.shape[1] == 3:
             from .loss_utils import create_seg_mask
             tgt = create_seg_mask(tgt, ignore_index=self.ignore_index).to(tgt.device)
         elif tgt.ndim == 4 and tgt.shape[1] == 1:
             tgt = tgt.squeeze(1)
-        # Convert room_id to class index for classification
-        elif tgt.ndim == 0 or (tgt.ndim == 1 and tgt.numel() > 0):
-            # Check if values are in room_id range (3000-3999)
-            if tgt.numel() > 0 and torch.all((tgt >= 3000) & (tgt < 4000)):
-                from .loss_utils import room_id_to_class_index
-                tgt = room_id_to_class_index(tgt, ignore_index=self.ignore_index)
+        # Convert room_id label to class index for classification
+        # Labels are scalars (0D) or 1D tensors (batched) - always convert to class index
+        elif tgt.ndim == 0 or tgt.ndim == 1:
+            from .loss_utils import room_id_to_class_index
+            tgt = room_id_to_class_index(tgt, ignore_index=self.ignore_index).to(tgt.device)
+        
         if tgt.dtype != torch.long:
             tgt = tgt.long()
 

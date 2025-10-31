@@ -6,7 +6,7 @@ experiment:
   save_path: "outputs/exp1_rgb_only"
 
 dataset:
-  manifest: ""  # Path to manifest CSV file
+  manifest: "test_dataset/manifests/manifest.csv"  # Path to manifest CSV file
   outputs:
     rgb: "layout_image"  # Column name for layout RGB images
   filters:
@@ -35,8 +35,8 @@ autoencoder:
         final_activation: tanh
 
 training:
-  batch_size: 32
-  num_workers: 4
+  batch_size: 4
+  num_workers: 0  # Use 0 on Windows to avoid multiprocessing issues
   shuffle: true
   epochs: 2
   learning_rate: 0.0001

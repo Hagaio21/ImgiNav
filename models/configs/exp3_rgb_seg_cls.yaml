@@ -6,7 +6,7 @@ experiment:
   save_path: "outputs/exp3_rgb_seg_cls"
 
 dataset:
-  manifest: ""  # Path to manifest CSV file
+  manifest: "test_dataset/manifests/manifest.csv"  # Path to manifest CSV file
   outputs:
     rgb: "layout_image"  # Column name for layout RGB images
     segmentation: "layout_image"  # Column name for layout/segmentation images (same as rgb)
@@ -43,8 +43,8 @@ autoencoder:
         num_classes: 34  # From room_id_to_class.yaml
 
 training:
-  batch_size: 32
-  num_workers: 4
+  batch_size: 4
+  num_workers: 0  # Use 0 on Windows to avoid multiprocessing issues
   shuffle: true
   epochs: 2
   learning_rate: 0.0001
