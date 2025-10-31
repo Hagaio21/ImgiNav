@@ -3,7 +3,6 @@ import torch.nn as nn
 from .base_component import BaseComponent
 from .blocks import TimeEmbedding, DownBlock, UpBlock, ResidualBlock
 
-
 class ConditionFusion(BaseComponent):
     def _build(self):
         mode = self._init_kwargs.get("mode", "none")
@@ -34,7 +33,6 @@ class ConditionFusion(BaseComponent):
             return self.gamma(cond) * x + self.beta(cond)
         return x
 
-
 class DualUNet(BaseComponent):
     def _build(self):
         in_ch = self._init_kwargs.get("in_channels", 3)
@@ -46,6 +44,7 @@ class DualUNet(BaseComponent):
         time_dim = self._init_kwargs.get("time_dim", 128)
         fusion_mode = self._init_kwargs.get("fusion_mode", "none")
         cond_mult = self._init_kwargs.get("cond_mult", 1.0)
+        norm_groups = self._init_kwargs.get("norm_groups", 8)
 
         self.time_mlp = TimeEmbedding(time_dim)
         self.use_cond = cond_ch > 0
@@ -60,10 +59,10 @@ class DualUNet(BaseComponent):
 
         for i in range(depth):
             ch = base_ch * (2 ** i)
-            self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks))
+            self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups))
             if self.use_cond:
                 cond_c = int(base_ch * cond_mult * (2 ** i))
-                self.cond_downs.append(DownBlock(cond_prev_ch, cond_c, time_dim, num_res_blocks))
+                self.cond_downs.append(DownBlock(cond_prev_ch, cond_c, time_dim, num_res_blocks, norm_groups))
                 fusion_cfg = {
                     "mode": fusion_mode,
                     "x_channels": ch,
@@ -74,7 +73,7 @@ class DualUNet(BaseComponent):
             prev_ch = ch
             feats.append(ch)
 
-        self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim)
+        self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups)
         self.bottleneck_fusion = ConditionFusion(
             mode=fusion_mode,
             x_channels=prev_ch,
@@ -83,7 +82,7 @@ class DualUNet(BaseComponent):
 
         self.ups = nn.ModuleList()
         for ch in reversed(feats):
-            self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks))
+            self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups))
             prev_ch = ch
 
         self.final = nn.Conv2d(prev_ch, out_ch, 1)
@@ -121,5 +120,6 @@ class DualUNet(BaseComponent):
             "time_dim": self._init_kwargs.get("time_dim", 128),
             "fusion_mode": self._init_kwargs.get("fusion_mode", "none"),
             "cond_mult": self._init_kwargs.get("cond_mult", 1.0),
+            "norm_groups": self._init_kwargs.get("norm_groups", 8),
         })
         return cfg

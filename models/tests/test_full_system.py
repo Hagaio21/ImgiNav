@@ -110,7 +110,8 @@ def test_full_system(tmp_path):
     t = torch.randint(0, model.scheduler.num_steps, (x0.size(0),))
 
     outputs = model(x0, t, noise=noise)
-    targets = {"rgb": x0, "noise": noise}
+    # Use encoded noise from outputs (in latent space) to match pred_noise shape
+    targets = {"rgb": x0, "noise": outputs["noise"]}
 
     loss, logs = loss_fn(outputs, targets)
     loss.backward()

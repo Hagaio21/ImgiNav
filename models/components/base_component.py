@@ -136,26 +136,31 @@ class BaseComponent(nn.Module):
         - Returns a list of {params, lr} dicts for optimizer creation.
         """
         groups = []
-
-        # top-level parameters not in submodules
-        top_params = [p for p in self.parameters() if p.requires_grad]
-        if top_params:
-            base_lr = self._init_kwargs.get("lr", None)
-            group = {"params": top_params}
-            if base_lr is not None:
-                group["lr"] = base_lr
-            groups.append(group)
-
-        # child modules
+        
+        # Track parameters that belong to child modules
+        child_params = set()
+        
+        # First, collect parameters from child modules
         for name, module in self.named_children():
             trainable = [p for p in module.parameters() if p.requires_grad]
             if not trainable:
                 continue
+            # Track these parameters
+            child_params.update(trainable)
             lr_key = f"{name}_lr"
             lr_value = self._init_kwargs.get(lr_key, None)
             group = {"params": trainable}
             if lr_value is not None:
                 group["lr"] = lr_value
+            groups.append(group)
+
+        # Collect top-level parameters that are NOT in child modules
+        top_params = [p for p in self.parameters() if p.requires_grad and p not in child_params]
+        if top_params:
+            base_lr = self._init_kwargs.get("lr", None)
+            group = {"params": top_params}
+            if base_lr is not None:
+                group["lr"] = base_lr
             groups.append(group)
 
         return groups

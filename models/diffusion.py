@@ -34,11 +34,19 @@ class DiffusionModel(BaseComponent):
     # ------------------------------------------------------------------
     def forward(self, x0, t, cond=None, noise=None):
         """Forward diffusion training step."""
-        if noise is None:
-            noise = torch.randn_like(x0)
-
         # encode image
         latents = self.autoencoder.encoder(x0)
+        
+        # Generate noise in latent space if not provided, or encode if in image space
+        if noise is None:
+            noise = torch.randn_like(latents)
+        elif noise.shape != latents.shape:
+            # If noise is in image space, encode it to latent space
+            if noise.shape == x0.shape:
+                noise = self.autoencoder.encoder(noise)
+            else:
+                # Reshape or regenerate if shapes don't match
+                noise = torch.randn_like(latents)
 
         # add noise
         noisy_latents = self.scheduler.add_noise(latents, noise, t)
@@ -53,6 +61,7 @@ class DiffusionModel(BaseComponent):
             "latent": latents,
             "noisy_latent": noisy_latents,
             "pred_noise": pred_noise,
+            "noise": noise,  # Return the noise used (in latent space)
             **decoded,
         }
 

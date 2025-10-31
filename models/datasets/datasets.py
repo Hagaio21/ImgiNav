@@ -3,6 +3,7 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import pandas as pd
 from pathlib import Path
+import numpy as np
 from ..components.base_component import BaseComponent
 
 class ManifestDataset(BaseComponent, Dataset):
@@ -98,6 +99,13 @@ class ManifestDataset(BaseComponent, Dataset):
                 img = Image.open(p).convert("RGB")
                 if self.transform:
                     img = self.transform(img)
+                else:
+                    # Default: convert PIL Image to tensor
+                    # Convert to numpy array, then to tensor, and normalize to [0, 1]
+                    img = torch.from_numpy(np.array(img)).float()
+                    # Convert from HWC to CHW format
+                    if img.ndim == 3:
+                        img = img.permute(2, 0, 1) / 255.0
                 return img
             if ext == ".pt":
                 return torch.load(p)
