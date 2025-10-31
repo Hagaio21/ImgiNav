@@ -1,12 +1,12 @@
 #!/bin/bash
-#BSUB -J diffusion_sweep[1-6]
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_sweep.%J.%I.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_sweep.%J.%I.err
+#BSUB -J autoencoder_exps[1-6]
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/autoencoder_exps.%J.%I.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/autoencoder_exps.%J.%I.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=16000]"
+#BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
-#BSUB -W 10:00
-#BSUB -q gpuv100
+#BSUB -W 20:00
+#BSUB -q gpul40s
 
 set -euo pipefail
 
@@ -14,17 +14,17 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
-CONFIG_DIR="${BASE_DIR}/config/architecture/diffusion"
+PYTHON_SCRIPT="${BASE_DIR}/training/train.py"
+CONFIG_DIR="${BASE_DIR}/models/configs"
 
-# Ordered list of YAMLs for unconditioned diffusion sweep
+# Ordered list of YAMLs to run
 CONFIG_FILES=(
-  "${CONFIG_DIR}/E1_Linear_64.yaml"
-  "${CONFIG_DIR}/E2_Cosine_64.yaml"
-  "${CONFIG_DIR}/E3_Quadratic_64.yaml"
-  "${CONFIG_DIR}/E4_Linear_128.yaml"
-  "${CONFIG_DIR}/E5_Cosine_128.yaml"
-  "${CONFIG_DIR}/E6_Quadratic_128.yaml"
+  "${CONFIG_DIR}/exp1_rgb_only.yaml"
+  "${CONFIG_DIR}/exp2_rgb_seg.yaml"
+  "${CONFIG_DIR}/exp3_rgb_seg_cls.yaml"
+  "${CONFIG_DIR}/exp4_rgb_only_large.yaml"
+  "${CONFIG_DIR}/exp5_rgb_seg_large.yaml"
+  "${CONFIG_DIR}/exp6_rgb_seg_cls_large.yaml"
 )
 
 # Pick config for this array index
@@ -56,14 +56,16 @@ fi
 # =============================================================================
 echo "=========================================="
 echo "Array job index: ${LSB_JOBINDEX}"
-echo "Running Diffusion experiment"
+echo "Training Autoencoder experiment"
 echo "Config: ${CONFIG_FILE}"
 echo "Start: $(date)"
 echo "=========================================="
 
-python "${PYTHON_SCRIPT}" --config "${CONFIG_FILE}"
+cd "${BASE_DIR}"
+python "${PYTHON_SCRIPT}" "${CONFIG_FILE}"
 
 echo "=========================================="
-echo "Experiment COMPLETE"
+echo "Training COMPLETE"
 echo "End: $(date)"
 echo "=========================================="
+

@@ -3,13 +3,13 @@
 
 experiment:
   name: "exp5_rgb_seg_large"
-  save_path: "outputs/exp5_rgb_seg_large"
+  save_path: "/work3/s233249/ImgiNav/experiments/NEW/exp5_rgb_seg_large"
 
 dataset:
-  manifest: ""  # Path to manifest CSV file
+  manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
   outputs:
-    rgb: "layout_image"  # Column name for layout RGB images
-    segmentation: "layout_image"  # Column name for layout/segmentation images (same as rgb)
+    rgb: "layout_path"  # Column name for layout RGB images
+    segmentation: "layout_path"  # Column name for layout/segmentation images (same as rgb)
   filters:
     is_empty: [false]  # Filter out empty layouts
   return_path: false
@@ -39,13 +39,15 @@ autoencoder:
         num_classes: 10  # From rgb_to_class.yaml
 
 training:
-  batch_size: 16  # Smaller batch size for larger model
-  num_workers: 4
+  batch_size: 64
+  num_workers: 8
   shuffle: true
   epochs: 100
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
+  save_interval: 5  # Save checkpoint every 5 epochs
+  sample_interval: 5  # Save sample images every 5 epochs
   
   loss:
     type: CompositeLoss

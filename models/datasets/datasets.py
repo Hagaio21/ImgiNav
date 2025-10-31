@@ -105,10 +105,22 @@ class ManifestDataset(BaseComponent, Dataset):
         if pd.isna(val):
             raise ValueError(f"NaN value in manifest")
         
+        # Handle string "scene" for room_id column (maps to room_id 0 -> class index 0)
+        if isinstance(val, str) and val.lower() == "scene":
+            return torch.tensor(0)
+        
+        # Handle numeric values (like room_id), return as-is
+        if isinstance(val, (int, float)):
+            return torch.tensor(val)
+        
         if isinstance(val, str):
             # Handle empty strings
             if not val or val.strip() == "":
                 raise ValueError(f"Empty path in manifest")
+            # Try to convert string to number if it's numeric (for numeric room_ids as strings)
+            if val.replace('.', '').replace('-', '').isdigit():
+                return torch.tensor(float(val))
+            # Otherwise treat as file path
             p = Path(val)
             # Resolve relative paths relative to manifest directory
             if not p.is_absolute():
@@ -132,12 +144,6 @@ class ManifestDataset(BaseComponent, Dataset):
                 return img
             if ext == ".pt":
                 return torch.load(p)
-        # For numeric values (like room_id), return as-is
-        if isinstance(val, (int, float)):
-            return torch.tensor(val)
-        # Try to convert string to number if it's numeric
-        if isinstance(val, str) and val.replace('.', '').replace('-', '').isdigit():
-            return torch.tensor(float(val))
         return torch.tensor(val)
 
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4):

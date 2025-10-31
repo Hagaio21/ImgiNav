@@ -5,12 +5,16 @@ Loads experiment config, builds model, dataset, loss, and runs training.
 """
 
 import torch
+import torch.nn.functional as F
 import yaml
 import json
 import sys
 from pathlib import Path
 from tqdm import tqdm
 import argparse
+from torchvision.utils import save_image
+from PIL import Image
+import numpy as np
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -165,6 +169,77 @@ def eval_epoch(model, dataloader, loss_fn, device):
     return avg_loss, avg_logs
 
 
+def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=32, target_size=256):
+    """Save sample images from validation set."""
+    model.eval()
+    samples_dir = output_dir / "samples" / f"epoch_{epoch:03d}"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get one batch for visualization
+    batch_iter = iter(val_loader)
+    batch = next(batch_iter)
+    batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    
+    # Limit batch size for visualization
+    if isinstance(batch.get("rgb"), torch.Tensor):
+        batch_size = min(batch["rgb"].shape[0], sample_batch_size)
+        batch = {k: v[:batch_size] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    
+    with torch.no_grad():
+        outputs = model(batch["rgb"])
+    
+    # Save RGB input and reconstruction
+    if "rgb" in batch and "rgb" in outputs:
+        input_rgb = batch["rgb"]
+        pred_rgb = outputs["rgb"]
+        
+        # Denormalize from [-1, 1] or [0, 1] to [0, 1]
+        if pred_rgb.min() < 0:
+            pred_rgb = (pred_rgb + 1) / 2  # tanh output: [-1, 1] -> [0, 1]
+        pred_rgb = torch.clamp(pred_rgb, 0, 1)
+        
+        # Handle input normalization (assumes [0, 1])
+        input_rgb = torch.clamp(input_rgb, 0, 1)
+        
+        # Resize if needed
+        if input_rgb.shape[-1] != target_size:
+            input_rgb = F.interpolate(input_rgb, size=(target_size, target_size), mode='bilinear', align_corners=False)
+            pred_rgb = F.interpolate(pred_rgb, size=(target_size, target_size), mode='bilinear', align_corners=False)
+        
+        # Create grid: [input, pred, input, pred, ...]
+        images = []
+        for i in range(batch_size):
+            images.append(input_rgb[i])
+            images.append(pred_rgb[i])
+        
+        grid = torch.stack(images)
+        grid_path = samples_dir / "rgb_input_pred.png"
+        save_image(grid, grid_path, nrow=2, padding=2, normalize=False)
+    
+    # Save segmentation if available
+    if "segmentation" in outputs:
+        pred_seg = outputs["segmentation"]  # [B, C, H, W]
+        # Get predicted classes
+        pred_classes = torch.argmax(pred_seg, dim=1)  # [B, H, W]
+        
+        # Resize if needed
+        if pred_classes.shape[-1] != target_size:
+            pred_classes = F.interpolate(
+                pred_classes.unsqueeze(1).float(),
+                size=(target_size, target_size),
+                mode='nearest'
+            ).squeeze(1).long()
+        
+        # Normalize to [0, 1] for visualization (simple colormap)
+        pred_classes_vis = (pred_classes.float() / pred_classes.max().float().clamp(min=1)) * 255
+        pred_classes_vis = pred_classes_vis.unsqueeze(1).repeat(1, 3, 1, 1) / 255.0
+        
+        grid_path = samples_dir / "segmentation_pred.png"
+        save_image(pred_classes_vis, grid_path, nrow=4, padding=2, normalize=False)
+    
+    print(f"  Saved samples to {samples_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train autoencoder from experiment config")
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
@@ -281,11 +356,13 @@ def main():
     num_epochs = config["training"]["epochs"]
     save_interval = config["training"].get("save_interval", 1)
     eval_interval = config["training"].get("eval_interval", 1)
+    sample_interval = config["training"].get("sample_interval", 5)
     keep_checkpoints = config["training"].get("keep_checkpoints", None)
     
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"  Save interval: every {save_interval} epoch(s)")
     print(f"  Eval interval: every {eval_interval} epoch(s)")
+    print(f"  Sample interval: every {sample_interval} epoch(s)")
     if keep_checkpoints:
         print(f"  Keeping only last {keep_checkpoints} checkpoints")
     
@@ -320,6 +397,11 @@ def main():
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 print(f"  New best validation loss: {best_val_loss:.6f}")
+        
+        # Save samples at specified interval (use validation set if available, else training set)
+        if (epoch + 1) % sample_interval == 0:
+            loader_to_use = val_loader if val_loader else train_loader
+            save_samples(model, loader_to_use, device, output_dir, epoch + 1, sample_batch_size=32)
         
         training_history.append(epoch_log)
         
