@@ -6,6 +6,7 @@ Loads experiment config, builds model, dataset, loss, and runs training.
 
 import torch
 import yaml
+import json
 import sys
 from pathlib import Path
 from tqdm import tqdm
@@ -36,7 +37,7 @@ def build_model(config):
 def build_dataset(config):
     """Build dataset from config."""
     ds_cfg = config["dataset"]
-    dataset = ManifestDataset.from_config(ds_cfg)
+    dataset = ManifestDataset(**ds_cfg)
     return dataset
 
 
@@ -48,17 +49,38 @@ def build_loss(config):
 
 
 def build_optimizer(model, config):
-    """Build optimizer from config."""
+    """Build optimizer from config using model's parameter_groups for trainable params."""
     lr = config["training"]["learning_rate"]
     weight_decay = config["training"].get("weight_decay", 0.0)
     optimizer_type = config["training"].get("optimizer", "AdamW").lower()
     
+    # Get parameter groups from model (respects frozen params and per-module LRs)
+    param_groups = model.parameter_groups()
+    
+    # If no groups returned (all frozen or no per-module LRs), use trainable params with base LR
+    if not param_groups:
+        trainable_params = list(model.trainable_parameters())
+        if not trainable_params:
+            raise ValueError("No trainable parameters found in model!")
+        param_groups = [{"params": trainable_params, "lr": lr}]
+    else:
+        # Set default LR for groups that don't have one specified
+        for group in param_groups:
+            if "lr" not in group:
+                group["lr"] = lr
+    
+    # Add weight_decay to all groups
+    for group in param_groups:
+        group["weight_decay"] = weight_decay
+    
     if optimizer_type == "adamw":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = torch.optim.AdamW(param_groups)
     elif optimizer_type == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = torch.optim.Adam(param_groups)
     elif optimizer_type == "sgd":
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=0.9)
+        for group in param_groups:
+            group["momentum"] = 0.9
+        optimizer = torch.optim.SGD(param_groups)
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_type}")
     
@@ -108,13 +130,45 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch):
     return avg_loss, avg_logs
 
 
+def eval_epoch(model, dataloader, loss_fn, device):
+    """Evaluate for one epoch."""
+    model.eval()
+    total_loss = 0.0
+    total_samples = 0
+    log_dict = {}
+    
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Eval", leave=False):
+            # Move batch to device
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            
+            # Forward pass
+            outputs = model(batch["rgb"])
+            
+            # Compute loss
+            loss, logs = loss_fn(outputs, batch)
+            
+            # Accumulate stats
+            batch_size = batch["rgb"].shape[0]
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+            
+            # Update logs
+            for k, v in logs.items():
+                if k not in log_dict:
+                    log_dict[k] = 0.0
+                log_dict[k] += v.item() * batch_size
+    
+    avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+    avg_logs = {k: v / total_samples for k, v in log_dict.items()}
+    
+    return avg_loss, avg_logs
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train autoencoder from experiment config")
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
-                       help="Device to train on (default: cuda if available, else cpu)")
     parser.add_argument("--resume", type=Path, default=None, help="Path to checkpoint to resume from")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for checkpoints and logs")
     
     args = parser.parse_args()
     
@@ -124,16 +178,27 @@ def main():
     exp_name = config.get("experiment", {}).get("name", "unnamed")
     print(f"Experiment: {exp_name}")
     
-    # Setup output directory
-    if args.output_dir is None:
-        args.output_dir = Path("outputs") / exp_name
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {args.output_dir}")
+    # Get device from config or default
+    device = config.get("training", {}).get("device")
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+    
+    # Get output directory from config
+    output_dir = config.get("experiment", {}).get("save_path")
+    if output_dir is None:
+        # Default: outputs/experiment_name
+        output_dir = Path("outputs") / exp_name
+    else:
+        output_dir = Path(output_dir)
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_dir}")
     
     # Build components
     print("Building model...")
     model = build_model(config)
-    model = model.to(args.device)
+    model = model.to(device)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     print("Building dataset...")
@@ -143,7 +208,21 @@ def main():
         shuffle=config["training"].get("shuffle", True),
         num_workers=config["training"].get("num_workers", 4)
     )
-    print(f"Dataset size: {len(dataset)}, Batches: {len(train_loader)}")
+    print(f"Train dataset size: {len(dataset)}, Batches: {len(train_loader)}")
+    
+    # Build validation dataset if provided
+    val_dataset = None
+    val_loader = None
+    if "validation" in config:
+        val_cfg = config["validation"].get("dataset", {})
+        if val_cfg:
+            val_dataset = ManifestDataset(**val_cfg)
+            val_loader = val_dataset.make_dataloader(
+                batch_size=config["validation"].get("batch_size", config["training"]["batch_size"]),
+                shuffle=False,
+                num_workers=config["training"].get("num_workers", 4)
+            )
+            print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)}")
     
     print("Building loss function...")
     loss_fn = build_loss(config)
@@ -153,42 +232,149 @@ def main():
     
     # Resume from checkpoint if provided
     start_epoch = 0
+    training_history = []
     if args.resume and args.resume.exists():
         print(f"Resuming from checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=args.device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        start_epoch = checkpoint.get("epoch", 0) + 1
-        print(f"Resuming from epoch {start_epoch}")
+        # Load model using class method (includes config)
+        model = Autoencoder.load_checkpoint(args.resume, map_location=device)
+        model = model.to(device)
+        
+        # Try to load training history from logs (handle both with/without exp name)
+        checkpoint_name = Path(args.resume).stem
+        if "_checkpoint_" in checkpoint_name:
+            logs_name = checkpoint_name.replace("_checkpoint_", "_logs_")
+        else:
+            logs_name = checkpoint_name.replace("checkpoint_", "logs_")
+        logs_path = Path(args.resume).parent / f"{logs_name}.json"
+        if logs_path.exists():
+            with open(logs_path, "r") as f:
+                latest_log = json.load(f)
+            start_epoch = latest_log.get("epoch", 0)
+            print(f"Resuming from epoch {start_epoch} (from logs)")
+            
+            # Try to load full training history if available (extract exp name from checkpoint)
+            if "_checkpoint_" in checkpoint_name:
+                exp_name_from_checkpoint = checkpoint_name.split("_checkpoint_")[0]
+                history_path = Path(args.resume).parent / f"{exp_name_from_checkpoint}_training_history.json"
+            else:
+                history_path = Path(args.resume).parent / "training_history.json"
+            if history_path.exists():
+                with open(history_path, "r") as f:
+                    training_history = json.load(f)
+                    print(f"Loaded training history ({len(training_history)} epochs)")
+        else:
+            # Extract epoch number from checkpoint filename
+            checkpoint_name = Path(args.resume).stem
+            if "epoch_" in checkpoint_name:
+                try:
+                    epoch_num = int(checkpoint_name.split("epoch_")[1].split(".")[0])
+                    start_epoch = epoch_num
+                    print(f"Resuming from epoch {start_epoch} (from filename)")
+                except:
+                    print("Warning: Could not determine epoch from checkpoint, starting from epoch 0")
+            else:
+                print("Warning: Could not determine epoch, optimizer state not resumed")
+        
+        # Note: Optimizer state is not saved/restored. Training will restart optimizer from scratch.
     
-    # Training loop
+    # Training configuration (all from config)
     num_epochs = config["training"]["epochs"]
+    save_interval = config["training"].get("save_interval", 1)
+    eval_interval = config["training"].get("eval_interval", 1)
+    keep_checkpoints = config["training"].get("keep_checkpoints", None)
+    
     print(f"\nStarting training for {num_epochs} epochs...")
+    print(f"  Save interval: every {save_interval} epoch(s)")
+    print(f"  Eval interval: every {eval_interval} epoch(s)")
+    if keep_checkpoints:
+        print(f"  Keeping only last {keep_checkpoints} checkpoints")
+    
+    best_val_loss = float("inf")
+    checkpoint_files = []
     
     for epoch in range(start_epoch, num_epochs):
-        avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, args.device, epoch + 1)
+        # Training
+        avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1)
         
-        print(f"Epoch {epoch + 1}/{num_epochs} - Loss: {avg_loss:.6f}")
+        print(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():
-            print(f"  {k}: {v:.6f}")
+            print(f"  Train {k}: {v:.6f}")
         
-        # Save checkpoint
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "config": config,
-            "loss": avg_loss,
-            **avg_logs
+        # Record training history
+        epoch_log = {
+            "epoch": epoch + 1,
+            "train_loss": float(avg_loss),
+            **{f"train_{k}": float(v) for k, v in avg_logs.items()}
         }
-        checkpoint_path = args.output_dir / f"checkpoint_epoch_{epoch + 1:03d}.pt"
-        torch.save(checkpoint, checkpoint_path)
         
-        # Save latest
-        latest_path = args.output_dir / "checkpoint_latest.pt"
-        torch.save(checkpoint, latest_path)
+        # Evaluation
+        if val_loader and (epoch + 1) % eval_interval == 0:
+            val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device)
+            print(f"  Val Loss: {val_loss:.6f}")
+            for k, v in val_logs.items():
+                print(f"  Val {k}: {v:.6f}")
+            epoch_log["val_loss"] = float(val_loss)
+            epoch_log.update({f"val_{k}": float(v) for k, v in val_logs.items()})
+            
+            # Track best validation loss
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                print(f"  New best validation loss: {best_val_loss:.6f}")
+        
+        training_history.append(epoch_log)
+        
+        # Save checkpoint and logs at specified interval
+        should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == num_epochs
+        if should_save:
+            checkpoint_path = output_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
+            # Save checkpoint with config inside (via save_checkpoint method)
+            model.save_checkpoint(checkpoint_path, include_config=True)
+            checkpoint_files.append(checkpoint_path)
+            
+            # Save logs (loss dict and eval dicts) as JSON
+            logs_path = output_dir / f"{exp_name}_logs_epoch_{epoch + 1:03d}.json"
+            with open(logs_path, "w") as f:
+                json.dump(epoch_log, f, indent=2)
+            
+            # Save best checkpoint if validation improved
+            if val_loader and "val_loss" in epoch_log and epoch_log["val_loss"] == best_val_loss:
+                best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
+                model.save_checkpoint(best_path, include_config=True)
+                best_logs_path = output_dir / f"{exp_name}_logs_best.json"
+                with open(best_logs_path, "w") as f:
+                    json.dump(epoch_log, f, indent=2)
+                print(f"  Saved best checkpoint and logs")
+        
+        # Always save latest checkpoint and logs
+        latest_path = output_dir / f"{exp_name}_checkpoint_latest.pt"
+        model.save_checkpoint(latest_path, include_config=True)
+        latest_logs_path = output_dir / f"{exp_name}_logs_latest.json"
+        with open(latest_logs_path, "w") as f:
+            json.dump(epoch_log, f, indent=2)
+        
+        # Clean up old checkpoints and logs if keeping only N
+        if keep_checkpoints and len(checkpoint_files) > keep_checkpoints:
+            # Remove oldest checkpoint and log files
+            for old_checkpoint in checkpoint_files[:-keep_checkpoints]:
+                if old_checkpoint.exists():
+                    old_checkpoint.unlink()
+                # Handle both old format (without exp name) and new format (with exp name)
+                if "_checkpoint_" in old_checkpoint.name:
+                    old_logs = old_checkpoint.parent / old_checkpoint.name.replace("_checkpoint_", "_logs_")
+                else:
+                    old_logs = old_checkpoint.parent / old_checkpoint.name.replace("checkpoint_", "logs_")
+                if old_logs.exists():
+                    old_logs.unlink()
+            checkpoint_files = checkpoint_files[-keep_checkpoints:]
     
-    print(f"\nTraining complete! Checkpoints saved to {args.output_dir}")
+    # Save full training history (all loss and eval dicts) to JSON
+    history_path = output_dir / f"{exp_name}_training_history.json"
+    with open(history_path, "w") as f:
+        json.dump(training_history, f, indent=2)
+    print(f"\nTraining complete!")
+    print(f"  Checkpoints (with config): {output_dir}/{exp_name}_checkpoint_*.pt")
+    print(f"  Logs (loss and eval dicts): {output_dir}/{exp_name}_logs_*.json")
+    print(f"  Full training history: {history_path}")
 
 
 if __name__ == "__main__":
