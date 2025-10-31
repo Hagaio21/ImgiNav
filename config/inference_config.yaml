@@ -1,0 +1,11 @@
+# Inference configuration file for diffusion model sampling
+# This file contains paths to all required configs and checkpoints
+
+diffusion:
+  config: experiments/Diffusion_Uncond/E2_Cosine_64/output/experiment_config.yaml
+  checkpoint: experiments/Diffusion_Uncond/E2_Cosine_64/checkpoints/unet_latest.pt
+
+autoencoder:
+  config: experiments/AEVAE_sweep/AE_large_latent_seg/output/autoencoder_config.yaml
+  checkpoint: experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints/ae_latest.pt
+

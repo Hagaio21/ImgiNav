@@ -51,21 +51,7 @@ class LatentDiffusion(nn.Module):
         return pred_noise, noise, t, x_t
     
     def forward(self, batch, cfg_dropout_prob: float = 0.0):
-        """
-        Forward pass for training that extracts data and conditions from batch.
-        Args:
-            batch: Dict with keys:
-                - "layout" or "image" or "x": input tensor (B,C,H,W) or latent embeddings (B,C,H,W)
-                - "condition" or "cond" or "embedding": optional condition tensor
-            cfg_dropout_prob: Probability of dropping condition for classifier-free guidance
-        Returns:
-            dict with:
-                - "pred_noise": predicted noise
-                - "target_noise": ground-truth noise
-                - "timesteps": timestep tensor
-                - "x_t": noisy latent
-                - "pred_x0": predicted clean latent (optional)
-        """
+
         # Extract input data
         x = None
         for key in ["layout", "image", "x", "embedding"]:
@@ -210,7 +196,6 @@ class LatentDiffusion(nn.Module):
             alpha_bar_t = self.scheduler.alpha_bars[t_batch].view(-1, 1, 1, 1)
             beta_t = self.scheduler.betas[t_batch].view(-1, 1, 1, 1)
             
-            # --- REMOVED old alpha_bar_prev calculation ---
 
             # predict x0
             sqrt_alpha_bar_t_clamped = torch.sqrt(torch.clamp(alpha_bar_t, min=1e-8))
@@ -266,7 +251,7 @@ class LatentDiffusion(nn.Module):
                     variance = beta_t * (1 - alpha_bar_prev) / (1 - alpha_bar_t)
                     noise = torch.randn_like(x_t)
                     x_t = mean + torch.sqrt(variance) * noise
-            # --- END: MODIFIED DDIM/DDPM BLOCKS ---
+            # --- END: DDIM/DDPM BLOCKS ---
 
             if return_full_history:
                 latents_history.append(x_t.clone())
@@ -340,9 +325,6 @@ class LatentDiffusion(nn.Module):
         config: Union[str, Path, dict],
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
-
-        import importlib
-        
         # Backward compatibility: accept string path or dict
         if isinstance(config, (str, Path)):
             with open(config, "r", encoding="utf-8") as f:
@@ -355,50 +337,49 @@ class LatentDiffusion(nn.Module):
         # Scheduler
         from .components.scheduler import LinearScheduler, CosineScheduler
         sched_cfg = cfg["scheduler"]
-        sched_map = {"LinearScheduler": LinearScheduler, "CosineScheduler": CosineScheduler}
-        scheduler = sched_map[sched_cfg["type"]](num_steps=sched_cfg["num_steps"]).to(device)
+        sched_type = sched_cfg["type"]
+        
+        sched_map = {
+            "LinearScheduler": LinearScheduler,
+            "CosineScheduler": CosineScheduler,
+            "linear": LinearScheduler,
+            "cosine": CosineScheduler,
+        }
+        
+        scheduler = sched_map[sched_type](num_steps=sched_cfg["num_steps"]).to(device)
 
-        # Autoencoder (optional)
-        autoencoder = None
-        if "autoencoder" in cfg:
-            ae_cfg = cfg["autoencoder"].get("config")
-            ae_ckpt = cfg["autoencoder"].get("checkpoint")
-            try:
-                # Try to import AutoEncoder from models.autoencoder (new) or modules.autoencoder (old)
-                try:
-                    from models.autoencoder import AutoEncoder
-                except ImportError:
-                    AutoEncoder = importlib.import_module("modules.autoencoder").AutoEncoder
-                
-                autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
-                if ae_ckpt and Path(ae_ckpt).exists():
-                    ae_state = torch.load(ae_ckpt, map_location=device)
-                    autoencoder.load_state_dict(ae_state.get("model", ae_state), strict=False)
-            except Exception as e:
-                print(f"[Warning] Autoencoder loading failed: {e}")
-                pass
+        # Autoencoder
+        ae_cfg = cfg["autoencoder"]["config"]
+        ae_ckpt = cfg["autoencoder"]["checkpoint"]
+        from models.autoencoder import AutoEncoder
+        autoencoder = AutoEncoder.from_config(ae_cfg).to(device)
+        if Path(ae_ckpt).exists():
+            ae_state = torch.load(ae_ckpt, map_location=device)
+            autoencoder.load_state_dict(ae_state.get("model", ae_state), strict=False)
 
         # Backbone / UNet
-        unet_cfg = cfg.get("unet", {}).get("config")
-        unet_ckpt = cfg.get("unet", {}).get("checkpoint")
-        try:
-            # Try to import DualUNet from models.components.unet (new) or modules.unet (old)
-            try:
-                from models.components.unet import DualUNet as UNet
-            except ImportError:
-                UNet = importlib.import_module("modules.unet").UNet
-            
-            backbone = UNet.from_config(unet_cfg).to(device)
-            if unet_ckpt and Path(unet_ckpt).exists():
-                state = torch.load(unet_ckpt, map_location=device)
-                if "state_dict" in state:
-                    state = state["state_dict"]
-                backbone.load_state_dict(state, strict=False)
-        except Exception as e:
-            raise RuntimeError(f"Backbone import failed: {e}. Check your config and module path.")
+        unet_section = cfg.get("unet", {})
+        if isinstance(unet_section, dict):
+            unet_cfg = unet_section.get("config")
+            if unet_cfg is None:
+                unet_cfg = unet_section
+            unet_ckpt = unet_section.get("checkpoint")
+        else:
+            unet_cfg = unet_section
+            unet_ckpt = None
+        from models.components.unet import DualUNet as UNet
+        backbone = UNet.from_config(unet_cfg).to(device)
+        if unet_ckpt and Path(unet_ckpt).exists():
+            state = torch.load(unet_ckpt, map_location=device)
+            if "state_dict" in state:
+                state = state["state_dict"]
+            backbone.load_state_dict(state, strict=False)
 
-        latent = cfg["latent"]
-        latent_shape = (latent["channels"], latent["base"], latent["base"])
+        latent_shape = (
+            autoencoder.encoder.latent_channels,
+            autoencoder.encoder.latent_base,
+            autoencoder.encoder.latent_base,
+        )
 
         return cls(backbone=backbone, scheduler=scheduler,
                    autoencoder=autoencoder, latent_shape=latent_shape).to(device)
