@@ -98,10 +98,13 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch):
     total_samples = 0
     log_dict = {}
     
+    # Use non_blocking transfer for faster GPU transfers when pin_memory is enabled
+    non_blocking = device.type == "cuda"
+    
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch in pbar:
-        # Move batch to device
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        # Move batch to device (non_blocking if using CUDA with pin_memory)
+        batch = {k: v.to(device, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
         
         # Forward pass
         outputs = model(batch["rgb"])
@@ -141,10 +144,13 @@ def eval_epoch(model, dataloader, loss_fn, device):
     total_samples = 0
     log_dict = {}
     
+    # Use non_blocking transfer for faster GPU transfers when pin_memory is enabled
+    non_blocking = device.type == "cuda"
+    
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Eval", leave=False):
-            # Move batch to device
-            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            # Move batch to device (non_blocking if using CUDA with pin_memory)
+            batch = {k: v.to(device, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
             # Forward pass
             outputs = model(batch["rgb"])
@@ -176,9 +182,10 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     samples_dir.mkdir(parents=True, exist_ok=True)
     
     # Get one batch for visualization
+    non_blocking = device.type == "cuda"
     batch_iter = iter(val_loader)
     batch = next(batch_iter)
-    batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    batch = {k: v.to(device, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
     
     # Limit batch size for visualization
     if isinstance(batch.get("rgb"), torch.Tensor):

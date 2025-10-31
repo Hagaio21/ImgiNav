@@ -50,22 +50,41 @@ ROOM_ID_TO_CLASS = _load_room_id_to_class()
 NUM_CLASSES = len(set(RGB_TO_CLASS.values()))
 NUM_ROOM_CLASSES = len(set(ROOM_ID_TO_CLASS.values()))
 
+# Pre-compute RGB lookup tensors for batched operations
+# Create tensors: (num_classes, 3) for RGB values and (num_classes,) for class indices
+_rgb_values = []
+_class_indices = []
+for rgb_tuple, class_idx in RGB_TO_CLASS.items():
+    _rgb_values.append(list(rgb_tuple))
+    _class_indices.append(class_idx)
+
+RGB_VALUES_TENSOR = torch.tensor(_rgb_values, dtype=torch.uint8)  # (num_classes, 3)
+CLASS_INDICES_TENSOR = torch.tensor(_class_indices, dtype=torch.long)  # (num_classes,)
+
 
 def create_seg_mask(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor:
-
+    """
+    Convert RGB image tensor to segmentation mask.
+    Optimized GPU version that keeps all operations on device.
+    """
+    device = image.device
+    
     # Normalize to [0, 255] uint8 if needed
     if image.dtype == torch.float32 or image.dtype == torch.float64:
         image = (image * 255).clamp(0, 255).to(torch.uint8)
     else:
         image = image.to(torch.uint8)
     
+    # Ensure image is on correct device
+    image = image.to(device)
+    
     # Handle batch dimension
     if image.dim() == 4:  # (B, 3, H, W)
         B, C, H, W = image.shape
-        seg = torch.full((B, H, W), ignore_index, dtype=torch.long)
+        seg_list = []
         for b in range(B):
-            seg[b] = _segment_single(image[b], ignore_index=ignore_index)
-        return seg
+            seg_list.append(_segment_single(image[b], ignore_index=ignore_index))
+        return torch.stack(seg_list)
     elif image.dim() == 3:
         if image.shape[0] == 3:  # (3, H, W)
             return _segment_single(image, ignore_index=ignore_index)
@@ -76,21 +95,45 @@ def create_seg_mask(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor
 
 
 def _segment_single(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor:
-    """Segment a single (3, H, W) image tensor."""
+    """Segment a single (3, H, W) image tensor - fully vectorized batched version."""
     _, H, W = image.shape
-    seg = torch.full((H, W), ignore_index, dtype=torch.long)
     
-    # Convert to numpy for efficient processing
-    img_np = image.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
-    pixels = img_np.reshape(-1, 3)
+    # Ensure image is uint8 on the same device
+    if image.dtype != torch.uint8:
+        image = (image * 255).clamp(0, 255).to(torch.uint8)
     
-    # Map each pixel
-    for idx, rgb in enumerate(pixels):
-        rgb_tuple = tuple(rgb.astype(int))
-        if rgb_tuple in RGB_TO_CLASS:
-            seg.view(-1)[idx] = RGB_TO_CLASS[rgb_tuple]
+    device = image.device
     
-    return seg
+    # Reshape to (H*W, 3) for vectorized processing
+    image_flat = image.permute(1, 2, 0).reshape(-1, 3)  # (H*W, 3)
+    
+    # Move lookup tensors to device
+    rgb_values = RGB_VALUES_TENSOR.to(device)  # (num_classes, 3)
+    class_indices = CLASS_INDICES_TENSOR.to(device)  # (num_classes,)
+    
+    # Batched comparison: compare all pixels against all RGB values at once
+    # image_flat: (H*W, 3), rgb_values: (num_classes, 3)
+    # Expand dimensions for broadcasting: (H*W, 1, 3) vs (1, num_classes, 3)
+    image_expanded = image_flat.unsqueeze(1)  # (H*W, 1, 3)
+    rgb_expanded = rgb_values.unsqueeze(0)  # (1, num_classes, 3)
+    
+    # Compare all pixels with all RGB values: (H*W, num_classes, 3)
+    matches = (image_expanded == rgb_expanded).all(dim=2)  # (H*W, num_classes)
+    
+    # Find which class (if any) each pixel matches
+    # matches is (H*W, num_classes) boolean tensor
+    # We want to find the first True value in each row (pixel)
+    match_indices = matches.long().argmax(dim=1)  # (H*W,) - index of matching class, or 0 if no match
+    has_match = matches.any(dim=1)  # (H*W,) - whether pixel matched any class
+    
+    # Assign class indices: use matched class if found, otherwise ignore_index
+    seg = torch.where(
+        has_match,
+        class_indices[match_indices],
+        torch.full((H * W,), ignore_index, dtype=torch.long, device=device)
+    )
+    
+    return seg.reshape(H, W)
 
 
 def room_id_to_class_index(room_id: torch.Tensor, ignore_index: int = -100) -> torch.Tensor:

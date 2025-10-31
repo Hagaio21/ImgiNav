@@ -135,7 +135,9 @@ class ManifestDataset(BaseComponent, Dataset):
                 else:
                     # Default: convert PIL Image to tensor
                     # Convert to numpy array, then to tensor, and normalize to [0, 1]
-                    img = torch.from_numpy(np.array(img)).float()
+                    # Use contiguous array for faster conversion
+                    img_array = np.ascontiguousarray(img, dtype=np.float32)
+                    img = torch.from_numpy(img_array)
                     # Convert from HWC to CHW format
                     if img.ndim == 3:
                         img = img.permute(2, 0, 1) / 255.0
@@ -146,5 +148,13 @@ class ManifestDataset(BaseComponent, Dataset):
                 return torch.load(p)
         return torch.tensor(val)
 
-    def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4):
-        return DataLoader(self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True):
+        return DataLoader(
+            self, 
+            batch_size=batch_size, 
+            shuffle=shuffle, 
+            num_workers=num_workers,
+            pin_memory=pin_memory if torch.cuda.is_available() else False,
+            persistent_workers=persistent_workers if num_workers > 0 else False,
+            prefetch_factor=2 if num_workers > 0 else None
+        )

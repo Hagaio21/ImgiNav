@@ -35,7 +35,7 @@ autoencoder:
         final_activation: tanh
 
 training:
-  batch_size: 64
+  batch_size: 32
   num_workers: 8
   shuffle: true
   epochs: 100
