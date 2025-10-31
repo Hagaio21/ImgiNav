@@ -1,118 +1,108 @@
-#!/usr/bin/env python3
-
-import json
+import torch
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import pandas as pd
 from pathlib import Path
-from typing import Dict, List
+from .base_component import BaseComponent
 
 
-def safe_mkdir(path: Path, parents: bool = True, exist_ok: bool = True):
-    try:
-        path.mkdir(parents=parents, exist_ok=exist_ok)
-    except Exception as e:
-        raise RuntimeError(f"Failed to create directory {path}: {e}")
+class ManifestDataset(BaseComponent, Dataset):
+    def _build(self):
+        manifest = Path(self._init_kwargs["manifest"])
+        if not manifest.exists():
+            raise FileNotFoundError(f"Manifest not found: {manifest}")
 
+        self.df = pd.read_csv(manifest)
+        self.transform = self._init_kwargs.get("transform", None)
+        self.return_path = self._init_kwargs.get("return_path", False)
 
-def write_json(data: Dict, path: Path, indent: int = 2):
-    try:
-        safe_mkdir(path.parent)
-        path.write_text(json.dumps(data, indent=indent), encoding="utf-8")
-    except Exception as e:
-        raise RuntimeError(f"Failed to write JSON to {path}: {e}")
+        # two modes
+        self.target_key = self._init_kwargs.get("target_key", None)
+        self.outputs = self._init_kwargs.get("outputs", None)
 
+        self.path_col = self._init_kwargs.get("path_col", "path")
+        self.label_col = self._init_kwargs.get("label_col", None)
 
-def create_progress_tracker(total: int, description: str = "Processing"):
-    def update_progress(current: int, item_name: str = "", success: bool = True):
-        status = "✓" if success else "✗"
-        percentage = (current / total) * 100 if total > 0 else 0
-        print(f"[{current}/{total}] ({percentage:.1f}%) {status} {description} {item_name}", flush=True)
-    return update_progress
+        # optional filters
+        filters = self._init_kwargs.get("filters", None)
+        if filters:
+            self.df = self._apply_filters(self.df, filters)
 
+    # ------------------------
+    # Filtering
+    # ------------------------
+    def _apply_filters(self, df, filters: dict):
+        for key, value in filters.items():
+            if "__lt" in key:
+                col = key.replace("__lt", "")
+                df = df[df[col] < value]
+            elif "__gt" in key:
+                col = key.replace("__gt", "")
+                df = df[df[col] > value]
+            elif "__le" in key:
+                col = key.replace("__le", "")
+                df = df[df[col] <= value]
+            elif "__ge" in key:
+                col = key.replace("__ge", "")
+                df = df[df[col] >= value]
+            elif "__ne" in key:
+                col = key.replace("__ne", "")
+                df = df[df[col] != value]
+            else:
+                if isinstance(value, (list, tuple, set)):
+                    df = df[df[key].isin(value)]
+                else:
+                    df = df[df[key] == value]
+        return df.reset_index(drop=True)
 
-def load_config_with_profile(config_path: str = None, profile: str = None) -> Dict:
-    if not config_path:
-        return {}
-    
-    path = Path(config_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-    
-    if path.suffix.lower() in (".yml", ".yaml"):
-        try:
-            import yaml
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except ImportError as e:
-            raise RuntimeError("YAML config requested but 'pyyaml' is not installed") from e
-    else:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    
-    if not isinstance(data, dict):
-        raise ValueError("Config must be a dictionary")
-    
-    profile_name = profile or data.get("profile")
-    if profile_name and "profiles" in data:
-        if profile_name not in data["profiles"]:
-            raise ValueError(f"Profile '{profile_name}' not found")
-        
-        base_config = {k: v for k, v in data.items() if k not in ("profiles", "profile")}
-        base_config.update(data["profiles"][profile_name])
-        return base_config
-    
-    return data
+    # ------------------------
+    # Dataset core
+    # ------------------------
+    def __len__(self):
+        return len(self.df)
 
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
 
-def ensure_columns_exist(df, required_columns: List[str], source: str = "dataframe"):
-    missing = [col for col in required_columns if col not in df.columns]
-    if missing:
-        raise RuntimeError(f"Missing columns {missing} in {source}")
+        # multi-output mode
+        if self.outputs:
+            sample = {}
+            for key, col in self.outputs.items():
+                sample[key] = self._load_value(row[col])
+            if self.return_path:
+                sample["paths"] = {k: str(row[c]) for k, c in self.outputs.items()}
+            return sample
 
+        # simple mode
+        sample_path = Path(row[self.path_col])
+        data = self._load_value(sample_path)
+        label = torch.tensor(row[self.label_col]) if self.label_col and self.label_col in row else None
 
-def set_seeds(seed: int = 42):
-    """Set random seeds for reproducibility."""
-    import random
-    import torch
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        sample = {"data": data}
+        if label is not None:
+            sample["label"] = label
+        if self.target_key:
+            sample[self.target_key] = data
+        if self.return_path:
+            sample["path"] = str(sample_path)
+        return sample
 
+    # ------------------------
+    # Helpers
+    # ------------------------
+    def _load_value(self, val):
+        """Auto-load image, tensor, or numeric."""
+        if isinstance(val, str):
+            p = Path(val)
+            ext = p.suffix.lower()
+            if ext in [".png", ".jpg", ".jpeg", ".bmp"]:
+                img = Image.open(p).convert("RGB")
+                if self.transform:
+                    img = self.transform(img)
+                return img
+            if ext == ".pt":
+                return torch.load(p)
+        return torch.tensor(val)
 
-def extract_tensor_from_batch(batch, device=None, key="layout"):
-    """
-    Extract tensor from various batch types.
-    
-    Args:
-        batch: Can be dict, list/tuple, or tensor
-        device: Optional device to move tensor to
-        key: Key to extract from dict (default: "layout")
-    
-    Returns:
-        torch.Tensor: Extracted tensor
-    """
-    import torch
-    
-    if isinstance(batch, dict):
-        tensor = batch[key]
-    elif isinstance(batch, (list, tuple)):
-        tensor = batch[0]
-    elif torch.is_tensor(batch):
-        tensor = batch
-    else:
-        raise TypeError(f"Unexpected batch type: {type(batch)}")
-    
-    if device is not None:
-        tensor = tensor.to(device)
-    
-    return tensor
-
-
-def save_checkpoint(state_dict, path, metadata=None):
-
-    import torch
-    
-    checkpoint = {"state_dict": state_dict}
-    if metadata:
-        checkpoint.update(metadata)
-    
-    safe_mkdir(Path(path).parent)
-    torch.save(checkpoint, path)
+    def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4):
+        return DataLoader(self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
