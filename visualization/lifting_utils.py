@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Utility script to:
-1. Create a "z-map" (z-distribution) from semantic point clouds.
-2. "Lift" a 2D segmented layout image into a 3D point cloud using the z-map.
-
-Based on the processing pipeline from stage1, stage2, and stage3 scripts.
-"""
 
 import json
 import numpy as np
@@ -246,22 +239,7 @@ def lift_layout(
     point_density: float = 1.0,
     height_samples: int = 5
 ) -> np.ndarray:
-    """
-    Lifts a 2D segmented layout PNG to a 3D extruded point cloud using a z-map.
-    
-    Creates an extruded volume by sampling multiple heights per pixel along
-    the min-max height range from the z-map statistics.
-    
-    Args:
-        layout_path: Path to the layout.png to lift.
-        zmap_path: Path to the zmap.json created by create_zmap.
-        bg_color: The RGB tuple of the background color to ignore.
-        point_density: Fraction of pixels to sample (1.0 = all, 0.5 = 50%).
-        height_samples: Number of height samples per pixel to create extrusion (default: 5).
-    
-    Returns:
-        A NumPy array of shape (N, 6) with columns [x, y, z, r, g, b].
-    """
+
     layout_path = Path(layout_path)
     zmap_path = Path(zmap_path)
 
@@ -415,14 +393,7 @@ def save_point_cloud_as_ply(
     points: np.ndarray,
     output_ply_path: Union[str, Path]
 ):
-    """
-    Saves an (N, 6) [x,y,z,r,g,b] point cloud to a standard .ply file.
-    (This function is unchanged)
-    
-    Args:
-        points: The (N, 6) NumPy array from lift_layout.
-        output_ply_path: Path to save the .ply file.
-    """
+
     output_ply_path = Path(output_ply_path)
     output_ply_path.parent.mkdir(parents=True, exist_ok=True) # Ensure dir exists
     num_points = points.shape[0]
