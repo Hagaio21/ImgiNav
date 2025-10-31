@@ -91,7 +91,7 @@ def build_optimizer(model, config):
     return optimizer
 
 
-def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch):
+def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=False):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
@@ -112,30 +112,47 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch):
         # Move batch to device (non_blocking if using CUDA with pin_memory)
         batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
         
-        # Forward pass
-        outputs = model(batch["rgb"])
+        # Forward pass with mixed precision
+        if use_amp and device_obj.type == "cuda":
+            with torch.cuda.amp.autocast():
+                outputs = model(batch["rgb"])
+                loss, logs = loss_fn(outputs, batch)
+            
+            # Backward pass with gradient scaling (scaler created once before loop)
+            optimizer.zero_grad()
+            # Create scaler if needed (should be passed in, but handle here for now)
+            scaler = getattr(train_epoch, '_scaler', None)
+            if scaler is None and use_amp:
+                scaler = torch.cuda.amp.GradScaler()
+                train_epoch._scaler = scaler
+            
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # Forward pass
+            outputs = model(batch["rgb"])
+            loss, logs = loss_fn(outputs, batch)
+            
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
         
-        # Compute loss
-        loss, logs = loss_fn(outputs, batch)
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        # Accumulate stats
+        # Accumulate stats (detach before item() to avoid blocking)
         batch_size = batch["rgb"].shape[0]
-        total_loss += loss.item() * batch_size
+        loss_val = loss.detach().item()
+        total_loss += loss_val * batch_size
         total_samples += batch_size
         
-        # Update logs
+        # Update logs (detach before item())
         for k, v in logs.items():
             if k not in log_dict:
                 log_dict[k] = 0.0
-            log_dict[k] += v.item() * batch_size
+            log_dict[k] += v.detach().item() * batch_size
         
         # Update progress bar
-        pbar.set_postfix({"loss": loss.item(), **{k: v/total_samples for k, v in log_dict.items()}})
+        pbar.set_postfix({"loss": loss_val, **{k: v/total_samples for k, v in log_dict.items()}})
     
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
@@ -143,7 +160,7 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch):
     return avg_loss, avg_logs
 
 
-def eval_epoch(model, dataloader, loss_fn, device):
+def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
     """Evaluate for one epoch."""
     model.eval()
     total_loss = 0.0
@@ -164,22 +181,26 @@ def eval_epoch(model, dataloader, loss_fn, device):
             # Move batch to device (non_blocking if using CUDA with pin_memory)
             batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
-            # Forward pass
-            outputs = model(batch["rgb"])
+            # Forward pass with mixed precision
+            if use_amp and device_obj.type == "cuda":
+                with torch.cuda.amp.autocast():
+                    outputs = model(batch["rgb"])
+                    loss, logs = loss_fn(outputs, batch)
+            else:
+                outputs = model(batch["rgb"])
+                loss, logs = loss_fn(outputs, batch)
             
-            # Compute loss
-            loss, logs = loss_fn(outputs, batch)
-            
-            # Accumulate stats
+            # Accumulate stats (detach before item())
             batch_size = batch["rgb"].shape[0]
-            total_loss += loss.item() * batch_size
+            loss_val = loss.detach().item()
+            total_loss += loss_val * batch_size
             total_samples += batch_size
             
-            # Update logs
+            # Update logs (detach before item())
             for k, v in logs.items():
                 if k not in log_dict:
                     log_dict[k] = 0.0
-                log_dict[k] += v.item() * batch_size
+                log_dict[k] += v.detach().item() * batch_size
     
     avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
@@ -298,7 +319,30 @@ def main():
     # Build components
     print("Building model...")
     model = build_model(config)
-    model = model.to(device)
+    
+    # Convert device string to device object
+    if isinstance(device, str):
+        device_obj = torch.device(device)
+    else:
+        device_obj = device
+    
+    model = model.to(device_obj)
+    
+    # Enable channels_last memory format for faster convolutions (if CUDA)
+    if device_obj.type == "cuda":
+        try:
+            model = model.to(memory_format=torch.channels_last)
+            print("Using channels_last memory format for faster convolutions")
+        except:
+            pass
+    
+    # Compile model for faster execution (PyTorch 2.0+)
+    try:
+        model = torch.compile(model, mode="reduce-overhead")
+        print("Model compiled with torch.compile for faster execution")
+    except Exception as e:
+        print(f"Could not compile model (torch.compile not available or failed): {e}")
+    
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     print("Building dataset...")
@@ -329,6 +373,13 @@ def main():
     
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)
+    
+    # Check if using mixed precision training
+    use_amp = config.get("training", {}).get("use_amp", False)
+    if use_amp and device_obj.type == "cuda":
+        print("Using mixed precision training (FP16)")
+        # Create scaler once for the training function
+        train_epoch._scaler = torch.cuda.amp.GradScaler()
     
     # Resume from checkpoint if provided
     start_epoch = 0
@@ -396,7 +447,7 @@ def main():
     
     for epoch in range(start_epoch, num_epochs):
         # Training
-        avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1)
+        avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
         
         print(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():
@@ -411,7 +462,7 @@ def main():
         
         # Evaluation
         if val_loader and (epoch + 1) % eval_interval == 0:
-            val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device)
+            val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp)
             print(f"  Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():
                 print(f"  Val {k}: {v:.6f}")
