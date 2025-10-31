@@ -48,7 +48,7 @@ training:
   loss:
     type: CompositeLoss
     losses:
-      - type: L1Loss
+      - type: MSELoss
         key: rgb
         target: rgb
         weight: 1.0
