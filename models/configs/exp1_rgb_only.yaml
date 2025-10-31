@@ -1,5 +1,17 @@
 # Experiment 1: RGB Reconstruction Only
-# Input: 512x512x3, Latent: 32x32x8
+# Input: 512x512x3 (layout images), Latent: 32x32x8
+
+experiment:
+  name: "exp1_rgb_only"
+  save_path: "outputs/exp1_rgb_only"
+
+dataset:
+  manifest: ""  # Path to manifest CSV file
+  outputs:
+    rgb: "layout_image"  # Column name for layout RGB images
+  filters:
+    is_empty: [false]  # Filter out empty layouts
+  return_path: false
 
 autoencoder:
   encoder:
@@ -21,4 +33,21 @@ autoencoder:
         name: rgb
         out_channels: 3
         final_activation: tanh
+
+training:
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  epochs: 2
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: L1Loss
+        key: rgb
+        target: rgb
+        weight: 1.0
 

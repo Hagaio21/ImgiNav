@@ -1,5 +1,18 @@
 # Experiment 2: RGB Reconstruction + Segmentation
-# Input: 512x512x3, Latent: 32x32x8
+# Input: 512x512x3 (layout images), Latent: 32x32x8
+
+experiment:
+  name: "exp2_rgb_seg"
+  save_path: "outputs/exp2_rgb_seg"
+
+dataset:
+  manifest: ""  # Path to manifest CSV file
+  outputs:
+    rgb: "layout_image"  # Column name for layout RGB images
+    segmentation: "layout_image"  # Column name for layout/segmentation images (same as rgb)
+  filters:
+    is_empty: [false]  # Filter out empty layouts
+  return_path: false
 
 autoencoder:
   encoder:
@@ -24,4 +37,25 @@ autoencoder:
       - type: SegmentationHead
         name: segmentation
         num_classes: 10  # From rgb_to_class.yaml
+
+training:
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  epochs: 2
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: L1Loss
+        key: rgb
+        target: rgb
+        weight: 1.0
+      - type: CrossEntropyLoss
+        key: segmentation
+        target: segmentation
+        weight: 0.5
 

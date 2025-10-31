@@ -1,5 +1,19 @@
 # Experiment 6: RGB Reconstruction + Segmentation + Classification (Large Model)
-# Input: 512x512x3, Latent: 32x32x8
+# Input: 512x512x3 (layout images), Latent: 32x32x8
+
+experiment:
+  name: "exp6_rgb_seg_cls_large"
+  save_path: "outputs/exp6_rgb_seg_cls_large"
+
+dataset:
+  manifest: ""  # Path to manifest CSV file
+  outputs:
+    rgb: "layout_image"  # Column name for layout RGB images
+    segmentation: "layout_image"  # Column name for layout/segmentation images (same as rgb)
+    label: "room_id"  # Column name for room classification labels
+  filters:
+    is_empty: [false]  # Filter out empty layouts
+  return_path: false
 
 autoencoder:
   encoder:
@@ -27,4 +41,29 @@ autoencoder:
       - type: ClassificationHead
         name: classification
         num_classes: 34  # From room_id_to_class.yaml
+
+training:
+  batch_size: 16  # Smaller batch size for larger model
+  num_workers: 4
+  shuffle: true
+  epochs: 100
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: L1Loss
+        key: rgb
+        target: rgb
+        weight: 1.0
+      - type: CrossEntropyLoss
+        key: segmentation
+        target: segmentation
+        weight: 0.5
+      - type: CrossEntropyLoss
+        key: classification
+        target: label
+        weight: 1.0
 
