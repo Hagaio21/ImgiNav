@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import re
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -237,7 +238,8 @@ def lift_layout(
     zmap_path: Union[str, Path],
     bg_color: Tuple[int, int, int] = DEFAULT_BG_COLOR,
     point_density: float = 1.0,
-    height_samples: int = 5
+    height_samples: int = 5,
+    force_scale: str = None  # "room" or "scene", None for auto-detection
 ) -> np.ndarray:
 
     layout_path = Path(layout_path)
@@ -261,7 +263,18 @@ def lift_layout(
         print("Warning: Layout image appears to be empty (all background).")
         return np.empty((0, 6))
 
-    # 4. Handle point density sampling
+    # 4. Calculate coordinate scale based on force_scale parameter
+    # Room footprint: 3m x 3m, Scene footprint: 30m x 30m
+    # Image is 512x512 pixels, so we normalize to footprint size
+    if force_scale == "scene":
+        coord_scale = 30.0 / 512  # Scene: 512 pixels = 30m
+    elif force_scale == "room":
+        coord_scale = 3.0 / 512   # Room: 512 pixels = 3m
+    else:
+        # Default to room scale if not specified
+        coord_scale = 3.0 / 512   # Room: 512 pixels = 3m
+
+    # 5. Handle point density sampling
     if point_density < 1.0:
         num_samples = int(num_fg_pixels * point_density)
         sample_indices = np.random.choice(num_fg_pixels, num_samples, replace=False)
@@ -280,8 +293,7 @@ def lift_layout(
         stats = zmap.get(color_key)
         
         if stats:
-            # COORDINATE SCALING for better 3D visualization
-            coord_scale = 0.1  # Scale down coordinates
+            # Coordinate scale already determined based on room/scene detection above
             
             # We reverse the Y-axis flip from stage3
             x_world = x * coord_scale
@@ -292,32 +304,40 @@ def lift_layout(
             z_max = stats["max"]
             z_mean = stats["mean"]
             z_std = stats.get("std", 0.1)  # Use std if available, otherwise small default
+            semantic_id = stats.get("semantic_id")
             
-            # Safety clamp: Ensure bounds are reasonable relative to mean
-            # This prevents "exploding" even if zmap has extreme outliers
-            # Use tighter bounds: mean ± 1.5*std, but respect the provided min/max
-            safe_min = max(z_min, z_mean - 1.5 * z_std)
-            safe_max = min(z_max, z_mean + 1.5 * z_std)
-            
-            # If the range is still too wide, use even tighter bounds
-            if safe_max - safe_min > 1.0:  # If range > 1.0, it's probably too wide
-                safe_min = max(z_min, z_mean - 1.0 * z_std)
-                safe_max = min(z_max, z_mean + 1.0 * z_std)
-            
-            # Ensure safe bounds are valid
-            if safe_max <= safe_min:
-                safe_min, safe_max = z_min, z_max
-            
-            # Sample heights randomly to create actual point cloud (not layers)
-            # Use normal distribution centered at mean with std, clamped to safe range
-            if safe_max > safe_min:
-                # Sample from normal distribution to match the actual distribution
-                # Clamp to safe bounds to prevent exploding
-                heights = np.random.normal(z_mean, z_std, height_samples)
-                heights = np.clip(heights, safe_min, safe_max)
+            # Special handling for walls (semantic_id 2053): sample uniformly from min to max
+            # to properly represent floor-to-ceiling structure
+            if semantic_id == 2053:
+                # Walls should span from floor to ceiling uniformly
+                heights = np.linspace(z_min, z_max, height_samples)
             else:
-                # If min == max (flat surface), use that single value
-                heights = np.full(height_samples, z_mean)
+                # For other objects, sample around the mean with normal distribution
+                # Safety clamp: Ensure bounds are reasonable relative to mean
+                # This prevents "exploding" even if zmap has extreme outliers
+                # Use tighter bounds: mean ± 1.5*std, but respect the provided min/max
+                safe_min = max(z_min, z_mean - 1.5 * z_std)
+                safe_max = min(z_max, z_mean + 1.5 * z_std)
+                
+                # If the range is still too wide, use even tighter bounds
+                if safe_max - safe_min > 1.0:  # If range > 1.0, it's probably too wide
+                    safe_min = max(z_min, z_mean - 1.0 * z_std)
+                    safe_max = min(z_max, z_mean + 1.0 * z_std)
+                
+                # Ensure safe bounds are valid
+                if safe_max <= safe_min:
+                    safe_min, safe_max = z_min, z_max
+                
+                # Sample heights randomly to create actual point cloud (not layers)
+                # Use normal distribution centered at mean with std, clamped to safe range
+                if safe_max > safe_min:
+                    # Sample from normal distribution to match the actual distribution
+                    # Clamp to safe bounds to prevent exploding
+                    heights = np.random.normal(z_mean, z_std, height_samples)
+                    heights = np.clip(heights, safe_min, safe_max)
+                else:
+                    # If min == max (flat surface), use that single value
+                    heights = np.full(height_samples, z_mean)
             
             # Create a point for each height sample to create the extrusion
             for height in heights:
@@ -357,7 +377,7 @@ def load_ply_as_points(ply_path: Union[str, Path]) -> np.ndarray:
 
 
 def plot_point_cloud_3d(points: np.ndarray, title: str = "3D Point Cloud"):
-    """Plot the 3D point cloud using matplotlib."""
+    """Plot the 3D point cloud using matplotlib (interactive display)."""
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
     
@@ -387,6 +407,68 @@ def plot_point_cloud_3d(points: np.ndarray, title: str = "3D Point Cloud"):
     
     plt.tight_layout()
     plt.show()
+
+
+def plot_point_cloud_3d_to_image(
+    points: np.ndarray, 
+    output_path: Union[str, Path],
+    title: str = "3D Point Cloud",
+    figsize: Tuple[int, int] = (12, 8),
+    dpi: int = 100,
+    axis_limits: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]] = None,
+    layout_image: np.ndarray = None
+) -> None:
+    """Create 3D point cloud plot and save as image file."""
+    if layout_image is not None:
+        fig = plt.figure(figsize=(18, 8), dpi=dpi)
+        ax_3d = fig.add_subplot(121, projection='3d')
+        ax_2d = fig.add_subplot(122)
+    else:
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+        ax_3d = fig.add_subplot(111, projection='3d')
+    
+    # Extract coordinates and colors
+    x = points[:, 0]
+    y = points[:, 1] 
+    z = points[:, 2]
+    colors = points[:, 3:6] / 255.0  # Normalize RGB to [0,1]
+    
+    # Plot points with their colors
+    ax_3d.scatter(x, y, z, c=colors, s=1, alpha=0.6)
+    
+    # Set labels and title
+    ax_3d.set_xlabel('X')
+    ax_3d.set_ylabel('Y')
+    ax_3d.set_zlabel('Z')
+    ax_3d.set_title(title)
+    
+    # Set axis limits (fixed if provided, otherwise calculate)
+    if axis_limits is not None:
+        ax_3d.set_xlim(axis_limits[0])
+        ax_3d.set_ylim(axis_limits[1])
+        ax_3d.set_zlim(axis_limits[2])
+    else:
+        # Set equal aspect ratio
+        max_range = np.array([x.max()-x.min(), y.max()-y.min(), z.max()-z.min()]).max() / 2.0
+        mid_x = (x.max()+x.min()) * 0.5
+        mid_y = (y.max()+y.min()) * 0.5
+        mid_z = (z.max()+z.min()) * 0.5
+        ax_3d.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax_3d.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax_3d.set_zlim(mid_z - max_range, mid_z + max_range)
+    
+    # Add 2D layout image if provided
+    if layout_image is not None:
+        ax_2d.imshow(layout_image)
+        ax_2d.set_title("2D Layout")
+        ax_2d.axis('off')
+    
+    plt.tight_layout()
+    
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
 
 
 def save_point_cloud_as_ply(

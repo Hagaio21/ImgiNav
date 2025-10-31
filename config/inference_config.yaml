@@ -2,8 +2,8 @@
 # This file contains paths to all required configs and checkpoints
 
 diffusion:
-  config: experiments/Diffusion_Uncond/E2_Cosine_64/output/experiment_config.yaml
-  checkpoint: experiments/Diffusion_Uncond/E2_Cosine_64/checkpoints/unet_latest.pt
+  config: experiments/Diffusion_Uncond/E5_Cosine_128/output/experiment_config.yaml
+  checkpoint: experiments/Diffusion_Uncond/E5_Cosine_128/checkpoints/unet_best.pt
 
 autoencoder:
   config: experiments/AEVAE_sweep/AE_large_latent_seg/output/autoencoder_config.yaml

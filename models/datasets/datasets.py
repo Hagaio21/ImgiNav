@@ -29,6 +29,8 @@ class LayoutDataset(Dataset):
         taxonomy_path=None,
         skip_empty=True,
         return_embeddings=False,
+        return_segmentation=False,
+        return_classification=False,
     ):
         self.df = pd.read_csv(manifest_path)
         self.transform = transform
@@ -36,10 +38,14 @@ class LayoutDataset(Dataset):
         self.one_hot = one_hot
         self.skip_empty = skip_empty
         self.return_embeddings = return_embeddings
+        self.return_segmentation = return_segmentation
+        self.return_classification = return_classification
         self.taxonomy_path = taxonomy_path
 
         # --- taxonomy mapping ---
-        if taxonomy_path is not None:
+        if taxonomy_path is not None or return_segmentation:
+            if taxonomy_path is None:
+                raise ValueError("taxonomy_path required when return_segmentation=True")
             self.taxonomy = Taxonomy(taxonomy_path)
             self._build_supercategory_mapping()
         else:
@@ -57,6 +63,10 @@ class LayoutDataset(Dataset):
             self.df = self.df[self.df["is_empty"] == False]
 
         self.entries = self.df.to_dict("records")
+        
+        if self.return_classification:
+            max_room_id = int(self.df["room_id"].max()) if "room_id" in self.df and self.df["room_id"].notna().any() else 30
+            self.scene_class_id = max_room_id + 1
 
     # --------------------------------------------------------
     # Taxonomy helpers
@@ -100,16 +110,16 @@ class LayoutDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.entries[idx]
-        path = None  # ensure path exists for error printing
+        path = None
         try:
             if self.return_embeddings:
-                # strict access, fail early if missing
                 if "layout_emb" not in row:
                     raise KeyError(f"'layout_emb' column missing in row {idx}: keys={list(row.keys())}")
                 path = str(row["layout_emb"]).strip()
                 if not path.endswith(".pt"):
                     raise ValueError(f"Expected .pt file, got {path}")
                 layout = load_embedding(path)
+                layout_rgb = None
             else:
                 path = row["layout_path"]
                 img = Image.open(path).convert("RGB")
@@ -124,14 +134,26 @@ class LayoutDataset(Dataset):
             print(f"[Dataset Error] idx={idx}, path={path}, error={type(e).__name__}: {e}", flush=True)
             raise
 
-        return {
+        result = {
             "scene_id": row["scene_id"],
             "room_id": row["room_id"],
             "type": row["type"],
             "is_empty": row["is_empty"],
             "path": path,
-            "layout": layout,
+            "layout": layout_rgb if not self.one_hot and layout_rgb is not None else layout,
         }
+
+        if self.return_segmentation and self.COLOR_TO_CLASS is not None and layout_rgb is not None:
+            result["seg_labels"] = self.rgb_to_class_index(layout_rgb)
+
+        if self.return_classification:
+            room_id = row.get("room_id")
+            if room_id is not None and not pd.isna(room_id):
+                result["room_id"] = torch.tensor(int(room_id), dtype=torch.long)
+            else:
+                result["room_id"] = torch.tensor(self.scene_class_id, dtype=torch.long)
+
+        return result
 
     def rgb_to_class_index(self, tensor_img):
         """Convert RGB tensor (3,H,W) ∈ [0,1] to (H,W) long indices."""
@@ -217,6 +239,9 @@ class UnifiedLayoutDataset(Dataset):
         self.df = df
         self.entries = df.to_dict("records")
         
+        max_room_id = int(df["room_id"].max()) if "room_id" in df and df["room_id"].notna().any() else 30
+        self.scene_class_id = max_room_id + 1
+        
         # Print dataset statistics
         room_count = (df["sample_type"] == "room").sum()
         scene_count = (df["sample_type"] == "scene").sum()
@@ -282,16 +307,23 @@ class UnifiedLayoutDataset(Dataset):
         # ----- Layout -----
         layout = self._load_data(row, "layout_embedding", "layout_image", is_image=True)
 
-        return {
+        result = {
             "sample_id": row["sample_id"],
             "scene_id": row["scene_id"],
-            "room_id": row["room_id"] if is_room else None,
             "sample_type": row["sample_type"],
             "pov_type": row.get("pov_type", None),
             "pov": pov,
             "graph": graph,
             "layout": layout
         }
+
+        room_id = row.get("room_id")
+        if is_room and room_id is not None and not pd.isna(room_id):
+            result["room_id"] = torch.tensor(int(room_id), dtype=torch.long)
+        else:
+            result["room_id"] = torch.tensor(self.scene_class_id, dtype=torch.long)
+
+        return result
 
 # ---------- Helper Functions ----------
 
