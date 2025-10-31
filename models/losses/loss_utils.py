@@ -1,78 +1,53 @@
 """
 Utilities for loss computation.
-Hardcoded mappings for segmentation (RGB -> class) and classification (room_id -> class).
+Loads mappings from YAML config files for segmentation (RGB -> class) and classification (room_id -> class).
 """
 
 import torch
 import numpy as np
+import yaml
+from pathlib import Path
 
+# Load RGB to class mapping from YAML
+_LOSS_DIR = Path(__file__).parent
+_RGB_CONFIG_PATH = _LOSS_DIR / "rgb_to_class.yaml"
+_ROOM_CONFIG_PATH = _LOSS_DIR / "room_id_to_class.yaml"
 
-# Hardcoded RGB -> class_index mapping
-# Classes: All super-categories (1001-1009) except Structure (1008) + wall (2053) + background
-# Excluded: Structure (1008), Unknown (0)
-# Background: (240, 240, 240) from stage3
-# Colors from taxonomy.json id2color
-RGB_TO_CLASS = {
-    (228, 26, 28): 0,      # Bed (1001)
-    (55, 126, 184): 1,      # Cabinet/Shelf/Desk (1002)
-    (77, 175, 74): 2,       # Chair (1003)
-    (152, 78, 163): 3,      # Lighting (1004)
-    (127, 127, 127): 4,     # Others (1005)
-    (255, 127, 0): 5,       # Pier/Stool (1006)
-    (255, 255, 51): 6,      # Sofa (1007)
-    # Structure (1008) - EXCLUDED (color: [0, 0, 0])
-    (166, 86, 40): 7,       # Table (1009)
-    # Wall (2053)
-    (200, 200, 200): 8,     # Wall (2053)
-    # Background (240, 240, 240) from stage3
-    (240, 240, 240): 9,     # Background
-}
+def _load_rgb_to_class():
+    """Load RGB to class mapping from YAML file."""
+    with open(_RGB_CONFIG_PATH, "r") as f:
+        config = yaml.safe_load(f)
+    
+    rgb_to_class = {}
+    for entry in config.values():
+        rgb_tuple = tuple(entry["rgb"])
+        class_idx = entry["class_index"]
+        rgb_to_class[rgb_tuple] = class_idx
+    
+    return rgb_to_class
 
-NUM_CLASSES = len(RGB_TO_CLASS)
+def _load_room_id_to_class():
+    """Load room_id to class mapping from YAML file."""
+    with open(_ROOM_CONFIG_PATH, "r") as f:
+        config = yaml.safe_load(f)
+    
+    room_id_to_class = {}
+    for entry in config.values():
+        room_id = entry["room_id"]
+        class_idx = entry["class_index"]
+        # Handle both string "0000" and int
+        if isinstance(room_id, str):
+            room_id_to_class[room_id] = class_idx
+        room_id_to_class[int(room_id)] = class_idx  # Also map as int
+    
+    return room_id_to_class
 
+# Load mappings at module import
+RGB_TO_CLASS = _load_rgb_to_class()
+ROOM_ID_TO_CLASS = _load_room_id_to_class()
 
-# Hardcoded room_id -> class_index mapping for classification
-# Room IDs from taxonomy (3000-3999 range) mapped to sequential class indices
-# Room IDs can be strings ("0000") or integers (0, 3001, etc.)
-# Based on common room types - adjust as needed
-ROOM_ID_TO_CLASS = {
-    "0000": 0,      # Scene
-    0: 0,           # Scene (also handle as int)
-    3001: 1,        # Aisle
-    3002: 2,        # Auditorium
-    3003: 3,        # Balcony
-    3004: 4,        # BathRoom
-    3005: 5,        # Bathroom
-    3006: 6,        # BedRoom
-    3007: 7,        # Bedroom
-    3008: 8,        # CloakRoom
-    3009: 9,        # Corridor
-    3010: 10,        # Courtyard
-    3011: 11,        # DiningRoom
-    3012: 12,        # ElderlyRoom
-    3013: 13,        # EquipmentRoom
-    3014: 14,        # Garage
-    3015: 15,        # Hallway
-    3016: 16,        # KidsRoom
-    3017: 17,        # Kitchen
-    3018: 18,        # LaundryRoom
-    3019: 19,        # Library
-    3020: 20,        # LivingDiningRoom
-    3021: 21,        # LivingRoom
-    3022: 22,        # Lounge
-    3023: 23,        # MasterBathroom
-    3024: 24,        # MasterBedroom
-    3025: 25,        # NannyRoom
-    3026: 26,        # OtherRoom
-    3027: 27,        # OtherSpace
-    3028: 28,        # SecondBathroom
-    3029: 29,        # SecondBedroom
-    3030: 30,        # Stairwell
-    3031: 31,        # StorageRoom
-    3032: 32,        # Terrace
-    3033: 33,        # non
-}
-
+# Number of classes = number of unique class indices
+NUM_CLASSES = len(set(RGB_TO_CLASS.values()))
 NUM_ROOM_CLASSES = len(set(ROOM_ID_TO_CLASS.values()))
 
 

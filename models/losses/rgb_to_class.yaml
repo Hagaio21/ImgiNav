@@ -1,0 +1,44 @@
+# RGB color to class index mapping for segmentation
+# Used by create_seg_mask() in loss_utils.py
+# Number of classes = number of entries in this file
+
+bed:
+  rgb: [228, 26, 28]
+  class_index: 0
+
+cabinet_shelf_desk:
+  rgb: [55, 126, 184]
+  class_index: 1
+
+chair:
+  rgb: [77, 175, 74]
+  class_index: 2
+
+lighting:
+  rgb: [152, 78, 163]
+  class_index: 3
+
+others:
+  rgb: [127, 127, 127]
+  class_index: 4
+
+pier_stool:
+  rgb: [255, 127, 0]
+  class_index: 5
+
+sofa:
+  rgb: [255, 255, 51]
+  class_index: 6
+
+table:
+  rgb: [166, 86, 40]
+  class_index: 7
+
+wall:
+  rgb: [200, 200, 200]
+  class_index: 8
+
+background:
+  rgb: [240, 240, 240]
+  class_index: 9
+

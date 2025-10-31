@@ -1,0 +1,140 @@
+# Room ID to class index mapping for classification
+# Used by room_id_to_class_index() in loss_utils.py
+# Number of classes = number of entries in this file
+
+scene:
+  room_id: "0000"
+  class_index: 0
+
+aisle:
+  room_id: 3001
+  class_index: 1
+
+auditorium:
+  room_id: 3002
+  class_index: 2
+
+balcony:
+  room_id: 3003
+  class_index: 3
+
+bathroom_variant1:
+  room_id: 3004
+  class_index: 4
+
+bathroom:
+  room_id: 3005
+  class_index: 5
+
+bedroom_variant1:
+  room_id: 3006
+  class_index: 6
+
+bedroom:
+  room_id: 3007
+  class_index: 7
+
+cloakroom:
+  room_id: 3008
+  class_index: 8
+
+corridor:
+  room_id: 3009
+  class_index: 9
+
+courtyard:
+  room_id: 3010
+  class_index: 10
+
+diningroom:
+  room_id: 3011
+  class_index: 11
+
+elderlyroom:
+  room_id: 3012
+  class_index: 12
+
+equipmentroom:
+  room_id: 3013
+  class_index: 13
+
+garage:
+  room_id: 3014
+  class_index: 14
+
+hallway:
+  room_id: 3015
+  class_index: 15
+
+kidsroom:
+  room_id: 3016
+  class_index: 16
+
+kitchen:
+  room_id: 3017
+  class_index: 17
+
+laundryroom:
+  room_id: 3018
+  class_index: 18
+
+library:
+  room_id: 3019
+  class_index: 19
+
+livindiningroom:
+  room_id: 3020
+  class_index: 20
+
+livingroom:
+  room_id: 3021
+  class_index: 21
+
+lounge:
+  room_id: 3022
+  class_index: 22
+
+masterbathroom:
+  room_id: 3023
+  class_index: 23
+
+masterbedroom:
+  room_id: 3024
+  class_index: 24
+
+nannyroom:
+  room_id: 3025
+  class_index: 25
+
+otherroom:
+  room_id: 3026
+  class_index: 26
+
+otherspace:
+  room_id: 3027
+  class_index: 27
+
+secondbathroom:
+  room_id: 3028
+  class_index: 28
+
+secondbedroom:
+  room_id: 3029
+  class_index: 29
+
+stairwell:
+  room_id: 3030
+  class_index: 30
+
+storageroom:
+  room_id: 3031
+  class_index: 31
+
+terrace:
+  room_id: 3032
+  class_index: 32
+
+non:
+  room_id: 3033
+  class_index: 33
+
