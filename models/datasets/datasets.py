@@ -156,6 +156,6 @@ class ManifestDataset(BaseComponent, Dataset):
             num_workers=num_workers,
             pin_memory=pin_memory if torch.cuda.is_available() else False,
             persistent_workers=persistent_workers if num_workers > 0 else False,
-            prefetch_factor=4 if num_workers > 0 else None,  # Increased from 2 to 4 for more aggressive prefetching
+            prefetch_factor=2 if num_workers > 0 else None,  # Set to 2 (4 was too aggressive)
             drop_last=False  # Keep last incomplete batch
         )

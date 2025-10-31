@@ -328,20 +328,10 @@ def main():
     
     model = model.to(device_obj)
     
-    # Enable channels_last memory format for faster convolutions (if CUDA)
+    # Enable cudnn benchmark for faster convolutions (optimizes for input sizes)
     if device_obj.type == "cuda":
-        try:
-            model = model.to(memory_format=torch.channels_last)
-            print("Using channels_last memory format for faster convolutions")
-        except:
-            pass
-    
-    # Compile model for faster execution (PyTorch 2.0+)
-    try:
-        model = torch.compile(model, mode="reduce-overhead")
-        print("Model compiled with torch.compile for faster execution")
-    except Exception as e:
-        print(f"Could not compile model (torch.compile not available or failed): {e}")
+        torch.backends.cudnn.benchmark = True
+        print("Enabled cudnn.benchmark for faster convolutions")
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
@@ -374,12 +364,14 @@ def main():
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)
     
-    # Check if using mixed precision training
-    use_amp = config.get("training", {}).get("use_amp", False)
+    # Enable mixed precision training by default (can be disabled in config)
+    use_amp = config.get("training", {}).get("use_amp", True)  # Default to True for speedup
     if use_amp and device_obj.type == "cuda":
         print("Using mixed precision training (FP16)")
         # Create scaler once for the training function
         train_epoch._scaler = torch.cuda.amp.GradScaler()
+    elif not use_amp:
+        print("Mixed precision training disabled (use_amp: false)")
     
     # Resume from checkpoint if provided
     start_epoch = 0

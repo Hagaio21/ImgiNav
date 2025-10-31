@@ -61,6 +61,19 @@ for rgb_tuple, class_idx in RGB_TO_CLASS.items():
 RGB_VALUES_TENSOR = torch.tensor(_rgb_values, dtype=torch.uint8)  # (num_classes, 3)
 CLASS_INDICES_TENSOR = torch.tensor(_class_indices, dtype=torch.long)  # (num_classes,)
 
+# Cache lookup tensors per device to avoid repeated transfers
+_device_rgb_cache = {}
+_device_class_cache = {}
+
+def _get_lookup_tensors(device):
+    """Get or create lookup tensors for a device, with caching."""
+    # Convert device to string key for caching (handles both str and torch.device)
+    device_key = str(device)
+    if device_key not in _device_rgb_cache:
+        _device_rgb_cache[device_key] = RGB_VALUES_TENSOR.to(device)
+        _device_class_cache[device_key] = CLASS_INDICES_TENSOR.to(device)
+    return _device_rgb_cache[device_key], _device_class_cache[device_key]
+
 
 def create_seg_mask(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor:
     """
@@ -107,9 +120,8 @@ def _segment_single(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor
     # Reshape to (H*W, 3) for vectorized processing
     image_flat = image.permute(1, 2, 0).reshape(-1, 3)  # (H*W, 3)
     
-    # Move lookup tensors to device
-    rgb_values = RGB_VALUES_TENSOR.to(device)  # (num_classes, 3)
-    class_indices = CLASS_INDICES_TENSOR.to(device)  # (num_classes,)
+    # Get cached lookup tensors (avoids repeated device transfers)
+    rgb_values, class_indices = _get_lookup_tensors(device)  # (num_classes, 3), (num_classes,)
     
     # Batched comparison: compare all pixels against all RGB values at once
     # image_flat: (H*W, 3), rgb_values: (num_classes, 3)
