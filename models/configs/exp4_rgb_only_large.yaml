@@ -44,6 +44,9 @@ training:
   weight_decay: 0.01
   save_interval: 5  # Save checkpoint every 5 epochs
   sample_interval: 5  # Save sample images every 5 epochs
+  early_stopping_patience: 15  # Stop if no improvement for 15 epochs
+  early_stopping_min_delta: 0.001  # Minimum improvement to count
+  early_stopping_restore_best: true  # Restore best checkpoint on early stop
   
   loss:
     type: CompositeLoss

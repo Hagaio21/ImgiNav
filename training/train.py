@@ -9,10 +9,11 @@ import torch.nn.functional as F
 import yaml
 import json
 import sys
+import math
 from pathlib import Path
 from tqdm import tqdm
 import argparse
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 from PIL import Image
 import numpy as np
 
@@ -211,7 +212,7 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=32, target_size=256):
     """Save sample images from validation set."""
     model.eval()
-    samples_dir = output_dir / "samples" / f"epoch_{epoch:03d}"
+    samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     
     # Convert device string to device object if needed
@@ -226,41 +227,48 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     batch = next(batch_iter)
     batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
     
-    # Limit batch size for visualization
+    # Limit batch size for visualization and compute grid size
     if isinstance(batch.get("rgb"), torch.Tensor):
         batch_size = min(batch["rgb"].shape[0], sample_batch_size)
         batch = {k: v[:batch_size] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        # Compute n for n x n grid
+        grid_n = int(math.sqrt(batch_size))
+        if grid_n * grid_n < batch_size:
+            grid_n += 1
     
     with torch.no_grad():
         outputs = model(batch["rgb"])
     
-    # Save RGB input and reconstruction
+    # Save RGB input and reconstruction as two side-by-side grids
     if "rgb" in batch and "rgb" in outputs:
-        input_rgb = batch["rgb"]
-        pred_rgb = outputs["rgb"]
+        input_rgb = batch["rgb"]  # Already in [0, 1] range
+        pred_rgb = outputs["rgb"]  # Output from tanh is in [-1, 1]
         
-        # Denormalize from [-1, 1] or [0, 1] to [0, 1]
-        if pred_rgb.min() < 0:
-            pred_rgb = (pred_rgb + 1) / 2  # tanh output: [-1, 1] -> [0, 1]
-        pred_rgb = torch.clamp(pred_rgb, 0, 1)
+        # Denormalize prediction from tanh [-1, 1] to [0, 1]
+        # tanh outputs [-1, 1], convert to [0, 1] to match input
+        pred_rgb = (pred_rgb + 1) / 2.0
         
-        # Handle input normalization (assumes [0, 1])
-        input_rgb = torch.clamp(input_rgb, 0, 1)
+        # Don't clamp - preserve the actual output range
+        # Clamping can make images look faded if the model hasn't learned full range yet
         
         # Resize if needed
         if input_rgb.shape[-1] != target_size:
             input_rgb = F.interpolate(input_rgb, size=(target_size, target_size), mode='bilinear', align_corners=False)
             pred_rgb = F.interpolate(pred_rgb, size=(target_size, target_size), mode='bilinear', align_corners=False)
         
-        # Create grid: [input, pred, input, pred, ...]
-        images = []
-        for i in range(batch_size):
-            images.append(input_rgb[i])
-            images.append(pred_rgb[i])
+        # Create two complete grids side by side: original (left) and reconstruction (right)
+        # Create original grid (n×n)
+        orig_grid = make_grid(input_rgb, nrow=grid_n, padding=2, normalize=False)
+        # Create reconstruction grid (n×n)  
+        recon_grid = make_grid(pred_rgb, nrow=grid_n, padding=2, normalize=False)
         
-        grid = torch.stack(images)
-        grid_path = samples_dir / "rgb_input_pred.png"
-        save_image(grid, grid_path, nrow=2, padding=2, normalize=False)
+        # Concatenate horizontally (side by side)
+        # Both grids are (C, H, W), concatenate along width dimension
+        combined_grid = torch.cat([orig_grid, recon_grid], dim=2)  # Concatenate along width
+        
+        # Save combined grid: n×n original | n×n reconstruction (side by side)
+        grid_path = samples_dir / f"epoch_{epoch:03d}_comparison.png"
+        save_image(combined_grid, grid_path, normalize=False)
     
     # Save segmentation if available
     if "segmentation" in outputs:
@@ -277,11 +285,13 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             ).squeeze(1).long()
         
         # Normalize to [0, 1] for visualization (simple colormap)
-        pred_classes_vis = (pred_classes.float() / pred_classes.max().float().clamp(min=1)) * 255
-        pred_classes_vis = pred_classes_vis.unsqueeze(1).repeat(1, 3, 1, 1) / 255.0
+        max_class = pred_classes.max().float().clamp(min=1)
+        pred_classes_vis = (pred_classes.float() / max_class)
+        pred_classes_vis = pred_classes_vis.unsqueeze(1).repeat(1, 3, 1, 1)
         
-        grid_path = samples_dir / "segmentation_pred.png"
-        save_image(pred_classes_vis, grid_path, nrow=4, padding=2, normalize=False)
+        seg_grid = torch.stack([pred_classes_vis[i] for i in range(batch_size)])
+        seg_path = samples_dir / f"epoch_{epoch:03d}_segmentation.png"
+        save_image(seg_grid, seg_path, nrow=grid_n, padding=2, normalize=False)
     
     print(f"  Saved samples to {samples_dir}")
 
@@ -289,7 +299,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
 def main():
     parser = argparse.ArgumentParser(description="Train autoencoder from experiment config")
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
-    parser.add_argument("--resume", type=Path, default=None, help="Path to checkpoint to resume from")
     
     args = parser.parse_args()
     
@@ -373,53 +382,6 @@ def main():
     elif not use_amp:
         print("Mixed precision training disabled (use_amp: false)")
     
-    # Resume from checkpoint if provided
-    start_epoch = 0
-    training_history = []
-    if args.resume and args.resume.exists():
-        print(f"Resuming from checkpoint: {args.resume}")
-        # Load model using class method (includes config)
-        model = Autoencoder.load_checkpoint(args.resume, map_location=device)
-        model = model.to(device)
-        
-        # Try to load training history from logs (handle both with/without exp name)
-        checkpoint_name = Path(args.resume).stem
-        if "_checkpoint_" in checkpoint_name:
-            logs_name = checkpoint_name.replace("_checkpoint_", "_logs_")
-        else:
-            logs_name = checkpoint_name.replace("checkpoint_", "logs_")
-        logs_path = Path(args.resume).parent / f"{logs_name}.json"
-        if logs_path.exists():
-            with open(logs_path, "r") as f:
-                latest_log = json.load(f)
-            start_epoch = latest_log.get("epoch", 0)
-            print(f"Resuming from epoch {start_epoch} (from logs)")
-            
-            # Try to load full training history if available (extract exp name from checkpoint)
-            if "_checkpoint_" in checkpoint_name:
-                exp_name_from_checkpoint = checkpoint_name.split("_checkpoint_")[0]
-                history_path = Path(args.resume).parent / f"{exp_name_from_checkpoint}_training_history.json"
-            else:
-                history_path = Path(args.resume).parent / "training_history.json"
-            if history_path.exists():
-                with open(history_path, "r") as f:
-                    training_history = json.load(f)
-                    print(f"Loaded training history ({len(training_history)} epochs)")
-        else:
-            # Extract epoch number from checkpoint filename
-            checkpoint_name = Path(args.resume).stem
-            if "epoch_" in checkpoint_name:
-                try:
-                    epoch_num = int(checkpoint_name.split("epoch_")[1].split(".")[0])
-                    start_epoch = epoch_num
-                    print(f"Resuming from epoch {start_epoch} (from filename)")
-                except:
-                    print("Warning: Could not determine epoch from checkpoint, starting from epoch 0")
-            else:
-                print("Warning: Could not determine epoch, optimizer state not resumed")
-        
-        # Note: Optimizer state is not saved/restored. Training will restart optimizer from scratch.
-    
     # Training configuration (all from config)
     num_epochs = config["training"]["epochs"]
     save_interval = config["training"].get("save_interval", 1)
@@ -427,17 +389,28 @@ def main():
     sample_interval = config["training"].get("sample_interval", 5)
     keep_checkpoints = config["training"].get("keep_checkpoints", None)
     
+    # Early stopping configuration
+    early_stopping_patience = config["training"].get("early_stopping_patience", None)
+    early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
+    early_stopping_restore_best = config["training"].get("early_stopping_restore_best", True)
+    
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"  Save interval: every {save_interval} epoch(s)")
     print(f"  Eval interval: every {eval_interval} epoch(s)")
     print(f"  Sample interval: every {sample_interval} epoch(s)")
     if keep_checkpoints:
         print(f"  Keeping only last {keep_checkpoints} checkpoints")
+    if early_stopping_patience:
+        print(f"  Early stopping: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
+        if early_stopping_restore_best:
+            print(f"  Will restore best checkpoint on early stop")
     
     best_val_loss = float("inf")
     checkpoint_files = []
+    epochs_without_improvement = 0
+    training_history = []
     
-    for epoch in range(start_epoch, num_epochs):
+    for epoch in range(num_epochs):
         # Training
         avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
         
@@ -461,10 +434,42 @@ def main():
             epoch_log["val_loss"] = float(val_loss)
             epoch_log.update({f"val_{k}": float(v) for k, v in val_logs.items()})
             
-            # Track best validation loss
-            if val_loss < best_val_loss:
+            # Track and save best validation loss immediately
+            improvement = best_val_loss - val_loss
+            if improvement > early_stopping_min_delta:
                 best_val_loss = val_loss
-                print(f"  New best validation loss: {best_val_loss:.6f}")
+                epochs_without_improvement = 0  # Reset counter on improvement
+                print(f"  New best validation loss: {best_val_loss:.6f} (improvement: {improvement:.6f})")
+                
+                # Save best checkpoint immediately (always updated when best is found)
+                best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
+                model.save_checkpoint(best_path, include_config=True)
+                best_logs_path = output_dir / f"{exp_name}_logs_best.json"
+                with open(best_logs_path, "w") as f:
+                    json.dump(epoch_log, f, indent=2)
+                print(f"  Saved best checkpoint and logs (val_loss: {best_val_loss:.6f})")
+            else:
+                epochs_without_improvement += 1
+                if early_stopping_patience:
+                    print(f"  No improvement for {epochs_without_improvement}/{early_stopping_patience} epochs")
+            
+            # Early stopping check (only when validation runs)
+            if early_stopping_patience and epochs_without_improvement >= early_stopping_patience:
+                print(f"\nEarly stopping triggered!")
+                print(f"  No improvement for {epochs_without_improvement} epochs")
+                print(f"  Best validation loss: {best_val_loss:.6f}")
+                
+                # Restore best checkpoint if requested
+                if early_stopping_restore_best:
+                    best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
+                    if best_path.exists():
+                        print(f"  Restoring best checkpoint from {best_path}")
+                        model = Autoencoder.load_checkpoint(best_path, map_location=device_obj)
+                        model = model.to(device_obj)
+                        print(f"  Model restored to best checkpoint")
+                
+                # Break out of training loop
+                break
         
         # Save samples at specified interval (use validation set if available, else training set)
         if (epoch + 1) % sample_interval == 0:
@@ -485,15 +490,6 @@ def main():
             logs_path = output_dir / f"{exp_name}_logs_epoch_{epoch + 1:03d}.json"
             with open(logs_path, "w") as f:
                 json.dump(epoch_log, f, indent=2)
-            
-            # Save best checkpoint if validation improved
-            if val_loader and "val_loss" in epoch_log and epoch_log["val_loss"] == best_val_loss:
-                best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
-                model.save_checkpoint(best_path, include_config=True)
-                best_logs_path = output_dir / f"{exp_name}_logs_best.json"
-                with open(best_logs_path, "w") as f:
-                    json.dump(epoch_log, f, indent=2)
-                print(f"  Saved best checkpoint and logs")
         
         # Always save latest checkpoint and logs
         latest_path = output_dir / f"{exp_name}_checkpoint_latest.pt"
