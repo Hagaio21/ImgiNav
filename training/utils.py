@@ -16,12 +16,16 @@ from models.datasets.datasets import ManifestDataset
 from models.losses.base_loss import LOSS_REGISTRY
 
 
-def set_deterministic(seed: int = 42):
+def set_deterministic(seed: int = 42, strict_determinism: bool = False):
     """
     Set random seeds for reproducibility across Python, NumPy, PyTorch, and CUDA.
     
     Args:
         seed: Random seed value
+        strict_determinism: If True, enables torch.use_deterministic_algorithms.
+            Note: Some operations (e.g., CrossEntropyLoss) don't have deterministic
+            CUDA implementations yet, so setting this to True will produce warnings.
+            Default: False (uses seed + cudnn deterministic, but not strict algorithm determinism)
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -29,10 +33,13 @@ def set_deterministic(seed: int = 42):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     
-    # Deterministic algorithms (may be slower)
+    # CUDNN deterministic settings (applies to most operations)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    
+    # Strict deterministic algorithms (may warn for operations without deterministic impl)
+    if strict_determinism:
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
 
 def load_config(config_path: Path):
