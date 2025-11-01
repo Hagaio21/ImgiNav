@@ -11,7 +11,7 @@ from pathlib import Path
 # Load RGB to class mapping from YAML
 _LOSS_DIR = Path(__file__).parent
 _RGB_CONFIG_PATH = _LOSS_DIR / "rgb_to_class.yaml"
-_ROOM_CONFIG_PATH = _LOSS_DIR / "room_id_to_class.yaml"
+_ROOM_CONFIG_PATH = _LOSS_DIR / "room_scene_to_class.yaml"  # Changed to binary room/scene mapping
 
 def _load_rgb_to_class():
     """Load RGB to class mapping from YAML file."""
@@ -42,13 +42,14 @@ def _load_room_id_to_class():
     
     return room_id_to_class
 
+
 # Load mappings at module import
 RGB_TO_CLASS = _load_rgb_to_class()
 ROOM_ID_TO_CLASS = _load_room_id_to_class()
 
 # Number of classes = number of unique class indices
 NUM_CLASSES = len(set(RGB_TO_CLASS.values()))
-NUM_ROOM_CLASSES = len(set(ROOM_ID_TO_CLASS.values()))
+NUM_ROOM_CLASSES = 2  # Binary classification: room (0) vs scene (1)
 
 # Pre-compute RGB lookup tensors for batched operations
 # Create tensors: (num_classes, 3) for RGB values and (num_classes,) for class indices
@@ -163,16 +164,18 @@ def _segment_single(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor
     return seg.reshape(H, W)
 
 
-def room_id_to_class_index(room_id: torch.Tensor, ignore_index: int = -100) -> torch.Tensor:
+def room_id_to_class_index(room_id: torch.Tensor, ignore_index: int = 0) -> torch.Tensor:
     """
-    Convert room_id (taxonomy ID 3000-3999 or "0000") to class index (0 to num_room_classes-1).
+    Convert room_id to binary class index: room=0, scene=1
+    Scene layouts have room_id "0000" or 0 → class 1 (scene)
+    All other room_ids → class 0 (room)
     
     Args:
         room_id: Room ID tensor, shape () or (N,). Can be int or string "0000"
-        ignore_index: Value to use for unknown room IDs
+        ignore_index: Value to use for unknown room IDs (defaults to 0 for room)
     
     Returns:
-        Class index tensor, same shape as input
+        Class index tensor, same shape as input. 0=room, 1=scene
     """
     if isinstance(room_id, torch.Tensor):
         room_id_np = room_id.cpu().numpy()
@@ -189,7 +192,10 @@ def room_id_to_class_index(room_id: torch.Tensor, ignore_index: int = -100) -> t
             return ROOM_ID_TO_CLASS[rid_str]
         # Try as int
         rid_int = int(rid)
-        return ROOM_ID_TO_CLASS.get(rid_int, ignore_index)
+        if rid_int in ROOM_ID_TO_CLASS:
+            return ROOM_ID_TO_CLASS[rid_int]
+        # Default: any other room_id is a room (class 0)
+        return 0
     
     # Convert to Python value(s) for lookup
     if room_id_np.ndim == 0:

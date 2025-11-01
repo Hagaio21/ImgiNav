@@ -1,5 +1,6 @@
-# Experiment 3: RGB Reconstruction + Segmentation + Classification
+# Experiment 3: RGB Reconstruction + Segmentation + Binary Room/Scene Classification
 # Input: 512x512x3 (layout images), Latent: 32x32x8
+# Classification: 2 classes (room=0, scene=1)
 
 experiment:
   name: "exp3_rgb_seg_cls"
@@ -10,7 +11,7 @@ dataset:
   outputs:
     rgb: "layout_path"  # Column name for layout RGB images
     segmentation: "layout_path"  # Column name for layout/segmentation images (same as rgb)
-    label: "room_id"  # Column name for room classification labels
+    label: "room_id"  # Column name for room/scene classification (room_id "0000" = scene, others = room)
   filters:
     is_empty: [false]  # Filter out empty layouts
   return_path: false
@@ -40,7 +41,7 @@ autoencoder:
         num_classes: 10  # From rgb_to_class.yaml
       - type: ClassificationHead
         name: classification
-        num_classes: 34  # From room_id_to_class.yaml
+        num_classes: 2  # Binary: room (0) vs scene (1)
 
 training:
   batch_size: 32
@@ -62,13 +63,13 @@ training:
       - type: MSELoss
         key: rgb
         target: rgb
-        weight: 1.0
+        weight: 1.0  # Primary task - RGB reconstruction
       - type: CrossEntropyLoss
         key: segmentation
         target: segmentation
-        weight: 0.5
+        weight: 0.05  # Light semantic guidance
       - type: CrossEntropyLoss
         key: classification
         target: label
-        weight: 1.0
+        weight: 0.01  # Very light scale regularization (room vs scene)
 

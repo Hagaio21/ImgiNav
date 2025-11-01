@@ -88,7 +88,7 @@ class CrossEntropyLoss(LossComponent):
         # Labels are scalars (0D) or 1D tensors (batched) - always convert to class index
         elif tgt.ndim == 0 or tgt.ndim == 1:
             from .loss_utils import room_id_to_class_index
-            tgt = room_id_to_class_index(tgt, ignore_index=self.ignore_index).to(tgt.device)
+            tgt = room_id_to_class_index(tgt, ignore_index=self.ignore_index).to(pred.device)
         
         if tgt.dtype != torch.long:
             tgt = tgt.long()

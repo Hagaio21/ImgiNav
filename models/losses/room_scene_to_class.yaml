@@ -1,0 +1,10 @@
+# Room/Scene ID to class index mapping for binary classification
+# Used by room_id_to_class_index() in loss_utils.py
+# 2 classes: room=0, scene=1
+# Scene layouts have room_id "0000" or 0 → class 1 (scene)
+# All other room_ids default to class 0 (room)
+
+scene:
+  room_id: "0000"
+  class_index: 1
+
