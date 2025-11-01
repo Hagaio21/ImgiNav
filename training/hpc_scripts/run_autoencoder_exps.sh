@@ -3,10 +3,10 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/autoencoder_exps.%J.%I.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/autoencoder_exps.%J.%I.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=32000]"
+#BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
 #BSUB -W 20:00
-#BSUB -q gpul40s
+#BSUB -q gpuv100
 
 set -euo pipefail
 
