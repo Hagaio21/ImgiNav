@@ -154,7 +154,7 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
     return avg_loss, avg_logs
 
 
-def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=8, target_size=256):
+def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=8, target_size=256, exp_name=None):
     """Save sample images from validation set."""
     model.eval()
     samples_dir = output_dir / "samples"
@@ -213,7 +213,11 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         combined_grid = torch.cat([orig_grid, recon_grid], dim=2)  # Concatenate along width
         
         # Save combined grid: n×n original | n×n reconstruction (side by side)
-        grid_path = samples_dir / f"epoch_{epoch:03d}_comparison.png"
+        # Include experiment name in filename if provided (for phase folder to avoid overwrites)
+        if exp_name:
+            grid_path = samples_dir / f"{exp_name}_epoch_{epoch:03d}_comparison.png"
+        else:
+            grid_path = samples_dir / f"epoch_{epoch:03d}_comparison.png"
         save_image(combined_grid, grid_path, normalize=False)
     
     # Save segmentation if available
@@ -236,7 +240,11 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         pred_classes_vis = pred_classes_vis.unsqueeze(1).repeat(1, 3, 1, 1)
         
         seg_grid = torch.stack([pred_classes_vis[i] for i in range(batch_size)])
-        seg_path = samples_dir / f"epoch_{epoch:03d}_segmentation.png"
+        # Include experiment name in filename if provided
+        if exp_name:
+            seg_path = samples_dir / f"{exp_name}_epoch_{epoch:03d}_segmentation.png"
+        else:
+            seg_path = samples_dir / f"epoch_{epoch:03d}_segmentation.png"
         save_image(seg_grid, seg_path, nrow=grid_n, padding=2, normalize=False)
     
     print(f"  Saved samples to {samples_dir}")
@@ -462,8 +470,10 @@ def main():
             save_samples(model, loader_to_use, device, output_dir, epoch + 1, sample_batch_size=32)
             
             # Also save smaller samples to phase folder if phase is specified (for analysis)
+            # Include experiment name in filename to avoid overwrites
             if phase_dir:
-                save_samples(model, loader_to_use, device, phase_dir, epoch + 1, sample_batch_size=8)
+                save_samples(model, loader_to_use, device, phase_dir, epoch + 1, 
+                           sample_batch_size=8, exp_name=exp_name)
         
         training_history.append(epoch_log)
         

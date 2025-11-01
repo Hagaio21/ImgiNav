@@ -11,9 +11,17 @@ import seaborn as sns
 from pathlib import Path
 import argparse
 import sys
+import torch
+import torch.nn.functional as F
+from torchvision.utils import save_image, make_grid
+import yaml
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from models.autoencoder import Autoencoder
+from models.datasets.datasets import ManifestDataset
+from training.utils import load_config
 
 # Set seaborn style with dark grid and pastel colors
 sns.set_style("darkgrid")
@@ -282,6 +290,179 @@ def create_convergence_analysis(all_data, output_dir):
         print(f"Saved: {conv_path}")
 
 
+def load_autoencoder_checkpoints(exp_names, base_experiments_dir):
+    """Load autoencoder checkpoints for all experiments."""
+    checkpoints = {}
+    base_dir = Path(base_experiments_dir)
+    
+    for exp_name in exp_names:
+        # Try to find best checkpoint first, then latest
+        exp_dir = base_dir / exp_name
+        best_ckpt = exp_dir / f"{exp_name}_checkpoint_best.pt"
+        latest_ckpt = exp_dir / f"{exp_name}_checkpoint_latest.pt"
+        
+        checkpoint_path = None
+        if best_ckpt.exists():
+            checkpoint_path = best_ckpt
+        elif latest_ckpt.exists():
+            checkpoint_path = latest_ckpt
+        else:
+            print(f"  Warning: No checkpoint found for {exp_name}, skipping visual comparison")
+            continue
+        
+        try:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = Autoencoder.load_checkpoint(checkpoint_path, map_location=device)
+            model = model.to(device)
+            model.eval()
+            checkpoints[exp_name] = {
+                'model': model,
+                'device': device,
+                'path': checkpoint_path
+            }
+            print(f"  Loaded: {exp_name} from {checkpoint_path.name}")
+        except Exception as e:
+            print(f"  Error loading {exp_name}: {e}")
+            continue
+    
+    return checkpoints
+
+
+def get_test_samples(dataset_manifest, test_samples_per_type=1):
+    """Get test samples from dataset: 1 scene and 1 room."""
+    dataset = ManifestDataset(
+        manifest=dataset_manifest,
+        outputs={
+            'rgb': 'layout_path',
+            'segmentation': 'layout_path',
+            'label': 'type'
+        },
+        filters={'is_empty': [False]},
+        return_path=False
+    )
+    
+    # Find scene and room samples
+    scenes = []
+    rooms = []
+    
+    for i in range(len(dataset)):
+        try:
+            sample = dataset[i]
+            label = sample.get('label', None)
+            
+            if isinstance(label, str):
+                label_lower = label.lower().strip()
+                if label_lower == 'scene' and len(scenes) < test_samples_per_type:
+                    scenes.append((i, sample))
+                elif label_lower == 'room' and len(rooms) < test_samples_per_type:
+                    rooms.append((i, sample))
+            
+            if len(scenes) >= test_samples_per_type and len(rooms) >= test_samples_per_type:
+                break
+        except Exception as e:
+            continue
+    
+    print(f"  Found {len(scenes)} scene(s) and {len(rooms)} room(s) for testing")
+    return scenes, rooms
+
+
+def create_visual_comparison(checkpoints, test_scenes, test_rooms, output_dir):
+    """Create visual comparison of all experiments on the same test samples."""
+    if not checkpoints:
+        print("  No checkpoints loaded, skipping visual comparison")
+        return
+    
+    if not test_scenes or not test_rooms:
+        print("  No test samples found, skipping visual comparison")
+        return
+    
+    device = list(checkpoints.values())[0]['device']
+    
+    # Get one scene and one room
+    scene_idx, scene_sample = test_scenes[0]
+    room_idx, room_sample = test_rooms[0]
+    
+    # Prepare input tensors
+    scene_rgb = scene_sample['rgb'].unsqueeze(0).to(device)
+    room_rgb = room_sample['rgb'].unsqueeze(0).to(device)
+    
+    # Run inference through all models
+    scene_reconstructions = {}
+    room_reconstructions = {}
+    
+    with torch.no_grad():
+        for exp_name, checkpoint_info in checkpoints.items():
+            model = checkpoint_info['model']
+            
+            # Scene reconstruction
+            scene_out = model(scene_rgb)
+            scene_reconstructions[exp_name] = scene_out['rgb'].cpu()
+            
+            # Room reconstruction
+            room_out = model(room_rgb)
+            room_reconstructions[exp_name] = room_out['rgb'].cpu()
+    
+    # Create comparison grids
+    # Scene comparison
+    scene_comparison = create_comparison_grid(
+        scene_rgb.cpu(),
+        scene_reconstructions,
+        title="Scene Reconstruction Comparison"
+    )
+    scene_path = output_dir / "visual_comparison_scene.png"
+    save_image(scene_comparison, scene_path, normalize=False)
+    print(f"  Saved: {scene_path}")
+    
+    # Room comparison
+    room_comparison = create_comparison_grid(
+        room_rgb.cpu(),
+        room_reconstructions,
+        title="Room Reconstruction Comparison"
+    )
+    room_path = output_dir / "visual_comparison_room.png"
+    save_image(room_comparison, room_path, normalize=False)
+    print(f"  Saved: {room_path}")
+
+
+def create_comparison_grid(original, reconstructions, title=""):
+    """
+    Create a grid showing original and all reconstructions.
+    
+    Args:
+        original: [1, 3, H, W] tensor
+        reconstructions: dict of {exp_name: [1, 3, H, W] tensor}
+        title: Optional title
+    
+    Returns:
+        Grid tensor ready for saving
+    """
+    # Denormalize from [-1, 1] to [0, 1]
+    original = (original + 1) / 2.0
+    reconstructions = {k: (v + 1) / 2.0 for k, v in reconstructions.items()}
+    
+    # Resize to 256 for visualization
+    target_size = 256
+    if original.shape[-1] != target_size:
+        original = F.interpolate(original, size=(target_size, target_size), 
+                                mode='bilinear', align_corners=False)
+        reconstructions = {
+            k: F.interpolate(v, size=(target_size, target_size), 
+                            mode='bilinear', align_corners=False)
+            for k, v in reconstructions.items()
+        }
+    
+    # Create row: [Original | Exp1 | Exp2 | ... | ExpN]
+    exp_names = sorted(reconstructions.keys())
+    images_to_grid = [original.squeeze(0)]  # Original first
+    images_to_grid.extend([reconstructions[name].squeeze(0) for name in exp_names])
+    
+    # Stack horizontally (all in one row)
+    grid = torch.stack(images_to_grid)
+    grid_image = make_grid(grid, nrow=len(images_to_grid), padding=4, normalize=False)
+    
+    return grid_image
+
+
 def create_summary_report(all_data, output_dir):
     """Create a text summary report."""
     report_path = output_dir / "analysis_summary.txt"
@@ -356,6 +537,23 @@ def main():
         default=None,
         help="Output directory for analysis plots (default: same as phase-dir/analysis)"
     )
+    parser.add_argument(
+        "--experiments-dir",
+        type=str,
+        default="/work3/s233249/ImgiNav/experiments/phase1",
+        help="Base directory containing individual experiment folders"
+    )
+    parser.add_argument(
+        "--dataset-manifest",
+        type=str,
+        default="/work3/s233249/ImgiNav/datasets/layouts.csv",
+        help="Path to dataset manifest for getting test samples"
+    )
+    parser.add_argument(
+        "--skip-visual",
+        action="store_true",
+        help="Skip visual comparison (faster if only metrics needed)"
+    )
     
     args = parser.parse_args()
     
@@ -376,14 +574,34 @@ def main():
     
     # Load all metrics
     all_data = load_metrics(phase_dir)
-    print(f"\nLoaded {len(all_data)} experiments\n")
+    exp_names = list(all_data.keys())
+    print(f"\nLoaded {len(exp_names)} experiments\n")
     
-    # Create visualizations
-    print("Creating visualizations...")
+    # Create visualizations from metrics
+    print("Creating metric visualizations...")
     create_loss_curves(all_data, output_dir)
     create_final_metrics_comparison(all_data, output_dir)
     create_convergence_analysis(all_data, output_dir)
     create_summary_report(all_data, output_dir)
+    
+    # Visual comparison with actual models
+    if not args.skip_visual:
+        print("\n" + "-" * 80)
+        print("Loading autoencoder checkpoints for visual comparison...")
+        print("-" * 80)
+        checkpoints = load_autoencoder_checkpoints(exp_names, args.experiments_dir)
+        
+        if checkpoints:
+            print("\nLoading test samples from dataset...")
+            test_scenes, test_rooms = get_test_samples(args.dataset_manifest)
+            
+            if test_scenes and test_rooms:
+                print("\nCreating visual comparisons...")
+                create_visual_comparison(checkpoints, test_scenes, test_rooms, output_dir)
+            else:
+                print("  Could not find test samples, skipping visual comparison")
+        else:
+            print("  Could not load any checkpoints, skipping visual comparison")
     
     print("\n" + "=" * 80)
     print("Analysis complete!")
