@@ -23,20 +23,24 @@ from models.autoencoder import Autoencoder
 from models.datasets.datasets import ManifestDataset
 from training.utils import load_config
 
-# Set seaborn style with dark grid and pastel colors
+# Set seaborn style with dark grid
 sns.set_style("darkgrid")
-sns.set_palette("pastel")
 plt.rcParams['figure.figsize'] = (12, 8)
 plt.rcParams['figure.dpi'] = 100
 
-# Color palette for experiments
-PASTEL_COLORS = [
-    '#FFB3BA',  # Pastel red
-    '#BAFFC9',  # Pastel green
-    '#BAE1FF',  # Pastel blue
-    '#FFFFBA',  # Pastel yellow
-    '#FFDFBA',  # Pastel orange
+# Color palette for experiments - distinct colors from tab20 colormap
+import matplotlib.cm as cm
+_tab20_colors = cm.get_cmap('tab20').colors
+# Select distinct colors from tab20 (skip very similar ones)
+EXPERIMENT_COLORS = [
+    _tab20_colors[0],   # Blue
+    _tab20_colors[2],   # Red
+    _tab20_colors[4],   # Green
+    _tab20_colors[6],   # Orange
+    _tab20_colors[8],   # Purple
 ]
+# Convert to hex for compatibility
+EXPERIMENT_COLORS = [f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}' for r, g, b in EXPERIMENT_COLORS]
 
 
 def load_metrics(phase_dir):
@@ -73,11 +77,11 @@ def create_loss_curves(all_data, output_dir):
     for i, (exp_name, df) in enumerate(all_data.items()):
         if 'train_loss' in df.columns:
             ax1.plot(df['epoch'], df['train_loss'], 
-                    label=exp_name, color=PASTEL_COLORS[i % len(PASTEL_COLORS)], linewidth=2)
+                    label=exp_name, color=EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)], linewidth=2)
     ax1.set_xlabel('Epoch', fontsize=12)
     ax1.set_ylabel('Training Loss', fontsize=12)
     ax1.set_title('Training Loss', fontsize=14, fontweight='bold')
-    ax1.legend(loc='upper right', frameon=True, fancybox=True, shadow=True)
+    ax1.legend(loc='upper right', frameon=True, fancybox=False, shadow=False, edgecolor='none')
     ax1.grid(True, alpha=0.3)
     
     # Plot 2: Validation Loss
@@ -85,11 +89,11 @@ def create_loss_curves(all_data, output_dir):
     for i, (exp_name, df) in enumerate(all_data.items()):
         if 'val_loss' in df.columns:
             ax2.plot(df['epoch'], df['val_loss'], 
-                    label=exp_name, color=PASTEL_COLORS[i % len(PASTEL_COLORS)], linewidth=2)
+                    label=exp_name, color=EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)], linewidth=2)
     ax2.set_xlabel('Epoch', fontsize=12)
     ax2.set_ylabel('Validation Loss', fontsize=12)
     ax2.set_title('Validation Loss', fontsize=14, fontweight='bold')
-    ax2.legend(loc='upper right', frameon=True, fancybox=True, shadow=True)
+    ax2.legend(loc='upper right', frameon=True, fancybox=False, shadow=False, edgecolor='none')
     ax2.grid(True, alpha=0.3)
     
     # Plot 3: Training MSE (RGB)
@@ -98,11 +102,11 @@ def create_loss_curves(all_data, output_dir):
         mse_col = [c for c in df.columns if 'MSE' in c.upper() and 'train' in c.lower()]
         if mse_col:
             ax3.plot(df['epoch'], df[mse_col[0]], 
-                    label=exp_name, color=PASTEL_COLORS[i % len(PASTEL_COLORS)], linewidth=2)
+                    label=exp_name, color=EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)], linewidth=2)
     ax3.set_xlabel('Epoch', fontsize=12)
     ax3.set_ylabel('Training MSE (RGB)', fontsize=12)
     ax3.set_title('Training RGB MSE', fontsize=14, fontweight='bold')
-    ax3.legend(loc='upper right', frameon=True, fancybox=True, shadow=True)
+    ax3.legend(loc='upper right', frameon=True, fancybox=False, shadow=False, edgecolor='none')
     ax3.grid(True, alpha=0.3)
     
     # Plot 4: Validation MSE (RGB)
@@ -111,11 +115,11 @@ def create_loss_curves(all_data, output_dir):
         mse_col = [c for c in df.columns if 'MSE' in c.upper() and 'val' in c.lower()]
         if mse_col:
             ax4.plot(df['epoch'], df[mse_col[0]], 
-                    label=exp_name, color=PASTEL_COLORS[i % len(PASTEL_COLORS)], linewidth=2)
+                    label=exp_name, color=EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)], linewidth=2)
     ax4.set_xlabel('Epoch', fontsize=12)
     ax4.set_ylabel('Validation MSE (RGB)', fontsize=12)
     ax4.set_title('Validation RGB MSE', fontsize=14, fontweight='bold')
-    ax4.legend(loc='upper right', frameon=True, fancybox=True, shadow=True)
+    ax4.legend(loc='upper right', frameon=True, fancybox=False, shadow=False, edgecolor='none')
     ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -166,7 +170,7 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     # Plot 1: Final Validation Loss
     ax1 = axes[0, 0]
-    sns.barplot(data=final_df, x='experiment', y='val_loss', ax=ax1, palette=PASTEL_COLORS)
+    sns.barplot(data=final_df, x='experiment', y='val_loss', ax=ax1, palette=EXPERIMENT_COLORS)
     ax1.set_xlabel('Experiment', fontsize=12)
     ax1.set_ylabel('Final Validation Loss', fontsize=12)
     ax1.set_title('Final Validation Loss', fontsize=14, fontweight='bold')
@@ -176,7 +180,7 @@ def create_final_metrics_comparison(all_data, output_dir):
     # Plot 2: Final Validation MSE
     ax2 = axes[0, 1]
     if 'val_MSE' in final_df.columns:
-        sns.barplot(data=final_df, x='experiment', y='val_MSE', ax=ax2, palette=PASTEL_COLORS)
+        sns.barplot(data=final_df, x='experiment', y='val_MSE', ax=ax2, palette=EXPERIMENT_COLORS)
         ax2.set_xlabel('Experiment', fontsize=12)
         ax2.set_ylabel('Final Validation MSE', fontsize=12)
         ax2.set_title('Final Validation MSE (RGB)', fontsize=14, fontweight='bold')
@@ -189,7 +193,7 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     # Plot 3: Final Training Loss
     ax3 = axes[1, 0]
-    sns.barplot(data=final_df, x='experiment', y='train_loss', ax=ax3, palette=PASTEL_COLORS)
+    sns.barplot(data=final_df, x='experiment', y='train_loss', ax=ax3, palette=EXPERIMENT_COLORS)
     ax3.set_xlabel('Experiment', fontsize=12)
     ax3.set_ylabel('Final Training Loss', fontsize=12)
     ax3.set_title('Final Training Loss', fontsize=14, fontweight='bold')
@@ -199,7 +203,7 @@ def create_final_metrics_comparison(all_data, output_dir):
     # Plot 4: Final Validation Segmentation Loss
     ax4 = axes[1, 1]
     if 'val_seg_loss' in final_df.columns:
-        sns.barplot(data=final_df, x='experiment', y='val_seg_loss', ax=ax4, palette=PASTEL_COLORS)
+        sns.barplot(data=final_df, x='experiment', y='val_seg_loss', ax=ax4, palette=EXPERIMENT_COLORS)
         ax4.set_xlabel('Experiment', fontsize=12)
         ax4.set_ylabel('Final Validation Seg Loss', fontsize=12)
         ax4.set_title('Final Validation Segmentation Loss', fontsize=14, fontweight='bold')
@@ -257,20 +261,20 @@ def create_convergence_analysis(all_data, output_dir):
         # Plot loss reduction over time
         axes[0].plot(epochs, val_loss, 
                     label=exp_name, 
-                    color=PASTEL_COLORS[len(convergence_data) % len(PASTEL_COLORS)], 
+                    color=EXPERIMENT_COLORS[len(convergence_data) % len(EXPERIMENT_COLORS)], 
                     linewidth=2)
     
     axes[0].set_xlabel('Epoch', fontsize=12)
     axes[0].set_ylabel('Validation Loss', fontsize=12)
     axes[0].set_title('Loss Reduction Over Time', fontsize=14, fontweight='bold')
-    axes[0].legend(frameon=True, fancybox=True, shadow=True)
+    axes[0].legend(frameon=True, fancybox=False, shadow=False, edgecolor='none')
     axes[0].grid(True, alpha=0.3)
     
     # Bar plot: Convergence speed
     conv_df = pd.DataFrame(convergence_data)
     if len(conv_df) > 0:
         sns.barplot(data=conv_df, x='experiment', y='convergence_epoch', 
-                   ax=axes[1], palette=PASTEL_COLORS)
+                   ax=axes[1], palette=EXPERIMENT_COLORS)
         axes[1].set_xlabel('Experiment', fontsize=12)
         axes[1].set_ylabel('Convergence Epoch', fontsize=12)
         axes[1].set_title('Convergence Speed', fontsize=14, fontweight='bold')
@@ -404,29 +408,32 @@ def create_visual_comparison(checkpoints, test_scenes, test_rooms, output_dir):
     
     # Create comparison grids
     # Scene comparison
-    scene_comparison = create_comparison_grid(
+    scene_fig = create_comparison_grid(
         scene_rgb.cpu(),
         scene_reconstructions,
         title="Scene Reconstruction Comparison"
     )
     scene_path = output_dir / "visual_comparison_scene.png"
-    save_image(scene_comparison, scene_path, normalize=False)
+    scene_fig.savefig(scene_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(scene_fig)
     print(f"  Saved: {scene_path}")
     
     # Room comparison
-    room_comparison = create_comparison_grid(
+    room_fig = create_comparison_grid(
         room_rgb.cpu(),
         room_reconstructions,
         title="Room Reconstruction Comparison"
     )
     room_path = output_dir / "visual_comparison_room.png"
-    save_image(room_comparison, room_path, normalize=False)
+    room_fig.savefig(room_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(room_fig)
     print(f"  Saved: {room_path}")
 
 
 def create_comparison_grid(original, reconstructions, title=""):
     """
-    Create a grid showing original and all reconstructions.
+    Create a grid showing original and all reconstructions with labels.
+    Uses matplotlib to add text labels for each image.
     
     Args:
         original: [1, 3, H, W] tensor
@@ -434,8 +441,10 @@ def create_comparison_grid(original, reconstructions, title=""):
         title: Optional title
     
     Returns:
-        Grid tensor ready for saving
+        PIL Image or matplotlib figure (ready for saving)
     """
+    import matplotlib.patches as mpatches
+    
     # Denormalize from [-1, 1] to [0, 1]
     original = (original + 1) / 2.0
     reconstructions = {k: (v + 1) / 2.0 for k, v in reconstructions.items()}
@@ -451,16 +460,40 @@ def create_comparison_grid(original, reconstructions, title=""):
             for k, v in reconstructions.items()
         }
     
-    # Create row: [Original | Exp1 | Exp2 | ... | ExpN]
+    # Convert to numpy for matplotlib
+    original_np = original.squeeze(0).cpu().permute(1, 2, 0).numpy()
+    reconstructions_np = {
+        k: v.squeeze(0).cpu().permute(1, 2, 0).numpy()
+        for k, v in reconstructions.items()
+    }
+    
+    # Create figure with subplots
     exp_names = sorted(reconstructions.keys())
-    images_to_grid = [original.squeeze(0)]  # Original first
-    images_to_grid.extend([reconstructions[name].squeeze(0) for name in exp_names])
+    n_images = 1 + len(exp_names)  # Original + reconstructions
     
-    # Stack horizontally (all in one row)
-    grid = torch.stack(images_to_grid)
-    grid_image = make_grid(grid, nrow=len(images_to_grid), padding=4, normalize=False)
+    fig, axes = plt.subplots(1, n_images, figsize=(n_images * 3, 3.5))
+    if n_images == 1:
+        axes = [axes]  # Make iterable if single subplot
     
-    return grid_image
+    # Plot original
+    axes[0].imshow(original_np)
+    axes[0].set_title('Original', fontsize=12, fontweight='bold', pad=10)
+    axes[0].axis('off')
+    
+    # Plot reconstructions with experiment names
+    for i, exp_name in enumerate(exp_names, start=1):
+        axes[i].imshow(reconstructions_np[exp_name])
+        # Clean up experiment name for display (remove phase prefix if present)
+        display_name = exp_name.replace('phase1_1_AE_', '').replace('phase1_1_', '')
+        axes[i].set_title(display_name, fontsize=10, fontweight='bold', pad=10)
+        axes[i].axis('off')
+    
+    # Add overall title if provided
+    if title:
+        fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
+    
+    plt.tight_layout()
+    return fig
 
 
 def create_summary_report(all_data, output_dir):
