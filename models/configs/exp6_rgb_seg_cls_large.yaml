@@ -43,7 +43,7 @@ autoencoder:
         num_classes: 34  # From room_id_to_class.yaml
 
 training:
-  batch_size: 64
+  batch_size: 8
   num_workers: 8
   shuffle: true
   epochs: 100

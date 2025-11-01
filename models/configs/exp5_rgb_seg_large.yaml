@@ -39,7 +39,7 @@ autoencoder:
         num_classes: 10  # From rgb_to_class.yaml
 
 training:
-  batch_size: 16
+  batch_size: 8
   num_workers: 8
   shuffle: true
   epochs: 100
