@@ -46,17 +46,17 @@ training:
   seed: 42  # Random seed for reproducibility
   train_split: 0.8  # 80% train, 20% validation
   split_seed: 42  # Random seed for train/val split
-  batch_size: 8
+  batch_size: 32
   num_workers: 8
   shuffle: true
-  epochs: 100
+  epochs: 30
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
   save_interval: 5  # Save checkpoint every 5 epochs
   sample_interval: 5  # Save sample images every 5 epochs
-  early_stopping_patience: 15  # Stop if no improvement for 15 epochs
-  early_stopping_min_delta: 0.001  # Minimum improvement to count
+  early_stopping_patience: 5  # Stop if no improvement for 15 epochs
+  early_stopping_min_delta: 0.0001  # Minimum improvement to count
   early_stopping_restore_best: true  # Restore best checkpoint on early stop
   
   loss:
@@ -65,11 +65,11 @@ training:
       - type: MSELoss
         key: rgb
         target: rgb
-        weight: 1.0
+        weight: 0.2
       - type: CrossEntropyLoss
         key: segmentation
         target: segmentation
-        weight: 0.5
+        weight: 1.0
       - type: CrossEntropyLoss
         key: classification
         target: label
