@@ -5,6 +5,7 @@ import yaml
 
 from models.components.base_model import BaseModel
 from models.autoencoder import Autoencoder
+from models.decoder import Decoder
 from models.components.unet import DualUNet
 from models.components.scheduler import SCHEDULER_REGISTRY
 
@@ -13,12 +14,26 @@ class DiffusionModel(BaseModel):
     """Minimal end-to-end diffusion model for training."""
 
     def _build(self):
-        ae_cfg = self._init_kwargs.get("autoencoder", {})
+        ae_cfg = self._init_kwargs.get("autoencoder", None)
+        decoder_cfg = self._init_kwargs.get("decoder", None)
         unet_cfg = self._init_kwargs.get("unet", {})
         sched_cfg = self._init_kwargs.get("scheduler", {})
 
-        # autoencoder
-        self.autoencoder = Autoencoder.from_config(ae_cfg)
+        # Accept either full autoencoder or just decoder
+        if ae_cfg:
+            # Full autoencoder provided
+            self.autoencoder = Autoencoder.from_config(ae_cfg)
+            self.decoder = self.autoencoder.decoder
+            self.encoder = self.autoencoder.encoder
+            self._has_encoder = True
+        elif decoder_cfg:
+            # Only decoder provided (for inference or pre-encoded training)
+            self.decoder = Decoder.from_config(decoder_cfg)
+            self.encoder = None
+            self.autoencoder = None
+            self._has_encoder = False
+        else:
+            raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config")
 
         # UNet backbone
         self.unet = DualUNet.from_config(unet_cfg)
@@ -32,20 +47,32 @@ class DiffusionModel(BaseModel):
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
-    def forward(self, x0, t, cond=None, noise=None):
-        """Forward diffusion training step."""
-        # encode image
-        latents = self.autoencoder.encoder(x0)
+    def forward(self, x0_or_latents, t, cond=None, noise=None):
+        """
+        Forward diffusion training step.
         
-        # Generate noise in latent space if not provided, or encode if in image space
-        if noise is None:
-            noise = torch.randn_like(latents)
-        elif noise.shape != latents.shape:
-            # If noise is in image space, encode it to latent space
-            if noise.shape == x0.shape:
-                noise = self.autoencoder.encoder(noise)
-            else:
-                # Reshape or regenerate if shapes don't match
+        Args:
+            x0_or_latents: Either images (if encoder available) or latents (if decoder-only)
+            t: Timestep tensor
+            cond: Optional conditioning
+            noise: Optional noise tensor
+        """
+        # Encode image to latents if encoder is available, otherwise assume input is already latents
+        if self._has_encoder:
+            # x0 is images, encode them
+            latents = self.encoder(x0_or_latents)
+            if noise is None:
+                noise = torch.randn_like(latents)
+            elif noise.shape != latents.shape:
+                # If noise is in image space, encode it to latent space
+                if noise.shape == x0_or_latents.shape:
+                    noise = self.encoder(noise)
+                else:
+                    noise = torch.randn_like(latents)
+        else:
+            # Input is already latents (decoder-only mode)
+            latents = x0_or_latents
+            if noise is None:
                 noise = torch.randn_like(latents)
 
         # add noise
@@ -55,7 +82,7 @@ class DiffusionModel(BaseModel):
         pred_noise = self.unet(noisy_latents, t, cond)
 
         # decode reconstruction
-        decoded = self.autoencoder.decoder(noisy_latents)
+        decoded = self.decoder(noisy_latents)
 
         return {
             "latent": latents,
@@ -76,12 +103,16 @@ class DiffusionModel(BaseModel):
         return cls.from_config(cfg)
 
     def to_config(self):
-        return {
+        cfg = {
             "type": "DiffusionModel",
-            "autoencoder": self.autoencoder.to_config(),
             "unet": self.unet.to_config(),
             "scheduler": self.scheduler.to_config(),
         }
+        if self._has_encoder:
+            cfg["autoencoder"] = self.autoencoder.to_config()
+        else:
+            cfg["decoder"] = self.decoder.to_config()
+        return cfg
 
     # ------------------------------------------------------------------
     # Checkpointing (inherited from BaseModel, can override if needed)
