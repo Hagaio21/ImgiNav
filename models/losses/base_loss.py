@@ -78,27 +78,27 @@ class CrossEntropyLoss(LossComponent):
         pred = preds[self.key]
         tgt = targets[self.target_key]
 
-        # Convert RGB layout to segmentation mask (4D with 3 channels = RGB image)
-        if tgt.ndim == 4 and tgt.shape[1] == 3:
-            from .loss_utils import create_seg_mask
-            tgt = create_seg_mask(tgt, ignore_index=self.ignore_index).to(tgt.device)
-        elif tgt.ndim == 4 and tgt.shape[1] == 1:
-            tgt = tgt.squeeze(1)
+        # Handle string labels FIRST (before checking tensor attributes)
         # Convert sample_type string ("room"/"scene") to class index for binary classification
-        # Handle string labels or numeric labels
-        elif isinstance(tgt, str) or (isinstance(tgt, list) and len(tgt) > 0 and isinstance(tgt[0], str)):
+        if isinstance(tgt, str) or (isinstance(tgt, list) and len(tgt) > 0 and isinstance(tgt[0], str)):
             from .loss_utils import sample_type_to_class_index
             tgt = sample_type_to_class_index(tgt, ignore_index=self.ignore_index)
             if isinstance(tgt, torch.Tensor):
                 tgt = tgt.to(pred.device)
+        # Convert RGB layout to segmentation mask (4D with 3 channels = RGB image)
+        elif isinstance(tgt, torch.Tensor) and tgt.ndim == 4 and tgt.shape[1] == 3:
+            from .loss_utils import create_seg_mask
+            tgt = create_seg_mask(tgt, ignore_index=self.ignore_index).to(tgt.device)
+        elif isinstance(tgt, torch.Tensor) and tgt.ndim == 4 and tgt.shape[1] == 1:
+            tgt = tgt.squeeze(1)
         # Convert numeric labels (legacy room_id support) - defaults to room (0) if not found
-        elif tgt.ndim == 0 or tgt.ndim == 1:
+        elif isinstance(tgt, torch.Tensor) and (tgt.ndim == 0 or tgt.ndim == 1):
             # For numeric values, assume 0 or "0000" means scene (1), others are room (0)
-            if isinstance(tgt, torch.Tensor):
-                tgt = (tgt == 0).long().to(pred.device)  # 0 -> 1 (scene), others -> 0 (room)
-            else:
-                tgt = torch.tensor(1 if (isinstance(tgt, (int, float)) and (tgt == 0 or str(tgt) == "0000")) else 0, 
-                                 dtype=torch.long, device=pred.device)
+            tgt = (tgt == 0).long().to(pred.device)  # 0 -> 1 (scene), others -> 0 (room)
+        elif not isinstance(tgt, torch.Tensor):
+            # Handle non-tensor numeric values
+            tgt = torch.tensor(1 if (isinstance(tgt, (int, float)) and (tgt == 0 or str(tgt) == "0000")) else 0, 
+                             dtype=torch.long, device=pred.device)
         
         if tgt.dtype != torch.long:
             tgt = tgt.long()
