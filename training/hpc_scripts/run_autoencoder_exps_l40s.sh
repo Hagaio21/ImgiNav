@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train.py"
-CONFIG_DIR="${BASE_DIR}/models/configs"
+CONFIG_DIR="${BASE_DIR}/experiments/autoencoders"
 
 # Last 2 experiments (exp5-exp6)
 CONFIG_FILES=(

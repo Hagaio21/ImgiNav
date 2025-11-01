@@ -8,12 +8,17 @@ from ..components.base_component import BaseComponent
 
 class ManifestDataset(BaseComponent, Dataset):
     def _build(self):
-        manifest = Path(self._init_kwargs["manifest"])
-        if not manifest.exists():
-            raise FileNotFoundError(f"Manifest not found: {manifest}")
+        # Allow direct DataFrame passing (for split datasets)
+        if "_df" in self._init_kwargs:
+            self.df = self._init_kwargs["_df"]
+            self.manifest_dir = self._init_kwargs.get("_manifest_dir", Path("."))
+        else:
+            manifest = Path(self._init_kwargs["manifest"])
+            if not manifest.exists():
+                raise FileNotFoundError(f"Manifest not found: {manifest}")
 
-        self.df = pd.read_csv(manifest)
-        self.manifest_dir = manifest.parent  # Store manifest directory for relative path resolution
+            self.df = pd.read_csv(manifest)
+            self.manifest_dir = manifest.parent  # Store manifest directory for relative path resolution
         self.transform = self._init_kwargs.get("transform", None)
         self.return_path = self._init_kwargs.get("return_path", False)
 
@@ -150,6 +155,67 @@ class ManifestDataset(BaseComponent, Dataset):
         # Fallback: convert to tensor (will default to appropriate type)
         return torch.tensor(val)
 
+    def split(self, train_split=0.8, random_seed=42):
+        """
+        Split dataset into train and validation sets.
+        
+        Args:
+            train_split: Fraction of data for training (default: 0.8)
+            random_seed: Random seed for reproducibility (default: 42)
+            
+        Returns:
+            (train_dataset, val_dataset) tuple of ManifestDataset instances
+        """
+        val_split = 1.0 - train_split
+        if train_split <= 0 or train_split >= 1.0:
+            raise ValueError(f"train_split must be between 0 and 1, got {train_split}")
+        
+        total_size = len(self)
+        train_size = int(train_split * total_size)
+        val_size = total_size - train_size
+        
+        # Set random seed for reproducibility
+        generator = torch.Generator()
+        generator.manual_seed(random_seed)
+        
+        # Shuffle indices
+        indices = torch.randperm(total_size, generator=generator).tolist()
+        train_indices = indices[:train_size]
+        val_indices = indices[train_size:]
+        
+        # Create new datasets with filtered DataFrames
+        train_df = self.df.iloc[train_indices].reset_index(drop=True)
+        val_df = self.df.iloc[val_indices].reset_index(drop=True)
+        
+        # Create new dataset instances with filtered data
+        train_dataset = ManifestDataset(
+            manifest=None,  # Not using manifest path
+            outputs=self.outputs,
+            filters=None,  # Already filtered
+            return_path=self.return_path,
+            transform=self.transform,
+            target_key=self.target_key,
+            label_col=self.label_col,
+            path_col=self.path_col,
+            _df=train_df,  # Internal: pass DataFrame directly
+            _manifest_dir=self.manifest_dir
+        )
+        
+        val_dataset = ManifestDataset(
+            manifest=None,
+            outputs=self.outputs,
+            filters=None,
+            return_path=self.return_path,
+            transform=self.transform,
+            target_key=self.target_key,
+            label_col=self.label_col,
+            path_col=self.path_col,
+            _df=val_df,
+            _manifest_dir=self.manifest_dir
+        )
+        
+        return train_dataset, val_dataset
+    
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True):
         return DataLoader(
             self, 

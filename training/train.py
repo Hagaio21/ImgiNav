@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from models.autoencoder import Autoencoder
 from models.datasets.datasets import ManifestDataset
 from models.losses.base_loss import LOSS_REGISTRY
+from training.utils import set_deterministic
 
 
 def load_config(config_path: Path):
@@ -308,6 +309,12 @@ def main():
     exp_name = config.get("experiment", {}).get("name", "unnamed")
     print(f"Experiment: {exp_name}")
     
+    # Set deterministic behavior if seed is provided
+    training_seed = config.get("training", {}).get("seed", None)
+    if training_seed is not None:
+        set_deterministic(training_seed)
+        print(f"Set deterministic mode with seed: {training_seed}")
+    
     # Get device from config or default
     device = config.get("training", {}).get("device")
     if device is None:
@@ -346,26 +353,45 @@ def main():
     
     print("Building dataset...")
     dataset = build_dataset(config)
-    train_loader = dataset.make_dataloader(
+    
+    # Build validation dataset
+    val_dataset = None
+    val_loader = None
+    
+    # Check if validation dataset is explicitly provided
+    if "validation" in config and "dataset" in config["validation"]:
+        val_cfg = config["validation"]["dataset"]
+        val_dataset = ManifestDataset(**val_cfg)
+        val_loader = val_dataset.make_dataloader(
+            batch_size=config["validation"].get("batch_size", config["training"]["batch_size"]),
+            shuffle=False,
+            num_workers=config["training"].get("num_workers", 4)
+        )
+        print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)} (from config)")
+        # Use full dataset for training if validation is explicitly provided
+        train_dataset = dataset
+    else:
+        # Auto-split dataset using train_split from config
+        train_split = config["training"].get("train_split", 0.8)
+        split_seed = config["training"].get("split_seed", 42)
+        
+        if train_split < 1.0:
+            train_dataset, val_dataset = dataset.split(train_split=train_split, random_seed=split_seed)
+            val_loader = val_dataset.make_dataloader(
+                batch_size=config["validation"].get("batch_size", config["training"]["batch_size"]) if "validation" in config else config["training"]["batch_size"],
+                shuffle=False,
+                num_workers=config["training"].get("num_workers", 4)
+            )
+            print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)} (auto-split {int((1-train_split)*100)}%)")
+        else:
+            train_dataset = dataset
+    
+    train_loader = train_dataset.make_dataloader(
         batch_size=config["training"]["batch_size"],
         shuffle=config["training"].get("shuffle", True),
         num_workers=config["training"].get("num_workers", 4)
     )
-    print(f"Train dataset size: {len(dataset)}, Batches: {len(train_loader)}")
-    
-    # Build validation dataset if provided
-    val_dataset = None
-    val_loader = None
-    if "validation" in config:
-        val_cfg = config["validation"].get("dataset", {})
-        if val_cfg:
-            val_dataset = ManifestDataset(**val_cfg)
-            val_loader = val_dataset.make_dataloader(
-                batch_size=config["validation"].get("batch_size", config["training"]["batch_size"]),
-                shuffle=False,
-                num_workers=config["training"].get("num_workers", 4)
-            )
-            print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)}")
+    print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
     print("Building loss function...")
     loss_fn = build_loss(config)
@@ -396,7 +422,8 @@ def main():
     
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"  Save interval: every {save_interval} epoch(s)")
-    print(f"  Eval interval: every {eval_interval} epoch(s)")
+    if val_loader:
+        print(f"  Evaluation: every epoch")
     print(f"  Sample interval: every {sample_interval} epoch(s)")
     if keep_checkpoints:
         print(f"  Keeping only last {keep_checkpoints} checkpoints")
@@ -428,8 +455,8 @@ def main():
             **{f"train_{k}": float(v) for k, v in avg_logs.items()}
         }
         
-        # Evaluation
-        if val_loader and (epoch + 1) % eval_interval == 0:
+        # Evaluation (run every epoch if validation set exists)
+        if val_loader:
             val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp)
             print(f"  Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():
@@ -453,7 +480,7 @@ def main():
                 if early_stopping_patience:
                     print(f"  No improvement for {epochs_without_improvement}/{early_stopping_patience} epochs")
             
-            # Early stopping check (only when validation runs)
+            # Early stopping check
             if early_stopping_patience and epochs_without_improvement >= early_stopping_patience:
                 print(f"\nEarly stopping triggered!")
                 print(f"  No improvement for {epochs_without_improvement} epochs")
