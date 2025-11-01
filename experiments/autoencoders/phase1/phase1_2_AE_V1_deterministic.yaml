@@ -1,6 +1,6 @@
 # Phase 1.2: VAE Test - Experiment V1
 # Deterministic encoder (no VAE)
-# NOTE: Update all architecture params based on Phase 1.1 winner
+# Architecture: 32×32×16 = 16,384 dims (from Phase 1.1 winner)
 
 experiment:
   name: "phase1_2_AE_V1_deterministic"
@@ -20,17 +20,17 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
-    base_channels: 32  # TODO: Update based on Phase 1.1 winner
-    downsampling_steps: 4  # TODO: Update based on Phase 1.1 winner
+    latent_channels: 16  # 32×32×16 latent space
+    base_channels: 32
+    downsampling_steps: 4  # 512 -> 32 (32×32 spatial resolution)
     activation: SiLU
     norm_groups: 8
     variational: false
   
   decoder:
-    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
-    base_channels: 32  # TODO: Update based on Phase 1.1 winner
-    upsampling_steps: 4  # TODO: Update based on Phase 1.1 winner
+    latent_channels: 16  # 32×32×16 latent space
+    base_channels: 32
+    upsampling_steps: 4  # 32 -> 512 (32×32 spatial resolution)
     activation: SiLU
     norm_groups: 8
     heads:
