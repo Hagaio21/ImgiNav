@@ -767,52 +767,119 @@ def create_summary_report(all_data, output_dir):
     
     final_df = pd.DataFrame(final_metrics)
     
+    # Add latent dimension info to final_df
+    final_df['latent_dims'] = final_df['experiment'].apply(
+        lambda x: parse_latent_dimensions(x).get('total_dims', None)
+    )
+    final_df['latent_shape'] = final_df['experiment'].apply(
+        lambda x: parse_latent_dimensions(x).get('spatial_str', '?×?')
+    )
+    final_df['latent_channels'] = final_df['experiment'].apply(
+        lambda x: parse_latent_dimensions(x).get('channels', None)
+    )
+    
+    # Calculate MSE per dimension (efficiency metric)
+    if 'val_MSE' in final_df.columns and 'latent_dims' in final_df.columns:
+        final_df['MSE_per_dim'] = final_df['val_MSE'] / final_df['latent_dims']
+    
     with open(report_path, 'w') as f:
         f.write("=" * 80 + "\n")
-        f.write("Phase 1.1: Latent Channel Sweep - Results Summary\n")
+        f.write("Phase 1.1: Channel × Spatial Resolution Sweep - Results Summary\n")
         f.write("=" * 80 + "\n\n")
+        f.write("ANALYSIS FOCUS: Latent-size-centric (optimized for diffusion efficiency)\n")
+        f.write("-" * 80 + "\n\n")
         
-        # Rank experiments by key metrics
+        # Rank by efficiency (MSE per dimension)
+        if 'MSE_per_dim' in final_df.columns:
+            final_df_efficiency = final_df.sort_values('MSE_per_dim')
+            f.write("Ranking by Efficiency (MSE per Dimension):\n")
+            f.write("-" * 80 + "\n")
+            for rank, (idx, row) in enumerate(final_df_efficiency.iterrows(), 1):
+                exp_clean = row['experiment'].replace('phase1_1_AE_', '')
+                dims_str = f"{row.get('latent_shape', '?×?')}×{row.get('latent_channels', '?')} = {row.get('latent_dims', 0):,}"
+                f.write(f"{rank}. {exp_clean}\n")
+                f.write(f"   Latent: {dims_str}\n")
+                f.write(f"   Validation MSE: {row['val_MSE']:.6f}\n")
+                f.write(f"   MSE per Dimension: {row['MSE_per_dim']:.2e}\n")
+                f.write("\n")
+        
+        # Rank by quality (Validation MSE)
         if 'val_MSE' in final_df.columns:
             final_df_sorted = final_df.sort_values('val_MSE')
+            f.write("\n" + "=" * 80 + "\n")
             f.write("Ranking by Validation MSE (RGB Reconstruction Quality):\n")
             f.write("-" * 80 + "\n")
             for rank, (idx, row) in enumerate(final_df_sorted.iterrows(), 1):
                 exp_clean = row['experiment'].replace('phase1_1_AE_', '')
+                dims_str = f"{row.get('latent_shape', '?×?')}×{row.get('latent_channels', '?')} = {row.get('latent_dims', 0):,}"
                 f.write(f"{rank}. {exp_clean}\n")
+                f.write(f"   Latent: {dims_str}\n")
                 f.write(f"   Validation MSE: {row['val_MSE']:.6f}\n")
-                if 'val_loss' in row:
-                    f.write(f"   Validation Loss: {row['val_loss']:.6f}\n")
-                if rank == 1:
-                    best_mse = row['val_MSE']
-                    best_exp = row['experiment']
+                if 'MSE_per_dim' in row:
+                    f.write(f"   MSE per Dimension: {row['MSE_per_dim']:.2e}\n")
                 f.write("\n")
         
-        # Best experiment summary
-        if 'val_MSE' in final_df.columns:
+        # Latent dimension statistics
+        if 'latent_dims' in final_df.columns:
             f.write("=" * 80 + "\n")
-            f.write("BEST EXPERIMENT:\n")
+            f.write("Latent Dimension Statistics:\n")
             f.write("=" * 80 + "\n")
-            best_row = final_df_sorted.iloc[0]
-            best_exp_clean = best_row['experiment'].replace('phase1_1_AE_', '')
-            f.write(f"Experiment: {best_exp_clean}\n")
-            f.write(f"Validation MSE: {best_row['val_MSE']:.6f}\n")
-            if 'val_loss' in best_row:
-                f.write(f"Validation Loss: {best_row['val_loss']:.6f}\n")
-            if 'train_MSE' in best_row:
-                f.write(f"Training MSE: {best_row['train_MSE']:.6f}\n")
-            if 'val_seg_loss' in best_row:
-                f.write(f"Segmentation Loss: {best_row['val_seg_loss']:.6f}\n")
-            f.write("\n")
             
-            # Performance difference from best
-            f.write("Performance vs Best (Validation MSE):\n")
-            f.write("-" * 80 + "\n")
-            for idx, row in final_df.iterrows():
-                if row['experiment'] != best_exp:
-                    exp_clean = row['experiment'].replace('phase1_1_AE_', '')
-                    diff_pct = ((row['val_MSE'] - best_mse) / best_mse) * 100
-                    f.write(f"{exp_clean}: {diff_pct:+.1f}% vs best\n")
+            smallest_dims = final_df['latent_dims'].min()
+            smallest_rows = final_df[final_df['latent_dims'] == smallest_dims]
+            largest_dims = final_df['latent_dims'].max()
+            largest_rows = final_df[final_df['latent_dims'] == largest_dims]
+            avg_dims = final_df['latent_dims'].mean()
+            median_dims = final_df['latent_dims'].median()
+            std_dims = final_df['latent_dims'].std()
+            
+            f.write(f"Minimum latent dimensions: {smallest_dims:,}\n")
+            for _, row in smallest_rows.iterrows():
+                f.write(f"  {row['experiment'].replace('phase1_1_AE_', '')}: {row.get('latent_shape', '?×?')}×{row.get('latent_channels', '?')}, MSE={row['val_MSE']:.6f}\n")
+            
+            f.write(f"\nMaximum latent dimensions: {largest_dims:,}\n")
+            for _, row in largest_rows.iterrows():
+                f.write(f"  {row['experiment'].replace('phase1_1_AE_', '')}: {row.get('latent_shape', '?×?')}×{row.get('latent_channels', '?')}, MSE={row['val_MSE']:.6f}\n")
+            
+            f.write(f"\nAverage latent dimensions: {avg_dims:,.0f}\n")
+            f.write(f"Median latent dimensions: {median_dims:,.0f}\n")
+            f.write(f"Std deviation: {std_dims:,.0f}\n")
+            f.write("\n")
+        
+        # Efficiency vs Quality correlation analysis
+        if 'MSE_per_dim' in final_df.columns and 'val_MSE' in final_df.columns:
+            f.write("=" * 80 + "\n")
+            f.write("Efficiency vs Quality Analysis:\n")
+            f.write("=" * 80 + "\n")
+            
+            # Correlation coefficient
+            if len(final_df) > 1:
+                correlation = final_df['latent_dims'].corr(final_df['val_MSE'])
+                f.write(f"Correlation (Latent Dimensions vs Validation MSE): {correlation:.4f}\n\n")
+            
+            # Rank 1 by each metric
+            rank1_efficiency = final_df_efficiency.iloc[0]
+            rank1_quality = final_df_sorted.iloc[0]
+            
+            f.write(f"Rank 1 by Efficiency (MSE per Dimension):\n")
+            f.write(f"  Experiment: {rank1_efficiency['experiment'].replace('phase1_1_AE_', '')}\n")
+            f.write(f"  Latent: {rank1_efficiency.get('latent_shape', '?×?')}×{rank1_efficiency.get('latent_channels', '?')} = {rank1_efficiency.get('latent_dims', 0):,} dims\n")
+            f.write(f"  Validation MSE: {rank1_efficiency['val_MSE']:.6f}\n")
+            f.write(f"  MSE per Dimension: {rank1_efficiency['MSE_per_dim']:.2e}\n")
+            
+            f.write(f"\nRank 1 by Quality (Validation MSE):\n")
+            f.write(f"  Experiment: {rank1_quality['experiment'].replace('phase1_1_AE_', '')}\n")
+            f.write(f"  Latent: {rank1_quality.get('latent_shape', '?×?')}×{rank1_quality.get('latent_channels', '?')} = {rank1_quality.get('latent_dims', 0):,} dims\n")
+            f.write(f"  Validation MSE: {rank1_quality['val_MSE']:.6f}\n")
+            if 'MSE_per_dim' in rank1_quality:
+                f.write(f"  MSE per Dimension: {rank1_quality['MSE_per_dim']:.2e}\n")
+            
+            if rank1_efficiency['experiment'] != rank1_quality['experiment']:
+                mse_diff = ((rank1_efficiency['val_MSE'] - rank1_quality['val_MSE']) / rank1_efficiency['val_MSE']) * 100
+                dim_diff = ((rank1_quality['latent_dims'] - rank1_efficiency['latent_dims']) / rank1_efficiency['latent_dims']) * 100
+                f.write(f"\nDifference (Quality rank 1 - Efficiency rank 1):\n")
+                f.write(f"  MSE: {mse_diff:+.2f}%\n")
+                f.write(f"  Dimensions: {dim_diff:+.1f}%\n")
             f.write("\n")
         
         # Detailed metrics for all experiments
@@ -823,10 +890,16 @@ def create_summary_report(all_data, output_dir):
         for exp_name, df in all_data.items():
             exp_clean = exp_name.replace('phase1_1_AE_', '')
             f.write(f"Experiment: {exp_clean}\n")
-            f.write(f"  Total Epochs: {len(df)}\n")
             
             # Get final metrics from final_df
             exp_row = final_df[final_df['experiment'] == exp_name].iloc[0]
+            
+            # Latent dimension info (primary for diffusion)
+            if 'latent_dims' in exp_row:
+                dims_str = f"{exp_row.get('latent_shape', '?×?')}×{exp_row.get('latent_channels', '?')} = {exp_row.get('latent_dims', 0):,}"
+                f.write(f"  Latent Shape: {dims_str}\n")
+            
+            f.write(f"  Total Epochs: {len(df)}\n")
             
             if 'train_loss' in exp_row:
                 f.write(f"  Final Training Loss: {exp_row['train_loss']:.6f}\n")
@@ -836,6 +909,8 @@ def create_summary_report(all_data, output_dir):
                 f.write(f"  Final Training MSE: {exp_row['train_MSE']:.6f}\n")
             if 'val_MSE' in exp_row:
                 f.write(f"  Final Validation MSE: {exp_row['val_MSE']:.6f}\n")
+            if 'MSE_per_dim' in exp_row:
+                f.write(f"  MSE per Dimension: {exp_row['MSE_per_dim']:.2e}\n")
             if 'train_seg_loss' in exp_row:
                 f.write(f"  Final Training Seg Loss: {exp_row['train_seg_loss']:.6f}\n")
             if 'val_seg_loss' in exp_row:
@@ -858,7 +933,7 @@ def main():
     parser.add_argument(
         "--phase-dir",
         type=str,
-        default="outputs/phase1_1_latent_channels",
+        default="outputs/phase1_1_latent_shape_sweep",
         help="Path to phase directory containing metrics CSVs"
     )
     parser.add_argument(
@@ -896,7 +971,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print("=" * 80)
-    print("Phase 1.1: Latent Channel Sweep Analysis")
+    print("Phase 1.1: Channel × Spatial Resolution Sweep Analysis")
     print("=" * 80)
     print(f"Loading metrics from: {phase_dir}")
     print(f"Saving plots to: {output_dir}")
@@ -912,6 +987,11 @@ def main():
     create_loss_curves(all_data, output_dir)
     create_final_metrics_comparison(all_data, output_dir)
     create_convergence_analysis(all_data, output_dir)
+    
+    # Efficiency analysis (latent-size-centric for diffusion)
+    print("\nCreating efficiency analysis (latent-size-centric)...")
+    create_efficiency_analysis(all_data, output_dir)
+    
     create_summary_report(all_data, output_dir)
     
     # Visual comparison with actual models
