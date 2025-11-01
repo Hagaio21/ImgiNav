@@ -46,7 +46,7 @@ training:
   seed: 42  # Random seed for reproducibility
   train_split: 0.8  # 80% train, 20% validation
   split_seed: 42  # Random seed for train/val split
-  batch_size: 32
+  batch_size: 16
   num_workers: 8
   shuffle: true
   epochs: 50
