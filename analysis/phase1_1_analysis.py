@@ -7,6 +7,7 @@ Loads metrics from all experiments and creates comparison visualizations.
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import seaborn as sns
 from pathlib import Path
 import argparse
@@ -30,8 +31,8 @@ plt.rcParams['figure.figsize'] = (12, 8)
 plt.rcParams['figure.dpi'] = 100
 
 # Color palette for experiments - distinct colors from tab20 colormap (12 colors for 12 experiments)
-import matplotlib.cm as cm
-_tab20_colors = cm.get_cmap('tab20').colors
+import matplotlib
+_tab20_colors = matplotlib.colormaps['tab20'].colors
 # Select distinct colors from tab20 for 12 experiments
 EXPERIMENT_COLORS = [
     _tab20_colors[0],   # Blue
@@ -208,10 +209,11 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     # Plot 1: Final Validation Loss
     ax1 = axes[0, 0]
-    bars1 = sns.barplot(data=final_df, x='experiment', y='val_loss', ax=ax1, palette=EXPERIMENT_COLORS)
+    bars1 = sns.barplot(data=final_df, x='experiment', y='val_loss', ax=ax1, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
     ax1.set_xlabel('Experiment', fontsize=12)
     ax1.set_ylabel('Final Validation Loss', fontsize=12)
     ax1.set_title('Final Validation Loss', fontsize=14, fontweight='bold')
+    ax1.xaxis.set_major_locator(ticker.FixedLocator(ax1.get_xticks()))
     ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
     ax1.grid(True, alpha=0.3, axis='y')
     # Add value labels on bars
@@ -232,7 +234,7 @@ def create_final_metrics_comparison(all_data, output_dir):
     # Plot 2: Final Validation MSE (zoomed to highlight differences)
     ax2 = axes[0, 1]
     if 'val_MSE' in final_df.columns:
-        bars2 = sns.barplot(data=final_df, x='experiment', y='val_MSE', ax=ax2, palette=EXPERIMENT_COLORS)
+        bars2 = sns.barplot(data=final_df, x='experiment', y='val_MSE', ax=ax2, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
         ax2.set_xlabel('Experiment', fontsize=12)
         ax2.set_ylabel('Final Validation MSE', fontsize=12)
         # Zoom y-axis to highlight differences
@@ -242,6 +244,7 @@ def create_final_metrics_comparison(all_data, output_dir):
         ax2.set_ylim(max(0, mse_min - mse_range*0.15), mse_max + mse_range*0.15)
         ax2.set_title(f'Final Validation MSE (RGB)\nRange: {mse_min:.4f} - {mse_max:.4f}', 
                      fontsize=14, fontweight='bold')
+        ax2.xaxis.set_major_locator(ticker.FixedLocator(ax2.get_xticks()))
         ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
         ax2.grid(True, alpha=0.3, axis='y')
         # Add value labels on bars
@@ -254,10 +257,11 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     # Plot 3: Final Training Loss
     ax3 = axes[1, 0]
-    bars3 = sns.barplot(data=final_df, x='experiment', y='train_loss', ax=ax3, palette=EXPERIMENT_COLORS)
+    bars3 = sns.barplot(data=final_df, x='experiment', y='train_loss', ax=ax3, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
     ax3.set_xlabel('Experiment', fontsize=12)
     ax3.set_ylabel('Final Training Loss', fontsize=12)
     ax3.set_title('Final Training Loss', fontsize=14, fontweight='bold')
+    ax3.xaxis.set_major_locator(ticker.FixedLocator(ax3.get_xticks()))
     ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
     ax3.grid(True, alpha=0.3, axis='y')
     # Add value labels on bars
@@ -267,10 +271,11 @@ def create_final_metrics_comparison(all_data, output_dir):
     # Plot 4: Final Validation Segmentation Loss
     ax4 = axes[1, 1]
     if 'val_seg_loss' in final_df.columns:
-        bars4 = sns.barplot(data=final_df, x='experiment', y='val_seg_loss', ax=ax4, palette=EXPERIMENT_COLORS)
+        bars4 = sns.barplot(data=final_df, x='experiment', y='val_seg_loss', ax=ax4, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
         ax4.set_xlabel('Experiment', fontsize=12)
         ax4.set_ylabel('Final Validation Seg Loss', fontsize=12)
         ax4.set_title('Final Validation Segmentation Loss', fontsize=14, fontweight='bold')
+        ax4.xaxis.set_major_locator(ticker.FixedLocator(ax4.get_xticks()))
         ax4.set_xticklabels(ax4.get_xticklabels(), rotation=45, ha='right')
         ax4.grid(True, alpha=0.3, axis='y')
         # Add value labels on bars
@@ -370,10 +375,11 @@ def create_convergence_analysis(all_data, output_dir):
     conv_df = pd.DataFrame(convergence_data)
     if len(conv_df) > 0:
         sns.barplot(data=conv_df, x='experiment', y='convergence_epoch', 
-                   ax=axes[1], palette=EXPERIMENT_COLORS)
+                   ax=axes[1], hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
         axes[1].set_xlabel('Experiment', fontsize=12)
         axes[1].set_ylabel('Convergence Epoch', fontsize=12)
         axes[1].set_title('Convergence Speed', fontsize=14, fontweight='bold')
+        axes[1].xaxis.set_major_locator(ticker.FixedLocator(axes[1].get_xticks()))
         axes[1].set_xticklabels(axes[1].get_xticklabels(), rotation=45, ha='right')
         axes[1].grid(True, alpha=0.3, axis='y')
     
@@ -669,10 +675,11 @@ def create_efficiency_analysis(all_data, output_dir):
     # Plot 2: MSE per Dimension (efficiency metric)
     ax2 = axes[0, 1]
     bars2 = sns.barplot(data=eff_df, x='experiment', y='MSE_per_dim', 
-                       ax=ax2, palette=EXPERIMENT_COLORS)
+                       ax=ax2, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
     ax2.set_xlabel('Experiment', fontsize=12)
     ax2.set_ylabel('MSE per Latent Dimension (×10⁻⁸)', fontsize=12)
     ax2.set_title('Efficiency: Lower is Better', fontsize=14, fontweight='bold')
+    ax2.xaxis.set_major_locator(ticker.FixedLocator(ax2.get_xticks()))
     ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
     ax2.grid(True, alpha=0.3, axis='y')
     # Scale y-axis to show differences
@@ -685,10 +692,11 @@ def create_efficiency_analysis(all_data, output_dir):
     # Plot 3: Total Latent Dimensions
     ax3 = axes[1, 0]
     bars3 = sns.barplot(data=eff_df, x='experiment', y='latent_dims', 
-                       ax=ax3, palette=EXPERIMENT_COLORS)
+                       ax=ax3, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
     ax3.set_xlabel('Experiment', fontsize=12)
     ax3.set_ylabel('Total Latent Dimensions', fontsize=12)
     ax3.set_title('Latent Space Size', fontsize=14, fontweight='bold')
+    ax3.xaxis.set_major_locator(ticker.FixedLocator(ax3.get_xticks()))
     ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
     ax3.grid(True, alpha=0.3, axis='y')
     for container in bars3.containers:

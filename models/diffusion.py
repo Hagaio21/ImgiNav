@@ -119,6 +119,92 @@ class DiffusionModel(BaseModel):
         }
 
     # ------------------------------------------------------------------
+    # Sampling
+    # ------------------------------------------------------------------
+    def sample(self, batch_size=1, latent_shape=None, cond=None, num_steps=50, 
+               method="ddim", eta=0.0, device=None, return_history=False, verbose=False):
+ 
+        if device is None:
+            device = next(self.parameters()).device
+        
+        # Infer latent shape from decoder config if not provided
+        if latent_shape is None:
+            latent_ch = self.decoder._init_kwargs.get('latent_channels', 4)
+            up_steps = self.decoder._init_kwargs.get('upsampling_steps', 4)
+            spatial_res = 512 // (2 ** up_steps)
+            latent_shape = (latent_ch, spatial_res, spatial_res)
+        
+        self.scheduler = self.scheduler.to(device)
+        latents = torch.randn((batch_size, *latent_shape), device=device)
+        
+        # Create timestep schedule
+        if method == "ddim":
+            step_size = self.scheduler.num_steps // num_steps
+            timesteps = torch.arange(0, self.scheduler.num_steps, step_size, device=device).long()
+        else:
+            timesteps = torch.arange(self.scheduler.num_steps - 1, -1, -1, device=device).long()
+        
+        history = [] if return_history else None
+        
+        # Sampling loop
+        for i, t in enumerate(timesteps):
+            if verbose and (i % max(1, len(timesteps) // 10) == 0 or i == len(timesteps) - 1):
+                print(f"  Sampling step {i+1}/{len(timesteps)} (t={t.item()})")
+            
+            t_batch = t.expand(batch_size)
+            
+            with torch.no_grad():
+                pred_noise = self.unet(latents, t_batch, cond)
+            
+            # DDIM step
+            if method == "ddim":
+                alpha_bar_t = self.scheduler.alpha_bars[t].view(-1, 1, 1, 1)
+                alpha_bar_prev = self.scheduler.alpha_bars[timesteps[i-1]].view(-1, 1, 1, 1) if i > 0 else torch.tensor(1.0, device=device).view(-1, 1, 1, 1)
+                
+                # Predict x0
+                pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                
+                # DDIM update (deterministic if eta=0)
+                if eta > 0 and i < len(timesteps) - 1:
+                    sigma = eta * ((1 - alpha_bar_prev) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_prev)).sqrt()
+                    noise = sigma * torch.randn_like(latents)
+                else:
+                    noise = 0
+                
+                latents = alpha_bar_prev.sqrt() * pred_x0 + (1 - alpha_bar_prev).sqrt() * pred_noise + noise
+            
+            else:
+                # DDPM step
+                alpha_t = self.scheduler.alphas[t].view(-1, 1, 1, 1)
+                beta_t = self.scheduler.betas[t].view(-1, 1, 1, 1)
+                
+                if i < len(timesteps) - 1:
+                    alpha_bar_prev = self.scheduler.alpha_bars[timesteps[i+1]].view(-1, 1, 1, 1)
+                    pred_mean = (1 / alpha_t.sqrt()) * (latents - beta_t / (1 - self.scheduler.alpha_bars[t]).sqrt().view(-1, 1, 1, 1) * pred_noise)
+                    latents = pred_mean + beta_t.sqrt() * torch.randn_like(latents)
+            
+            if return_history:
+                history.append(latents.clone())
+        
+        # Build output dict
+        result = {"latent": latents}
+        
+        # Decode to RGB if decoder is available
+        with torch.no_grad():
+            decoded_out = self.decoder({"latent": latents})
+            if "rgb" in decoded_out:
+                rgb = decoded_out["rgb"]
+                # Denormalize from [-1, 1] to [0, 1]
+                rgb = (rgb + 1.0) / 2.0
+                rgb = torch.clamp(rgb, 0.0, 1.0)
+                result["rgb"] = rgb
+        
+        if return_history:
+            result["history"] = history
+        
+        return result
+
+    # ------------------------------------------------------------------
     # Config I/O
     # ------------------------------------------------------------------
     @classmethod

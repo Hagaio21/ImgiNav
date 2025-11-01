@@ -107,6 +107,62 @@ class DualUNet(BaseComponent):
             x_t = up(x_t, skip, t_emb)
 
         return self.final(x_t)
+    
+    def freeze_blocks(self, block_names):
+
+        if isinstance(block_names, str):
+            block_names = [block_names]
+        
+        for name in block_names:
+            if name == "downs":
+                for block in self.downs:
+                    for p in block.parameters():
+                        p.requires_grad = False
+            elif name == "ups":
+                for block in self.ups:
+                    for p in block.parameters():
+                        p.requires_grad = False
+            elif name == "bottleneck":
+                for p in self.bottleneck.parameters():
+                    p.requires_grad = False
+            elif name == "time_mlp":
+                for p in self.time_mlp.parameters():
+                    p.requires_grad = False
+            elif name == "final":
+                for p in self.final.parameters():
+                    p.requires_grad = False
+            else:
+                raise ValueError(f"Unknown block name: {name}")
+    
+    def freeze_downblocks(self):
+        """Freeze all downsampling blocks (for ControlNet attachment)."""
+        self.freeze_blocks(["downs"])
+    
+    def freeze_upblocks(self):
+        """Freeze all upsampling blocks."""
+        self.freeze_blocks(["ups"])
+    
+    def get_skip_connections(self, x_t, t):
+        """
+        Forward pass that returns skip connections for ControlNet attachment.
+        
+        Returns:
+            tuple: (output, skips) where skips is a list of skip connection tensors
+        """
+        t_emb = self.time_mlp(t.float())
+        skips = []
+        cond_feats = None  # ControlNet doesn't use cond_downs
+        
+        for i, down in enumerate(self.downs):
+            x_t, skip = down(x_t, t_emb)
+            skips.append(skip)
+        
+        x_t = self.bottleneck(x_t, t_emb)
+        
+        for up, skip in zip(self.ups, reversed(skips)):
+            x_t = up(x_t, skip, t_emb)
+        
+        return self.final(x_t), skips
 
     def to_config(self):
         cfg = super().to_config()

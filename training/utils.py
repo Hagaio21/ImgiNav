@@ -17,16 +17,7 @@ from models.losses.base_loss import LOSS_REGISTRY
 
 
 def set_deterministic(seed: int = 42, strict_determinism: bool = False):
-    """
-    Set random seeds for reproducibility across Python, NumPy, PyTorch, and CUDA.
-    
-    Args:
-        seed: Random seed value
-        strict_determinism: If True, enables torch.use_deterministic_algorithms.
-            Note: Some operations (e.g., CrossEntropyLoss) don't have deterministic
-            CUDA implementations yet, so setting this to True will produce warnings.
-            Default: False (uses seed + cudnn deterministic, but not strict algorithm determinism)
-    """
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -54,6 +45,8 @@ def build_model(config):
     ae_cfg = config["autoencoder"]
     model = Autoencoder.from_config(ae_cfg)
     return model
+
+
 
 
 def build_dataset(config):
@@ -115,4 +108,31 @@ def get_device(config):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     return device
+
+
+def build_scheduler(optimizer, config):
+    """Build learning rate scheduler from config."""
+    training_cfg = config.get("training", {})
+    
+    scheduler_type = training_cfg.get("scheduler", {}).get("type", None)
+    if scheduler_type is None:
+        return None
+    
+    epochs_target = config.get("experiment", {}).get("epochs_target", training_cfg.get("epochs", 100))
+    
+    if scheduler_type.lower() == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_target)
+    elif scheduler_type.lower() == "linear":
+        start_factor = training_cfg.get("scheduler", {}).get("start_factor", 1.0)
+        end_factor = training_cfg.get("scheduler", {}).get("end_factor", 0.0)
+        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=start_factor, end_factor=end_factor, total_iters=epochs_target)
+    elif scheduler_type.lower() == "step":
+        step_size = training_cfg.get("scheduler", {}).get("step_size", epochs_target // 3)
+        gamma = training_cfg.get("scheduler", {}).get("gamma", 0.1)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    else:
+        print(f"  Warning: Unknown scheduler type '{scheduler_type}', not using scheduler")
+        return None
+    
+    return scheduler
 

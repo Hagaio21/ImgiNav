@@ -21,7 +21,7 @@ PYTHON_SCRIPT="${BASE_DIR}/analysis/phase1_1_analysis.py"
 LOG_DIR="${BASE_DIR}/analysis/hpc_scripts/logs"
 
 # Phase-specific paths
-PHASE_DIR="${BASE_DIR}/outputs/phase1_1_latent_channels"
+PHASE_DIR="${BASE_DIR}/outputs/phase1_1_latent_shape_sweep"
 EXPERIMENTS_DIR="${BASE_DIR}/../experiments/phase1"
 DATASET_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
 

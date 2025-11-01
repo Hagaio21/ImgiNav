@@ -47,6 +47,6 @@ fi
 echo "Monitor logs in: ${LOG_DIR}"
 echo ""
 echo "Results will be saved to:"
-echo "  outputs/phase1_1_latent_channels/analysis/"
+echo "  outputs/phase1_1_latent_shape_sweep/analysis/"
 echo ""
 

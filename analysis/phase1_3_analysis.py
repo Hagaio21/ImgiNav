@@ -2,10 +2,17 @@
 """
 Analysis script for Phase 1.3: Loss Tuning
 Loads metrics from all experiments and creates comparison visualizations.
+Includes UMAP visualization for latent space structure analysis.
 """
 
 import sys
 from pathlib import Path
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import torch
+import torch.nn.functional as F
 
 # Import from phase1_1_analysis (reuse functions)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -14,6 +21,19 @@ from phase1_1_analysis import (
     create_convergence_analysis, create_summary_report,
     load_autoencoder_checkpoints, get_test_samples, create_visual_comparison
 )
+
+# Set seaborn style
+sns.set_style("darkgrid")
+plt.rcParams['figure.figsize'] = (12, 8)
+plt.rcParams['figure.dpi'] = 100
+
+# Try to import UMAP (optional dependency)
+try:
+    import umap
+    UMAP_AVAILABLE = True
+except ImportError:
+    UMAP_AVAILABLE = False
+    print("Warning: UMAP not available. Install with: pip install umap-learn")
 
 def main():
     import argparse
@@ -76,6 +96,13 @@ def main():
     create_loss_curves(all_data, output_dir)
     create_final_metrics_comparison(all_data, output_dir)
     create_convergence_analysis(all_data, output_dir)
+    
+    # Phase 1.3 specific: Loss component analysis
+    print("Creating loss component analysis...")
+    create_loss_component_breakdown(all_data, output_dir)
+    create_multitask_analysis(all_data, output_dir)
+    create_loss_interaction_analysis(all_data, output_dir)
+    
     create_summary_report(all_data, output_dir)
     
     # Visual comparison with actual models
@@ -87,11 +114,19 @@ def main():
         
         if checkpoints:
             print("\nLoading test samples from dataset...")
-            test_scenes, test_rooms = get_test_samples(args.dataset_manifest)
+            test_scenes, test_rooms = get_test_samples(args.dataset_manifest, test_samples_per_type=10)
             
             if test_scenes and test_rooms:
                 print("\nCreating visual comparisons...")
                 create_visual_comparison(checkpoints, test_scenes, test_rooms, output_dir)
+                
+                # Phase 1.3 specific: UMAP latent space visualization
+                if UMAP_AVAILABLE:
+                    print("\nCreating UMAP latent space visualizations...")
+                    create_umap_visualization(checkpoints, args.dataset_manifest, output_dir, 
+                                              n_samples_per_type=50)
+                else:
+                    print("  Skipping UMAP visualization (not installed)")
             else:
                 print("  Could not find test samples, skipping visual comparison")
         else:
@@ -101,6 +136,585 @@ def main():
     print("Analysis complete!")
     print(f"Results saved to: {output_dir}")
     print("=" * 80)
+
+
+def create_loss_component_breakdown(all_data, output_dir):
+    """Break down total loss into individual components (MSE, Seg, Cls)."""
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Phase 1.3: Loss Component Breakdown', fontsize=16, fontweight='bold')
+    
+    exp_names = sorted(all_data.keys())
+    colors = ['#2E86AB', '#A23B72', '#F18F01']
+    
+    # Plot 1: Final Loss Components Comparison
+    ax = axes[0, 0]
+    final_mse = []
+    final_seg = []
+    final_cls = []
+    exp_labels = []
+    
+    for exp_name in exp_names:
+        df = all_data[exp_name]
+        final = df.iloc[-1]
+        exp_labels.append(exp_name.replace('phase1_3_AE_', '').replace('_', ' '))
+        
+        final_mse.append(final.get('val_MSE_rgb', final.get('train_MSE_rgb', 0)))
+        
+        seg_cols = [c for c in final.index if 'CE_segmentation' in c or 'seg' in c.lower()]
+        if seg_cols:
+            final_seg.append(final[seg_cols[0]])
+        else:
+            final_seg.append(0)
+        
+        cls_cols = [c for c in final.index if 'CE_classification' in c or ('cls' in c.lower() and 'seg' not in c.lower())]
+        if cls_cols:
+            final_cls.append(final[cls_cols[0]])
+        else:
+            final_cls.append(0)
+    
+    x = np.arange(len(exp_names))
+    width = 0.25
+    
+    ax.bar(x - width, final_mse, width, label='MSE (RGB)', color=colors[0], alpha=0.8)
+    ax.bar(x, final_seg, width, label='Segmentation', color=colors[1], alpha=0.8)
+    ax.bar(x + width, final_cls, width, label='Classification', color=colors[2], alpha=0.8)
+    
+    ax.set_ylabel('Loss Value', fontsize=12)
+    ax.set_title('Final Loss Components', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(exp_labels, rotation=45, ha='right')
+    ax.legend(frameon=True, fancybox=False, shadow=False)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Plot 2: Loss Component Trends (Training)
+    ax = axes[0, 1]
+    for i, exp_name in enumerate(exp_names):
+        df = all_data[exp_name]
+        mse_cols = [c for c in df.columns if 'MSE' in c.upper() and 'train' in c.lower()]
+        if mse_cols:
+            ax.plot(df['epoch'], df[mse_cols[0]], 
+                   label=f"{exp_labels[i]} - MSE", linewidth=2, color=colors[0], alpha=0.7)
+        
+        seg_cols = [c for c in df.columns if ('CE_segmentation' in c or 'seg' in c.lower()) and 'train' in c.lower()]
+        if seg_cols:
+            ax.plot(df['epoch'], df[seg_cols[0]], 
+                   label=f"{exp_labels[i]} - Seg", linewidth=2, color=colors[1], alpha=0.7, linestyle='--')
+        
+        cls_cols = [c for c in df.columns if ('CE_classification' in c or ('cls' in c.lower() and 'seg' not in c.lower())) and 'train' in c.lower()]
+        if cls_cols:
+            ax.plot(df['epoch'], df[cls_cols[0]], 
+                   label=f"{exp_labels[i]} - Cls", linewidth=2, color=colors[2], alpha=0.7, linestyle=':')
+    
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Loss Value', fontsize=12)
+    ax.set_title('Loss Component Trends (Training)', fontsize=14, fontweight='bold')
+    ax.legend(frameon=True, fancybox=False, shadow=False, ncol=2)
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 3: Loss Component Ratios
+    ax = axes[1, 0]
+    ratios_data = []
+    for exp_name in exp_names:
+        df = all_data[exp_name]
+        final = df.iloc[-1]
+        
+        mse_val = final.get('val_MSE_rgb', final.get('train_MSE_rgb', 1))
+        seg_cols = [c for c in final.index if 'CE_segmentation' in c or 'seg' in c.lower()]
+        seg_val = final[seg_cols[0]] if seg_cols else 0
+        cls_cols = [c for c in final.index if 'CE_classification' in c or ('cls' in c.lower() and 'seg' not in c.lower())]
+        cls_val = final[cls_cols[0]] if cls_cols else 0
+        
+        total = mse_val + seg_val + cls_val
+        if total > 0:
+            ratios_data.append({
+                'Experiment': exp_labels[exp_names.index(exp_name)],
+                'MSE %': (mse_val / total) * 100,
+                'Seg %': (seg_val / total) * 100,
+                'Cls %': (cls_val / total) * 100
+            })
+    
+    if ratios_data:
+        df_ratios = pd.DataFrame(ratios_data)
+        x = np.arange(len(df_ratios))
+        width = 0.6
+        
+        bottom_mse = np.zeros(len(df_ratios))
+        bottom_seg = df_ratios['MSE %'].values
+        bottom_cls = bottom_seg + df_ratios['Seg %'].values
+        
+        ax.bar(x, df_ratios['MSE %'], width, label='MSE', color=colors[0], alpha=0.8)
+        ax.bar(x, df_ratios['Seg %'], width, bottom=bottom_seg, label='Seg', color=colors[1], alpha=0.8)
+        ax.bar(x, df_ratios['Cls %'], width, bottom=bottom_cls, label='Cls', color=colors[2], alpha=0.8)
+        
+        ax.set_ylabel('Percentage of Total Loss', fontsize=12)
+        ax.set_title('Loss Component Ratios', fontsize=14, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(df_ratios['Experiment'], rotation=45, ha='right')
+        ax.legend(frameon=True, fancybox=False, shadow=False)
+        ax.grid(True, alpha=0.3, axis='y')
+    
+    # Plot 4: Task Performance Summary
+    ax = axes[1, 1]
+    task_perf = []
+    for exp_name in exp_names:
+        df = all_data[exp_name]
+        final = df.iloc[-1]
+        label = exp_labels[exp_names.index(exp_name)]
+        
+        # RGB quality (MSE - lower is better, so invert)
+        mse_val = final.get('val_MSE_rgb', final.get('train_MSE_rgb', 1))
+        rgb_score = 1 / (1 + mse_val * 100)  # Normalize to [0, 1]
+        
+        # Segmentation performance (if available)
+        seg_cols = [c for c in df.columns if ('CE_segmentation' in c or 'seg' in c.lower()) and 'val' in c.lower()]
+        if seg_cols:
+            seg_val = final[seg_cols[0]]
+            seg_score = 1 / (1 + seg_val * 10)
+        else:
+            seg_score = 0
+        
+        # Classification performance (if available)
+        cls_cols = [c for c in df.columns if ('CE_classification' in c or ('cls' in c.lower() and 'seg' not in c.lower())) and 'val' in c.lower()]
+        if cls_cols:
+            cls_val = final[cls_cols[0]]
+            cls_score = 1 / (1 + cls_val * 10)
+        else:
+            cls_score = 0
+        
+        task_perf.append({
+            'Experiment': label,
+            'RGB Quality': rgb_score,
+            'Segmentation': seg_score,
+            'Classification': cls_score
+        })
+    
+    if task_perf:
+        df_task = pd.DataFrame(task_perf)
+        x = np.arange(len(df_task))
+        width = 0.25
+        
+        ax.bar(x - width, df_task['RGB Quality'], width, label='RGB Quality', color=colors[0], alpha=0.8)
+        ax.bar(x, df_task['Segmentation'], width, label='Segmentation', color=colors[1], alpha=0.8)
+        ax.bar(x + width, df_task['Classification'], width, label='Classification', color=colors[2], alpha=0.8)
+        
+        ax.set_ylabel('Normalized Performance', fontsize=12)
+        ax.set_title('Task Performance Summary', fontsize=14, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(df_task['Experiment'], rotation=45, ha='right')
+        ax.legend(frameon=True, fancybox=False, shadow=False)
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.set_ylim([0, 1])
+    
+    plt.tight_layout()
+    output_path = output_dir / "loss_component_breakdown.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"  Saved: {output_path}")
+
+
+def create_multitask_analysis(all_data, output_dir):
+    """Analyze multi-task interactions and trade-offs."""
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle('Phase 1.3: Multi-Task Interaction Analysis', fontsize=16, fontweight='bold')
+    
+    exp_names = sorted(all_data.keys())
+    colors = ['#2E86AB', '#A23B72', '#F18F01']
+    
+    # Extract final metrics
+    metrics_data = []
+    for exp_name in exp_names:
+        df = all_data[exp_name]
+        final = df.iloc[-1]
+        
+        mse_val = final.get('val_MSE_rgb', final.get('train_MSE_rgb', 0))
+        seg_cols = [c for c in final.index if 'CE_segmentation' in c or 'seg' in c.lower()]
+        seg_val = final[seg_cols[0]] if seg_cols else None
+        cls_cols = [c for c in final.index if 'CE_classification' in c or ('cls' in c.lower() and 'seg' not in c.lower())]
+        cls_val = final[cls_cols[0]] if cls_cols else None
+        
+        metrics_data.append({
+            'exp': exp_name.replace('phase1_3_AE_', ''),
+            'mse': mse_val,
+            'seg': seg_val,
+            'cls': cls_val
+        })
+    
+    # Plot 1: MSE vs Auxiliary Tasks
+    ax = axes[0]
+    for i, m in enumerate(metrics_data):
+        label = m['exp'].replace('_', ' ').title()
+        has_seg = m['seg'] is not None
+        has_cls = m['cls'] is not None
+        
+        if has_cls:
+            marker = 'o'
+            color = colors[2]
+        elif has_seg:
+            marker = 's'
+            color = colors[1]
+        else:
+            marker = '^'
+            color = colors[0]
+        
+        ax.scatter(i, m['mse'], s=200, marker=marker, color=color, alpha=0.7, edgecolors='black', linewidth=2)
+    
+    ax.set_ylabel('Validation MSE (RGB)', fontsize=12)
+    ax.set_title('RGB Quality by Configuration', fontsize=14, fontweight='bold')
+    ax.set_xticks(range(len(metrics_data)))
+    ax.set_xticklabels([m['exp'].replace('_', ' ').title() for m in metrics_data], rotation=45, ha='right')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add legend
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='^', color='w', markerfacecolor=colors[0], markersize=10, label='RGB Only'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor=colors[1], markersize=10, label='RGB + Seg'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=colors[2], markersize=10, label='RGB + Seg + Cls')
+    ]
+    ax.legend(handles=legend_elements, frameon=True, fancybox=False, shadow=False)
+    
+    # Plot 2: Auxiliary Task Performance
+    ax = axes[1]
+    seg_values = [m['seg'] for m in metrics_data if m['seg'] is not None]
+    cls_values = [m['cls'] for m in metrics_data if m['cls'] is not None]
+    
+    if seg_values:
+        seg_indices = [i for i, m in enumerate(metrics_data) if m['seg'] is not None]
+        ax.scatter(seg_indices, seg_values, s=200, marker='s', color=colors[1], alpha=0.7, 
+                  edgecolors='black', linewidth=2, label='Segmentation Loss')
+    
+    if cls_values:
+        cls_indices = [i for i, m in enumerate(metrics_data) if m['cls'] is not None]
+        ax.scatter(cls_indices, cls_values, s=200, marker='o', color=colors[2], alpha=0.7,
+                  edgecolors='black', linewidth=2, label='Classification Loss')
+    
+    ax.set_ylabel('Auxiliary Task Loss', fontsize=12)
+    ax.set_title('Auxiliary Task Performance', fontsize=14, fontweight='bold')
+    ax.set_xticks(range(len(metrics_data)))
+    ax.set_xticklabels([m['exp'].replace('_', ' ').title() for m in metrics_data], rotation=45, ha='right')
+    ax.legend(frameon=True, fancybox=False, shadow=False)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Plot 3: Trade-off Analysis (MSE change vs auxiliary tasks)
+    ax = axes[2]
+    baseline_mse = metrics_data[0]['mse']  # Assume F1 (RGB only) is first
+    
+    mse_changes = []
+    task_counts = []
+    labels = []
+    
+    for m in metrics_data:
+        mse_change = ((m['mse'] - baseline_mse) / baseline_mse) * 100 if baseline_mse > 0 else 0
+        num_tasks = (1 if m['seg'] is not None else 0) + (1 if m['cls'] is not None else 0)
+        
+        mse_changes.append(mse_change)
+        task_counts.append(num_tasks)
+        labels.append(m['exp'].replace('_', ' ').title())
+    
+    scatter = ax.scatter(task_counts, mse_changes, s=300, c=range(len(task_counts)), 
+                        cmap='viridis', alpha=0.7, edgecolors='black', linewidth=2)
+    
+    for i, (x, y, label) in enumerate(zip(task_counts, mse_changes, labels)):
+        ax.annotate(label, (x, y), xytext=(5, 5), textcoords='offset points', fontsize=9)
+    
+    ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Number of Auxiliary Tasks', fontsize=12)
+    ax.set_ylabel('MSE Change vs Baseline (%)', fontsize=12)
+    ax.set_title('Multi-Task Trade-off', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    output_path = output_dir / "multitask_analysis.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"  Saved: {output_path}")
+
+
+def create_loss_interaction_analysis(all_data, output_dir):
+    """Analyze if auxiliary tasks help or hurt RGB reconstruction."""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    exp_names = sorted(all_data.keys())
+    
+    # Get baseline (RGB only)
+    baseline_exp = None
+    for exp_name in exp_names:
+        if 'rgb_only' in exp_name.lower() or 'F1' in exp_name:
+            baseline_exp = exp_name
+            break
+    
+    if not baseline_exp:
+        baseline_exp = exp_names[0]  # Assume first is baseline
+    
+    baseline_df = all_data[baseline_exp]
+    baseline_final_mse = baseline_df.iloc[-1].get('val_MSE_rgb', baseline_df.iloc[-1].get('train_MSE_rgb', 0))
+    
+    comparisons = []
+    for exp_name in exp_names:
+        if exp_name == baseline_exp:
+            continue
+        
+        df = all_data[exp_name]
+        final_mse = df.iloc[-1].get('val_MSE_rgb', df.iloc[-1].get('train_MSE_rgb', 0))
+        
+        mse_diff = ((final_mse - baseline_final_mse) / baseline_final_mse) * 100
+        exp_label = exp_name.replace('phase1_3_AE_', '').replace('_', ' ')
+        
+        comparisons.append({
+            'Experiment': exp_label,
+            'MSE Change (%)': mse_diff,
+            'Auxiliary Tasks': 'Seg' if 'seg' in exp_name.lower() and 'cls' not in exp_name.lower() 
+                             else 'Seg+Cls' if 'cls' in exp_name.lower() else 'None'
+        })
+    
+    if comparisons:
+        df_comp = pd.DataFrame(comparisons)
+        colors_map = {'Seg': '#A23B72', 'Seg+Cls': '#F18F01', 'None': '#2E86AB'}
+        bar_colors = [colors_map.get(comp['Auxiliary Tasks'], '#666666') for comp in comparisons]
+        
+        bars = ax.barh(df_comp['Experiment'], df_comp['MSE Change (%)'], color=bar_colors, alpha=0.7, edgecolor='black')
+        
+        ax.axvline(x=0, color='black', linestyle='-', linewidth=1.5, alpha=0.5)
+        ax.set_xlabel('MSE Change vs RGB-Only Baseline (%)', fontsize=12)
+        ax.set_title('Impact of Auxiliary Tasks on RGB Quality', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Add value annotations
+        for i, (bar, val) in enumerate(zip(bars, df_comp['MSE Change (%)'])):
+            width = bar.get_width()
+            ax.text(width, bar.get_y() + bar.get_height()/2, f'{val:+.2f}%',
+                   ha='left' if width > 0 else 'right', va='center', fontsize=10, fontweight='bold')
+        
+        # Add legend
+        from matplotlib.patches import Patch
+        legend_elements = [Patch(facecolor=colors_map[k], label=k) for k in colors_map.keys()]
+        ax.legend(handles=legend_elements, frameon=True, fancybox=False, shadow=False)
+    
+    plt.tight_layout()
+    output_path = output_dir / "loss_interaction_analysis.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"  Saved: {output_path}")
+
+
+def create_umap_visualization(checkpoints, dataset_manifest, output_dir, n_samples_per_type=50):
+    """Create UMAP visualization of latent space for each experiment."""
+    if not UMAP_AVAILABLE:
+        print("  UMAP not available, skipping latent space visualization")
+        return
+    
+    if not checkpoints:
+        print("  No checkpoints available for UMAP visualization")
+        return
+    
+    # Load dataset
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from models.datasets.datasets import ManifestDataset
+    
+    dataset = ManifestDataset(
+        manifest=dataset_manifest,
+        outputs={
+            'rgb': 'layout_path',
+            'segmentation': 'layout_path',
+            'label': 'type'
+        },
+        filters={'is_empty': [False]},
+        return_path=False
+    )
+    
+    # Sample balanced dataset
+    scenes = []
+    rooms = []
+    room_types = {}  # Track room types if available
+    
+    for i in range(len(dataset)):
+        try:
+            sample = dataset[i]
+            label = sample.get('label', None)
+            
+            if isinstance(label, str):
+                label_lower = label.lower().strip()
+                if label_lower == 'scene' and len(scenes) < n_samples_per_type:
+                    scenes.append((i, sample))
+                elif label_lower == 'room' and len(rooms) < n_samples_per_type:
+                    rooms.append((i, sample))
+                    # Try to get room type if available
+                    # (You might need to adjust this based on your dataset structure)
+            
+            if len(scenes) >= n_samples_per_type and len(rooms) >= n_samples_per_type:
+                break
+        except Exception as e:
+            continue
+    
+    all_samples = scenes + rooms
+    if len(all_samples) < 10:
+        print(f"  Only found {len(all_samples)} samples, need at least 10 for UMAP")
+        return
+    
+    print(f"  Using {len(all_samples)} samples for UMAP visualization ({len(scenes)} scenes, {len(rooms)} rooms)")
+    
+    # Create UMAP visualization for each experiment
+    device = list(checkpoints.values())[0]['device']
+    
+    for exp_name, checkpoint_info in checkpoints.items():
+        model = checkpoint_info['model']
+        model.eval()
+        
+        # Extract latents
+        latents_list = []
+        labels_list = []
+        sample_types = []
+        
+        with torch.no_grad():
+            for idx, sample in all_samples:
+                rgb_input = sample['rgb'].unsqueeze(0).to(device)
+                
+                # Encode to latent
+                encoder_out = model.encode(rgb_input)
+                if 'latent' in encoder_out:
+                    latent = encoder_out['latent']
+                elif 'mu' in encoder_out:
+                    latent = encoder_out['mu']  # Use mu for VAE
+                else:
+                    continue
+                
+                # Flatten latent
+                latent_flat = latent.cpu().view(-1).numpy()
+                latents_list.append(latent_flat)
+                
+                # Store label
+                label = sample.get('label', 'unknown')
+                labels_list.append(label)
+                
+                if isinstance(label, str):
+                    sample_types.append(0 if label.lower() == 'room' else 1)  # 0=room, 1=scene
+                else:
+                    sample_types.append(0)
+        
+        if len(latents_list) < 10:
+            print(f"  Skipping {exp_name}: not enough valid latents")
+            continue
+        
+        latents_array = np.array(latents_list)
+        print(f"  Computing UMAP for {exp_name} (latent shape: {latents_array.shape})...")
+        
+        # Fit UMAP
+        reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
+        embedding = reducer.fit_transform(latents_array)
+        
+        # Create visualization
+        fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+        fig.suptitle(f'Phase 1.3: UMAP Latent Space - {exp_name.replace("phase1_3_AE_", "")}', 
+                    fontsize=16, fontweight='bold')
+        
+        # Plot 1: Room vs Scene separation
+        ax = axes[0]
+        room_mask = np.array(sample_types) == 0
+        scene_mask = np.array(sample_types) == 1
+        
+        ax.scatter(embedding[room_mask, 0], embedding[room_mask, 1], 
+                  c='#2E86AB', label='Room', alpha=0.6, s=50, edgecolors='black', linewidth=0.5)
+        ax.scatter(embedding[scene_mask, 0], embedding[scene_mask, 1], 
+                  c='#A23B72', label='Scene', alpha=0.6, s=50, edgecolors='black', linewidth=0.5)
+        
+        ax.set_xlabel('UMAP Dimension 1', fontsize=12)
+        ax.set_ylabel('UMAP Dimension 2', fontsize=12)
+        ax.set_title('Room vs Scene Separation', fontsize=14, fontweight='bold')
+        ax.legend(frameon=True, fancybox=False, shadow=False)
+        ax.grid(True, alpha=0.3)
+        
+        # Plot 2: All samples (colored by type)
+        ax = axes[1]
+        scatter = ax.scatter(embedding[:, 0], embedding[:, 1], 
+                           c=sample_types, cmap='coolwarm', alpha=0.6, s=50,
+                           edgecolors='black', linewidth=0.5)
+        ax.set_xlabel('UMAP Dimension 1', fontsize=12)
+        ax.set_ylabel('UMAP Dimension 2', fontsize=12)
+        ax.set_title('Latent Space Structure', fontsize=14, fontweight='bold')
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label('Type (0=Room, 1=Scene)', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        # Calculate separation metric (simple distance-based)
+        room_center = embedding[room_mask].mean(axis=0) if room_mask.sum() > 0 else None
+        scene_center = embedding[scene_mask].mean(axis=0) if scene_mask.sum() > 0 else None
+        
+        if room_center is not None and scene_center is not None:
+            separation = np.linalg.norm(room_center - scene_center)
+            ax.text(0.02, 0.98, f'Center Separation: {separation:.3f}', 
+                   transform=ax.transAxes, ha='left', va='top',
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        output_path = output_dir / f"umap_{exp_name.replace('phase1_3_AE_', '')}.png"
+        plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved: {output_path}")
+    
+    # Create comparison plot (all experiments side-by-side)
+    if len(checkpoints) > 1:
+        fig, axes = plt.subplots(1, len(checkpoints), figsize=(6 * len(checkpoints), 6))
+        if len(checkpoints) == 1:
+            axes = [axes]
+        
+        fig.suptitle('Phase 1.3: UMAP Comparison - Room vs Scene Separation', 
+                    fontsize=16, fontweight='bold')
+        
+        for ax_idx, (exp_name, checkpoint_info) in enumerate(sorted(checkpoints.items())):
+            model = checkpoint_info['model']
+            model.eval()
+            
+            latents_list = []
+            sample_types = []
+            
+            with torch.no_grad():
+                for idx, sample in all_samples:
+                    rgb_input = sample['rgb'].unsqueeze(0).to(device)
+                    encoder_out = model.encode(rgb_input)
+                    if 'latent' in encoder_out:
+                        latent = encoder_out['latent']
+                    elif 'mu' in encoder_out:
+                        latent = encoder_out['mu']
+                    else:
+                        continue
+                    latent_flat = latent.cpu().view(-1).numpy()
+                    latents_list.append(latent_flat)
+                    
+                    label = sample.get('label', 'unknown')
+                    if isinstance(label, str):
+                        sample_types.append(0 if label.lower() == 'room' else 1)
+                    else:
+                        sample_types.append(0)
+            
+            if len(latents_list) < 10:
+                continue
+            
+            latents_array = np.array(latents_list)
+            reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
+            embedding = reducer.fit_transform(latents_array)
+            
+            room_mask = np.array(sample_types) == 0
+            scene_mask = np.array(sample_types) == 1
+            
+            ax = axes[ax_idx]
+            ax.scatter(embedding[room_mask, 0], embedding[room_mask, 1], 
+                      c='#2E86AB', label='Room', alpha=0.6, s=30, edgecolors='black', linewidth=0.3)
+            ax.scatter(embedding[scene_mask, 0], embedding[scene_mask, 1], 
+                      c='#A23B72', label='Scene', alpha=0.6, s=30, edgecolors='black', linewidth=0.3)
+            
+            ax.set_title(exp_name.replace('phase1_3_AE_', '').replace('_', ' '), 
+                        fontsize=12, fontweight='bold')
+            ax.set_xlabel('UMAP 1', fontsize=10)
+            ax.set_ylabel('UMAP 2', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            if ax_idx == 0:
+                ax.legend(frameon=True, fancybox=False, shadow=False, fontsize=9)
+        
+        plt.tight_layout()
+        output_path = output_dir / "umap_comparison.png"
+        plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved: {output_path}")
 
 
 if __name__ == "__main__":
