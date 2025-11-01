@@ -52,6 +52,7 @@ class BaseComponent(nn.Module):
     # Checkpoint handling
     # -----------------------
     def save_checkpoint(self, path, include_config=True):
+        """Save model checkpoint. Override in subclasses for extended checkpointing."""
         payload = {"state_dict": self.state_dict()}
         if include_config:
             payload["config"] = self.to_config()
@@ -59,6 +60,7 @@ class BaseComponent(nn.Module):
 
     @classmethod
     def load_checkpoint(cls, path, map_location="cpu"):
+        """Load model checkpoint. Override in subclasses for extended checkpointing."""
         payload = torch.load(path, map_location=map_location)
         config = payload.get("config")
         model = cls.from_config(config) if config else cls()

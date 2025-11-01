@@ -3,13 +3,13 @@ import torch.nn as nn
 from pathlib import Path
 import yaml
 
-from models.components.base_component import BaseComponent
+from models.components.base_model import BaseModel
 from models.autoencoder import Autoencoder
 from models.components.unet import DualUNet
 from models.components.scheduler import SCHEDULER_REGISTRY
 
 
-class DiffusionModel(BaseComponent):
+class DiffusionModel(BaseModel):
     """Minimal end-to-end diffusion model for training."""
 
     def _build(self):
@@ -84,19 +84,5 @@ class DiffusionModel(BaseComponent):
         }
 
     # ------------------------------------------------------------------
-    # Checkpointing
+    # Checkpointing (inherited from BaseModel, can override if needed)
     # ------------------------------------------------------------------
-    def save_checkpoint(self, path):
-        path = Path(path)
-        ckpt = {
-            "config": self.to_config(),
-            "state_dict": self.state_dict(),
-        }
-        torch.save(ckpt, path)
-
-    @classmethod
-    def load_checkpoint(cls, path, map_location="cpu"):
-        ckpt = torch.load(path, map_location=map_location)
-        model = cls.from_config(ckpt["config"])
-        model.load_state_dict(ckpt["state_dict"])
-        return model
