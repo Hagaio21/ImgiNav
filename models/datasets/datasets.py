@@ -85,7 +85,7 @@ class ManifestDataset(BaseComponent, Dataset):
         # simple mode
         sample_path = Path(row[self.path_col])
         data = self._load_value(sample_path)
-        label = torch.tensor(row[self.label_col]) if self.label_col and self.label_col in row else None
+        label = self._load_value(row[self.label_col]) if self.label_col and self.label_col in row else None
 
         sample = {"data": data}
         if label is not None:
@@ -107,11 +107,11 @@ class ManifestDataset(BaseComponent, Dataset):
         
         # Handle string "scene" for room_id column (maps to room_id 0 -> class index 0)
         if isinstance(val, str) and val.lower() == "scene":
-            return torch.tensor(0)
+            return torch.tensor(0, dtype=torch.long)
         
-        # Handle numeric values (like room_id), return as-is
+        # Handle numeric values (like room_id), return as long for consistency
         if isinstance(val, (int, float)):
-            return torch.tensor(val)
+            return torch.tensor(int(val), dtype=torch.long)
         
         if isinstance(val, str):
             # Handle empty strings
@@ -119,7 +119,8 @@ class ManifestDataset(BaseComponent, Dataset):
                 raise ValueError(f"Empty path in manifest")
             # Try to convert string to number if it's numeric (for numeric room_ids as strings)
             if val.replace('.', '').replace('-', '').isdigit():
-                return torch.tensor(float(val))
+                # Convert to int (long) for room_id values to maintain dtype consistency
+                return torch.tensor(int(float(val)), dtype=torch.long)
             # Otherwise treat as file path
             p = Path(val)
             # Resolve relative paths relative to manifest directory
@@ -146,6 +147,7 @@ class ManifestDataset(BaseComponent, Dataset):
                 return img
             if ext == ".pt":
                 return torch.load(p)
+        # Fallback: convert to tensor (will default to appropriate type)
         return torch.tensor(val)
 
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True):

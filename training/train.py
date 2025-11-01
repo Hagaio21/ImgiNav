@@ -115,7 +115,7 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         
         # Forward pass with mixed precision
         if use_amp and device_obj.type == "cuda":
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(batch["rgb"])
                 loss, logs = loss_fn(outputs, batch)
             
@@ -378,7 +378,7 @@ def main():
     if use_amp and device_obj.type == "cuda":
         print("Using mixed precision training (FP16)")
         # Create scaler once for the training function
-        train_epoch._scaler = torch.cuda.amp.GradScaler()
+        train_epoch._scaler = torch.amp.GradScaler('cuda')
     elif not use_amp:
         print("Mixed precision training disabled (use_amp: false)")
     
