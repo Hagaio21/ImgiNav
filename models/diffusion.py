@@ -26,17 +26,34 @@ class DiffusionModel(BaseModel):
             self.decoder = self.autoencoder.decoder
             self.encoder = self.autoencoder.encoder
             self._has_encoder = True
+            # Freeze autoencoder if requested
+            if ae_cfg.get("frozen", False):
+                self.autoencoder.freeze()
         elif decoder_cfg:
             # Only decoder provided (for inference or pre-encoded training)
             self.decoder = Decoder.from_config(decoder_cfg)
             self.encoder = None
             self.autoencoder = None
             self._has_encoder = False
+            # Freeze decoder if requested
+            if decoder_cfg.get("frozen", False):
+                self.decoder.freeze()
         else:
             raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config")
 
         # UNet backbone
         self.unet = DualUNet.from_config(unet_cfg)
+        # Freeze UNet if requested (or use special ControlNet freezing)
+        if unet_cfg.get("frozen", False):
+            self.unet.freeze()
+        # Support ControlNet-style freezing via config
+        if unet_cfg.get("freeze_downblocks", False):
+            self.unet.freeze_downblocks()
+        if unet_cfg.get("freeze_upblocks", False):
+            self.unet.freeze_upblocks()
+        freeze_blocks = unet_cfg.get("freeze_blocks", None)
+        if freeze_blocks:
+            self.unet.freeze_blocks(freeze_blocks)
 
         # noise scheduler
         sched_type = sched_cfg.get("type", "CosineScheduler")

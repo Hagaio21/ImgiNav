@@ -15,6 +15,12 @@ class Autoencoder(BaseModel):
 
         self.encoder = Encoder.from_config(encoder_cfg)
         self.decoder = Decoder.from_config(decoder_cfg)
+        
+        # Freeze components if requested in config
+        if encoder_cfg.get("frozen", False):
+            self.encoder.freeze()
+        if decoder_cfg.get("frozen", False):
+            self.decoder.freeze()
 
     def forward(self, x):
         """
