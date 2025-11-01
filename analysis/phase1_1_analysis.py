@@ -82,6 +82,17 @@ def parse_latent_dimensions(exp_name):
     }
 
 
+def get_latent_shape_label(exp_name):
+    """
+    Get latent shape label for display (e.g., "(32×32×16 = 16,384)").
+    Returns only the shape, not the experiment name.
+    """
+    dims_info = parse_latent_dimensions(exp_name)
+    if dims_info['total_dims']:
+        return f"({dims_info['spatial_str']}×{dims_info['channels']} = {dims_info['total_dims']:,})"
+    return exp_name.replace('phase1_1_AE_', '')
+
+
 def load_metrics(phase_dir):
     """Load all metrics CSV files from phase directory."""
     phase_path = Path(phase_dir)
@@ -203,23 +214,6 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     final_df = pd.DataFrame(final_metrics)
     
-    # Create comparison plots
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Phase 1.1: Final Metrics Comparison', fontsize=16, fontweight='bold')
-    
-    # Plot 1: Final Validation Loss
-    ax1 = axes[0, 0]
-    bars1 = sns.barplot(data=final_df, x='experiment', y='val_loss', ax=ax1, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
-    ax1.set_xlabel('Experiment', fontsize=12)
-    ax1.set_ylabel('Final Validation Loss', fontsize=12)
-    ax1.set_title('Final Validation Loss', fontsize=14, fontweight='bold')
-    ax1.xaxis.set_major_locator(ticker.FixedLocator(ax1.get_xticks()))
-    ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
-    ax1.grid(True, alpha=0.3, axis='y')
-    # Add value labels on bars
-    for container in bars1.containers:
-        ax1.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
-    
     # Add latent dimension info to dataframe
     final_df['latent_dims'] = final_df['experiment'].apply(
         lambda x: parse_latent_dimensions(x).get('total_dims', None)
@@ -230,12 +224,31 @@ def create_final_metrics_comparison(all_data, output_dir):
     final_df['latent_channels'] = final_df['experiment'].apply(
         lambda x: parse_latent_dimensions(x).get('channels', None)
     )
+    # Create label column with latent shape for display
+    final_df['latent_label'] = final_df['experiment'].apply(get_latent_shape_label)
+    
+    # Create comparison plots
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Phase 1.1: Final Metrics Comparison', fontsize=16, fontweight='bold')
+    
+    # Plot 1: Final Validation Loss
+    ax1 = axes[0, 0]
+    bars1 = sns.barplot(data=final_df, x='latent_label', y='val_loss', ax=ax1, hue='latent_label', palette=EXPERIMENT_COLORS, legend=False)
+    ax1.set_xlabel('Latent Shape (H×W×C = Total)', fontsize=12)
+    ax1.set_ylabel('Final Validation Loss', fontsize=12)
+    ax1.set_title('Final Validation Loss', fontsize=14, fontweight='bold')
+    ax1.xaxis.set_major_locator(ticker.FixedLocator(ax1.get_xticks()))
+    ax1.set_xticklabels(final_df['latent_label'].values, rotation=45, ha='right', fontsize=8)
+    ax1.grid(True, alpha=0.3, axis='y')
+    # Add value labels on bars (positioned to avoid title overlap)
+    for container in bars1.containers:
+        ax1.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=7, label_type='edge')
     
     # Plot 2: Final Validation MSE (zoomed to highlight differences)
     ax2 = axes[0, 1]
     if 'val_MSE' in final_df.columns:
-        bars2 = sns.barplot(data=final_df, x='experiment', y='val_MSE', ax=ax2, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
-        ax2.set_xlabel('Experiment', fontsize=12)
+        bars2 = sns.barplot(data=final_df, x='latent_label', y='val_MSE', ax=ax2, hue='latent_label', palette=EXPERIMENT_COLORS, legend=False)
+        ax2.set_xlabel('Latent Shape (H×W×C = Total)', fontsize=12)
         ax2.set_ylabel('Final Validation MSE', fontsize=12)
         # Zoom y-axis to highlight differences
         mse_min = final_df['val_MSE'].min()
@@ -243,13 +256,13 @@ def create_final_metrics_comparison(all_data, output_dir):
         mse_range = mse_max - mse_min
         ax2.set_ylim(max(0, mse_min - mse_range*0.15), mse_max + mse_range*0.15)
         ax2.set_title(f'Final Validation MSE (RGB)\nRange: {mse_min:.4f} - {mse_max:.4f}', 
-                     fontsize=14, fontweight='bold')
+                     fontsize=14, fontweight='bold', pad=20)
         ax2.xaxis.set_major_locator(ticker.FixedLocator(ax2.get_xticks()))
-        ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
+        ax2.set_xticklabels(final_df['latent_label'].values, rotation=45, ha='right', fontsize=8)
         ax2.grid(True, alpha=0.3, axis='y')
-        # Add value labels on bars
+        # Add value labels on bars (positioned to avoid title overlap)
         for container in bars2.containers:
-            ax2.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
+            ax2.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=7, label_type='edge')
     else:
         ax2.text(0.5, 0.5, 'MSE data not available', 
                 ha='center', va='center', transform=ax2.transAxes, fontsize=12)
@@ -257,30 +270,30 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     # Plot 3: Final Training Loss
     ax3 = axes[1, 0]
-    bars3 = sns.barplot(data=final_df, x='experiment', y='train_loss', ax=ax3, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
-    ax3.set_xlabel('Experiment', fontsize=12)
+    bars3 = sns.barplot(data=final_df, x='latent_label', y='train_loss', ax=ax3, hue='latent_label', palette=EXPERIMENT_COLORS, legend=False)
+    ax3.set_xlabel('Latent Shape (H×W×C = Total)', fontsize=12)
     ax3.set_ylabel('Final Training Loss', fontsize=12)
     ax3.set_title('Final Training Loss', fontsize=14, fontweight='bold')
     ax3.xaxis.set_major_locator(ticker.FixedLocator(ax3.get_xticks()))
-    ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
+    ax3.set_xticklabels(final_df['latent_label'].values, rotation=45, ha='right', fontsize=8)
     ax3.grid(True, alpha=0.3, axis='y')
-    # Add value labels on bars
+    # Add value labels on bars (positioned to avoid title overlap)
     for container in bars3.containers:
-        ax3.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
+        ax3.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=7, label_type='edge')
     
     # Plot 4: Final Validation Segmentation Loss
     ax4 = axes[1, 1]
     if 'val_seg_loss' in final_df.columns:
-        bars4 = sns.barplot(data=final_df, x='experiment', y='val_seg_loss', ax=ax4, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
-        ax4.set_xlabel('Experiment', fontsize=12)
+        bars4 = sns.barplot(data=final_df, x='latent_label', y='val_seg_loss', ax=ax4, hue='latent_label', palette=EXPERIMENT_COLORS, legend=False)
+        ax4.set_xlabel('Latent Shape (H×W×C = Total)', fontsize=12)
         ax4.set_ylabel('Final Validation Seg Loss', fontsize=12)
         ax4.set_title('Final Validation Segmentation Loss', fontsize=14, fontweight='bold')
         ax4.xaxis.set_major_locator(ticker.FixedLocator(ax4.get_xticks()))
-        ax4.set_xticklabels(ax4.get_xticklabels(), rotation=45, ha='right')
+        ax4.set_xticklabels(final_df['latent_label'].values, rotation=45, ha='right', fontsize=8)
         ax4.grid(True, alpha=0.3, axis='y')
-        # Add value labels on bars
+        # Add value labels on bars (positioned to avoid title overlap)
         for container in bars4.containers:
-            ax4.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
+            ax4.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=7, label_type='edge')
     else:
         ax4.text(0.5, 0.5, 'Segmentation loss data not available', 
                 ha='center', va='center', transform=ax4.transAxes, fontsize=12)
@@ -306,14 +319,16 @@ def create_final_metrics_comparison(all_data, output_dir):
         
         bars = ax.barh(range(len(final_df_sorted)), relative_mse.values, color=colors_list)
         ax.set_yticks(range(len(final_df_sorted)))
-        ax.set_yticklabels([name.replace('phase1_1_AE_', '') for name in final_df_sorted['experiment']])
+        # Use latent shape labels instead of experiment names
+        latent_labels = [get_latent_shape_label(name) for name in final_df_sorted['experiment']]
+        ax.set_yticklabels(latent_labels, fontsize=9)
         ax.set_xlabel('% Difference from Best MSE', fontsize=12)
         ax.set_title('Relative Performance: Validation MSE vs Best', fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.3, axis='x')
         
-        # Add value labels
+        # Add value labels (positioned to avoid overlap)
         for i, (idx, val) in enumerate(relative_mse.items()):
-            ax.text(val + 0.5, i, f'{val:.1f}%', va='center', fontsize=9)
+            ax.text(val + 0.5, i, f'{val:.1f}%', va='center', fontsize=8)
         
         plt.tight_layout()
         rel_path = output_dir / "relative_performance_mse.png"
@@ -360,27 +375,30 @@ def create_convergence_analysis(all_data, output_dir):
         })
         
         # Plot loss reduction over time
+        label = get_latent_shape_label(exp_name)
         axes[0].plot(epochs, val_loss, 
-                    label=exp_name, 
+                    label=label, 
                     color=EXPERIMENT_COLORS[len(convergence_data) % len(EXPERIMENT_COLORS)], 
                     linewidth=2)
     
     axes[0].set_xlabel('Epoch', fontsize=12)
     axes[0].set_ylabel('Validation Loss', fontsize=12)
     axes[0].set_title('Loss Reduction Over Time', fontsize=14, fontweight='bold')
-    axes[0].legend(frameon=True, fancybox=False, shadow=False, edgecolor='none')
+    axes[0].legend(frameon=True, fancybox=False, shadow=False, edgecolor='none', fontsize=8)
     axes[0].grid(True, alpha=0.3)
     
     # Bar plot: Convergence speed
     conv_df = pd.DataFrame(convergence_data)
     if len(conv_df) > 0:
-        sns.barplot(data=conv_df, x='experiment', y='convergence_epoch', 
-                   ax=axes[1], hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
-        axes[1].set_xlabel('Experiment', fontsize=12)
+        # Add latent label column for display
+        conv_df['latent_label'] = conv_df['experiment'].apply(get_latent_shape_label)
+        sns.barplot(data=conv_df, x='latent_label', y='convergence_epoch', 
+                   ax=axes[1], hue='latent_label', palette=EXPERIMENT_COLORS, legend=False)
+        axes[1].set_xlabel('Latent Shape (H×W×C = Total)', fontsize=12)
         axes[1].set_ylabel('Convergence Epoch', fontsize=12)
         axes[1].set_title('Convergence Speed', fontsize=14, fontweight='bold')
         axes[1].xaxis.set_major_locator(ticker.FixedLocator(axes[1].get_xticks()))
-        axes[1].set_xticklabels(axes[1].get_xticklabels(), rotation=45, ha='right')
+        axes[1].set_xticklabels(conv_df['latent_label'].values, rotation=45, ha='right', fontsize=8)
         axes[1].grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
@@ -596,16 +614,9 @@ def create_comparison_grid(original, reconstructions, title=""):
         if i >= len(axes):
             break  # Safety check
         axes[i].imshow(reconstructions_np[exp_name])
-        # Clean up experiment name for display
-        display_name = exp_name.replace('phase1_1_AE_', '').replace('phase1_1_', '')
-        # Add latent dimensions to title
-        dims_info = parse_latent_dimensions(exp_name)
-        if dims_info['total_dims']:
-            dims_str = f"{dims_info['spatial_str']}×{dims_info['channels']} = {dims_info['total_dims']:,}"
-            title = f"{display_name}\n({dims_str})"
-        else:
-            title = display_name
-        axes[i].set_title(title, fontsize=9, fontweight='bold', pad=6)
+        # Use only latent shape for title (no experiment name)
+        latent_label = get_latent_shape_label(exp_name)
+        axes[i].set_title(latent_label, fontsize=10, fontweight='bold', pad=10)
         axes[i].axis('off')
     
     # Hide unused subplots
@@ -628,10 +639,15 @@ def create_efficiency_analysis(all_data, output_dir):
     # Calculate latent dimensions from experiment names
     final_data = []
     for exp_name, df in all_data.items():
-        if 'val_MSE' not in df.columns or len(df) == 0:
+        if len(df) == 0:
             continue
         
-        final_mse = df['val_MSE'].iloc[-1]
+        # Find MSE column (could be val_MSE, val_MSE_rgb, etc.)
+        mse_cols = [c for c in df.columns if 'MSE' in c.upper() and 'val' in c.lower()]
+        if not mse_cols:
+            continue
+        
+        final_mse = df[mse_cols[0]].iloc[-1]
         dims_info = parse_latent_dimensions(exp_name)
         
         if dims_info['total_dims']:
@@ -657,50 +673,55 @@ def create_efficiency_analysis(all_data, output_dir):
     fig.suptitle('Phase 1.1: Efficiency Analysis (Quality vs Latent Dimensions)', 
                  fontsize=16, fontweight='bold')
     
+    # Add latent label column for display
+    eff_df['latent_label'] = eff_df['experiment'].apply(get_latent_shape_label)
+    
     # Plot 1: MSE vs Latent Dimensions (scatter)
     ax1 = axes[0, 0]
-    for i, row in eff_df.iterrows():
+    for i, (idx, row) in enumerate(eff_df.iterrows()):
         color = EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)]
         ax1.scatter(row['latent_dims'], row['val_MSE'], 
                    s=200, color=color, alpha=0.7)
-        # Add label
-        display_name = row['experiment'].replace('phase1_1_AE_', '').replace('phase1_1_', '')
+        # Add label with latent shape only
         ax1.text(row['latent_dims'], row['val_MSE'], 
-                f"  {display_name}", fontsize=8, va='bottom')
+                f"  {row['latent_label']}", fontsize=7, va='bottom', ha='left')
     ax1.set_xlabel('Total Latent Dimensions (H×W×C)', fontsize=12)
     ax1.set_ylabel('Validation MSE', fontsize=12)
     ax1.set_title('Quality vs Capacity Trade-off', fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     
+    # Add latent label column for display
+    eff_df['latent_label'] = eff_df['experiment'].apply(get_latent_shape_label)
+    
     # Plot 2: MSE per Dimension (efficiency metric)
     ax2 = axes[0, 1]
-    bars2 = sns.barplot(data=eff_df, x='experiment', y='MSE_per_dim', 
-                       ax=ax2, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
-    ax2.set_xlabel('Experiment', fontsize=12)
+    bars2 = sns.barplot(data=eff_df, x='latent_label', y='MSE_per_dim', 
+                       ax=ax2, hue='latent_label', palette=EXPERIMENT_COLORS, legend=False)
+    ax2.set_xlabel('Latent Shape (H×W×C = Total)', fontsize=12)
     ax2.set_ylabel('MSE per Latent Dimension (×10⁻⁸)', fontsize=12)
     ax2.set_title('Efficiency: Lower is Better', fontsize=14, fontweight='bold')
     ax2.xaxis.set_major_locator(ticker.FixedLocator(ax2.get_xticks()))
-    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
+    ax2.set_xticklabels(eff_df['latent_label'].values, rotation=45, ha='right', fontsize=8)
     ax2.grid(True, alpha=0.3, axis='y')
     # Scale y-axis to show differences
     y_min, y_max = eff_df['MSE_per_dim'].min(), eff_df['MSE_per_dim'].max()
     y_range = y_max - y_min
     ax2.set_ylim(y_min - 0.1*y_range, y_max + 0.1*y_range)
     for container in bars2.containers:
-        ax2.bar_label(container, fmt='%.2e', rotation=90, padding=3, fontsize=7)
+        ax2.bar_label(container, fmt='%.2e', rotation=90, padding=3, fontsize=7, label_type='edge')
     
     # Plot 3: Total Latent Dimensions
     ax3 = axes[1, 0]
-    bars3 = sns.barplot(data=eff_df, x='experiment', y='latent_dims', 
-                       ax=ax3, hue='experiment', palette=EXPERIMENT_COLORS, legend=False)
-    ax3.set_xlabel('Experiment', fontsize=12)
+    bars3 = sns.barplot(data=eff_df, x='latent_label', y='latent_dims', 
+                       ax=ax3, hue='latent_label', palette=EXPERIMENT_COLORS, legend=False)
+    ax3.set_xlabel('Latent Shape (H×W×C = Total)', fontsize=12)
     ax3.set_ylabel('Total Latent Dimensions', fontsize=12)
     ax3.set_title('Latent Space Size', fontsize=14, fontweight='bold')
     ax3.xaxis.set_major_locator(ticker.FixedLocator(ax3.get_xticks()))
-    ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
+    ax3.set_xticklabels(eff_df['latent_label'].values, rotation=45, ha='right', fontsize=8)
     ax3.grid(True, alpha=0.3, axis='y')
     for container in bars3.containers:
-        ax3.bar_label(container, fmt='%d', rotation=90, padding=3, fontsize=7)
+        ax3.bar_label(container, fmt='%d', rotation=90, padding=3, fontsize=7, label_type='edge')
     
     # Plot 4: Improvement vs Cost (relative to smallest)
     ax4 = axes[1, 1]
@@ -711,13 +732,13 @@ def create_efficiency_analysis(all_data, output_dir):
     eff_df['dim_increase'] = ((eff_df['latent_dims'] - smallest['latent_dims']) / smallest['latent_dims']) * 100
     
     # Scatter: improvement % vs dimension increase %
-    for i, row in eff_df.iterrows():
+    for i, (idx, row) in enumerate(eff_df.iterrows()):
         color = EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)]
         ax4.scatter(row['dim_increase'], row['mse_improvement'], 
                    s=200, color=color, alpha=0.7)
-        display_name = row['experiment'].replace('phase1_1_AE_', '').replace('phase1_1_', '')
+        # Use latent shape label instead of experiment name
         ax4.text(row['dim_increase'], row['mse_improvement'], 
-                f"  {display_name}", fontsize=8, va='bottom')
+                f"  {row['latent_label']}", fontsize=7, va='bottom', ha='left')
     
     ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
     ax4.axvline(x=0, color='gray', linestyle='--', alpha=0.5)
