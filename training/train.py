@@ -7,7 +7,6 @@ Loads experiment config, builds model, dataset, loss, and runs training.
 import torch
 import torch.nn.functional as F
 import yaml
-import json
 import sys
 import math
 from pathlib import Path
@@ -16,6 +15,7 @@ import argparse
 from torchvision.utils import save_image, make_grid
 from PIL import Image
 import numpy as np
+import pandas as pd
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -410,6 +410,9 @@ def main():
     epochs_without_improvement = 0
     training_history = []
     
+    # CSV file path for metrics (overwritten each epoch)
+    metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
+    
     for epoch in range(num_epochs):
         # Training
         avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
@@ -444,10 +447,7 @@ def main():
                 # Save best checkpoint immediately (always updated when best is found)
                 best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
                 model.save_checkpoint(best_path, include_config=True)
-                best_logs_path = output_dir / f"{exp_name}_logs_best.json"
-                with open(best_logs_path, "w") as f:
-                    json.dump(epoch_log, f, indent=2)
-                print(f"  Saved best checkpoint and logs (val_loss: {best_val_loss:.6f})")
+                print(f"  Saved best checkpoint (val_loss: {best_val_loss:.6f})")
             else:
                 epochs_without_improvement += 1
                 if early_stopping_patience:
@@ -478,49 +478,33 @@ def main():
         
         training_history.append(epoch_log)
         
-        # Save checkpoint and logs at specified interval
+        # Save metrics CSV (overwrite with all epochs so far)
+        df = pd.DataFrame(training_history)
+        df.to_csv(metrics_csv_path, index=False)
+        
+        # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == num_epochs
         if should_save:
             checkpoint_path = output_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
             # Save checkpoint with config inside (via save_checkpoint method)
             model.save_checkpoint(checkpoint_path, include_config=True)
             checkpoint_files.append(checkpoint_path)
-            
-            # Save logs (loss dict and eval dicts) as JSON
-            logs_path = output_dir / f"{exp_name}_logs_epoch_{epoch + 1:03d}.json"
-            with open(logs_path, "w") as f:
-                json.dump(epoch_log, f, indent=2)
         
-        # Always save latest checkpoint and logs
+        # Always save latest checkpoint
         latest_path = output_dir / f"{exp_name}_checkpoint_latest.pt"
         model.save_checkpoint(latest_path, include_config=True)
-        latest_logs_path = output_dir / f"{exp_name}_logs_latest.json"
-        with open(latest_logs_path, "w") as f:
-            json.dump(epoch_log, f, indent=2)
         
-        # Clean up old checkpoints and logs if keeping only N
+        # Clean up old checkpoints if keeping only N
         if keep_checkpoints and len(checkpoint_files) > keep_checkpoints:
-            # Remove oldest checkpoint and log files
+            # Remove oldest checkpoint files
             for old_checkpoint in checkpoint_files[:-keep_checkpoints]:
                 if old_checkpoint.exists():
                     old_checkpoint.unlink()
-                # Handle both old format (without exp name) and new format (with exp name)
-                if "_checkpoint_" in old_checkpoint.name:
-                    old_logs = old_checkpoint.parent / old_checkpoint.name.replace("_checkpoint_", "_logs_")
-                else:
-                    old_logs = old_checkpoint.parent / old_checkpoint.name.replace("checkpoint_", "logs_")
-                if old_logs.exists():
-                    old_logs.unlink()
             checkpoint_files = checkpoint_files[-keep_checkpoints:]
     
-    # Save full training history (all loss and eval dicts) to JSON
-    history_path = output_dir / f"{exp_name}_training_history.json"
-    with open(history_path, "w") as f:
-        json.dump(training_history, f, indent=2)
     print(f"\nTraining complete!")
     print(f"  Checkpoints (with config): {output_dir}/{exp_name}_checkpoint_*.pt")
-    print(f"  Logs (loss and eval dicts): {output_dir}/{exp_name}_logs_*.json")
-    print(f"  Full training history: {history_path}")
+    print(f"  Metrics CSV: {metrics_csv_path}")
 
 
 if __name__ == "__main__":
