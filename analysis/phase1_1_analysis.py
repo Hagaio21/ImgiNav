@@ -170,22 +170,34 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     # Plot 1: Final Validation Loss
     ax1 = axes[0, 0]
-    sns.barplot(data=final_df, x='experiment', y='val_loss', ax=ax1, palette=EXPERIMENT_COLORS)
+    bars1 = sns.barplot(data=final_df, x='experiment', y='val_loss', ax=ax1, palette=EXPERIMENT_COLORS)
     ax1.set_xlabel('Experiment', fontsize=12)
     ax1.set_ylabel('Final Validation Loss', fontsize=12)
     ax1.set_title('Final Validation Loss', fontsize=14, fontweight='bold')
     ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
     ax1.grid(True, alpha=0.3, axis='y')
+    # Add value labels on bars
+    for container in bars1.containers:
+        ax1.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
     
-    # Plot 2: Final Validation MSE
+    # Plot 2: Final Validation MSE (zoomed to highlight differences)
     ax2 = axes[0, 1]
     if 'val_MSE' in final_df.columns:
-        sns.barplot(data=final_df, x='experiment', y='val_MSE', ax=ax2, palette=EXPERIMENT_COLORS)
+        bars2 = sns.barplot(data=final_df, x='experiment', y='val_MSE', ax=ax2, palette=EXPERIMENT_COLORS)
         ax2.set_xlabel('Experiment', fontsize=12)
         ax2.set_ylabel('Final Validation MSE', fontsize=12)
-        ax2.set_title('Final Validation MSE (RGB)', fontsize=14, fontweight='bold')
+        # Zoom y-axis to highlight differences
+        mse_min = final_df['val_MSE'].min()
+        mse_max = final_df['val_MSE'].max()
+        mse_range = mse_max - mse_min
+        ax2.set_ylim(max(0, mse_min - mse_range*0.15), mse_max + mse_range*0.15)
+        ax2.set_title(f'Final Validation MSE (RGB)\nRange: {mse_min:.4f} - {mse_max:.4f}', 
+                     fontsize=14, fontweight='bold')
         ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
         ax2.grid(True, alpha=0.3, axis='y')
+        # Add value labels on bars
+        for container in bars2.containers:
+            ax2.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
     else:
         ax2.text(0.5, 0.5, 'MSE data not available', 
                 ha='center', va='center', transform=ax2.transAxes, fontsize=12)
@@ -193,22 +205,28 @@ def create_final_metrics_comparison(all_data, output_dir):
     
     # Plot 3: Final Training Loss
     ax3 = axes[1, 0]
-    sns.barplot(data=final_df, x='experiment', y='train_loss', ax=ax3, palette=EXPERIMENT_COLORS)
+    bars3 = sns.barplot(data=final_df, x='experiment', y='train_loss', ax=ax3, palette=EXPERIMENT_COLORS)
     ax3.set_xlabel('Experiment', fontsize=12)
     ax3.set_ylabel('Final Training Loss', fontsize=12)
     ax3.set_title('Final Training Loss', fontsize=14, fontweight='bold')
     ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
     ax3.grid(True, alpha=0.3, axis='y')
+    # Add value labels on bars
+    for container in bars3.containers:
+        ax3.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
     
     # Plot 4: Final Validation Segmentation Loss
     ax4 = axes[1, 1]
     if 'val_seg_loss' in final_df.columns:
-        sns.barplot(data=final_df, x='experiment', y='val_seg_loss', ax=ax4, palette=EXPERIMENT_COLORS)
+        bars4 = sns.barplot(data=final_df, x='experiment', y='val_seg_loss', ax=ax4, palette=EXPERIMENT_COLORS)
         ax4.set_xlabel('Experiment', fontsize=12)
         ax4.set_ylabel('Final Validation Seg Loss', fontsize=12)
         ax4.set_title('Final Validation Segmentation Loss', fontsize=14, fontweight='bold')
         ax4.set_xticklabels(ax4.get_xticklabels(), rotation=45, ha='right')
         ax4.grid(True, alpha=0.3, axis='y')
+        # Add value labels on bars
+        for container in bars4.containers:
+            ax4.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
     else:
         ax4.text(0.5, 0.5, 'Segmentation loss data not available', 
                 ha='center', va='center', transform=ax4.transAxes, fontsize=12)
@@ -219,6 +237,35 @@ def create_final_metrics_comparison(all_data, output_dir):
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved: {output_path}")
     plt.close()
+    
+    # Create relative performance plot (difference from best)
+    if 'val_MSE' in final_df.columns:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        best_mse = final_df['val_MSE'].min()
+        final_df_sorted = final_df.sort_values('val_MSE')
+        relative_mse = ((final_df_sorted['val_MSE'] - best_mse) / best_mse) * 100
+        
+        # Map experiments to colors (use experiment index in original sorted list)
+        exp_order = sorted(final_df['experiment'].tolist())
+        colors_list = [EXPERIMENT_COLORS[exp_order.index(exp) % len(EXPERIMENT_COLORS)] 
+                      for exp in final_df_sorted['experiment']]
+        
+        bars = ax.barh(range(len(final_df_sorted)), relative_mse.values, color=colors_list)
+        ax.set_yticks(range(len(final_df_sorted)))
+        ax.set_yticklabels([name.replace('phase1_1_AE_', '') for name in final_df_sorted['experiment']])
+        ax.set_xlabel('% Difference from Best MSE', fontsize=12)
+        ax.set_title('Relative Performance: Validation MSE vs Best', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Add value labels
+        for i, (idx, val) in enumerate(relative_mse.items()):
+            ax.text(val + 0.5, i, f'{val:.1f}%', va='center', fontsize=9)
+        
+        plt.tight_layout()
+        rel_path = output_dir / "relative_performance_mse.png"
+        plt.savefig(rel_path, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"Saved: {rel_path}")
+        plt.close()
     
     # Save final metrics table
     table_path = output_dir / "final_metrics_table.csv"
@@ -497,61 +544,123 @@ def create_comparison_grid(original, reconstructions, title=""):
 
 
 def create_summary_report(all_data, output_dir):
-    """Create a text summary report."""
+    """Create a text summary report with actual results."""
     report_path = output_dir / "analysis_summary.txt"
+    
+    # Collect all final metrics
+    final_metrics = []
+    for exp_name, df in all_data.items():
+        final_row = df.iloc[-1]
+        metrics = {
+            'experiment': exp_name,
+            'train_loss': final_row.get('train_loss', np.nan),
+            'val_loss': final_row.get('val_loss', np.nan),
+        }
+        
+        # Extract MSE if available
+        mse_cols = [c for c in df.columns if 'MSE' in c.upper()]
+        if mse_cols:
+            for col in mse_cols:
+                if 'train' in col.lower():
+                    metrics['train_MSE'] = final_row.get(col, np.nan)
+                elif 'val' in col.lower():
+                    metrics['val_MSE'] = final_row.get(col, np.nan)
+        
+        # Extract segmentation loss if available
+        seg_cols = [c for c in df.columns if 'CE_segmentation' in c]
+        if seg_cols:
+            for col in seg_cols:
+                if 'train' in col.lower():
+                    metrics['train_seg_loss'] = final_row.get(col, np.nan)
+                elif 'val' in col.lower():
+                    metrics['val_seg_loss'] = final_row.get(col, np.nan)
+        
+        final_metrics.append(metrics)
+    
+    final_df = pd.DataFrame(final_metrics)
     
     with open(report_path, 'w') as f:
         f.write("=" * 80 + "\n")
-        f.write("Phase 1.1: Latent Channel Sweep - Analysis Summary\n")
+        f.write("Phase 1.1: Latent Channel Sweep - Results Summary\n")
         f.write("=" * 80 + "\n\n")
         
-        # Best experiment by validation loss
-        best_val_loss = float('inf')
-        best_exp = None
+        # Rank experiments by key metrics
+        if 'val_MSE' in final_df.columns:
+            final_df_sorted = final_df.sort_values('val_MSE')
+            f.write("Ranking by Validation MSE (RGB Reconstruction Quality):\n")
+            f.write("-" * 80 + "\n")
+            for rank, (idx, row) in enumerate(final_df_sorted.iterrows(), 1):
+                exp_clean = row['experiment'].replace('phase1_1_AE_', '')
+                f.write(f"{rank}. {exp_clean}\n")
+                f.write(f"   Validation MSE: {row['val_MSE']:.6f}\n")
+                if 'val_loss' in row:
+                    f.write(f"   Validation Loss: {row['val_loss']:.6f}\n")
+                if rank == 1:
+                    best_mse = row['val_MSE']
+                    best_exp = row['experiment']
+                f.write("\n")
+        
+        # Best experiment summary
+        if 'val_MSE' in final_df.columns:
+            f.write("=" * 80 + "\n")
+            f.write("BEST EXPERIMENT:\n")
+            f.write("=" * 80 + "\n")
+            best_row = final_df_sorted.iloc[0]
+            best_exp_clean = best_row['experiment'].replace('phase1_1_AE_', '')
+            f.write(f"Experiment: {best_exp_clean}\n")
+            f.write(f"Validation MSE: {best_row['val_MSE']:.6f}\n")
+            if 'val_loss' in best_row:
+                f.write(f"Validation Loss: {best_row['val_loss']:.6f}\n")
+            if 'train_MSE' in best_row:
+                f.write(f"Training MSE: {best_row['train_MSE']:.6f}\n")
+            if 'val_seg_loss' in best_row:
+                f.write(f"Segmentation Loss: {best_row['val_seg_loss']:.6f}\n")
+            f.write("\n")
+            
+            # Performance difference from best
+            f.write("Performance vs Best (Validation MSE):\n")
+            f.write("-" * 80 + "\n")
+            for idx, row in final_df.iterrows():
+                if row['experiment'] != best_exp:
+                    exp_clean = row['experiment'].replace('phase1_1_AE_', '')
+                    diff_pct = ((row['val_MSE'] - best_mse) / best_mse) * 100
+                    f.write(f"{exp_clean}: {diff_pct:+.1f}% vs best\n")
+            f.write("\n")
+        
+        # Detailed metrics for all experiments
+        f.write("=" * 80 + "\n")
+        f.write("Detailed Metrics by Experiment:\n")
+        f.write("=" * 80 + "\n\n")
         
         for exp_name, df in all_data.items():
-            if 'val_loss' in df.columns:
-                final_val_loss = df['val_loss'].iloc[-1]
-                if final_val_loss < best_val_loss:
-                    best_val_loss = final_val_loss
-                    best_exp = exp_name
-        
-        if best_exp:
-            f.write(f"Best Experiment (by Final Validation Loss): {best_exp}\n")
-            f.write(f"  Final Validation Loss: {best_val_loss:.6f}\n\n")
-        
-        # Summary for each experiment
-        f.write("-" * 80 + "\n")
-        f.write("Experiment Summaries:\n")
-        f.write("-" * 80 + "\n\n")
-        
-        for exp_name, df in all_data.items():
-            f.write(f"Experiment: {exp_name}\n")
+            exp_clean = exp_name.replace('phase1_1_AE_', '')
+            f.write(f"Experiment: {exp_clean}\n")
             f.write(f"  Total Epochs: {len(df)}\n")
             
-            if 'train_loss' in df.columns:
-                initial_train = df['train_loss'].iloc[0]
-                final_train = df['train_loss'].iloc[-1]
-                f.write(f"  Training Loss: {initial_train:.6f} → {final_train:.6f}\n")
+            # Get final metrics from final_df
+            exp_row = final_df[final_df['experiment'] == exp_name].iloc[0]
             
+            if 'train_loss' in exp_row:
+                f.write(f"  Final Training Loss: {exp_row['train_loss']:.6f}\n")
+            if 'val_loss' in exp_row:
+                f.write(f"  Final Validation Loss: {exp_row['val_loss']:.6f}\n")
+            if 'train_MSE' in exp_row:
+                f.write(f"  Final Training MSE: {exp_row['train_MSE']:.6f}\n")
+            if 'val_MSE' in exp_row:
+                f.write(f"  Final Validation MSE: {exp_row['val_MSE']:.6f}\n")
+            if 'train_seg_loss' in exp_row:
+                f.write(f"  Final Training Seg Loss: {exp_row['train_seg_loss']:.6f}\n")
+            if 'val_seg_loss' in exp_row:
+                f.write(f"  Final Validation Seg Loss: {exp_row['val_seg_loss']:.6f}\n")
+            
+            # Training progress
             if 'val_loss' in df.columns:
                 initial_val = df['val_loss'].iloc[0]
                 final_val = df['val_loss'].iloc[-1]
-                f.write(f"  Validation Loss: {initial_val:.6f} → {final_val:.6f}\n")
+                improvement = initial_val - final_val
+                f.write(f"  Validation Loss Improvement: {improvement:.6f} ({initial_val:.6f} → {final_val:.6f})\n")
             
             f.write("\n")
-        
-        # Recommendations
-        f.write("-" * 80 + "\n")
-        f.write("Recommendations:\n")
-        f.write("-" * 80 + "\n\n")
-        f.write("1. Select top 2 experiments based on:\n")
-        f.write("   - Lowest final validation loss\n")
-        f.write("   - Stable convergence\n")
-        f.write("   - Reasonable model size\n\n")
-        f.write("2. Update Phase 1.2 configs with:\n")
-        f.write("   - Best latent_channels\n")
-        f.write("   - Best base_channels\n\n")
     
     print(f"Saved: {report_path}")
 
