@@ -24,13 +24,26 @@ echo ""
 
 # Submit analysis job
 echo "Submitting analysis job (V100 GPU)..."
-bsub < "${SCRIPT_DIR}/run_phase1_1_analysis.sh"
+JOB_OUTPUT=$(bsub < "${SCRIPT_DIR}/run_phase1_1_analysis.sh" 2>&1)
+EXIT_CODE=$?
+echo "${JOB_OUTPUT}"
+
+# Extract job ID if available (LSF format: "Job <12345> is submitted...")
+JOB_ID=$(echo "${JOB_OUTPUT}" | grep -o 'Job <[0-9]*>' | grep -o '[0-9]*' | head -1)
 
 echo ""
 echo "=========================================="
-echo "Analysis job submitted!"
+if [ -n "${JOB_ID}" ]; then
+    echo "Analysis job submitted successfully!"
+    echo "Job ID: ${JOB_ID}"
+else
+    echo "Analysis job submission attempted"
+fi
 echo "=========================================="
 echo "Check status with: bjobs"
+if [ -n "${JOB_ID}" ]; then
+    echo "Or specifically: bjobs ${JOB_ID}"
+fi
 echo "Monitor logs in: ${LOG_DIR}"
 echo ""
 echo "Results will be saved to:"

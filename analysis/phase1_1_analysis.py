@@ -170,7 +170,7 @@ def create_final_metrics_comparison(all_data, output_dir):
     ax1.set_xlabel('Experiment', fontsize=12)
     ax1.set_ylabel('Final Validation Loss', fontsize=12)
     ax1.set_title('Final Validation Loss', fontsize=14, fontweight='bold')
-    ax1.tick_params(axis='x', rotation=45, ha='right')
+    ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
     ax1.grid(True, alpha=0.3, axis='y')
     
     # Plot 2: Final Validation MSE
@@ -180,7 +180,7 @@ def create_final_metrics_comparison(all_data, output_dir):
         ax2.set_xlabel('Experiment', fontsize=12)
         ax2.set_ylabel('Final Validation MSE', fontsize=12)
         ax2.set_title('Final Validation MSE (RGB)', fontsize=14, fontweight='bold')
-        ax2.tick_params(axis='x', rotation=45, ha='right')
+        ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
         ax2.grid(True, alpha=0.3, axis='y')
     else:
         ax2.text(0.5, 0.5, 'MSE data not available', 
@@ -193,7 +193,7 @@ def create_final_metrics_comparison(all_data, output_dir):
     ax3.set_xlabel('Experiment', fontsize=12)
     ax3.set_ylabel('Final Training Loss', fontsize=12)
     ax3.set_title('Final Training Loss', fontsize=14, fontweight='bold')
-    ax3.tick_params(axis='x', rotation=45, ha='right')
+    ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
     ax3.grid(True, alpha=0.3, axis='y')
     
     # Plot 4: Final Validation Segmentation Loss
@@ -203,7 +203,7 @@ def create_final_metrics_comparison(all_data, output_dir):
         ax4.set_xlabel('Experiment', fontsize=12)
         ax4.set_ylabel('Final Validation Seg Loss', fontsize=12)
         ax4.set_title('Final Validation Segmentation Loss', fontsize=14, fontweight='bold')
-        ax4.tick_params(axis='x', rotation=45, ha='right')
+        ax4.set_xticklabels(ax4.get_xticklabels(), rotation=45, ha='right')
         ax4.grid(True, alpha=0.3, axis='y')
     else:
         ax4.text(0.5, 0.5, 'Segmentation loss data not available', 
@@ -274,7 +274,7 @@ def create_convergence_analysis(all_data, output_dir):
         axes[1].set_xlabel('Experiment', fontsize=12)
         axes[1].set_ylabel('Convergence Epoch', fontsize=12)
         axes[1].set_title('Convergence Speed', fontsize=14, fontweight='bold')
-        axes[1].tick_params(axis='x', rotation=45, ha='right')
+        axes[1].set_xticklabels(axes[1].get_xticklabels(), rotation=45, ha='right')
         axes[1].grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()

@@ -8,6 +8,9 @@
 #BSUB -W 02:00
 #BSUB -q gpuv100
 
+# Ensure this runs on GPU queue
+export CUDA_VISIBLE_DEVICES=0
+
 set -euo pipefail
 
 # =============================================================================
