@@ -1,5 +1,5 @@
 #!/bin/bash
-#BSUB -J phase1_1_l40s[1-1]
+#BSUB -J phase1_1_l40s[1-2]
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/o/phase1_1_l40s.%J.%I.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/e/phase1_1_l40s.%J.%I.err
 #BSUB -n 8
@@ -21,9 +21,10 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"
 
-# Phase 1.1 experiments - Last 1 (L5) on L40s
+# Phase 1.1 experiments - Last 2 (S11-S12) on L40s (will queue automatically)
 CONFIG_FILES=(
-  "${CONFIG_DIR}/phase1_1_AE_L5_ch4_base64.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S11_ch8_ds6.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S12_ch4_ds2.yaml"
 )
 
 # Pick config for this array index
@@ -60,7 +61,7 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Phase 1.1: Latent Channel Sweep (L40s)"
+echo "Phase 1.1: Channel × Spatial Resolution Sweep (L40s)"
 echo "Array job index: ${LSB_JOBINDEX}"
 echo "Config: ${CONFIG_FILE}"
 echo "Working directory: ${BASE_DIR}"

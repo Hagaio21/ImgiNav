@@ -1,11 +1,10 @@
-# Phase 1.1: Latent Channel Sweep - Experiment L2
-# latent_channels=8, base_channels=32, downsampling=4 → 32×32×8 latent
-# Baseline: 32×32×8 = 8K dimensions
+# Phase 1.1: Channel × Spatial Resolution Sweep - S7
+# ch=4, ds4 → 32×32×4 = 4K dims (very compact)
 
 experiment:
-  name: "phase1_1_AE_L2_ch8_base32"
-  phase: "phase1_1_latent_channels"
-  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_1_AE_L2_ch8_base32"
+  name: "phase1_1_AE_S7_ch4_ds4"
+  phase: "phase1_1_latent_shape_sweep"
+  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_1_AE_S7_ch4_ds4"
 
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
@@ -20,7 +19,7 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 8
+    latent_channels: 4
     base_channels: 32
     downsampling_steps: 4  # 512 -> 256 -> 128 -> 64 -> 32
     activation: SiLU
@@ -28,7 +27,7 @@ autoencoder:
     variational: false
   
   decoder:
-    latent_channels: 8
+    latent_channels: 4
     base_channels: 32
     upsampling_steps: 4  # 32 -> 64 -> 128 -> 256 -> 512
     activation: SiLU
@@ -52,7 +51,7 @@ training:
   batch_size: 16
   num_workers: 8
   shuffle: true
-  epochs: 10  # Quick screening
+  epochs: 10
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01

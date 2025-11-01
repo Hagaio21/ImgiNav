@@ -11,13 +11,12 @@ Phase 1 systematically tests different autoencoder architectures to find the opt
 
 | Phase | Focus | Experiments | Timeline |
 |-------|-------|-------------|----------|
-| **1.1** | Latent Channel Sweep | 5 experiments | 1 day |
-| **1.2** | Spatial Resolution | 3 experiments | 1 day |
-| **1.3** | VAE Test | 2 experiments | 1 day |
-| **1.4** | Loss Tuning | 3 experiments | 1 day |
+| **1.1** | Channel × Spatial Resolution Sweep | 12 experiments | 1-2 days |
+| **1.2** | VAE Test | 2 experiments | 1 day |
+| **1.3** | Loss Tuning | 3 experiments | 1 day |
 | **1.5** | Final Training | 1 experiment | 1 day |
 
-**Total Phase 1 Timeline**: ~5 days
+**Total Phase 1 Timeline**: ~4-5 days
 
 ## Quick Start
 
@@ -39,13 +38,11 @@ After each sub-phase completes:
 Each phase depends on the previous phase's results:
 
 ```
-Phase 1.1 (Channel Sweep)
-    ↓ [Select: latent_channels, base_channels]
-Phase 1.2 (Spatial Resolution)
-    ↓ [Select: downsampling_steps]
-Phase 1.3 (VAE Test)
+Phase 1.1 (Channel × Spatial Resolution Sweep)
+    ↓ [Select: latent_channels, downsampling_steps, base_channels]
+Phase 1.2 (VAE Test)
     ↓ [Select: variational true/false]
-Phase 1.4 (Loss Tuning)
+Phase 1.3 (Loss Tuning)
     ↓ [Select: loss weights]
 Phase 1.5 (Final Training)
     ↓ [Final Autoencoder]
@@ -79,10 +76,9 @@ Phase 2 (Diffusion Architecture)
    ```
 
 2. **Key decisions**:
-   - **Phase 1.1**: Which latent_channels + base_channels?
-   - **Phase 1.2**: Which downsampling_steps (64×64 vs 32×32 vs 16×16)?
-   - **Phase 1.3**: VAE or deterministic?
-   - **Phase 1.4**: Which loss weights?
+   - **Phase 1.1**: Which channel count × spatial resolution combination? (efficiency focus)
+   - **Phase 1.2**: VAE or deterministic encoder?
+   - **Phase 1.3**: Which loss weight configuration?
 
 3. **Update configs**: Edit next phase's YAML files with winners
 
@@ -96,8 +92,7 @@ Phase 2 (Diffusion Architecture)
 
 | Decision | Primary Metric | Secondary Considerations |
 |----------|----------------|------------------------|
-| **Channels** | Validation MSE | Model size, training speed |
-| **Resolution** | Validation MSE + Visual quality | ControlNet spatial needs |
+| **Latent Shape** | Validation MSE per dimension | Efficiency, computational cost |
 | **VAE** | Validation MSE + KLD | Latent smoothness, complexity |
 | **Loss** | Validation MSE | Auxiliary task performance |
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Analysis script for Phase 1.3: VAE Test
+Analysis script for Phase 1.3: Loss Tuning
 Loads metrics from all experiments and creates comparison visualizations.
 """
 
@@ -22,7 +22,7 @@ def main():
     parser.add_argument(
         "--phase-dir",
         type=str,
-        default="outputs/phase1_3_vae_test",
+        default="outputs/phase1_3_loss_tuning",
         help="Path to phase directory containing metrics CSVs"
     )
     parser.add_argument(
@@ -60,7 +60,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print("=" * 80)
-    print("Phase 1.3: VAE Test Analysis")
+    print("Phase 1.3: Loss Tuning Analysis")
     print("=" * 80)
     print(f"Loading metrics from: {phase_dir}")
     print(f"Saving plots to: {output_dir}")

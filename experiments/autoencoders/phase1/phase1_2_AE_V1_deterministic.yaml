@@ -1,11 +1,11 @@
-# Phase 1.1: Latent Channel Sweep - Experiment L1
-# latent_channels=4, base_channels=32, downsampling=4 → 32×32×4 latent
-# Very compact: 32×32×4 = 4K dimensions
+# Phase 1.2: VAE Test - Experiment V1
+# Deterministic encoder (no VAE)
+# NOTE: Update all architecture params based on Phase 1.1 winner
 
 experiment:
-  name: "phase1_1_AE_L1_ch4_base32"
-  phase: "phase1_1_latent_channels"
-  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_1_AE_L1_ch4_base32"
+  name: "phase1_2_AE_V1_deterministic"
+  phase: "phase1_2_vae_test"
+  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_2_AE_V1_deterministic"
 
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
@@ -20,17 +20,17 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 4
-    base_channels: 32
-    downsampling_steps: 4  # 512 -> 256 -> 128 -> 64 -> 32
+    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
+    base_channels: 32  # TODO: Update based on Phase 1.1 winner
+    downsampling_steps: 4  # TODO: Update based on Phase 1.1 winner
     activation: SiLU
     norm_groups: 8
     variational: false
   
   decoder:
-    latent_channels: 4
-    base_channels: 32
-    upsampling_steps: 4  # 32 -> 64 -> 128 -> 256 -> 512
+    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
+    base_channels: 32  # TODO: Update based on Phase 1.1 winner
+    upsampling_steps: 4  # TODO: Update based on Phase 1.1 winner
     activation: SiLU
     norm_groups: 8
     heads:
@@ -52,7 +52,7 @@ training:
   batch_size: 16
   num_workers: 8
   shuffle: true
-  epochs: 10  # Quick screening
+  epochs: 10  # Quick test
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01

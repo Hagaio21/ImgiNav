@@ -1,5 +1,5 @@
 #!/bin/bash
-#BSUB -J phase1_1_v100[1-4]
+#BSUB -J phase1_1_v100[1-10]
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/o/phase1_1_v100.%J.%I.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/e/phase1_1_v100.%J.%I.err
 #BSUB -n 8
@@ -21,12 +21,18 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"
 
-# Phase 1.1 experiments - First 4 (L1-L4) on V100
+# Phase 1.1 experiments - Sweep S1-S10 on V100 (will queue automatically)
 CONFIG_FILES=(
-  "${CONFIG_DIR}/phase1_1_AE_L1_ch4_base32.yaml"
-  "${CONFIG_DIR}/phase1_1_AE_L2_ch8_base32.yaml"
-  "${CONFIG_DIR}/phase1_1_AE_L3_ch16_base32.yaml"
-  "${CONFIG_DIR}/phase1_1_AE_L4_ch8_base64.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S1_ch16_ds4.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S2_ch8_ds3.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S3_ch4_ds3.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S4_ch8_ds4.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S5_ch16_ds5.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S6_ch32_ds4.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S7_ch4_ds4.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S8_ch8_ds5.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S9_ch16_ds3.yaml"
+  "${CONFIG_DIR}/phase1_1_AE_S10_ch2_ds3.yaml"
 )
 
 # Pick config for this array index
@@ -63,7 +69,7 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Phase 1.1: Latent Channel Sweep (V100)"
+echo "Phase 1.1: Channel × Spatial Resolution Sweep (V100)"
 echo "Array job index: ${LSB_JOBINDEX}"
 echo "Config: ${CONFIG_FILE}"
 echo "Working directory: ${BASE_DIR}"

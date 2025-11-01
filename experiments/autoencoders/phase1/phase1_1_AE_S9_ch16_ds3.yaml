@@ -1,11 +1,10 @@
-# Phase 1.4: Loss Tuning - Experiment F1
-# RGB only (MSE=1.0, Seg=0.0, Cls=0.0)
-# NOTE: Update all architecture params based on Phase 1.3 winner
+# Phase 1.1: Channel × Spatial Resolution Sweep - S9
+# ch=16, ds3 → 64×64×16 = 65K dims (high quality, large - quality ceiling test)
 
 experiment:
-  name: "phase1_4_AE_F1_rgb_only"
-  phase: "phase1_4_loss_tuning"
-  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_4_AE_F1_rgb_only"
+  name: "phase1_1_AE_S9_ch16_ds3"
+  phase: "phase1_1_latent_shape_sweep"
+  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_1_AE_S9_ch16_ds3"
 
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
@@ -20,17 +19,17 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 8  # TODO: Update based on Phase 1.3 winner
-    base_channels: 32  # TODO: Update based on Phase 1.3 winner
-    downsampling_steps: 4  # TODO: Update based on Phase 1.3 winner
+    latent_channels: 16
+    base_channels: 32
+    downsampling_steps: 3  # 512 -> 256 -> 128 -> 64
     activation: SiLU
     norm_groups: 8
-    variational: false  # TODO: Update based on Phase 1.3 winner
+    variational: false
   
   decoder:
-    latent_channels: 8  # TODO: Update based on Phase 1.3 winner
-    base_channels: 32  # TODO: Update based on Phase 1.3 winner
-    upsampling_steps: 4  # TODO: Update based on Phase 1.3 winner
+    latent_channels: 16
+    base_channels: 32
+    upsampling_steps: 3  # 64 -> 128 -> 256 -> 512
     activation: SiLU
     norm_groups: 8
     heads:
@@ -52,7 +51,7 @@ training:
   batch_size: 16
   num_workers: 8
   shuffle: true
-  epochs: 10  # Quick test
+  epochs: 10
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
@@ -72,9 +71,9 @@ training:
       - type: CrossEntropyLoss
         key: segmentation
         target: segmentation
-        weight: 0.0  # Disabled
+        weight: 0.05
       - type: CrossEntropyLoss
         key: classification
         target: label
-        weight: 0.0  # Disabled
+        weight: 0.01
 

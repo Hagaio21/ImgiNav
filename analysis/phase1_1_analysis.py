@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Analysis script for Phase 1.1: Latent Channel Sweep
+Analysis script for Phase 1.1: Channel × Spatial Resolution Sweep
 Loads metrics from all experiments and creates comparison visualizations.
 """
 
@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from torchvision.utils import save_image, make_grid
 import yaml
+import re
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -28,19 +29,56 @@ sns.set_style("darkgrid")
 plt.rcParams['figure.figsize'] = (12, 8)
 plt.rcParams['figure.dpi'] = 100
 
-# Color palette for experiments - distinct colors from tab20 colormap
+# Color palette for experiments - distinct colors from tab20 colormap (12 colors for 12 experiments)
 import matplotlib.cm as cm
 _tab20_colors = cm.get_cmap('tab20').colors
-# Select distinct colors from tab20 (skip very similar ones)
+# Select distinct colors from tab20 for 12 experiments
 EXPERIMENT_COLORS = [
     _tab20_colors[0],   # Blue
+    _tab20_colors[1],   # Light Blue
     _tab20_colors[2],   # Red
+    _tab20_colors[3],   # Light Red
     _tab20_colors[4],   # Green
+    _tab20_colors[5],   # Light Green
     _tab20_colors[6],   # Orange
+    _tab20_colors[7],   # Light Orange
     _tab20_colors[8],   # Purple
+    _tab20_colors[9],   # Light Purple
+    _tab20_colors[10],  # Brown
+    _tab20_colors[11],  # Pink
 ]
 # Convert to hex for compatibility
 EXPERIMENT_COLORS = [f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}' for r, g, b in EXPERIMENT_COLORS]
+
+
+def parse_latent_dimensions(exp_name):
+    """
+    Parse latent dimensions from experiment name.
+    Example: 'phase1_1_AE_S1_ch16_ds4' -> channels=16, ds=4, spatial='32×32', dims=16384
+    
+    Returns dict with: channels, downsampling_steps, spatial_str, total_dims
+    """
+    # Extract channels and downsampling steps from name
+    ch_match = re.search(r'ch(\d+)', exp_name)
+    ds_match = re.search(r'ds(\d+)', exp_name)
+    
+    if not ch_match or not ds_match:
+        return {'channels': None, 'downsampling_steps': None, 'spatial_str': '?×?', 'total_dims': None}
+    
+    channels = int(ch_match.group(1))
+    downsampling_steps = int(ds_match.group(1))
+    
+    # Calculate spatial resolution (512 / 2^downsampling_steps)
+    spatial_res = 512 // (2 ** downsampling_steps)
+    spatial_str = f'{spatial_res}×{spatial_res}'
+    total_dims = spatial_res * spatial_res * channels
+    
+    return {
+        'channels': channels,
+        'downsampling_steps': downsampling_steps,
+        'spatial_str': spatial_str,
+        'total_dims': total_dims
+    }
 
 
 def load_metrics(phase_dir):
@@ -179,6 +217,17 @@ def create_final_metrics_comparison(all_data, output_dir):
     # Add value labels on bars
     for container in bars1.containers:
         ax1.bar_label(container, fmt='%.4f', rotation=90, padding=3, fontsize=8)
+    
+    # Add latent dimension info to dataframe
+    final_df['latent_dims'] = final_df['experiment'].apply(
+        lambda x: parse_latent_dimensions(x).get('total_dims', None)
+    )
+    final_df['latent_shape'] = final_df['experiment'].apply(
+        lambda x: parse_latent_dimensions(x).get('spatial_str', '?×?')
+    )
+    final_df['latent_channels'] = final_df['experiment'].apply(
+        lambda x: parse_latent_dimensions(x).get('channels', None)
+    )
     
     # Plot 2: Final Validation MSE (zoomed to highlight differences)
     ax2 = axes[0, 1]
@@ -514,25 +563,47 @@ def create_comparison_grid(original, reconstructions, title=""):
         for k, v in reconstructions.items()
     }
     
-    # Create figure with subplots
+    # Create figure with subplots - use 2 rows if more than 6 experiments
     exp_names = sorted(reconstructions.keys())
     n_images = 1 + len(exp_names)  # Original + reconstructions
     
-    fig, axes = plt.subplots(1, n_images, figsize=(n_images * 3, 3.5))
-    if n_images == 1:
-        axes = [axes]  # Make iterable if single subplot
+    # Determine grid layout: 2 rows if more than 7 total images, otherwise 1 row
+    if n_images > 7:
+        ncols = 7  # 1 original + 6 per row max
+        nrows = 2
+        fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 3))
+        axes = axes.flatten()
+    else:
+        ncols = n_images
+        nrows = 1
+        fig, axes = plt.subplots(1, n_images, figsize=(n_images * 2.5, 3))
+        if n_images == 1:
+            axes = [axes]  # Make iterable if single subplot
     
     # Plot original
     axes[0].imshow(original_np)
-    axes[0].set_title('Original', fontsize=12, fontweight='bold', pad=10)
+    axes[0].set_title('Original', fontsize=11, fontweight='bold', pad=8)
     axes[0].axis('off')
     
-    # Plot reconstructions with experiment names
+    # Plot reconstructions with experiment names and dimensions
     for i, exp_name in enumerate(exp_names, start=1):
+        if i >= len(axes):
+            break  # Safety check
         axes[i].imshow(reconstructions_np[exp_name])
-        # Clean up experiment name for display (remove phase prefix if present)
+        # Clean up experiment name for display
         display_name = exp_name.replace('phase1_1_AE_', '').replace('phase1_1_', '')
-        axes[i].set_title(display_name, fontsize=10, fontweight='bold', pad=10)
+        # Add latent dimensions to title
+        dims_info = parse_latent_dimensions(exp_name)
+        if dims_info['total_dims']:
+            dims_str = f"{dims_info['spatial_str']}×{dims_info['channels']} = {dims_info['total_dims']:,}"
+            title = f"{display_name}\n({dims_str})"
+        else:
+            title = display_name
+        axes[i].set_title(title, fontsize=9, fontweight='bold', pad=6)
+        axes[i].axis('off')
+    
+    # Hide unused subplots
+    for i in range(len(exp_names) + 1, len(axes)):
         axes[i].axis('off')
     
     # Add overall title if provided
@@ -543,6 +614,122 @@ def create_comparison_grid(original, reconstructions, title=""):
     return fig
 
 
+def create_efficiency_analysis(all_data, output_dir):
+    """
+    Analyze quality vs efficiency trade-off for Phase 1.1.
+    Focus on whether improvement is worth the increased latent dimensions.
+    """
+    # Calculate latent dimensions from experiment names
+    final_data = []
+    for exp_name, df in all_data.items():
+        if 'val_MSE' not in df.columns or len(df) == 0:
+            continue
+        
+        final_mse = df['val_MSE'].iloc[-1]
+        dims_info = parse_latent_dimensions(exp_name)
+        
+        if dims_info['total_dims']:
+            mse_per_dim = final_mse / dims_info['total_dims']
+            final_data.append({
+                'experiment': exp_name,
+                'val_MSE': final_mse,
+                'latent_dims': dims_info['total_dims'],
+                'spatial': dims_info['spatial_str'],
+                'channels': dims_info['channels'],
+                'MSE_per_dim': mse_per_dim,
+            })
+    
+    if not final_data:
+        print("  No efficiency data available")
+        return
+    
+    eff_df = pd.DataFrame(final_data)
+    eff_df = eff_df.sort_values('latent_dims')
+    
+    # Create efficiency comparison plot
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Phase 1.1: Efficiency Analysis (Quality vs Latent Dimensions)', 
+                 fontsize=16, fontweight='bold')
+    
+    # Plot 1: MSE vs Latent Dimensions (scatter)
+    ax1 = axes[0, 0]
+    for i, row in eff_df.iterrows():
+        color = EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)]
+        ax1.scatter(row['latent_dims'], row['val_MSE'], 
+                   s=200, color=color, alpha=0.7)
+        # Add label
+        display_name = row['experiment'].replace('phase1_1_AE_', '').replace('phase1_1_', '')
+        ax1.text(row['latent_dims'], row['val_MSE'], 
+                f"  {display_name}", fontsize=8, va='bottom')
+    ax1.set_xlabel('Total Latent Dimensions (H×W×C)', fontsize=12)
+    ax1.set_ylabel('Validation MSE', fontsize=12)
+    ax1.set_title('Quality vs Capacity Trade-off', fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: MSE per Dimension (efficiency metric)
+    ax2 = axes[0, 1]
+    bars2 = sns.barplot(data=eff_df, x='experiment', y='MSE_per_dim', 
+                       ax=ax2, palette=EXPERIMENT_COLORS)
+    ax2.set_xlabel('Experiment', fontsize=12)
+    ax2.set_ylabel('MSE per Latent Dimension (×10⁻⁸)', fontsize=12)
+    ax2.set_title('Efficiency: Lower is Better', fontsize=14, fontweight='bold')
+    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
+    ax2.grid(True, alpha=0.3, axis='y')
+    # Scale y-axis to show differences
+    y_min, y_max = eff_df['MSE_per_dim'].min(), eff_df['MSE_per_dim'].max()
+    y_range = y_max - y_min
+    ax2.set_ylim(y_min - 0.1*y_range, y_max + 0.1*y_range)
+    for container in bars2.containers:
+        ax2.bar_label(container, fmt='%.2e', rotation=90, padding=3, fontsize=7)
+    
+    # Plot 3: Total Latent Dimensions
+    ax3 = axes[1, 0]
+    bars3 = sns.barplot(data=eff_df, x='experiment', y='latent_dims', 
+                       ax=ax3, palette=EXPERIMENT_COLORS)
+    ax3.set_xlabel('Experiment', fontsize=12)
+    ax3.set_ylabel('Total Latent Dimensions', fontsize=12)
+    ax3.set_title('Latent Space Size', fontsize=14, fontweight='bold')
+    ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
+    ax3.grid(True, alpha=0.3, axis='y')
+    for container in bars3.containers:
+        ax3.bar_label(container, fmt='%d', rotation=90, padding=3, fontsize=7)
+    
+    # Plot 4: Improvement vs Cost (relative to smallest)
+    ax4 = axes[1, 1]
+    smallest = eff_df.loc[eff_df['latent_dims'].idxmin()]
+    largest = eff_df.loc[eff_df['latent_dims'].idxmax()]
+    
+    eff_df['mse_improvement'] = ((smallest['val_MSE'] - eff_df['val_MSE']) / smallest['val_MSE']) * 100
+    eff_df['dim_increase'] = ((eff_df['latent_dims'] - smallest['latent_dims']) / smallest['latent_dims']) * 100
+    
+    # Scatter: improvement % vs dimension increase %
+    for i, row in eff_df.iterrows():
+        color = EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)]
+        ax4.scatter(row['dim_increase'], row['mse_improvement'], 
+                   s=200, color=color, alpha=0.7)
+        display_name = row['experiment'].replace('phase1_1_AE_', '').replace('phase1_1_', '')
+        ax4.text(row['dim_increase'], row['mse_improvement'], 
+                f"  {display_name}", fontsize=8, va='bottom')
+    
+    ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    ax4.axvline(x=0, color='gray', linestyle='--', alpha=0.5)
+    ax4.set_xlabel('% Increase in Latent Dimensions (vs Smallest)', fontsize=12)
+    ax4.set_ylabel('% Improvement in MSE (vs Smallest)', fontsize=12)
+    ax4.set_title('Cost-Benefit Analysis', fontsize=14, fontweight='bold')
+    ax4.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    output_path = output_dir / "efficiency_analysis.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    print(f"Saved: {output_path}")
+    plt.close()
+    
+    # Save efficiency table
+    table_path = output_dir / "efficiency_analysis.csv"
+    eff_df.to_csv(table_path, index=False)
+    print(f"Saved: {table_path}")
+
+
 def create_summary_report(all_data, output_dir):
     """Create a text summary report with actual results."""
     report_path = output_dir / "analysis_summary.txt"
@@ -550,6 +737,7 @@ def create_summary_report(all_data, output_dir):
     # Collect all final metrics
     final_metrics = []
     for exp_name, df in all_data.items():
+        dims_info = parse_latent_dimensions(exp_name)
         final_row = df.iloc[-1]
         metrics = {
             'experiment': exp_name,

@@ -1,11 +1,10 @@
-# Phase 1.2: Spatial Resolution Test - Experiment R3
-# downsampling_steps=5 → 16×16 latent (very compact)
-# NOTE: Update latent_channels and base_channels based on Phase 1.1 results
+# Phase 1.1: Channel × Spatial Resolution Sweep - S8
+# ch=8, ds5 → 16×16×8 = 2K dims (extremely compact)
 
 experiment:
-  name: "phase1_2_AE_R3_ds5"
-  phase: "phase1_2_spatial_resolution"
-  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_2_AE_R3_ds5"
+  name: "phase1_1_AE_S8_ch8_ds5"
+  phase: "phase1_1_latent_shape_sweep"
+  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_1_AE_S8_ch8_ds5"
 
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
@@ -20,16 +19,16 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 16  # From Phase 1.1 winner (L3)
-    base_channels: 32  # From Phase 1.1 winner (L3)
+    latent_channels: 8
+    base_channels: 32
     downsampling_steps: 5  # 512 -> 256 -> 128 -> 64 -> 32 -> 16
     activation: SiLU
     norm_groups: 8
     variational: false
   
   decoder:
-    latent_channels: 16  # From Phase 1.1 winner (L3)
-    base_channels: 32  # From Phase 1.1 winner (L3)
+    latent_channels: 8
+    base_channels: 32
     upsampling_steps: 5  # 16 -> 32 -> 64 -> 128 -> 256 -> 512
     activation: SiLU
     norm_groups: 8
@@ -52,7 +51,7 @@ training:
   batch_size: 16
   num_workers: 8
   shuffle: true
-  epochs: 10  # Quick test
+  epochs: 10
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01

@@ -1,11 +1,11 @@
-# Phase 1.2: Spatial Resolution Test - Experiment R2
-# downsampling_steps=4 → 32×32 latent (baseline)
-# NOTE: Update latent_channels and base_channels based on Phase 1.1 results
+# Phase 1.2: VAE Test - Experiment V2
+# VAE with light KL regularization (KL_weight=0.0001)
+# NOTE: Update all architecture params based on Phase 1.1 winner
 
 experiment:
-  name: "phase1_2_AE_R2_ds4"
-  phase: "phase1_2_spatial_resolution"
-  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_2_AE_R2_ds4"
+  name: "phase1_2_AE_V2_vae_light"
+  phase: "phase1_2_vae_test"
+  save_path: "/work3/s233249/ImgiNav/experiments/phase1/phase1_2_AE_V2_vae_light"
 
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
@@ -20,17 +20,17 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 16  # From Phase 1.1 winner (L3)
-    base_channels: 32  # From Phase 1.1 winner (L3)
-    downsampling_steps: 4  # 512 -> 256 -> 128 -> 64 -> 32
+    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
+    base_channels: 32  # TODO: Update based on Phase 1.1 winner
+    downsampling_steps: 4  # TODO: Update based on Phase 1.1 winner
     activation: SiLU
     norm_groups: 8
-    variational: false
+    variational: true
   
   decoder:
-    latent_channels: 16  # From Phase 1.1 winner (L3)
-    base_channels: 32  # From Phase 1.1 winner (L3)
-    upsampling_steps: 4  # 32 -> 64 -> 128 -> 256 -> 512
+    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
+    base_channels: 32  # TODO: Update based on Phase 1.1 winner
+    upsampling_steps: 4  # TODO: Update based on Phase 1.1 winner
     activation: SiLU
     norm_groups: 8
     heads:
@@ -69,6 +69,10 @@ training:
         key: rgb
         target: rgb
         weight: 1.0
+      - type: KLDLoss
+        key: mu
+        target: logvar
+        weight: 0.0001  # Light VAE regularization
       - type: CrossEntropyLoss
         key: segmentation
         target: segmentation
