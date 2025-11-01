@@ -20,16 +20,16 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
-    base_channels: 32  # TODO: Update based on Phase 1.1 winner
+    latent_channels: 16  # From Phase 1.1 winner (L3)
+    base_channels: 32  # From Phase 1.1 winner (L3)
     downsampling_steps: 3  # 512 -> 256 -> 128 -> 64
     activation: SiLU
     norm_groups: 8
     variational: false
   
   decoder:
-    latent_channels: 8  # TODO: Update based on Phase 1.1 winner
-    base_channels: 32  # TODO: Update based on Phase 1.1 winner
+    latent_channels: 16  # From Phase 1.1 winner (L3)
+    base_channels: 32  # From Phase 1.1 winner (L3)
     upsampling_steps: 3  # 64 -> 128 -> 256 -> 512
     activation: SiLU
     norm_groups: 8
