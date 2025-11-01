@@ -1,7 +1,7 @@
 #!/bin/bash
 #BSUB -J phase1_1_l40s[1-1]
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_1_l40s.%J.%I.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_1_l40s.%J.%I.err
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/o/phase1_1_l40s.%J.%I.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/e/phase1_1_l40s.%J.%I.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
