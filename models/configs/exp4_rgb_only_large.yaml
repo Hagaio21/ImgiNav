@@ -17,14 +17,14 @@ autoencoder:
   encoder:
     in_channels: 3
     latent_channels: 8
-    base_channels: 128  # Larger model
+    base_channels: 64  # Moderate size for autoencoder
     downsampling_steps: 4  # 512 -> 256 -> 128 -> 64 -> 32
     activation: SiLU
     norm_groups: 8
   
   decoder:
     latent_channels: 8
-    base_channels: 128  # Larger model
+    base_channels: 64  # Moderate size for autoencoder
     upsampling_steps: 4  # 32 -> 64 -> 128 -> 256 -> 512
     activation: SiLU
     norm_groups: 8
