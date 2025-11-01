@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J phase1_2_l40s[1-1]
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_l40s.%J.%I.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_l40s.%J.%I.err
+#BSUB -J phase1_2_l40s
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_l40s.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_l40s.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
@@ -21,13 +21,8 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"
 
-# Phase 1.2 experiments - Last 1 (R3) on L40s
-CONFIG_FILES=(
-  "${CONFIG_DIR}/phase1_2_AE_R3_ds5.yaml"
-)
-
-# Pick config for this array index
-CONFIG_FILE="${CONFIG_FILES[$((LSB_JOBINDEX-1))]}"
+# Phase 1.2 experiment - V2 (VAE) on L40s
+CONFIG_FILE="${CONFIG_DIR}/phase1_2_AE_V2_vae_light.yaml"
 
 # Validate config file exists
 if [ ! -f "${CONFIG_FILE}" ]; then
@@ -60,8 +55,7 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Phase 1.2: Spatial Resolution Test (L40s)"
-echo "Array job index: ${LSB_JOBINDEX}"
+echo "Phase 1.2: VAE Test - V2 VAE Light (L40s)"
 echo "Config: ${CONFIG_FILE}"
 echo "Working directory: ${BASE_DIR}"
 echo "Start: $(date)"

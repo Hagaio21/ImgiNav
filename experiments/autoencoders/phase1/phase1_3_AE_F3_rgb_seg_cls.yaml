@@ -1,6 +1,7 @@
 # Phase 1.3: Loss Tuning - Experiment F3
 # Full multi-head (MSE=1.0, Seg=0.05, Cls=0.01) - Current best
-# NOTE: Update all architecture params based on Phase 1.2 winner
+# Architecture: 32×32×16 = 16,384 dims (from Phase 1.1 winner)
+# Using deterministic encoder (will update after Phase 1.2 if VAE wins)
 
 experiment:
   name: "phase1_3_AE_F3_rgb_seg_cls"
@@ -20,17 +21,17 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 8  # TODO: Update based on Phase 1.2 winner
-    base_channels: 32  # TODO: Update based on Phase 1.2 winner
-    downsampling_steps: 4  # TODO: Update based on Phase 1.2 winner
+    latent_channels: 16  # 32×32×16 latent space
+    base_channels: 32
+    downsampling_steps: 4  # 512 -> 32 (32×32 spatial resolution)
     activation: SiLU
     norm_groups: 8
-    variational: false  # TODO: Update based on Phase 1.2 winner
+    variational: false  # Will update after Phase 1.2 if VAE wins
   
   decoder:
-    latent_channels: 8  # TODO: Update based on Phase 1.2 winner
-    base_channels: 32  # TODO: Update based on Phase 1.2 winner
-    upsampling_steps: 4  # TODO: Update based on Phase 1.2 winner
+    latent_channels: 16  # 32×32×16 latent space
+    base_channels: 32
+    upsampling_steps: 4  # 32 -> 512 (32×32 spatial resolution)
     activation: SiLU
     norm_groups: 8
     heads:

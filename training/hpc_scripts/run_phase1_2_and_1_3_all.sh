@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J phase1_2_v100
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_v100.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_v100.%J.err
+#BSUB -J phase1_2_3_all[1-8]
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_3_all.%J.%I.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase1_2_3_all.%J.%I.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
@@ -21,8 +21,25 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"
 
-# Phase 1.2 experiment - V1 (Deterministic) on V100
-CONFIG_FILE="${CONFIG_DIR}/phase1_2_AE_V1_deterministic.yaml"
+# All 8 experiments: Phase 1.2 (2) + Phase 1.3 (6)
+# Phase 1.2: V1 (deterministic), V2 (VAE)
+# Phase 1.3: F1 (det), F1_vae, F2 (det), F2_vae, F3 (det), F3_vae
+CONFIG_FILES=(
+  # Phase 1.2: VAE Test
+  "${CONFIG_DIR}/phase1_2_AE_V1_deterministic.yaml"
+  "${CONFIG_DIR}/phase1_2_AE_V2_vae_light.yaml"
+  # Phase 1.3: Loss Tuning (deterministic versions)
+  "${CONFIG_DIR}/phase1_3_AE_F1_rgb_only.yaml"
+  "${CONFIG_DIR}/phase1_3_AE_F2_rgb_seg.yaml"
+  "${CONFIG_DIR}/phase1_3_AE_F3_rgb_seg_cls.yaml"
+  # Phase 1.3: Loss Tuning (VAE versions)
+  "${CONFIG_DIR}/phase1_3_AE_F1_rgb_only_vae.yaml"
+  "${CONFIG_DIR}/phase1_3_AE_F2_rgb_seg_vae.yaml"
+  "${CONFIG_DIR}/phase1_3_AE_F3_rgb_seg_cls_vae.yaml"
+)
+
+# Pick config for this array index
+CONFIG_FILE="${CONFIG_FILES[$((LSB_JOBINDEX-1))]}"
 
 # Validate config file exists
 if [ ! -f "${CONFIG_FILE}" ]; then
@@ -55,7 +72,8 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Phase 1.2: VAE Test - V1 Deterministic (V100)"
+echo "Phase 1.2 + 1.3: Combined Run (All 8 experiments)"
+echo "Array job index: ${LSB_JOBINDEX}/8"
 echo "Config: ${CONFIG_FILE}"
 echo "Working directory: ${BASE_DIR}"
 echo "Start: $(date)"
