@@ -1,0 +1,312 @@
+================================================================================
+Phase 1.1: Channel × Spatial Resolution Sweep - Results Summary
+================================================================================
+
+ANALYSIS FOCUS: Latent-size-centric (optimized for diffusion efficiency)
+--------------------------------------------------------------------------------
+
+Ranking by Efficiency (MSE per Dimension):
+--------------------------------------------------------------------------------
+1. S12_ch4_ds2
+   Latent: 128×128×4 = 65,536
+   Validation MSE: 0.000804
+   MSE per Dimension: 1.23e-08
+
+2. S9_ch16_ds3
+   Latent: 64×64×16 = 65,536
+   Validation MSE: 0.000838
+   MSE per Dimension: 1.28e-08
+
+3. S6_ch32_ds4
+   Latent: 32×32×32 = 32,768
+   Validation MSE: 0.000950
+   MSE per Dimension: 2.90e-08
+
+4. S2_ch8_ds3
+   Latent: 64×64×8 = 32,768
+   Validation MSE: 0.000978
+   MSE per Dimension: 2.98e-08
+
+5. S1_ch16_ds4
+   Latent: 32×32×16 = 16,384
+   Validation MSE: 0.001101
+   MSE per Dimension: 6.72e-08
+
+6. S3_ch4_ds3
+   Latent: 64×64×4 = 16,384
+   Validation MSE: 0.001175
+   MSE per Dimension: 7.17e-08
+
+7. S4_ch8_ds4
+   Latent: 32×32×8 = 8,192
+   Validation MSE: 0.001591
+   MSE per Dimension: 1.94e-07
+
+8. S10_ch2_ds3
+   Latent: 64×64×2 = 8,192
+   Validation MSE: 0.001669
+   MSE per Dimension: 2.04e-07
+
+9. S5_ch16_ds5
+   Latent: 16×16×16 = 4,096
+   Validation MSE: 0.002469
+   MSE per Dimension: 6.03e-07
+
+10. S7_ch4_ds4
+   Latent: 32×32×4 = 4,096
+   Validation MSE: 0.002618
+   MSE per Dimension: 6.39e-07
+
+11. S8_ch8_ds5
+   Latent: 16×16×8 = 2,048
+   Validation MSE: 0.004035
+   MSE per Dimension: 1.97e-06
+
+12. S11_ch8_ds6
+   Latent: 8×8×8 = 512
+   Validation MSE: 0.009273
+   MSE per Dimension: 1.81e-05
+
+
+================================================================================
+Ranking by Validation MSE (RGB Reconstruction Quality):
+--------------------------------------------------------------------------------
+1. S12_ch4_ds2
+   Latent: 128×128×4 = 65,536
+   Validation MSE: 0.000804
+   MSE per Dimension: 1.23e-08
+
+2. S9_ch16_ds3
+   Latent: 64×64×16 = 65,536
+   Validation MSE: 0.000838
+   MSE per Dimension: 1.28e-08
+
+3. S6_ch32_ds4
+   Latent: 32×32×32 = 32,768
+   Validation MSE: 0.000950
+   MSE per Dimension: 2.90e-08
+
+4. S2_ch8_ds3
+   Latent: 64×64×8 = 32,768
+   Validation MSE: 0.000978
+   MSE per Dimension: 2.98e-08
+
+5. S1_ch16_ds4
+   Latent: 32×32×16 = 16,384
+   Validation MSE: 0.001101
+   MSE per Dimension: 6.72e-08
+
+6. S3_ch4_ds3
+   Latent: 64×64×4 = 16,384
+   Validation MSE: 0.001175
+   MSE per Dimension: 7.17e-08
+
+7. S4_ch8_ds4
+   Latent: 32×32×8 = 8,192
+   Validation MSE: 0.001591
+   MSE per Dimension: 1.94e-07
+
+8. S10_ch2_ds3
+   Latent: 64×64×2 = 8,192
+   Validation MSE: 0.001669
+   MSE per Dimension: 2.04e-07
+
+9. S5_ch16_ds5
+   Latent: 16×16×16 = 4,096
+   Validation MSE: 0.002469
+   MSE per Dimension: 6.03e-07
+
+10. S7_ch4_ds4
+   Latent: 32×32×4 = 4,096
+   Validation MSE: 0.002618
+   MSE per Dimension: 6.39e-07
+
+11. S8_ch8_ds5
+   Latent: 16×16×8 = 2,048
+   Validation MSE: 0.004035
+   MSE per Dimension: 1.97e-06
+
+12. S11_ch8_ds6
+   Latent: 8×8×8 = 512
+   Validation MSE: 0.009273
+   MSE per Dimension: 1.81e-05
+
+================================================================================
+Latent Dimension Statistics:
+================================================================================
+Minimum latent dimensions: 512
+  S11_ch8_ds6: 8×8×8, MSE=0.009273
+
+Maximum latent dimensions: 65,536
+  S12_ch4_ds2: 128×128×4, MSE=0.000804
+  S9_ch16_ds3: 64×64×16, MSE=0.000838
+
+Average latent dimensions: 21,376
+Median latent dimensions: 12,288
+Std deviation: 23,283
+
+================================================================================
+Efficiency vs Quality Analysis:
+================================================================================
+Correlation (Latent Dimensions vs Validation MSE): -0.5196
+
+Rank 1 by Efficiency (MSE per Dimension):
+  Experiment: S12_ch4_ds2
+  Latent: 128×128×4 = 65,536 dims
+  Validation MSE: 0.000804
+  MSE per Dimension: 1.23e-08
+
+Rank 1 by Quality (Validation MSE):
+  Experiment: S12_ch4_ds2
+  Latent: 128×128×4 = 65,536 dims
+  Validation MSE: 0.000804
+  MSE per Dimension: 1.23e-08
+
+================================================================================
+Detailed Metrics by Experiment:
+================================================================================
+
+Experiment: S1_ch16_ds4
+  Latent Shape: 32×32×16 = 16,384
+  Total Epochs: 10
+  Final Training Loss: 0.074434
+  Final Validation Loss: 0.074310
+  Final Training MSE: 0.001202
+  Final Validation MSE: 0.001101
+  MSE per Dimension: 6.72e-08
+  Final Training Seg Loss: 0.073132
+  Final Validation Seg Loss: 0.073123
+  Validation Loss Improvement: 0.010420 (0.084730 → 0.074310)
+
+Experiment: S7_ch4_ds4
+  Latent Shape: 32×32×4 = 4,096
+  Total Epochs: 10
+  Final Training Loss: 0.075881
+  Final Validation Loss: 0.076388
+  Final Training MSE: 0.002505
+  Final Validation MSE: 0.002618
+  MSE per Dimension: 6.39e-07
+  Final Training Seg Loss: 0.073288
+  Final Validation Seg Loss: 0.073313
+  Validation Loss Improvement: 0.011150 (0.087538 → 0.076388)
+
+Experiment: S4_ch8_ds4
+  Latent Shape: 32×32×8 = 8,192
+  Total Epochs: 10
+  Final Training Loss: 0.075161
+  Final Validation Loss: 0.074824
+  Final Training MSE: 0.001827
+  Final Validation MSE: 0.001591
+  MSE per Dimension: 1.94e-07
+  Final Training Seg Loss: 0.073205
+  Final Validation Seg Loss: 0.073175
+  Validation Loss Improvement: 0.010064 (0.084888 → 0.074824)
+
+Experiment: S3_ch4_ds3
+  Latent Shape: 64×64×4 = 16,384
+  Total Epochs: 10
+  Final Training Loss: 0.074588
+  Final Validation Loss: 0.074412
+  Final Training MSE: 0.001304
+  Final Validation MSE: 0.001175
+  MSE per Dimension: 7.17e-08
+  Final Training Seg Loss: 0.073151
+  Final Validation Seg Loss: 0.073140
+  Validation Loss Improvement: 0.010570 (0.084982 → 0.074412)
+
+Experiment: S11_ch8_ds6
+  Latent Shape: 8×8×8 = 512
+  Total Epochs: 10
+  Final Training Loss: 0.083843
+  Final Validation Loss: 0.083846
+  Final Training MSE: 0.009190
+  Final Validation MSE: 0.009273
+  MSE per Dimension: 1.81e-05
+  Final Training Seg Loss: 0.074515
+  Final Validation Seg Loss: 0.074489
+  Validation Loss Improvement: 0.018693 (0.102539 → 0.083846)
+
+Experiment: S10_ch2_ds3
+  Latent Shape: 64×64×2 = 8,192
+  Total Epochs: 10
+  Final Training Loss: 0.075199
+  Final Validation Loss: 0.075002
+  Final Training MSE: 0.001833
+  Final Validation MSE: 0.001669
+  MSE per Dimension: 2.04e-07
+  Final Training Seg Loss: 0.073288
+  Final Validation Seg Loss: 0.073268
+  Validation Loss Improvement: 0.010521 (0.085523 → 0.075002)
+
+Experiment: S6_ch32_ds4
+  Latent Shape: 32×32×32 = 32,768
+  Total Epochs: 10
+  Final Training Loss: 0.074338
+  Final Validation Loss: 0.074151
+  Final Training MSE: 0.001120
+  Final Validation MSE: 0.000950
+  MSE per Dimension: 2.90e-08
+  Final Training Seg Loss: 0.073129
+  Final Validation Seg Loss: 0.073116
+  Validation Loss Improvement: 0.011397 (0.085548 → 0.074151)
+
+Experiment: S5_ch16_ds5
+  Latent Shape: 16×16×16 = 4,096
+  Total Epochs: 10
+  Final Training Loss: 0.076540
+  Final Validation Loss: 0.075804
+  Final Training MSE: 0.003092
+  Final Validation MSE: 0.002469
+  MSE per Dimension: 6.03e-07
+  Final Training Seg Loss: 0.073349
+  Final Validation Seg Loss: 0.073273
+  Validation Loss Improvement: 0.012925 (0.088729 → 0.075804)
+
+Experiment: S2_ch8_ds3
+  Latent Shape: 64×64×8 = 32,768
+  Total Epochs: 10
+  Final Training Loss: 0.074212
+  Final Validation Loss: 0.074198
+  Final Training MSE: 0.000977
+  Final Validation MSE: 0.000978
+  MSE per Dimension: 2.98e-08
+  Final Training Seg Loss: 0.073116
+  Final Validation Seg Loss: 0.073110
+  Validation Loss Improvement: 0.010786 (0.084984 → 0.074198)
+
+Experiment: S12_ch4_ds2
+  Latent Shape: 128×128×4 = 65,536
+  Total Epochs: 10
+  Final Training Loss: 0.074162
+  Final Validation Loss: 0.074074
+  Final Training MSE: 0.000869
+  Final Validation MSE: 0.000804
+  MSE per Dimension: 1.23e-08
+  Final Training Seg Loss: 0.073111
+  Final Validation Seg Loss: 0.073107
+  Validation Loss Improvement: 0.008949 (0.083023 → 0.074074)
+
+Experiment: S9_ch16_ds3
+  Latent Shape: 64×64×16 = 65,536
+  Total Epochs: 10
+  Final Training Loss: 0.074018
+  Final Validation Loss: 0.074123
+  Final Training MSE: 0.000809
+  Final Validation MSE: 0.000838
+  MSE per Dimension: 1.28e-08
+  Final Training Seg Loss: 0.073103
+  Final Validation Seg Loss: 0.073102
+  Validation Loss Improvement: 0.009868 (0.083991 → 0.074123)
+
+Experiment: S8_ch8_ds5
+  Latent Shape: 16×16×8 = 2,048
+  Total Epochs: 10
+  Final Training Loss: 0.077975
+  Final Validation Loss: 0.077671
+  Final Training MSE: 0.004324
+  Final Validation MSE: 0.004035
+  MSE per Dimension: 1.97e-06
+  Final Training Seg Loss: 0.073505
+  Final Validation Seg Loss: 0.073463
+  Validation Loss Improvement: 0.013642 (0.091314 → 0.077671)
+

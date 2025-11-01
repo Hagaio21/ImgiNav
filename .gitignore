@@ -22,7 +22,6 @@ env/
 # Ignore large data and output files from version control
 test_dataset/
 old/
-outputs/
 logs/
 /work3/s233249/ImgiNav/ImgiNav/notebooks/ae_test_outputs/checkpoints
 */checkpoints/
