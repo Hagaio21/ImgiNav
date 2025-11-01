@@ -154,7 +154,7 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
     return avg_loss, avg_logs
 
 
-def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=32, target_size=256):
+def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=8, target_size=256):
     """Save sample images from validation set."""
     model.eval()
     samples_dir = output_dir / "samples"
@@ -275,6 +275,15 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}")
     
+    # Get phase directory for shared metrics/samples (if phase is specified)
+    phase = config.get("experiment", {}).get("phase", None)
+    phase_dir = None
+    if phase:
+        # Phase folder: outputs/phase_name (shared across all experiments in phase)
+        phase_dir = Path("outputs") / phase
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Phase directory: {phase_dir} (for shared metrics/samples)")
+    
     # Build components
     print("Building model...")
     model = build_model(config)
@@ -380,8 +389,13 @@ def main():
     epochs_without_improvement = 0
     training_history = []
     
-    # CSV file path for metrics (overwritten each epoch)
+    # CSV file path for metrics (in experiment folder)
     metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
+    
+    # Also save metrics to phase folder if phase is specified (for analysis)
+    phase_metrics_path = None
+    if phase_dir:
+        phase_metrics_path = phase_dir / f"{exp_name}_metrics.csv"
     
     for epoch in range(num_epochs):
         # Training
@@ -444,13 +458,22 @@ def main():
         # Save samples at specified interval (use validation set if available, else training set)
         if (epoch + 1) % sample_interval == 0:
             loader_to_use = val_loader if val_loader else train_loader
+            # Save samples to experiment folder
             save_samples(model, loader_to_use, device, output_dir, epoch + 1, sample_batch_size=32)
+            
+            # Also save smaller samples to phase folder if phase is specified (for analysis)
+            if phase_dir:
+                save_samples(model, loader_to_use, device, phase_dir, epoch + 1, sample_batch_size=8)
         
         training_history.append(epoch_log)
         
         # Save metrics CSV (overwrite with all epochs so far)
         df = pd.DataFrame(training_history)
         df.to_csv(metrics_csv_path, index=False)
+        
+        # Also save to phase folder if phase is specified (for analysis)
+        if phase_metrics_path:
+            df.to_csv(phase_metrics_path, index=False)
         
         # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == num_epochs

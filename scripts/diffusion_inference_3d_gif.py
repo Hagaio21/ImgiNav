@@ -148,8 +148,8 @@ def main():
             # First, compute final point cloud to get fixed axis limits
             print(f"[{scale_name.upper()}] Computing final point cloud for fixed axis limits...")
             final_latent = latents_history[-1]
-            final_rgb, _ = diffusion.autoencoder.decode(final_latent, from_latent=True)
-            final_rgb = final_rgb[0].cpu().numpy()
+            decoded_out = diffusion.autoencoder.decode({"latent": final_latent})
+            final_rgb = decoded_out["rgb"][0].cpu().numpy()
             final_rgb = (final_rgb * 255).astype(np.uint8)
             final_rgb = np.transpose(final_rgb, (1, 2, 0))
             
@@ -187,8 +187,8 @@ def main():
             for step_idx, latent in enumerate(latents_history):
                 print(f"[{scale_name.upper()}] Step {step_idx}/{len(latents_history)-1} Decoding and lifting to 3D...")
                 
-                rgb_out, _ = diffusion.autoencoder.decode(latent, from_latent=True)
-                rgb_out = rgb_out[0].cpu().numpy()
+                decoded_out = diffusion.autoencoder.decode({"latent": latent})
+                rgb_out = decoded_out["rgb"][0].cpu().numpy()
                 
                 rgb_out = (rgb_out * 255).astype(np.uint8)
                 rgb_out = np.transpose(rgb_out, (1, 2, 0))

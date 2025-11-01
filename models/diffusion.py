@@ -60,18 +60,44 @@ class DiffusionModel(BaseModel):
         # Encode image to latents if encoder is available, otherwise assume input is already latents
         if self._has_encoder:
             # x0 is images, encode them
-            latents = self.encoder(x0_or_latents)
+            encoder_out = self.encoder(x0_or_latents)  # Returns dict
+            # Extract latent z from dict
+            if "latent" in encoder_out:
+                latents = encoder_out["latent"]
+            elif "mu" in encoder_out and "logvar" in encoder_out:
+                # VAE mode: use mu as deterministic representation for diffusion
+                # (diffusion will add its own noise)
+                latents = encoder_out["mu"]
+            else:
+                raise ValueError(f"Encoder output must contain 'latent' or 'mu'/'logvar'. Got: {list(encoder_out.keys())}")
+            
             if noise is None:
                 noise = torch.randn_like(latents)
             elif noise.shape != latents.shape:
                 # If noise is in image space, encode it to latent space
                 if noise.shape == x0_or_latents.shape:
-                    noise = self.encoder(noise)
+                    noise_out = self.encoder(noise)
+                    # Extract latent from encoder output
+                    if "latent" in noise_out:
+                        noise = noise_out["latent"]
+                    elif "mu" in noise_out:
+                        noise = noise_out["mu"]
+                    else:
+                        noise = torch.randn_like(latents)
                 else:
                     noise = torch.randn_like(latents)
         else:
             # Input is already latents (decoder-only mode)
-            latents = x0_or_latents
+            # Can be dict or tensor - handle both
+            if isinstance(x0_or_latents, dict):
+                if "latent" in x0_or_latents:
+                    latents = x0_or_latents["latent"]
+                elif "mu" in x0_or_latents:
+                    latents = x0_or_latents["mu"]
+                else:
+                    raise ValueError(f"Latent dict must contain 'latent' or 'mu'. Got: {list(x0_or_latents.keys())}")
+            else:
+                latents = x0_or_latents  # Direct tensor
             if noise is None:
                 noise = torch.randn_like(latents)
 
@@ -81,8 +107,8 @@ class DiffusionModel(BaseModel):
         # predict noise
         pred_noise = self.unet(noisy_latents, t, cond)
 
-        # decode reconstruction
-        decoded = self.decoder(noisy_latents)
+        # decode reconstruction - decoder expects dict
+        decoded = self.decoder({"latent": noisy_latents})
 
         return {
             "latent": latents,

@@ -84,11 +84,21 @@ class CrossEntropyLoss(LossComponent):
             tgt = create_seg_mask(tgt, ignore_index=self.ignore_index).to(tgt.device)
         elif tgt.ndim == 4 and tgt.shape[1] == 1:
             tgt = tgt.squeeze(1)
-        # Convert room_id label to class index for classification
-        # Labels are scalars (0D) or 1D tensors (batched) - always convert to class index
+        # Convert sample_type string ("room"/"scene") to class index for binary classification
+        # Handle string labels or numeric labels
+        elif isinstance(tgt, str) or (isinstance(tgt, list) and len(tgt) > 0 and isinstance(tgt[0], str)):
+            from .loss_utils import sample_type_to_class_index
+            tgt = sample_type_to_class_index(tgt, ignore_index=self.ignore_index)
+            if isinstance(tgt, torch.Tensor):
+                tgt = tgt.to(pred.device)
+        # Convert numeric labels (legacy room_id support) - defaults to room (0) if not found
         elif tgt.ndim == 0 or tgt.ndim == 1:
-            from .loss_utils import room_id_to_class_index
-            tgt = room_id_to_class_index(tgt, ignore_index=self.ignore_index).to(pred.device)
+            # For numeric values, assume 0 or "0000" means scene (1), others are room (0)
+            if isinstance(tgt, torch.Tensor):
+                tgt = (tgt == 0).long().to(pred.device)  # 0 -> 1 (scene), others -> 0 (room)
+            else:
+                tgt = torch.tensor(1 if (isinstance(tgt, (int, float)) and (tgt == 0 or str(tgt) == "0000")) else 0, 
+                                 dtype=torch.long, device=pred.device)
         
         if tgt.dtype != torch.long:
             tgt = tgt.long()

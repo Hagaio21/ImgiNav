@@ -11,7 +11,7 @@ dataset:
   outputs:
     rgb: "layout_path"  # Column name for layout RGB images
     segmentation: "layout_path"  # Column name for layout/segmentation images (same as rgb)
-    label: "room_id"  # Column name for room/scene classification (room_id "0000" = scene, others = room)
+    label: "type"  # Column name for room/scene classification ("room" or "scene")
   filters:
     is_empty: [false]  # Filter out empty layouts
   return_path: false

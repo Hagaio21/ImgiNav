@@ -17,14 +17,40 @@ class Autoencoder(BaseModel):
         self.decoder = Decoder.from_config(decoder_cfg)
 
     def forward(self, x):
-        z = self.encoder(x)
-        outputs = self.decoder(z)
-        return {"latent": z, **outputs}
+        """
+        Forward pass. All components return dicts which are merged.
+        
+        Returns:
+            Dictionary containing all keys from encoder and decoder outputs.
+            Includes: "latent" (or "mu"/"logvar" for VAE), plus all decoder head outputs.
+        """
+        encoder_out = self.encoder(x)  # Dict: {"latent": z} or {"mu": mu, "logvar": logvar}
+        decoder_out = self.decoder(encoder_out)  # Dict: {head_name: output}
+        return {**encoder_out, **decoder_out}  # Merge all keys
     
-    def decode(self, z):
-        return self.decoder(z)
+    def decode(self, z_or_dict):
+        """
+        Decode from latent(s). Accepts dict or tensor for convenience.
+        
+        Args:
+            z_or_dict: Either dict with "latent" key, or tensor (converted to dict)
+        
+        Returns:
+            Dictionary with decoder head outputs
+        """
+        if isinstance(z_or_dict, dict):
+            return self.decoder(z_or_dict)
+        else:
+            # Convert tensor to dict for convenience
+            return self.decoder({"latent": z_or_dict})
     
     def encode(self, x):
+        """
+        Encode input to latent representation.
+        
+        Returns:
+            Dictionary: {"latent": z} or {"mu": mu, "logvar": logvar} for VAE
+        """
         return self.encoder(x)
 
     def to_config(self):

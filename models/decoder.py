@@ -44,7 +44,34 @@ class Decoder(BaseComponent):
             cfg["in_channels"] = cfg.get("in_channels", out_ch)
             self.heads[head_name] = cls.from_config(cfg)
 
-    def forward(self, z):
+    def forward(self, z_or_dict):
+        """
+        Forward pass. Accepts dict from encoder.
+        
+        Args:
+            z_or_dict: Dictionary containing:
+                - "latent": tensor z (regular mode)
+                - "mu" and "logvar": tensors (VAE mode - will reparameterize)
+        
+        Returns:
+            Dictionary with outputs from all heads
+        """
+        if isinstance(z_or_dict, dict):
+            if "latent" in z_or_dict:
+                # Regular mode: use provided latent
+                z = z_or_dict["latent"]
+            elif "mu" in z_or_dict and "logvar" in z_or_dict:
+                # VAE mode: reparameterization trick
+                mu = z_or_dict["mu"]
+                logvar = z_or_dict["logvar"]
+                std = torch.exp(0.5 * logvar)
+                epsilon = torch.randn_like(std)
+                z = mu + std * epsilon
+            else:
+                raise ValueError(f"Dict must contain 'latent' or 'mu'/'logvar'. Got keys: {list(z_or_dict.keys())}")
+        else:
+            raise TypeError(f"Decoder forward expects dict, got {type(z_or_dict)}")
+        
         feats = self.shared_decoder(z)
         return {name: head(feats) for name, head in self.heads.items()}
 

@@ -11,7 +11,7 @@ from pathlib import Path
 # Load RGB to class mapping from YAML
 _LOSS_DIR = Path(__file__).parent
 _RGB_CONFIG_PATH = _LOSS_DIR / "rgb_to_class.yaml"
-_ROOM_CONFIG_PATH = _LOSS_DIR / "room_scene_to_class.yaml"  # Changed to binary room/scene mapping
+# Note: Room/scene classification uses sample_type column directly ("room"=0, "scene"=1), no YAML needed
 
 def _load_rgb_to_class():
     """Load RGB to class mapping from YAML file."""
@@ -26,26 +26,8 @@ def _load_rgb_to_class():
     
     return rgb_to_class
 
-def _load_room_id_to_class():
-    """Load room_id to class mapping from YAML file."""
-    with open(_ROOM_CONFIG_PATH, "r") as f:
-        config = yaml.safe_load(f)
-    
-    room_id_to_class = {}
-    for entry in config.values():
-        room_id = entry["room_id"]
-        class_idx = entry["class_index"]
-        # Handle both string "0000" and int
-        if isinstance(room_id, str):
-            room_id_to_class[room_id] = class_idx
-        room_id_to_class[int(room_id)] = class_idx  # Also map as int
-    
-    return room_id_to_class
-
-
 # Load mappings at module import
 RGB_TO_CLASS = _load_rgb_to_class()
-ROOM_ID_TO_CLASS = _load_room_id_to_class()
 
 # Number of classes = number of unique class indices
 NUM_CLASSES = len(set(RGB_TO_CLASS.values()))
@@ -164,49 +146,48 @@ def _segment_single(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor
     return seg.reshape(H, W)
 
 
-def room_id_to_class_index(room_id: torch.Tensor, ignore_index: int = 0) -> torch.Tensor:
+def sample_type_to_class_index(sample_type, ignore_index: int = 0) -> torch.Tensor:
     """
-    Convert room_id to binary class index: room=0, scene=1
-    Scene layouts have room_id "0000" or 0 → class 1 (scene)
-    All other room_ids → class 0 (room)
+    Convert sample_type string ("room" or "scene") to binary class index: room=0, scene=1
     
     Args:
-        room_id: Room ID tensor, shape () or (N,). Can be int or string "0000"
-        ignore_index: Value to use for unknown room IDs (defaults to 0 for room)
+        sample_type: String tensor, string, or list of strings. Values should be "room" or "scene"
+        ignore_index: Value to use for unknown sample types (defaults to 0 for room)
     
     Returns:
-        Class index tensor, same shape as input. 0=room, 1=scene
+        Class index tensor. 0=room, 1=scene
     """
-    if isinstance(room_id, torch.Tensor):
-        room_id_np = room_id.cpu().numpy()
-        device = room_id.device
-    else:
-        room_id_np = np.array(room_id)
-        device = torch.device("cpu")
+    # Handle tensor input
+    if isinstance(sample_type, torch.Tensor):
+        device = sample_type.device
+        # Convert tensor values to strings
+        if sample_type.ndim == 0:
+            val = str(sample_type.item()).lower().strip()
+            class_idx = 1 if val == "scene" else 0
+            return torch.tensor(class_idx, dtype=torch.long, device=device)
+        else:
+            # Batch case
+            class_indices = []
+            for val in sample_type.cpu().numpy():
+                val_str = str(val).lower().strip()
+                class_idx = 1 if val_str == "scene" else 0
+                class_indices.append(class_idx)
+            return torch.tensor(class_indices, dtype=torch.long, device=device)
     
-    # Helper to look up class index - handle both string "0000" and int 0
-    def lookup_room_id(rid):
-        # Try as string first (for "0000")
-        rid_str = str(rid).zfill(4)  # Pad to 4 digits
-        if rid_str in ROOM_ID_TO_CLASS:
-            return ROOM_ID_TO_CLASS[rid_str]
-        # Try as int
-        rid_int = int(rid)
-        if rid_int in ROOM_ID_TO_CLASS:
-            return ROOM_ID_TO_CLASS[rid_int]
-        # Default: any other room_id is a room (class 0)
-        return 0
+    # Handle string input
+    if isinstance(sample_type, str):
+        val = sample_type.lower().strip()
+        class_idx = 1 if val == "scene" else 0
+        return torch.tensor(class_idx, dtype=torch.long)
     
-    # Convert to Python value(s) for lookup
-    if room_id_np.ndim == 0:
-        class_idx = lookup_room_id(room_id_np.item())
-        return torch.tensor(class_idx, dtype=torch.long, device=device)
-    else:
-        # Batch case
-        class_indices = torch.tensor(
-            [lookup_room_id(rid) for rid in room_id_np.flatten()],
-            dtype=torch.long,
-            device=device
-        )
-        return class_indices.reshape(room_id.shape)
+    # Handle list/array input
+    if isinstance(sample_type, (list, np.ndarray)):
+        class_indices = []
+        for val in sample_type:
+            val_str = str(val).lower().strip()
+            class_idx = 1 if val_str == "scene" else 0
+            class_indices.append(class_idx)
+        return torch.tensor(class_indices, dtype=torch.long)
+    
+    raise ValueError(f"Unsupported sample_type type: {type(sample_type)}")
 

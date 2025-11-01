@@ -110,15 +110,17 @@ class ManifestDataset(BaseComponent, Dataset):
         if pd.isna(val):
             raise ValueError(f"NaN value in manifest")
         
-        # Handle string "scene" for room_id column (maps to room_id 0 -> class index 0)
-        if isinstance(val, str) and val.lower() == "scene":
-            return torch.tensor(0, dtype=torch.long)
-        
         # Handle numeric values (like room_id), return as long for consistency
         if isinstance(val, (int, float)):
             return torch.tensor(int(val), dtype=torch.long)
         
         if isinstance(val, str):
+            # Handle string labels like "room" or "scene" - return as string for classification head
+            val_lower = val.lower().strip()
+            if val_lower in ["room", "scene"]:
+                # Return as string - will be converted by loss function
+                return val
+            
             # Handle empty strings
             if not val or val.strip() == "":
                 raise ValueError(f"Empty path in manifest")
