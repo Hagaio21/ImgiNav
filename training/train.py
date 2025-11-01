@@ -22,75 +22,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.autoencoder import Autoencoder
 from models.datasets.datasets import ManifestDataset
-from models.losses.base_loss import LOSS_REGISTRY
-from training.utils import set_deterministic
-
-
-def load_config(config_path: Path):
-    """Load experiment config from YAML file."""
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    return config
-
-
-def build_model(config):
-    """Build autoencoder from config."""
-    ae_cfg = config["autoencoder"]
-    model = Autoencoder.from_config(ae_cfg)
-    return model
-
-
-def build_dataset(config):
-    """Build dataset from config."""
-    ds_cfg = config["dataset"]
-    dataset = ManifestDataset(**ds_cfg)
-    return dataset
-
-
-def build_loss(config):
-    """Build loss function from config."""
-    loss_cfg = config["training"]["loss"]
-    loss_fn = LOSS_REGISTRY[loss_cfg["type"]].from_config(loss_cfg)
-    return loss_fn
-
-
-def build_optimizer(model, config):
-    """Build optimizer from config using model's parameter_groups for trainable params."""
-    lr = config["training"]["learning_rate"]
-    weight_decay = config["training"].get("weight_decay", 0.0)
-    optimizer_type = config["training"].get("optimizer", "AdamW").lower()
-    
-    # Get parameter groups from model (respects frozen params and per-module LRs)
-    param_groups = model.parameter_groups()
-    
-    # If no groups returned (all frozen or no per-module LRs), use trainable params with base LR
-    if not param_groups:
-        trainable_params = list(model.trainable_parameters())
-        if not trainable_params:
-            raise ValueError("No trainable parameters found in model!")
-        param_groups = [{"params": trainable_params, "lr": lr}]
-    else:
-        # Set default LR for groups that don't have one specified
-        for group in param_groups:
-            if "lr" not in group:
-                group["lr"] = lr
-    
-    # Add weight_decay to all groups
-    for group in param_groups:
-        group["weight_decay"] = weight_decay
-    
-    if optimizer_type == "adamw":
-        optimizer = torch.optim.AdamW(param_groups)
-    elif optimizer_type == "adam":
-        optimizer = torch.optim.Adam(param_groups)
-    elif optimizer_type == "sgd":
-        for group in param_groups:
-            group["momentum"] = 0.9
-        optimizer = torch.optim.SGD(param_groups)
-    else:
-        raise ValueError(f"Unknown optimizer: {optimizer_type}")
-    
-    return optimizer
+from training.utils import (
+    set_deterministic,
+    load_config,
+    build_model,
+    build_dataset,
+    build_loss,
+    build_optimizer,
+    get_device,
+)
 
 
 def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=False):
@@ -242,11 +182,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     # Save RGB input and reconstruction as two side-by-side grids
     if "rgb" in batch and "rgb" in outputs:
-        input_rgb = batch["rgb"]  # Already in [0, 1] range
+        input_rgb = batch["rgb"]  # Already in [-1, 1] range (from dataset normalization)
         pred_rgb = outputs["rgb"]  # Output from tanh is in [-1, 1]
         
-        # Denormalize prediction from tanh [-1, 1] to [0, 1]
-        # tanh outputs [-1, 1], convert to [0, 1] to match input
+        # Denormalize both from [-1, 1] to [0, 1] for visualization
+        # Both input and prediction are in [-1, 1], convert to [0, 1] for display
+        input_rgb = (input_rgb + 1) / 2.0
         pred_rgb = (pred_rgb + 1) / 2.0
         
         # Don't clamp - preserve the actual output range
@@ -316,9 +257,7 @@ def main():
         print(f"Set deterministic mode with seed: {training_seed}")
     
     # Get device from config or default
-    device = config.get("training", {}).get("device")
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = get_device(config)
     print(f"Device: {device}")
     
     # Get output directory from config

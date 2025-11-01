@@ -140,13 +140,15 @@ class ManifestDataset(BaseComponent, Dataset):
                     img = self.transform(img)
                 else:
                     # Default: convert PIL Image to tensor
-                    # Convert to numpy array, then to tensor, and normalize to [0, 1]
+                    # Convert to numpy array, then to tensor, and normalize to [-1, 1]
+                    # This matches tanh output activation (range [-1, 1])
+                    # Formula: (pixel / 255.0) * 2.0 - 1.0 = pixel / 127.5 - 1.0
                     # Use contiguous array for faster conversion
                     img_array = np.ascontiguousarray(img, dtype=np.float32)
                     img = torch.from_numpy(img_array)
-                    # Convert from HWC to CHW format
+                    # Convert from HWC to CHW format and normalize to [-1, 1]
                     if img.ndim == 3:
-                        img = img.permute(2, 0, 1) / 255.0
+                        img = img.permute(2, 0, 1) / 127.5 - 1.0  # [0, 255] -> [-1, 1]
                     else:
                         raise ValueError(f"Unexpected image shape after conversion: {img.shape}")
                 return img

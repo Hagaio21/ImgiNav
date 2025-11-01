@@ -79,11 +79,21 @@ def create_seg_mask(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor
     """
     Convert RGB image tensor to segmentation mask.
     Optimized GPU version that keeps all operations on device.
+    
+    Accepts images in either:
+    - [-1, 1] range (normalized for tanh)
+    - [0, 1] range (normalized for sigmoid)
+    - [0, 255] range (uint8)
     """
     device = image.device
     
     # Normalize to [0, 255] uint8 if needed
     if image.dtype == torch.float32 or image.dtype == torch.float64:
+        # Check if image is in [-1, 1] range (tanh normalization)
+        # If min < -0.5, assume it's [-1, 1], convert to [0, 1] first
+        if image.min() < -0.5:
+            image = (image + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+        # Convert [0, 1] to [0, 255]
         image = (image * 255).clamp(0, 255).to(torch.uint8)
     else:
         image = image.to(torch.uint8)
@@ -112,7 +122,12 @@ def _segment_single(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor
     _, H, W = image.shape
     
     # Ensure image is uint8 on the same device
+    # Handle both [-1, 1] and [0, 1] float ranges
     if image.dtype != torch.uint8:
+        # Check if image is in [-1, 1] range (tanh normalization)
+        if image.min() < -0.5:
+            image = (image + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+        # Convert [0, 1] to [0, 255] uint8
         image = (image * 255).clamp(0, 255).to(torch.uint8)
     
     device = image.device
