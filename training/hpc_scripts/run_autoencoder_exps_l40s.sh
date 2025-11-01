@@ -16,6 +16,10 @@ set -euo pipefail
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train.py"
 CONFIG_DIR="${BASE_DIR}/experiments/autoencoders"
+LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
+
+# Ensure log directory exists
+mkdir -p "${LOG_DIR}"
 
 # Last 2 experiments (exp5-exp6)
 CONFIG_FILES=(
@@ -25,6 +29,12 @@ CONFIG_FILES=(
 
 # Pick config for this array index
 CONFIG_FILE="${CONFIG_FILES[$((LSB_JOBINDEX-1))]}"
+
+# Validate config file exists
+if [ ! -f "${CONFIG_FILE}" ]; then
+  echo "ERROR: Config file not found: ${CONFIG_FILE}" >&2
+  exit 1
+fi
 
 # =============================================================================
 # MODULES
@@ -54,14 +64,33 @@ echo "=========================================="
 echo "Array job index: ${LSB_JOBINDEX}"
 echo "Training Autoencoder experiment (L40s)"
 echo "Config: ${CONFIG_FILE}"
+echo "Working directory: ${BASE_DIR}"
 echo "Start: $(date)"
 echo "=========================================="
 
 cd "${BASE_DIR}"
+
+# Validate Python script exists
+if [ ! -f "${PYTHON_SCRIPT}" ]; then
+  echo "ERROR: Python script not found: ${PYTHON_SCRIPT}" >&2
+  exit 1
+fi
+
+# Run training
 python "${PYTHON_SCRIPT}" "${CONFIG_FILE}"
 
-echo "=========================================="
-echo "Training COMPLETE"
-echo "End: $(date)"
-echo "=========================================="
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ]; then
+  echo "=========================================="
+  echo "Training COMPLETE - SUCCESS"
+  echo "End: $(date)"
+  echo "=========================================="
+else
+  echo "=========================================="
+  echo "Training FAILED with exit code: ${EXIT_CODE}"
+  echo "End: $(date)"
+  echo "=========================================="
+  exit $EXIT_CODE
+fi
 
