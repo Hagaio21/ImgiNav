@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import yaml
 import sys
 import math
+import warnings
 from pathlib import Path
 from tqdm import tqdm
 import argparse
@@ -16,6 +17,9 @@ from torchvision.utils import save_image, make_grid
 from PIL import Image
 import numpy as np
 import pandas as pd
+
+# Suppress torchvision.io extension warning (we use PIL, not torchvision.io)
+warnings.filterwarnings("ignore", message=".*Failed to load image Python extension.*")
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
