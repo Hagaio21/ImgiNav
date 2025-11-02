@@ -56,6 +56,9 @@ training:
   # Mixed precision for efficiency
   use_amp: true
   
+  # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
+  max_grad_norm: 1.0  # Set to null/omit to disable gradient clipping
+  
   # Loss (simple MSE on noise prediction)
   loss:
     type: MSELoss

@@ -42,6 +42,10 @@ training:
   eval_interval: 5
   sample_interval: 10
   use_amp: true
+  
+  # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
+  max_grad_norm: 1.0
+  
   scheduler:
     type: cosine
   loss:

@@ -25,7 +25,7 @@ from models.diffusion import DiffusionModel
 from torchvision.utils import save_image, make_grid
 
 
-def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch, use_amp=False):
+def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch, use_amp=False, max_grad_norm=None):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
@@ -83,6 +83,10 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                 train_epoch._scaler = scaler
             
             scaler.scale(loss).backward()
+            # Gradient clipping for stability (especially with cosine schedulers)
+            if max_grad_norm is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
@@ -91,6 +95,9 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             
             optimizer.zero_grad()
             loss.backward()
+            # Gradient clipping for stability (especially with cosine schedulers)
+            if max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
         
         # Step scheduler
@@ -373,6 +380,7 @@ def main():
     eval_interval = config["training"].get("eval_interval", 1)
     sample_interval = config["training"].get("sample_interval", 10)
     keep_checkpoints = config["training"].get("keep_checkpoints", None)
+    max_grad_norm = config["training"].get("max_grad_norm", None)
     
     # Early stopping
     early_stopping_patience = config["training"].get("early_stopping_patience", None)
@@ -386,6 +394,8 @@ def main():
     if val_loader:
         print(f"  Evaluation: every {eval_interval} epoch(s)")
     print(f"  Sample interval: every {sample_interval} epoch(s) (DDPM)")
+    if max_grad_norm is not None:
+        print(f"  Gradient clipping: max_norm={max_grad_norm}")
     if keep_checkpoints:
         print(f"  Keeping only last {keep_checkpoints} checkpoints")
     if early_stopping_patience:
@@ -405,7 +415,7 @@ def main():
     
     for epoch in range(start_epoch, num_epochs):
         # Training
-        avg_loss, avg_logs = train_epoch(model, train_loader, scheduler, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
+        avg_loss, avg_logs = train_epoch(model, train_loader, scheduler, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm)
         
         print(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():
