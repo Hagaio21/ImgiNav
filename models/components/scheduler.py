@@ -20,8 +20,10 @@ class NoiseScheduler(BaseComponent):
 
     def add_noise(self, x0, noise, t):
         t = t.long().view(-1)
-        sqrt_alpha_bar = self.alpha_bars[t].sqrt().to(x0.device)
-        sqrt_one_minus = (1 - self.alpha_bars[t]).sqrt().to(x0.device)
+        # Move alpha_bars to same device as t if needed
+        alpha_bars = self.alpha_bars.to(t.device)
+        sqrt_alpha_bar = alpha_bars[t].sqrt().to(x0.device)
+        sqrt_one_minus = (1 - alpha_bars[t]).sqrt().to(x0.device)
         # Reshape to broadcast correctly: [B] -> [B, 1, 1, 1, ...]
         # Add dimensions to match spatial dimensions of x0
         while sqrt_alpha_bar.dim() < x0.dim():
