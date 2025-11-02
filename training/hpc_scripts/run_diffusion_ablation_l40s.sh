@@ -10,14 +10,16 @@
 
 set -euo pipefail
 
-# Get config file from command line
-if [ $# -eq 0 ]; then
+# Get config file from command line or environment variable
+if [ $# -gt 0 ]; then
+    CONFIG_FILE="$1"
+elif [ -n "${DIFFUSION_CONFIG:-}" ]; then
+    CONFIG_FILE="${DIFFUSION_CONFIG}"
+else
     echo "ERROR: No config file provided" >&2
-    echo "Usage: $0 <config.yaml>" >&2
+    echo "Usage: $0 <config.yaml> or set DIFFUSION_CONFIG environment variable" >&2
     exit 1
 fi
-
-CONFIG_FILE="$1"
 
 # =============================================================================
 # PATHS

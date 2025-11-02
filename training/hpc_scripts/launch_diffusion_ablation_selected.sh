@@ -47,13 +47,10 @@ for config in "${V100_CONFIGS[@]}"; do
     if [ -f "${CONFIG_DIR}/${config}" ]; then
         CONFIG_PATH="${CONFIG_DIR}/${config}"
         echo "  Submitting: ${config} (V100)"
-        # Create wrapper script for V100
-        cat > /tmp/run_diffusion_v100_${config%.yaml}.sh <<EOF
-#!/bin/bash
-${SCRIPT_DIR}/run_diffusion_ablation_v100.sh "${CONFIG_PATH}"
-EOF
-        chmod +x /tmp/run_diffusion_v100_${config%.yaml}.sh
-        bsub < /tmp/run_diffusion_v100_${config%.yaml}.sh
+        # Export config path and submit script with input redirection to read #BSUB directives
+        export DIFFUSION_CONFIG="${CONFIG_PATH}"
+        bsub < "${SCRIPT_DIR}/run_diffusion_ablation_v100.sh"
+        unset DIFFUSION_CONFIG
         sleep 2  # Small delay to avoid overwhelming the scheduler
     else
         echo "  WARNING: Config not found: ${config}" >&2
@@ -69,13 +66,10 @@ for config in "${L40S_CONFIGS[@]}"; do
     if [ -f "${CONFIG_DIR}/${config}" ]; then
         CONFIG_PATH="${CONFIG_DIR}/${config}"
         echo "  Submitting: ${config} (L40s)"
-        # Create wrapper script for L40s
-        cat > /tmp/run_diffusion_l40s_${config%.yaml}.sh <<EOF
-#!/bin/bash
-${SCRIPT_DIR}/run_diffusion_ablation_l40s.sh "${CONFIG_PATH}"
-EOF
-        chmod +x /tmp/run_diffusion_l40s_${config%.yaml}.sh
-        bsub < /tmp/run_diffusion_l40s_${config%.yaml}.sh
+        # Export config path and submit script with input redirection to read #BSUB directives
+        export DIFFUSION_CONFIG="${CONFIG_PATH}"
+        bsub < "${SCRIPT_DIR}/run_diffusion_ablation_l40s.sh"
+        unset DIFFUSION_CONFIG
         sleep 2  # Small delay to avoid overwhelming the scheduler
     else
         echo "  WARNING: Config not found: ${config}" >&2
