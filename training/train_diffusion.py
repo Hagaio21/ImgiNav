@@ -177,7 +177,7 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None):
-    """Generate and save sample images using DDIM sampling."""
+    """Generate and save sample images using DDPM sampling."""
     model.eval()
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
@@ -194,13 +194,14 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     except StopIteration:
         return
     
-    # Generate samples using DDIM (faster)
-    print(f"  Generating {sample_batch_size} samples using DDIM...")
+    # Generate samples using DDPM (full stochastic sampling)
+    num_steps = model.scheduler.num_steps
+    print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps)...")
     with torch.no_grad():
         sample_output = model.sample(
             batch_size=sample_batch_size,
-            num_steps=50,  # Fast DDIM sampling
-            method="ddim",
+            num_steps=num_steps,  # Full DDPM sampling
+            method="ddpm",
             eta=0.0,
             device=device_obj,
             verbose=False
@@ -379,7 +380,7 @@ def main():
     print(f"  Save interval: every {save_interval} epoch(s)")
     if val_loader:
         print(f"  Evaluation: every {eval_interval} epoch(s)")
-    print(f"  Sample interval: every {sample_interval} epoch(s) (DDIM)")
+    print(f"  Sample interval: every {sample_interval} epoch(s) (DDPM)")
     if keep_checkpoints:
         print(f"  Keeping only last {keep_checkpoints} checkpoints")
     if early_stopping_patience:
