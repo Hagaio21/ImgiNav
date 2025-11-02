@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from PIL import Image
 import pandas as pd
 from pathlib import Path
@@ -220,14 +220,44 @@ class ManifestDataset(BaseComponent, Dataset):
         
         return train_dataset, val_dataset
     
-    def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True):
-        return DataLoader(
-            self, 
-            batch_size=batch_size, 
-            shuffle=shuffle, 
-            num_workers=num_workers,
-            pin_memory=pin_memory if torch.cuda.is_available() else False,
-            persistent_workers=persistent_workers if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None,  # Set to 2 (4 was too aggressive)
-            drop_last=False  # Keep last incomplete batch
-        )
+    def _compute_room_id_weights(self):
+        """Compute inverse frequency weights for room_id balancing."""
+        if "room_id" not in self.df.columns:
+            return None
+        room_ids = self.df["room_id"].values
+        unique_rooms, counts = np.unique(room_ids, return_counts=True)
+        max_count = counts.max()
+        weight_map = {rid: max_count / count for rid, count in zip(unique_rooms, counts)}
+        weights = np.array([weight_map[rid] for rid in room_ids], dtype=np.float32)
+        return torch.from_numpy(weights)
+    
+    def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, use_weighted_sampling=False):
+        if use_weighted_sampling:
+            weights = self._compute_room_id_weights()
+            if weights is None:
+                print("Warning: room_id column not found, falling back to regular sampling")
+                use_weighted_sampling = False
+            else:
+                room_ids = self.df["room_id"].values
+                unique_rooms, counts = np.unique(room_ids, return_counts=True)
+                max_count = counts.max()
+                print(f"Room ID sampling weights:")
+                for rid, count in zip(unique_rooms, counts):
+                    weight = max_count / count
+                    print(f"  {rid}: weight={weight:.2f}, count={count}")
+        
+        if use_weighted_sampling:
+            sampler = WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
+            return DataLoader(
+                self, batch_size=batch_size, sampler=sampler, num_workers=num_workers,
+                pin_memory=pin_memory if torch.cuda.is_available() else False,
+                persistent_workers=persistent_workers if num_workers > 0 else False,
+                prefetch_factor=2 if num_workers > 0 else None, drop_last=False
+            )
+        else:
+            return DataLoader(
+                self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers,
+                pin_memory=pin_memory if torch.cuda.is_available() else False,
+                persistent_workers=persistent_workers if num_workers > 0 else False,
+                prefetch_factor=2 if num_workers > 0 else None, drop_last=False
+            )
