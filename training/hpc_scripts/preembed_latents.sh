@@ -22,7 +22,7 @@ mkdir -p "${LOG_DIR}"
 
 # Autoencoder config and checkpoint
 AUTOENCODER_CONFIG="${BASE_DIR}/experiments/autoencoders/phase1/phase1_5_AE_final.yaml"
-AUTOENCODER_CHECKPOINT="${BASE_DIR}/experiments/phase1/phase1_5_AE_final/phase1_5_AE_final_checkpoint_best.pt"
+AUTOENCODER_CHECKPOINT="/work3/s233249/ImgiNav/experiments/phase1/phase1_5_AE_final/phase1_5_AE_final_checkpoint_best.pt"
 
 # Dataset paths
 INPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
