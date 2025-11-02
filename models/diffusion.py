@@ -187,11 +187,20 @@ class DiffusionModel(BaseModel):
             
             # DDIM step
             if method == "ddim":
-                alpha_bar_t = self.scheduler.alpha_bars[t].view(-1, 1, 1, 1)
-                alpha_bar_prev = self.scheduler.alpha_bars[timesteps[i-1]].view(-1, 1, 1, 1) if i > 0 else torch.tensor(1.0, device=device).view(-1, 1, 1, 1)
+                # Move scheduler tensors to device if needed
+                alpha_bars = self.scheduler.alpha_bars.to(device)
+                
+                alpha_bar_t = alpha_bars[t].view(-1, 1, 1, 1)
+                if i > 0:
+                    alpha_bar_prev = alpha_bars[timesteps[i-1]].view(-1, 1, 1, 1)
+                else:
+                    # First step: use alpha_bar_0 = 1.0
+                    alpha_bar_prev = torch.tensor(1.0, device=device, dtype=alpha_bar_t.dtype).view(-1, 1, 1, 1)
                 
                 # Predict x0
                 pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                # Clamp to avoid numerical issues (latents should be roughly in range [-scale, scale])
+                pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
                 
                 # DDIM update (deterministic if eta=0)
                 if eta > 0 and i < len(timesteps) - 1:
@@ -204,13 +213,38 @@ class DiffusionModel(BaseModel):
             
             else:
                 # DDPM step
-                alpha_t = self.scheduler.alphas[t].view(-1, 1, 1, 1)
-                beta_t = self.scheduler.betas[t].view(-1, 1, 1, 1)
+                # Move scheduler tensors to device if needed
+                alpha_bars = self.scheduler.alpha_bars.to(device)
+                alphas = self.scheduler.alphas.to(device)
+                betas = self.scheduler.betas.to(device)
+                
+                alpha_bar_t = alpha_bars[t].view(-1, 1, 1, 1)
+                beta_t = betas[t].view(-1, 1, 1, 1)
                 
                 if i < len(timesteps) - 1:
-                    alpha_bar_prev = self.scheduler.alpha_bars[timesteps[i+1]].view(-1, 1, 1, 1)
-                    pred_mean = (1 / alpha_t.sqrt()) * (latents - beta_t / (1 - self.scheduler.alpha_bars[t]).sqrt().view(-1, 1, 1, 1) * pred_noise)
-                    latents = pred_mean + beta_t.sqrt() * torch.randn_like(latents)
+                    # Get t-1 (next timestep in reverse order)
+                    t_prev = timesteps[i+1]
+                    alpha_bar_prev = alpha_bars[t_prev].view(-1, 1, 1, 1)
+                    alpha_t = alphas[t].view(-1, 1, 1, 1)
+                    
+                    # DDPM posterior mean: predict x_{t-1} from x_t and predicted noise
+                    # Formula: pred_mean = (1/sqrt(alpha_t)) * (x_t - beta_t/sqrt(1-alpha_bar_t) * epsilon)
+                    pred_mean = (1.0 / alpha_t.sqrt()) * (latents - (beta_t / (1 - alpha_bar_t).sqrt()) * pred_noise)
+                    
+                    # Posterior variance: beta_tilde = (1-alpha_bar_{t-1})/(1-alpha_bar_t) * beta_t
+                    # For stability, clamp to avoid numerical issues
+                    posterior_variance = ((1 - alpha_bar_prev) / (1 - alpha_bar_t).clamp(min=1e-8)) * beta_t
+                    posterior_variance = torch.clamp(posterior_variance, min=1e-20)
+                    
+                    # Sample x_{t-1} with noise
+                    noise = torch.randn_like(latents)
+                    latents = pred_mean + posterior_variance.sqrt() * noise
+                else:
+                    # Last step: predict x_0 and use it directly (no noise)
+                    pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                    # Clamp to avoid numerical issues
+                    pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
+                    latents = pred_x0
             
             if return_history:
                 history.append(latents.clone())

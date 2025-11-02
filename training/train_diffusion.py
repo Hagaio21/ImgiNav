@@ -450,9 +450,14 @@ def main():
                 break
         
         # Generate samples
-        if (epoch + 1) % sample_interval == 0 and val_loader:
+        # Every epoch for first 5 epochs, then every sample_interval epochs
+        should_sample = (
+            (epoch + 1) <= 5 or  # First 5 epochs: every epoch
+            (epoch + 1) % sample_interval == 0  # After that: every sample_interval epochs
+        )
+        if should_sample and val_loader:
             save_samples(model, val_loader, device, output_dir, epoch + 1, 
-                       sample_batch_size=4, exp_name=exp_name)
+                       sample_batch_size=64, exp_name=exp_name)  # 8x8 grid
         
         training_history.append(epoch_log)
         

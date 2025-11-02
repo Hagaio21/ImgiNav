@@ -44,6 +44,8 @@ class CosineScheduler(NoiseScheduler):
         steps = torch.arange(0, num_steps + 1, dtype=torch.float32)
         alpha_bars = torch.cos(((steps / num_steps) + 0.008) / 1.008 * 3.14159 / 2) ** 2
         betas = 1 - (alpha_bars[1:] / alpha_bars[:-1])
+        # Clamp betas to avoid numerical issues (like other schedulers do)
+        betas = torch.clamp(betas, min=1e-4, max=0.999)
         alphas = 1 - betas
         return alphas, betas
 
