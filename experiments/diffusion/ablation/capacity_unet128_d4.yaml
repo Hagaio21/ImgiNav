@@ -43,6 +43,9 @@ training:
   sample_interval: 10
   use_amp: true
   
+  # Weighted sampling to balance room_id distribution
+  use_weighted_sampling: true
+  
   # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
   max_grad_norm: 1.0
   
