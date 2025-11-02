@@ -32,5 +32,6 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
 fi
 
 cd "${BASE_DIR}"
+export PYTHONPATH="${BASE_DIR}:${PYTHONPATH}"
 python "${PYTHON_SCRIPT}" "${CONFIG_FILE}"
 
