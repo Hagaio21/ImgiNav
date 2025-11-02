@@ -49,7 +49,23 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
     df = pd.read_csv(manifest_path)
     print(f"Loaded manifest with {len(df)} samples")
     
-    # Create dataset for loading images
+    # Apply the same filters that ManifestDataset will use
+    # Filter out rows with NaN values in required columns
+    required_cols = ["layout_path"]
+    df = df.dropna(subset=required_cols)
+    
+    # Apply filters (same as ManifestDataset)
+    filters = {"is_empty": [False]}
+    for key, value in filters.items():
+        if isinstance(value, (list, tuple, set)):
+            df = df[df[key].isin(value)]
+        else:
+            df = df[df[key] == value]
+    df = df.reset_index(drop=True)
+    
+    print(f"After filtering (non-empty layouts): {len(df)} samples")
+    
+    # Create dataset for loading images (using filtered manifest)
     dataset = ManifestDataset(
         manifest=str(manifest_path),
         outputs={"rgb": "layout_path"},
@@ -59,6 +75,14 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
     
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, 
                           num_workers=num_workers, pin_memory=True)
+    
+    # Verify that filtered dataframe matches dataset length
+    if len(df) != len(dataset):
+        raise ValueError(
+            f"Mismatch between filtered dataframe length ({len(df)}) "
+            f"and dataset length ({len(dataset)}). "
+            "They should match after applying the same filters."
+        )
     
     device = next(encoder.parameters()).device
     
