@@ -1,0 +1,93 @@
+# Base template for diffusion ablation experiments
+# This config will be customized for each ablation
+
+experiment:
+  name: "diffusion_ablation_base"  # Will be replaced per experiment
+  phase: "diffusion_ablation"
+  save_path: "/work3/s233249/ImgiNav/experiments/diffusion/ablation"
+  epochs_target: 1000  # Target epochs for learning rate scheduler
+
+dataset:
+  manifest: "/work3/s233249/ImgiNav/datasets/layouts_latents.csv"  # Manifest with latent_path column (created by preembed_latents.py)
+  outputs:
+    latent: "latent_path"  # Use pre-embedded latents for faster training
+  filters:
+    is_empty: [false]
+  return_path: false
+
+# Use frozen autoencoder from Phase 1.5 (32×32×16 latent space)
+# Note: Config structure matches Phase 1.5 final autoencoder
+autoencoder:
+  encoder:
+    in_channels: 3
+    latent_channels: 16  # 32×32×16 latent space
+    base_channels: 32
+    downsampling_steps: 4  # 512 -> 32
+    activation: SiLU
+    norm_groups: 8
+    variational: false  # Deterministic AE
+    frozen: true
+  decoder:
+    latent_channels: 16
+    base_channels: 32
+    upsampling_steps: 4  # 32 -> 512
+    activation: SiLU
+    norm_groups: 8
+    heads:
+      - type: RGBHead
+        name: rgb
+        out_channels: 3
+        final_activation: tanh
+      - type: SegmentationHead
+        name: segmentation
+        num_classes: 10
+    frozen: true
+  frozen: true  # Freeze entire autoencoder during diffusion training
+
+unet:
+  in_channels: 16  # Matches latent_channels from Phase 1.5
+  out_channels: 16  # Matches latent_channels from Phase 1.5
+  base_channels: 128  # Will vary: 64, 128, 256
+  depth: 4  # Will vary: 3, 4, 5
+  num_res_blocks: 2
+  time_dim: 128
+  cond_channels: 0  # Unconditional for now
+  fusion_mode: "none"
+  norm_groups: 8
+
+scheduler:
+  type: "CosineScheduler"  # Will vary: LinearScheduler, CosineScheduler, QuadraticScheduler
+  num_steps: 1000  # Will vary: 500, 1000, 2000
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 8  # Reduced for large UNet
+  num_workers: 8
+  shuffle: true
+  epochs: 500  # Long training
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  
+  # Checkpoint settings - only best and latest
+  save_interval: 99999  # Very large number to disable periodic checkpoints
+  eval_interval: 5  # Evaluate every 5 epochs
+  sample_interval: 10  # Generate samples every 10 epochs
+  
+  # Early stopping
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.0001
+  early_stopping_restore_best: true
+  
+  # Mixed precision for efficiency
+  use_amp: true
+  
+  # Loss (simple MSE on noise prediction)
+  loss:
+    type: MSELoss
+    key: "pred_noise"
+    target: "noise"
+    weight: 1.0
+
