@@ -103,6 +103,11 @@ def main():
     create_multitask_analysis(all_data, output_dir)
     create_loss_interaction_analysis(all_data, output_dir)
     
+    # Phase 1.3 specific: Two-dimensional analysis (Loss Config × Encoder Type)
+    print("Creating two-dimensional analysis (Loss Config × Encoder Type)...")
+    create_encoder_type_comparison(all_data, output_dir)
+    create_loss_vs_encoder_grid(all_data, output_dir)
+    
     create_summary_report(all_data, output_dir)
     
     # Visual comparison with actual models
@@ -715,6 +720,211 @@ def create_umap_visualization(checkpoints, dataset_manifest, output_dir, n_sampl
         plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
         plt.close()
         print(f"  Saved: {output_path}")
+
+
+def parse_experiment_name(exp_name):
+    """Parse experiment name to extract loss config and encoder type."""
+    exp_name_clean = exp_name.replace('phase1_3_AE_', '').lower()
+    
+    # Determine encoder type
+    is_vae = 'vae' in exp_name_clean
+    encoder_type = 'VAE' if is_vae else 'Deterministic'
+    
+    # Determine loss config
+    if 'f1' in exp_name_clean or 'rgb_only' in exp_name_clean:
+        loss_config = 'F1 (RGB only)'
+    elif 'f2' in exp_name_clean or ('rgb' in exp_name_clean and 'seg' in exp_name_clean and 'cls' not in exp_name_clean):
+        loss_config = 'F2 (RGB+Seg)'
+    elif 'f3' in exp_name_clean or ('rgb' in exp_name_clean and 'seg' in exp_name_clean and 'cls' in exp_name_clean):
+        loss_config = 'F3 (RGB+Seg+Cls)'
+    else:
+        loss_config = 'Unknown'
+    
+    return loss_config, encoder_type
+
+
+def create_encoder_type_comparison(all_data, output_dir):
+    """Compare Deterministic vs VAE for each loss configuration."""
+    # Group experiments by loss config and encoder type
+    grouped = {}
+    for exp_name, df in all_data.items():
+        loss_config, encoder_type = parse_experiment_name(exp_name)
+        key = loss_config
+        if key not in grouped:
+            grouped[key] = {}
+        grouped[key][encoder_type] = {'name': exp_name, 'df': df}
+    
+    if not grouped:
+        print("  Could not parse experiment names, skipping encoder type comparison")
+        return
+    
+    # Create comparison plot
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle('Phase 1.3: Encoder Type Comparison (Deterministic vs VAE)', 
+                 fontsize=16, fontweight='bold')
+    
+    loss_configs = ['F1 (RGB only)', 'F2 (RGB+Seg)', 'F3 (RGB+Seg+Cls)']
+    
+    for row_idx, loss_config in enumerate(loss_configs):
+        if loss_config not in grouped:
+            continue
+        
+        group = grouped[loss_config]
+        det_data = group.get('Deterministic')
+        vae_data = group.get('VAE')
+        
+        # Row 1: Loss curves comparison
+        ax = axes[0, row_idx]
+        if det_data and vae_data:
+            det_df = det_data['df']
+            vae_df = vae_data['df']
+            
+            # Plot MSE
+            if 'val_MSE_rgb' in det_df.columns and 'val_MSE_rgb' in vae_df.columns:
+                ax.plot(det_df['epoch'], det_df['val_MSE_rgb'], 
+                       label='Deterministic', linewidth=2.5, color='#2E86AB', linestyle='-')
+                ax.plot(vae_df['epoch'], vae_df['val_MSE_rgb'], 
+                       label='VAE', linewidth=2.5, color='#A23B72', linestyle='--')
+            elif 'train_MSE_rgb' in det_df.columns:
+                ax.plot(det_df['epoch'], det_df.get('val_MSE_rgb', det_df['train_MSE_rgb']), 
+                       label='Deterministic', linewidth=2.5, color='#2E86AB', linestyle='-')
+                ax.plot(vae_df['epoch'], vae_df.get('val_MSE_rgb', vae_df['train_MSE_rgb']), 
+                       label='VAE', linewidth=2.5, color='#A23B72', linestyle='--')
+            
+            ax.set_xlabel('Epoch', fontsize=11)
+            ax.set_ylabel('MSE (RGB)', fontsize=11)
+            ax.set_title(f'{loss_config}', fontsize=12, fontweight='bold')
+            ax.legend(frameon=True, fancybox=False, shadow=False)
+            ax.grid(True, alpha=0.3)
+        
+        # Row 2: Final metrics comparison
+        ax = axes[1, row_idx]
+        if det_data and vae_data:
+            det_final = det_data['df'].iloc[-1]
+            vae_final = vae_data['df'].iloc[-1]
+            
+            metrics = ['MSE', 'Total Loss']
+            det_values = [
+                det_final.get('val_MSE_rgb', det_final.get('train_MSE_rgb', 0)),
+                det_final.get('val_loss', det_final.get('train_loss', 0))
+            ]
+            vae_values = [
+                vae_final.get('val_MSE_rgb', vae_final.get('train_MSE_rgb', 0)),
+                vae_final.get('val_loss', vae_final.get('train_loss', 0))
+            ]
+            
+            x = np.arange(len(metrics))
+            width = 0.35
+            ax.bar(x - width/2, det_values, width, label='Deterministic', 
+                  color='#2E86AB', alpha=0.8)
+            ax.bar(x + width/2, vae_values, width, label='VAE', 
+                  color='#A23B72', alpha=0.8)
+            
+            ax.set_ylabel('Metric Value', fontsize=11)
+            ax.set_title(f'{loss_config} - Final Metrics', fontsize=12, fontweight='bold')
+            ax.set_xticks(x)
+            ax.set_xticklabels(metrics, fontsize=10)
+            ax.legend(frameon=True, fancybox=False, shadow=False)
+            ax.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    output_path = output_dir / "encoder_type_comparison.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"  Saved: {output_path}")
+
+
+def create_loss_vs_encoder_grid(all_data, output_dir):
+    """Create a grid visualization showing both dimensions: Loss Config × Encoder Type."""
+    # Organize data into grid
+    loss_configs = ['F1 (RGB only)', 'F2 (RGB+Seg)', 'F3 (RGB+Seg+Cls)']
+    encoder_types = ['Deterministic', 'VAE']
+    
+    grid_data = {}
+    for exp_name, df in all_data.items():
+        loss_config, encoder_type = parse_experiment_name(exp_name)
+        final = df.iloc[-1]
+        
+        key = (loss_config, encoder_type)
+        grid_data[key] = {
+            'exp_name': exp_name,
+            'mse': final.get('val_MSE_rgb', final.get('train_MSE_rgb', 0)),
+            'total_loss': final.get('val_loss', final.get('train_loss', 0))
+        }
+    
+    # Create heatmap-style grid
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle('Phase 1.3: Two-Dimensional Analysis (Loss Config × Encoder Type)', 
+                 fontsize=16, fontweight='bold')
+    
+    # Plot 1: MSE heatmap
+    ax = axes[0]
+    mse_grid = np.zeros((len(encoder_types), len(loss_configs)))
+    for i, encoder_type in enumerate(encoder_types):
+        for j, loss_config in enumerate(loss_configs):
+            key = (loss_config, encoder_type)
+            if key in grid_data:
+                mse_grid[i, j] = grid_data[key]['mse']
+            else:
+                mse_grid[i, j] = np.nan
+    
+    im = ax.imshow(mse_grid, cmap='viridis', aspect='auto')
+    ax.set_xticks(np.arange(len(loss_configs)))
+    ax.set_yticks(np.arange(len(encoder_types)))
+    ax.set_xticklabels([lc.replace(' (', '\n(') for lc in loss_configs], fontsize=10)
+    ax.set_yticklabels(encoder_types, fontsize=11)
+    ax.set_xlabel('Loss Configuration', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Encoder Type', fontsize=12, fontweight='bold')
+    ax.set_title('Final MSE (RGB) Heatmap', fontsize=13, fontweight='bold')
+    
+    # Add text annotations
+    for i in range(len(encoder_types)):
+        for j in range(len(loss_configs)):
+            key = (loss_configs[j], encoder_types[i])
+            if key in grid_data:
+                text = ax.text(j, i, f'{mse_grid[i, j]:.4f}',
+                            ha="center", va="center", color="white", fontweight='bold', fontsize=9)
+    
+    plt.colorbar(im, ax=ax, label='MSE Value')
+    
+    # Plot 2: Bar chart comparing across dimensions
+    ax = axes[1]
+    x_pos = np.arange(len(loss_configs))
+    width = 0.35
+    
+    det_values = []
+    vae_values = []
+    for loss_config in loss_configs:
+        det_key = (loss_config, 'Deterministic')
+        vae_key = (loss_config, 'VAE')
+        det_values.append(grid_data.get(det_key, {}).get('mse', 0))
+        vae_values.append(grid_data.get(vae_key, {}).get('mse', 0))
+    
+    bars1 = ax.bar(x_pos - width/2, det_values, width, label='Deterministic', 
+                   color='#2E86AB', alpha=0.8, edgecolor='black', linewidth=1.5)
+    bars2 = ax.bar(x_pos + width/2, vae_values, width, label='VAE', 
+                   color='#A23B72', alpha=0.8, edgecolor='black', linewidth=1.5)
+    
+    ax.set_ylabel('Final MSE (RGB)', fontsize=12)
+    ax.set_xlabel('Loss Configuration', fontsize=12, fontweight='bold')
+    ax.set_title('Encoder Type Comparison Across Loss Configs', fontsize=13, fontweight='bold')
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels([lc.replace(' (', '\n(') for lc in loss_configs], fontsize=10)
+    ax.legend(frameon=True, fancybox=False, shadow=False)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{height:.4f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    plt.tight_layout()
+    output_path = output_dir / "loss_vs_encoder_grid.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"  Saved: {output_path}")
 
 
 if __name__ == "__main__":
