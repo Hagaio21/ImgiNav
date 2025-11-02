@@ -224,6 +224,8 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
 def main():
     parser = argparse.ArgumentParser(description="Train diffusion model from experiment config")
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if exists (default: auto-resume)")
+    parser.add_argument("--no-resume", action="store_true", help="Force start from scratch (ignore existing checkpoints)")
     
     args = parser.parse_args()
     
@@ -253,21 +255,24 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}")
     
-    # Check for latest checkpoint (automatic resume)
+    # Check for latest checkpoint (automatic resume unless --no-resume is specified)
     latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
     start_epoch = 0
     best_val_loss = float("inf")
     training_history = []
     
-    if latest_checkpoint.exists():
+    should_resume = not args.no_resume and latest_checkpoint.exists()
+    if should_resume:
         print(f"\nFound latest checkpoint: {latest_checkpoint}")
         print("Resuming training...")
         
-        # Load checkpoint with extra state
+        # Load checkpoint with extra state, using current config (not saved config)
+        # This ensures we have the correct autoencoder checkpoint path
         model, extra_state = DiffusionModel.load_checkpoint(
             latest_checkpoint, 
             map_location=device,
-            return_extra=True
+            return_extra=True,
+            config=config  # Use current config file, not saved config
         )
         model = model.to(device)
         

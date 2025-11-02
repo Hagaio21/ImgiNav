@@ -33,7 +33,7 @@ class BaseModel(BaseComponent):
         torch.save(payload, path)
     
     @classmethod
-    def load_checkpoint(cls, path, map_location="cpu", return_extra=False):
+    def load_checkpoint(cls, path, map_location="cpu", return_extra=False, config=None):
         """
         Load model checkpoint, optionally returning extra state.
         
@@ -41,6 +41,7 @@ class BaseModel(BaseComponent):
             path: Path to checkpoint
             map_location: Device to load on
             return_extra: If True, return tuple (model, extra_state_dict)
+            config: Optional config dict to use instead of saved config (useful when resuming training)
             
         Returns:
             If return_extra=False: just the model (backward compatible)
@@ -50,8 +51,9 @@ class BaseModel(BaseComponent):
         path = Path(path)
         payload = torch.load(path, map_location=map_location)
         
-        config = payload.get("config")
-        model = cls.from_config(config) if config else cls()
+        # Use provided config if available, otherwise use saved config
+        model_config = config if config is not None else payload.get("config")
+        model = cls.from_config(model_config) if model_config else cls()
         model.load_state_dict(payload["state_dict"])
         
         if return_extra:
