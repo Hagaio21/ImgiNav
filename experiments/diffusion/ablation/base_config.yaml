@@ -15,34 +15,11 @@ dataset:
     is_empty: [false]
   return_path: false
 
-# Use frozen autoencoder from Phase 1.5 (32×32×16 latent space)
-# Note: Config structure matches Phase 1.5 final autoencoder
+# Autoencoder checkpoint (decoder will be extracted from it)
+# Only decoder needed since we're using pre-embedded latents
 autoencoder:
-  encoder:
-    in_channels: 3
-    latent_channels: 16  # 32×32×16 latent space
-    base_channels: 32
-    downsampling_steps: 4  # 512 -> 32
-    activation: SiLU
-    norm_groups: 8
-    variational: false  # Deterministic AE
-    frozen: true
-  decoder:
-    latent_channels: 16
-    base_channels: 32
-    upsampling_steps: 4  # 32 -> 512
-    activation: SiLU
-    norm_groups: 8
-    heads:
-      - type: RGBHead
-        name: rgb
-        out_channels: 3
-        final_activation: tanh
-      - type: SegmentationHead
-        name: segmentation
-        num_classes: 10
-    frozen: true
-  frozen: true  # Freeze entire autoencoder during diffusion training
+  checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_5_AE_final/phase1_5_AE_final_checkpoint_best.pt
+  frozen: true  # Freeze decoder during diffusion training
 
 unet:
   in_channels: 16  # Matches latent_channels from Phase 1.5
@@ -63,7 +40,7 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 8  # Reduced for large UNet
+  batch_size: 32  # Increased for pre-embedded latents (32× smaller than images)
   num_workers: 8
   shuffle: true
   epochs: 500  # Long training
@@ -75,11 +52,6 @@ training:
   save_interval: 99999  # Very large number to disable periodic checkpoints
   eval_interval: 5  # Evaluate every 5 epochs
   sample_interval: 10  # Generate samples every 10 epochs
-  
-  # Early stopping
-  early_stopping_patience: 10
-  early_stopping_min_delta: 0.0001
-  early_stopping_restore_best: true
   
   # Mixed precision for efficiency
   use_amp: true

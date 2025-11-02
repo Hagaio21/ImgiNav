@@ -19,19 +19,31 @@ class DiffusionModel(BaseModel):
         unet_cfg = self._init_kwargs.get("unet", {})
         sched_cfg = self._init_kwargs.get("scheduler", {})
 
-        # Accept either full autoencoder or just decoder
+        # Load decoder from checkpoint (cannot train decoder, only load from checkpoint)
+        # Accept either autoencoder checkpoint or decoder checkpoint
         if ae_cfg:
-            # Full autoencoder provided
-            self.autoencoder = Autoencoder.from_config(ae_cfg)
-            self.decoder = self.autoencoder.decoder
-            self.encoder = self.autoencoder.encoder
-            self._has_encoder = True
-            # Freeze autoencoder if requested
+            # Autoencoder checkpoint provided
+            ae_checkpoint = ae_cfg.get("checkpoint")
+            if not ae_checkpoint:
+                raise ValueError("'autoencoder' config must provide a 'checkpoint' path (diffusion cannot train autoencoder)")
+            # Load autoencoder from checkpoint and extract decoder
+            autoencoder = Autoencoder.load_checkpoint(ae_checkpoint, map_location="cpu")
+            self.decoder = autoencoder.decoder
+            self.encoder = None  # Not needed for pre-embedded latents
+            self.autoencoder = None
+            self._has_encoder = False
+            # Freeze decoder if requested
             if ae_cfg.get("frozen", False):
-                self.autoencoder.freeze()
+                self.decoder.freeze()
         elif decoder_cfg:
-            # Only decoder provided (for inference or pre-encoded training)
-            self.decoder = Decoder.from_config(decoder_cfg)
+            # Decoder checkpoint provided (should be autoencoder checkpoint that contains decoder)
+            decoder_checkpoint = decoder_cfg.get("checkpoint")
+            if not decoder_checkpoint:
+                raise ValueError("'decoder' config must provide a 'checkpoint' path (diffusion cannot train decoder)")
+            # Load autoencoder from checkpoint and extract decoder
+            # Note: decoder checkpoint should actually be an autoencoder checkpoint
+            autoencoder = Autoencoder.load_checkpoint(decoder_checkpoint, map_location="cpu")
+            self.decoder = autoencoder.decoder
             self.encoder = None
             self.autoencoder = None
             self._has_encoder = False
@@ -39,7 +51,7 @@ class DiffusionModel(BaseModel):
             if decoder_cfg.get("frozen", False):
                 self.decoder.freeze()
         else:
-            raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config")
+            raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config with 'checkpoint' path")
 
         # UNet backbone
         self.unet = DualUNet.from_config(unet_cfg)
