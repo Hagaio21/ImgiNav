@@ -22,18 +22,28 @@ from phase1_1_analysis import (
     load_autoencoder_checkpoints, get_test_samples, create_visual_comparison
 )
 
+# Import for config loading
+from training.utils import load_config
+import yaml
+
 # Set seaborn style
 sns.set_style("darkgrid")
 plt.rcParams['figure.figsize'] = (12, 8)
 plt.rcParams['figure.dpi'] = 100
 
 # Try to import UMAP (optional dependency)
+UMAP_AVAILABLE = False
 try:
-    import umap
+    from umap import UMAP
     UMAP_AVAILABLE = True
 except ImportError:
-    UMAP_AVAILABLE = False
-    print("Warning: UMAP not available. Install with: pip install umap-learn")
+    try:
+        import umap
+        UMAP = umap.UMAP
+        UMAP_AVAILABLE = True
+    except ImportError:
+        UMAP_AVAILABLE = False
+        print("Warning: UMAP not available. Install with: pip install umap-learn")
 
 def main():
     import argparse
@@ -71,6 +81,17 @@ def main():
     
     args = parser.parse_args()
     
+    # Determine config directory
+    if args.config_dir:
+        config_dir = Path(args.config_dir)
+    else:
+        # Try to infer from experiments_dir
+        base_dir = Path(args.experiments_dir).resolve()
+        # Go up to find experiments/autoencoders/phase1
+        config_dir = base_dir.parent / "experiments" / "autoencoders" / "phase1"
+        if not config_dir.exists():
+            config_dir = base_dir.parent.parent / "experiments" / "autoencoders" / "phase1"
+    
     # Determine output directory
     phase_dir = Path(args.phase_dir)
     if args.output_dir:
@@ -99,14 +120,15 @@ def main():
     
     # Phase 1.3 specific: Loss component analysis
     print("Creating loss component analysis...")
-    create_loss_component_breakdown(all_data, output_dir)
-    create_multitask_analysis(all_data, output_dir)
-    create_loss_interaction_analysis(all_data, output_dir)
+    create_loss_component_breakdown(all_data, output_dir, config_dir)
+    create_multitask_analysis(all_data, output_dir, config_dir)
+    create_loss_interaction_analysis(all_data, output_dir, config_dir)
     
     # Phase 1.3 specific: Two-dimensional analysis (Loss Config × Encoder Type)
     print("Creating two-dimensional analysis (Loss Config × Encoder Type)...")
-    create_encoder_type_comparison(all_data, output_dir)
-    create_loss_vs_encoder_grid(all_data, output_dir)
+    create_encoder_type_comparison(all_data, output_dir, config_dir)
+    create_loss_vs_encoder_grid(all_data, output_dir, config_dir)
+    
     
     create_summary_report(all_data, output_dir)
     
@@ -143,10 +165,10 @@ def main():
     print("=" * 80)
 
 
-def create_loss_component_breakdown(all_data, output_dir):
+def create_loss_component_breakdown(all_data, output_dir, config_dir=None):
     """Break down total loss into individual components (MSE, Seg, Cls)."""
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Phase 1.3: Loss Component Breakdown', fontsize=16, fontweight='bold')
+    fig.suptitle('Phase 1.3: Loss Component Breakdown', fontsize=16, fontweight='bold', y=0.995)
     
     exp_names = sorted(all_data.keys())
     colors = ['#2E86AB', '#A23B72', '#F18F01']
@@ -161,7 +183,8 @@ def create_loss_component_breakdown(all_data, output_dir):
     for exp_name in exp_names:
         df = all_data[exp_name]
         final = df.iloc[-1]
-        exp_labels.append(exp_name.replace('phase1_3_AE_', '').replace('_', ' '))
+        # Use meaningful display name
+        exp_labels.append(get_display_name(exp_name, config_dir))
         
         final_mse.append(final.get('val_MSE_rgb', final.get('train_MSE_rgb', 0)))
         
@@ -187,7 +210,8 @@ def create_loss_component_breakdown(all_data, output_dir):
     ax.set_ylabel('Loss Value', fontsize=12)
     ax.set_title('Final Loss Components', fontsize=14, fontweight='bold')
     ax.set_xticks(x)
-    ax.set_xticklabels(exp_labels, rotation=45, ha='right')
+    ax.set_xticklabels(exp_labels, rotation=45, ha='right', fontsize=9)
+    ax.tick_params(axis='x', pad=10)
     ax.legend(frameon=True, fancybox=False, shadow=False)
     ax.grid(True, alpha=0.3, axis='y')
     
@@ -251,12 +275,13 @@ def create_loss_component_breakdown(all_data, output_dir):
         ax.bar(x, df_ratios['Seg %'], width, bottom=bottom_seg, label='Seg', color=colors[1], alpha=0.8)
         ax.bar(x, df_ratios['Cls %'], width, bottom=bottom_cls, label='Cls', color=colors[2], alpha=0.8)
         
-        ax.set_ylabel('Percentage of Total Loss', fontsize=12)
-        ax.set_title('Loss Component Ratios', fontsize=14, fontweight='bold')
-        ax.set_xticks(x)
-        ax.set_xticklabels(df_ratios['Experiment'], rotation=45, ha='right')
-        ax.legend(frameon=True, fancybox=False, shadow=False)
-        ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylabel('Percentage of Total Loss', fontsize=12)
+    ax.set_title('Loss Component Ratios', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(df_ratios['Experiment'], rotation=45, ha='right', fontsize=9)
+    ax.tick_params(axis='x', pad=10)
+    ax.legend(frameon=True, fancybox=False, shadow=False)
+    ax.grid(True, alpha=0.3, axis='y')
     
     # Plot 4: Task Performance Summary
     ax = axes[1, 1]
@@ -305,22 +330,23 @@ def create_loss_component_breakdown(all_data, output_dir):
         ax.set_ylabel('Normalized Performance', fontsize=12)
         ax.set_title('Task Performance Summary', fontsize=14, fontweight='bold')
         ax.set_xticks(x)
-        ax.set_xticklabels(df_task['Experiment'], rotation=45, ha='right')
+        ax.set_xticklabels(df_task['Experiment'], rotation=45, ha='right', fontsize=9)
+        ax.tick_params(axis='x', pad=10)
         ax.legend(frameon=True, fancybox=False, shadow=False)
         ax.grid(True, alpha=0.3, axis='y')
         ax.set_ylim([0, 1])
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.98], pad=2.0)
     output_path = output_dir / "loss_component_breakdown.png"
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"  Saved: {output_path}")
 
 
-def create_multitask_analysis(all_data, output_dir):
+def create_multitask_analysis(all_data, output_dir, config_dir=None):
     """Analyze multi-task interactions and trade-offs."""
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    fig.suptitle('Phase 1.3: Multi-Task Interaction Analysis', fontsize=16, fontweight='bold')
+    fig.suptitle('Phase 1.3: Multi-Task Interaction Analysis', fontsize=16, fontweight='bold', y=0.995)
     
     exp_names = sorted(all_data.keys())
     colors = ['#2E86AB', '#A23B72', '#F18F01']
@@ -337,8 +363,10 @@ def create_multitask_analysis(all_data, output_dir):
         cls_cols = [c for c in final.index if 'CE_classification' in c or ('cls' in c.lower() and 'seg' not in c.lower())]
         cls_val = final[cls_cols[0]] if cls_cols else None
         
+        # Use meaningful display name
+        display_name = get_display_name(exp_name, config_dir)
         metrics_data.append({
-            'exp': exp_name.replace('phase1_3_AE_', ''),
+            'exp': display_name,
             'mse': mse_val,
             'seg': seg_val,
             'cls': cls_val
@@ -347,7 +375,7 @@ def create_multitask_analysis(all_data, output_dir):
     # Plot 1: MSE vs Auxiliary Tasks
     ax = axes[0]
     for i, m in enumerate(metrics_data):
-        label = m['exp'].replace('_', ' ').title()
+        label = m['exp']  # Already formatted display name
         has_seg = m['seg'] is not None
         has_cls = m['cls'] is not None
         
@@ -366,7 +394,8 @@ def create_multitask_analysis(all_data, output_dir):
     ax.set_ylabel('Validation MSE (RGB)', fontsize=12)
     ax.set_title('RGB Quality by Configuration', fontsize=14, fontweight='bold')
     ax.set_xticks(range(len(metrics_data)))
-    ax.set_xticklabels([m['exp'].replace('_', ' ').title() for m in metrics_data], rotation=45, ha='right')
+    ax.set_xticklabels([m['exp'] for m in metrics_data], rotation=45, ha='right', fontsize=9)
+    ax.tick_params(axis='x', pad=10)
     ax.grid(True, alpha=0.3, axis='y')
     
     # Add legend
@@ -396,7 +425,8 @@ def create_multitask_analysis(all_data, output_dir):
     ax.set_ylabel('Auxiliary Task Loss', fontsize=12)
     ax.set_title('Auxiliary Task Performance', fontsize=14, fontweight='bold')
     ax.set_xticks(range(len(metrics_data)))
-    ax.set_xticklabels([m['exp'].replace('_', ' ').title() for m in metrics_data], rotation=45, ha='right')
+    ax.set_xticklabels([m['exp'] for m in metrics_data], rotation=45, ha='right', fontsize=9)
+    ax.tick_params(axis='x', pad=10)
     ax.legend(frameon=True, fancybox=False, shadow=False)
     ax.grid(True, alpha=0.3, axis='y')
     
@@ -428,14 +458,14 @@ def create_multitask_analysis(all_data, output_dir):
     ax.set_title('Multi-Task Trade-off', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3)
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.98], pad=2.0)
     output_path = output_dir / "multitask_analysis.png"
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"  Saved: {output_path}")
 
 
-def create_loss_interaction_analysis(all_data, output_dir):
+def create_loss_interaction_analysis(all_data, output_dir, config_dir=None):
     """Analyze if auxiliary tasks help or hurt RGB reconstruction."""
     fig, ax = plt.subplots(figsize=(10, 8))
     
@@ -444,7 +474,8 @@ def create_loss_interaction_analysis(all_data, output_dir):
     # Get baseline (RGB only)
     baseline_exp = None
     for exp_name in exp_names:
-        if 'rgb_only' in exp_name.lower() or 'F1' in exp_name:
+        loss_config, _, _ = parse_experiment_name(exp_name, config_dir)
+        if 'F1' in loss_config or 'RGB only' in loss_config:
             baseline_exp = exp_name
             break
     
@@ -463,13 +494,22 @@ def create_loss_interaction_analysis(all_data, output_dir):
         final_mse = df.iloc[-1].get('val_MSE_rgb', df.iloc[-1].get('train_MSE_rgb', 0))
         
         mse_diff = ((final_mse - baseline_final_mse) / baseline_final_mse) * 100
-        exp_label = exp_name.replace('phase1_3_AE_', '').replace('_', ' ')
+        # Use meaningful display name
+        exp_label = get_display_name(exp_name, config_dir)
+        
+        # Determine auxiliary tasks from parsed config
+        _, _, loss_weights = parse_experiment_name(exp_name, config_dir)
+        if loss_weights.get('cls', 0) > 0:
+            aux_tasks = 'Seg+Cls'
+        elif loss_weights.get('seg', 0) > 0:
+            aux_tasks = 'Seg'
+        else:
+            aux_tasks = 'None'
         
         comparisons.append({
             'Experiment': exp_label,
             'MSE Change (%)': mse_diff,
-            'Auxiliary Tasks': 'Seg' if 'seg' in exp_name.lower() and 'cls' not in exp_name.lower() 
-                             else 'Seg+Cls' if 'cls' in exp_name.lower() else 'None'
+            'Auxiliary Tasks': aux_tasks
         })
     
     if comparisons:
@@ -495,7 +535,7 @@ def create_loss_interaction_analysis(all_data, output_dir):
         legend_elements = [Patch(facecolor=colors_map[k], label=k) for k in colors_map.keys()]
         ax.legend(handles=legend_elements, frameon=True, fancybox=False, shadow=False)
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.98], pad=2.0)
     output_path = output_dir / "loss_interaction_analysis.png"
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
@@ -604,13 +644,13 @@ def create_umap_visualization(checkpoints, dataset_manifest, output_dir, n_sampl
         print(f"  Computing UMAP for {exp_name} (latent shape: {latents_array.shape})...")
         
         # Fit UMAP
-        reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
+        reducer = UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
         embedding = reducer.fit_transform(latents_array)
         
         # Create visualization
         fig, axes = plt.subplots(1, 2, figsize=(16, 7))
         fig.suptitle(f'Phase 1.3: UMAP Latent Space - {exp_name.replace("phase1_3_AE_", "")}', 
-                    fontsize=16, fontweight='bold')
+                    fontsize=16, fontweight='bold', y=0.995)
         
         # Plot 1: Room vs Scene separation
         ax = axes[0]
@@ -650,7 +690,7 @@ def create_umap_visualization(checkpoints, dataset_manifest, output_dir, n_sampl
                    transform=ax.transAxes, ha='left', va='top',
                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         
-        plt.tight_layout()
+        plt.tight_layout(rect=[0, 0, 1, 0.98], pad=2.0)
         output_path = output_dir / f"umap_{exp_name.replace('phase1_3_AE_', '')}.png"
         plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
         plt.close()
@@ -663,7 +703,7 @@ def create_umap_visualization(checkpoints, dataset_manifest, output_dir, n_sampl
             axes = [axes]
         
         fig.suptitle('Phase 1.3: UMAP Comparison - Room vs Scene Separation', 
-                    fontsize=16, fontweight='bold')
+                    fontsize=16, fontweight='bold', y=0.995)
         
         for ax_idx, (exp_name, checkpoint_info) in enumerate(sorted(checkpoints.items())):
             model = checkpoint_info['model']
@@ -695,7 +735,7 @@ def create_umap_visualization(checkpoints, dataset_manifest, output_dir, n_sampl
                 continue
             
             latents_array = np.array(latents_list)
-            reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
+            reducer = UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
             embedding = reducer.fit_transform(latents_array)
             
             room_mask = np.array(sample_types) == 0
@@ -715,44 +755,142 @@ def create_umap_visualization(checkpoints, dataset_manifest, output_dir, n_sampl
             if ax_idx == 0:
                 ax.legend(frameon=True, fancybox=False, shadow=False, fontsize=9)
         
-        plt.tight_layout()
+        plt.tight_layout(rect=[0, 0, 1, 0.98], pad=2.0)
         output_path = output_dir / "umap_comparison.png"
         plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
         plt.close()
         print(f"  Saved: {output_path}")
 
 
-def parse_experiment_name(exp_name):
-    """Parse experiment name to extract loss config and encoder type."""
-    exp_name_clean = exp_name.replace('phase1_3_AE_', '').lower()
+def load_experiment_config(exp_name, config_dir):
+    """Load config file for an experiment to extract meaningful metadata."""
+    if config_dir is None:
+        return None
+        
+    # Try to find config file
+    config_paths = [
+        Path(config_dir) / f"{exp_name}.yaml",
+        Path(config_dir).parent / "phase1" / f"{exp_name}.yaml",
+    ]
     
-    # Determine encoder type
-    is_vae = 'vae' in exp_name_clean
-    encoder_type = 'VAE' if is_vae else 'Deterministic'
+    config = None
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                config = load_config(config_path)
+                break
+            except Exception as e:
+                continue
     
-    # Determine loss config
-    if 'f1' in exp_name_clean or 'rgb_only' in exp_name_clean:
-        loss_config = 'F1 (RGB only)'
-    elif 'f2' in exp_name_clean or ('rgb' in exp_name_clean and 'seg' in exp_name_clean and 'cls' not in exp_name_clean):
-        loss_config = 'F2 (RGB+Seg)'
-    elif 'f3' in exp_name_clean or ('rgb' in exp_name_clean and 'seg' in exp_name_clean and 'cls' in exp_name_clean):
-        loss_config = 'F3 (RGB+Seg+Cls)'
+    return config
+
+
+def parse_experiment_name(exp_name, config_dir=None):
+    """Parse experiment name to extract loss config and encoder type from config if available, otherwise from filename."""
+    # Try to load config first
+    config = None
+    if config_dir:
+        config = load_experiment_config(exp_name, config_dir)
+    
+    encoder_type = 'Deterministic'
+    loss_config = 'Unknown'
+    loss_weights = {}
+    
+    if config:
+        # Extract encoder type
+        variational = config.get('autoencoder', {}).get('encoder', {}).get('variational', False)
+        encoder_type = 'VAE' if variational else 'Deterministic'
+        
+        # Extract loss weights
+        loss_config_obj = config.get('training', {}).get('loss', {})
+        losses = loss_config_obj.get('losses', [])
+        
+        mse_weight = 0.0
+        seg_weight = 0.0
+        cls_weight = 0.0
+        kld_weight = 0.0
+        
+        for loss in losses:
+            loss_type = loss.get('type', '').lower()
+            weight = loss.get('weight', 0.0)
+            
+            if 'mse' in loss_type:
+                mse_weight = weight
+            elif 'kld' in loss_type or 'kl' in loss_type:
+                kld_weight = weight
+            elif 'crossentropy' in loss_type or 'ce' in loss_type:
+                if 'segmentation' in loss.get('key', '').lower():
+                    seg_weight = weight
+                elif 'classification' in loss.get('key', '').lower():
+                    cls_weight = weight
+        
+        loss_weights = {
+            'mse': mse_weight,
+            'seg': seg_weight,
+            'cls': cls_weight,
+            'kld': kld_weight
+        }
+        
+        # Create meaningful loss config name
+        if seg_weight == 0 and cls_weight == 0:
+            loss_config = 'F1 (RGB only)'
+        elif cls_weight == 0:
+            loss_config = f'F2 (RGB+Seg, w={seg_weight:.2f})'
+        else:
+            loss_config = f'F3 (RGB+Seg+Cls, w_seg={seg_weight:.2f}, w_cls={cls_weight:.2f})'
     else:
-        loss_config = 'Unknown'
+        # Fallback to filename parsing
+        exp_name_clean = exp_name.replace('phase1_3_AE_', '').lower()
+        
+        # Determine encoder type
+        is_vae = 'vae' in exp_name_clean
+        encoder_type = 'VAE' if is_vae else 'Deterministic'
+        
+        # Determine loss config
+        if 'f1' in exp_name_clean or 'rgb_only' in exp_name_clean:
+            loss_config = 'F1 (RGB only)'
+        elif 'f2' in exp_name_clean or ('rgb' in exp_name_clean and 'seg' in exp_name_clean and 'cls' not in exp_name_clean):
+            loss_config = 'F2 (RGB+Seg)'
+        elif 'f3' in exp_name_clean or ('rgb' in exp_name_clean and 'seg' in exp_name_clean and 'cls' in exp_name_clean):
+            loss_config = 'F3 (RGB+Seg+Cls)'
     
-    return loss_config, encoder_type
+    return loss_config, encoder_type, loss_weights
 
 
-def create_encoder_type_comparison(all_data, output_dir):
+def get_display_name(exp_name, config_dir=None):
+    """Get a short, meaningful display name for an experiment."""
+    loss_config, encoder_type, loss_weights = parse_experiment_name(exp_name, config_dir)
+    
+    # Extract F1, F2, or F3 from loss_config
+    if 'F1' in loss_config or 'RGB only' in loss_config:
+        config_short = 'F1'
+    elif 'F2' in loss_config:
+        config_short = 'F2'
+    elif 'F3' in loss_config:
+        config_short = 'F3'
+    else:
+        config_short = loss_config.split()[0] if loss_config else 'Unknown'
+    
+    # Use short labels for encoder type: "AE" for deterministic, "V" for VAE
+    encoder_short = 'V' if encoder_type == 'VAE' else 'AE'
+    
+    # Short format: "F1-AE", "F2-V", etc.
+    return f"{config_short}-{encoder_short}"
+
+
+def create_encoder_type_comparison(all_data, output_dir, config_dir=None):
     """Compare Deterministic vs VAE for each loss configuration."""
     # Group experiments by loss config and encoder type
     grouped = {}
     for exp_name, df in all_data.items():
-        loss_config, encoder_type = parse_experiment_name(exp_name)
+        loss_config, encoder_type, _ = parse_experiment_name(exp_name, config_dir)
+        # Normalize encoder type: use "AE" instead of "Deterministic"
+        if encoder_type == 'Deterministic':
+            encoder_type = 'AE'
         key = loss_config
         if key not in grouped:
             grouped[key] = {}
-        grouped[key][encoder_type] = {'name': exp_name, 'df': df}
+        grouped[key][encoder_type] = {'name': exp_name, 'df': df, 'display_name': get_display_name(exp_name, config_dir)}
     
     if not grouped:
         print("  Could not parse experiment names, skipping encoder type comparison")
@@ -760,8 +898,8 @@ def create_encoder_type_comparison(all_data, output_dir):
     
     # Create comparison plot
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle('Phase 1.3: Encoder Type Comparison (Deterministic vs VAE)', 
-                 fontsize=16, fontweight='bold')
+    fig.suptitle('Phase 1.3: Encoder Type Comparison (AE vs VAE)', 
+                 fontsize=16, fontweight='bold', y=0.995)
     
     loss_configs = ['F1 (RGB only)', 'F2 (RGB+Seg)', 'F3 (RGB+Seg+Cls)']
     
@@ -770,7 +908,7 @@ def create_encoder_type_comparison(all_data, output_dir):
             continue
         
         group = grouped[loss_config]
-        det_data = group.get('Deterministic')
+        det_data = group.get('AE') or group.get('Deterministic')  # Support both for backward compatibility
         vae_data = group.get('VAE')
         
         # Row 1: Loss curves comparison
@@ -782,12 +920,12 @@ def create_encoder_type_comparison(all_data, output_dir):
             # Plot MSE
             if 'val_MSE_rgb' in det_df.columns and 'val_MSE_rgb' in vae_df.columns:
                 ax.plot(det_df['epoch'], det_df['val_MSE_rgb'], 
-                       label='Deterministic', linewidth=2.5, color='#2E86AB', linestyle='-')
+                       label='AE', linewidth=2.5, color='#2E86AB', linestyle='-')
                 ax.plot(vae_df['epoch'], vae_df['val_MSE_rgb'], 
                        label='VAE', linewidth=2.5, color='#A23B72', linestyle='--')
             elif 'train_MSE_rgb' in det_df.columns:
                 ax.plot(det_df['epoch'], det_df.get('val_MSE_rgb', det_df['train_MSE_rgb']), 
-                       label='Deterministic', linewidth=2.5, color='#2E86AB', linestyle='-')
+                       label='AE', linewidth=2.5, color='#2E86AB', linestyle='-')
                 ax.plot(vae_df['epoch'], vae_df.get('val_MSE_rgb', vae_df['train_MSE_rgb']), 
                        label='VAE', linewidth=2.5, color='#A23B72', linestyle='--')
             
@@ -815,7 +953,7 @@ def create_encoder_type_comparison(all_data, output_dir):
             
             x = np.arange(len(metrics))
             width = 0.35
-            ax.bar(x - width/2, det_values, width, label='Deterministic', 
+            ax.bar(x - width/2, det_values, width, label='AE', 
                   color='#2E86AB', alpha=0.8)
             ax.bar(x + width/2, vae_values, width, label='VAE', 
                   color='#A23B72', alpha=0.8)
@@ -827,35 +965,49 @@ def create_encoder_type_comparison(all_data, output_dir):
             ax.legend(frameon=True, fancybox=False, shadow=False)
             ax.grid(True, alpha=0.3, axis='y')
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.98], pad=2.0)
     output_path = output_dir / "encoder_type_comparison.png"
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"  Saved: {output_path}")
 
 
-def create_loss_vs_encoder_grid(all_data, output_dir):
+def create_loss_vs_encoder_grid(all_data, output_dir, config_dir=None):
     """Create a grid visualization showing both dimensions: Loss Config × Encoder Type."""
-    # Organize data into grid
-    loss_configs = ['F1 (RGB only)', 'F2 (RGB+Seg)', 'F3 (RGB+Seg+Cls)']
-    encoder_types = ['Deterministic', 'VAE']
-    
+    # Organize data into grid - collect all unique loss configs from parsed names
+    loss_configs_set = set()
     grid_data = {}
+    
     for exp_name, df in all_data.items():
-        loss_config, encoder_type = parse_experiment_name(exp_name)
+        loss_config, encoder_type, _ = parse_experiment_name(exp_name, config_dir)
+        # Normalize encoder type: use "AE" instead of "Deterministic"
+        if encoder_type == 'Deterministic':
+            encoder_type = 'AE'
+        loss_configs_set.add(loss_config)
+        
         final = df.iloc[-1]
         
         key = (loss_config, encoder_type)
         grid_data[key] = {
             'exp_name': exp_name,
+            'display_name': get_display_name(exp_name, config_dir),
             'mse': final.get('val_MSE_rgb', final.get('train_MSE_rgb', 0)),
             'total_loss': final.get('val_loss', final.get('train_loss', 0))
         }
     
+    # Sort loss configs in logical order
+    loss_configs = []
+    for cfg in ['F1 (RGB only)', 'F2 (RGB+Seg', 'F3 (RGB+Seg+Cls']:
+        matching = [c for c in loss_configs_set if c.startswith(cfg)]
+        loss_configs.extend(sorted(matching))
+    loss_configs.extend([c for c in loss_configs_set if c not in loss_configs])
+    
+    encoder_types = ['AE', 'VAE']
+    
     # Create heatmap-style grid
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     fig.suptitle('Phase 1.3: Two-Dimensional Analysis (Loss Config × Encoder Type)', 
-                 fontsize=16, fontweight='bold')
+                 fontsize=16, fontweight='bold', y=0.995)
     
     # Plot 1: MSE heatmap
     ax = axes[0]
@@ -895,12 +1047,14 @@ def create_loss_vs_encoder_grid(all_data, output_dir):
     det_values = []
     vae_values = []
     for loss_config in loss_configs:
-        det_key = (loss_config, 'Deterministic')
+        # Try both 'AE' and 'Deterministic' for backward compatibility
+        det_key = (loss_config, 'AE')
+        det_key_alt = (loss_config, 'Deterministic')
         vae_key = (loss_config, 'VAE')
-        det_values.append(grid_data.get(det_key, {}).get('mse', 0))
+        det_values.append(grid_data.get(det_key, grid_data.get(det_key_alt, {})).get('mse', 0))
         vae_values.append(grid_data.get(vae_key, {}).get('mse', 0))
     
-    bars1 = ax.bar(x_pos - width/2, det_values, width, label='Deterministic', 
+    bars1 = ax.bar(x_pos - width/2, det_values, width, label='AE', 
                    color='#2E86AB', alpha=0.8, edgecolor='black', linewidth=1.5)
     bars2 = ax.bar(x_pos + width/2, vae_values, width, label='VAE', 
                    color='#A23B72', alpha=0.8, edgecolor='black', linewidth=1.5)
@@ -910,6 +1064,7 @@ def create_loss_vs_encoder_grid(all_data, output_dir):
     ax.set_title('Encoder Type Comparison Across Loss Configs', fontsize=13, fontweight='bold')
     ax.set_xticks(x_pos)
     ax.set_xticklabels([lc.replace(' (', '\n(') for lc in loss_configs], fontsize=10)
+    ax.tick_params(axis='x', pad=8)
     ax.legend(frameon=True, fancybox=False, shadow=False)
     ax.grid(True, alpha=0.3, axis='y')
     
@@ -918,9 +1073,9 @@ def create_loss_vs_encoder_grid(all_data, output_dir):
         for bar in bars:
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{height:.4f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+                   f'{height:.4f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.98], pad=2.0)
     output_path = output_dir / "loss_vs_encoder_grid.png"
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()

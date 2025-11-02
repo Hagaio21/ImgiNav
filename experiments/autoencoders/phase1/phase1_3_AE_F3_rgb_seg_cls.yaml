@@ -53,7 +53,7 @@ training:
   batch_size: 16
   num_workers: 8
   shuffle: true
-  epochs: 10  # Quick test
+  epochs: 20  # Extended test to see clearer differences
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
