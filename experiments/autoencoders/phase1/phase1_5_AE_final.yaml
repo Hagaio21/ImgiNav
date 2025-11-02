@@ -43,10 +43,6 @@ autoencoder:
       - type: SegmentationHead
         name: segmentation
         num_classes: 10
-      - type: ClassificationHead
-        name: classification
-        num_classes: 2
-
 training:
   seed: 42
   train_split: 0.8
@@ -75,8 +71,3 @@ training:
         key: segmentation
         target: segmentation
         weight: 0.05  # Segmentation loss (Phase 1.3 winner: F2)
-      - type: CrossEntropyLoss
-        key: classification
-        target: label
-        weight: 0.0  # Disabled (not used in F2 config)
-
