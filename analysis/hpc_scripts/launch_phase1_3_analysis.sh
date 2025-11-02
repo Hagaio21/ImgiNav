@@ -1,5 +1,5 @@
 #!/bin/bash
-# Launch script for Phase 1.2 Analysis
+# Launch script for Phase 1.3 Analysis
 # Runs analysis script on GPU
 
 set -euo pipefail
@@ -11,23 +11,24 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
 echo "=========================================="
-echo "Launching Phase 1.2 Analysis"
+echo "Launching Phase 1.3 Analysis"
 echo "=========================================="
 echo "Note: Phase 1.2 and 1.3 are trained together (8 experiments),"
 echo "      but metrics are saved to separate phase directories."
 echo ""
 echo "This will:"
-echo "  1. Load metrics from all 2 experiments (V1, V2)"
+echo "  1. Load metrics from all 6 experiments (F1-F3, deterministic + VAE)"
 echo "  2. Create comparison plots and analysis"
 echo "  3. Load autoencoder checkpoints"
 echo "  4. Run visual comparisons on test samples"
+echo "  5. Create UMAP latent space visualizations"
 echo ""
 echo "Log directory: ${LOG_DIR}"
 echo ""
 
 # Submit analysis job
 echo "Submitting analysis job (V100 GPU)..."
-JOB_OUTPUT=$(bsub < "${SCRIPT_DIR}/run_phase1_2_analysis.sh" 2>&1)
+JOB_OUTPUT=$(bsub < "${SCRIPT_DIR}/run_phase1_3_analysis.sh" 2>&1)
 EXIT_CODE=$?
 echo "${JOB_OUTPUT}"
 
@@ -50,6 +51,6 @@ fi
 echo "Monitor logs in: ${LOG_DIR}"
 echo ""
 echo "Results will be saved to:"
-echo "  outputs/phase1_2_vae_test/analysis/"
+echo "  outputs/phase1_3_loss_tuning/analysis/"
 echo ""
 

@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J phase1_2_analysis
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/analysis/hpc_scripts/logs/phase1_2_analysis.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/analysis/hpc_scripts/logs/phase1_2_analysis.%J.err
+#BSUB -J phase1_3_analysis
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/analysis/hpc_scripts/logs/phase1_3_analysis.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/analysis/hpc_scripts/logs/phase1_3_analysis.%J.err
 #BSUB -n 4
 #BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
@@ -17,11 +17,11 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/analysis/phase1_2_analysis.py"
+PYTHON_SCRIPT="${BASE_DIR}/analysis/phase1_3_analysis.py"
 LOG_DIR="${BASE_DIR}/analysis/hpc_scripts/logs"
 
 # Phase-specific paths
-PHASE_DIR="${BASE_DIR}/outputs/phase1_2_vae_test"
+PHASE_DIR="${BASE_DIR}/outputs/phase1_3_loss_tuning"
 EXPERIMENTS_DIR="${BASE_DIR}/../experiments/phase1"
 DATASET_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
 
@@ -53,7 +53,7 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Phase 1.2: VAE Test Analysis"
+echo "Phase 1.3: Loss Tuning Analysis"
 echo "=========================================="
 echo "Phase directory: ${PHASE_DIR}"
 echo "Experiments directory: ${EXPERIMENTS_DIR}"
@@ -73,7 +73,7 @@ fi
 # Validate phase directory exists
 if [ ! -d "${PHASE_DIR}" ]; then
   echo "ERROR: Phase directory not found: ${PHASE_DIR}" >&2
-  echo "Please ensure Phase 1.2 experiments have completed." >&2
+  echo "Please ensure Phase 1.3 experiments have completed." >&2
   exit 1
 fi
 
