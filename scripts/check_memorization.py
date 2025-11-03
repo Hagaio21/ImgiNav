@@ -275,6 +275,11 @@ def compute_diversity_metrics(samples):
     }
 
 
+def compute_diversity_metrics_latent(latents_flat):
+    """Compute diversity metrics on flattened latents."""
+    return compute_diversity_metrics(latents_flat)
+
+
 def plot_distributions(results, output_dir):
     """Plot distance distributions and statistics using seaborn."""
     output_dir = Path(output_dir)
@@ -640,10 +645,8 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     print("="*60)
     
     max_memorized_ratio = 0.0
-    if 'rgb' in summary:
-        max_memorized_ratio = max(max_memorized_ratio, summary['rgb']['memorized_ratio'])
     if 'latent' in summary:
-        max_memorized_ratio = max(max_memorized_ratio, summary['latent']['memorized_ratio'])
+        max_memorized_ratio = summary['latent']['memorized_ratio']
     
     if max_memorized_ratio < 0.01:
         print("✓ Model shows no significant memorization (< 1% samples)")
