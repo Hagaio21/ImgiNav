@@ -15,7 +15,7 @@ LOG_DIR="${BASE_DIR}/scripts/hpc_scripts/logs"
 MEMORIZATION_SCRIPT="${BASE_DIR}/scripts/check_memorization.py"
 ABLATION_DIR="${BASE_DIR}/experiments/diffusion/ablation"
 OUTPUT_BASE="/work3/s233249/ImgiNav/outputs/memorization_checks"
-MANIFEST_PATH="/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
+MANIFEST_PATH="/work3/s233249/ImgiNav/datasets/layouts_latents.csv"  # Use original pre-augmented dataset for memorization testing
 
 mkdir -p "${LOG_DIR}"
 
