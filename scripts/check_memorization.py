@@ -42,9 +42,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import entropy
 
-# Set seaborn style
-sns.set_style("darkgrid")
-
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -290,8 +287,18 @@ def plot_distributions(results, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Set seaborn style
-    sns.set_style("darkgrid")
+    # Set seaborn style (with fallback if style not available)
+    try:
+        sns.set_style("darkgrid")
+    except (OSError, FileNotFoundError):
+        # Fallback to default style if seaborn styles not available
+        plt.style.use('default')
+        # Manually set darkgrid-like appearance
+        plt.rcParams['axes.grid'] = True
+        plt.rcParams['grid.alpha'] = 0.3
+        plt.rcParams['axes.facecolor'] = 'white'
+        plt.rcParams['figure.facecolor'] = 'white'
+    
     plt.rcParams['figure.facecolor'] = 'white'
     
     # Create 2x2 grid: L2 distances, Cosine similarities, Diversity
