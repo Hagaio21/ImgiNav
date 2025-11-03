@@ -28,9 +28,7 @@ INPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_latents.csv"
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/augmented"
 
 # Augmentation parameters
-NUM_AUGMENTATIONS=3  # Number of augmented versions per original image
-ROTATION_RANGE=15.0  # Maximum rotation in degrees
-TRANSLATE_RANGE=0.05  # Maximum translation as fraction of size (5%)
+USE_MIRROR_ROTATION=true  # Use mirror + 90-degree rotations (7 variants per sample)
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "${OUTPUT_DIR}"
@@ -43,9 +41,13 @@ echo "Autoencoder config: ${AUTOENCODER_CONFIG}"
 echo "Autoencoder checkpoint: ${AUTOENCODER_CHECKPOINT}"
 echo "Input manifest: ${INPUT_MANIFEST}"
 echo "Output directory: ${OUTPUT_DIR}"
-echo "Number of augmentations per image: ${NUM_AUGMENTATIONS}"
-echo "Rotation range: ±${ROTATION_RANGE}°"
-echo "Translation range: ±5%"  # ${TRANSLATE_RANGE} * 100 = 5%
+if [ "${USE_MIRROR_ROTATION}" = "true" ]; then
+    echo "Augmentation method: Mirror + 90-degree rotations (7 variants per sample)"
+    echo "  - Original + 3 rotations (90°, 180°, 270°)"
+    echo "  - Mirror + 3 rotations (mirrored 90°, 180°, 270°)"
+else
+    echo "Augmentation method: Legacy random augmentation (3 variants per sample, deprecated)"
+fi
 echo ""
 
 # Check required files
@@ -84,18 +86,25 @@ fi
 cd "${BASE_DIR}"
 
 echo "Starting augmentation process..."
-python "${SCRIPT_PATH}" \
-    --autoencoder-config "${AUTOENCODER_CONFIG}" \
-    --autoencoder-checkpoint "${AUTOENCODER_CHECKPOINT}" \
-    --dataset-manifest "${INPUT_MANIFEST}" \
-    --output-dir "${OUTPUT_DIR}" \
-    --num-augmentations "${NUM_AUGMENTATIONS}" \
-    --rotation-range "${ROTATION_RANGE}" \
-    --translate-range "${TRANSLATE_RANGE}" \
+echo "Note: This will filter out white images (>95% whitish pixels) and empty images"
+echo ""
+
+# Build command with optional --use-mirror-rotation flag
+CMD="python \"${SCRIPT_PATH}\" \
+    --autoencoder-config \"${AUTOENCODER_CONFIG}\" \
+    --autoencoder-checkpoint \"${AUTOENCODER_CHECKPOINT}\" \
+    --dataset-manifest \"${INPUT_MANIFEST}\" \
+    --output-dir \"${OUTPUT_DIR}\" \
     --batch-size 32 \
     --num-workers 8 \
     --device cuda \
-    --overwrite
+    --overwrite"
+
+if [ "${USE_MIRROR_ROTATION}" = "true" ]; then
+    CMD="${CMD} --use-mirror-rotation"
+fi
+
+eval ${CMD}
 
 echo ""
 echo "========================================="

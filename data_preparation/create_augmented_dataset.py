@@ -29,22 +29,20 @@ def is_white_image(image_tensor, threshold=0.95, white_threshold=0.9):
     """
     Check if an image is mostly white (>95% whitish pixels by default).
     
+    A "whitish pixel" is one where all RGB channels are above the threshold.
+    
     Args:
-        image_tensor: Tensor of shape [C, H, W] in range [-1, 1] or [0, 255]
+        image_tensor: Tensor of shape [C, H, W] in range [0, 1]
         threshold: Fraction of pixels that must be white (default: 0.95 = 95%)
-        white_threshold: Pixel value threshold for "white" (0.9 in [-1,1] range, or 230 in [0,255] range)
+        white_threshold: Pixel value threshold for "white" in [0, 1] range (default: 0.9 = 230/255)
     
     Returns:
         True if image is mostly white, False otherwise
     """
-    # Handle different input ranges
-    if image_tensor.min() < 0:
-        # Assume [-1, 1] range
-        white_mask = (image_tensor > white_threshold).all(dim=0)  # All channels > threshold
-    else:
-        # Assume [0, 255] range, convert threshold
-        white_threshold_uint8 = white_threshold * 255 if white_threshold <= 1.0 else white_threshold
-        white_mask = (image_tensor > white_threshold_uint8).all(dim=0)  # All channels > threshold
+    # image_tensor is in [0, 1] range after normalization
+    # Check if all channels (R, G, B) are above threshold for each pixel
+    # Shape: [C, H, W] where C=3 (RGB)
+    white_mask = (image_tensor > white_threshold).all(dim=0)  # All channels > threshold
     
     # Count white pixels
     total_pixels = white_mask.numel()
@@ -310,16 +308,16 @@ def create_augmented_dataset(
                         raise ValueError(f"Encoder output must contain 'latent' or 'mu'")
                     torch.save(latent, latent_output_path)
                 
-                # Add to manifest
+                # Add to manifest (paths relative to output_dir for portability)
                 all_rows.append({
                     "layout_path": str(original_output_path.relative_to(output_dir.parent)),
                     "latent_path": str(latent_output_path.relative_to(output_dir.parent)),
                     "scene_id": scene_id,
                     "room_id": room_id,
-                    "is_empty": row.get("is_empty", False),
+                    "is_empty": False,  # We've already filtered empty images
                     "is_augmented": False,
                     "augmentation_id": 0,
-                    "original_path": str(original_image_path)
+                    "original_path": str(original_image_path) if original_image_path.is_absolute() else str(original_image_path)
                 })
                 processed_originals += 1
             except Exception as e:
