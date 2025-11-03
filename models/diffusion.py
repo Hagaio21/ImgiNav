@@ -404,9 +404,6 @@ class DiffusionModel(BaseModel):
         if include_config:
             payload["config"] = self.to_config()
         
-        # noise_scale and noise_offset are now stored in scheduler's state_dict (as buffers)
-        # No need to save them separately
-        
         payload.update(extra_state)
         torch.save(payload, path)
     

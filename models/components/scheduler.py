@@ -19,10 +19,14 @@ class NoiseScheduler(BaseComponent):
         noise_scale = self._init_kwargs.get("noise_scale", None)
         noise_offset = self._init_kwargs.get("noise_offset", None)
         if noise_scale is not None:
+            if hasattr(self, 'noise_scale'):
+                delattr(self, 'noise_scale')
             self.register_buffer("noise_scale", noise_scale)
         else:
             self.noise_scale = None
         if noise_offset is not None:
+            if hasattr(self, 'noise_offset'):
+                delattr(self, 'noise_offset')
             self.register_buffer("noise_offset", noise_offset)
         else:
             self.noise_offset = None
