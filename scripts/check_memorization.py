@@ -53,13 +53,15 @@ from models.datasets.datasets import ManifestDataset
 from training.utils import load_config, build_dataset
 
 
-def load_training_samples(dataset, num_samples=None, device="cuda"):
+def load_training_samples(dataset, num_samples=None, device="cuda", batch_size=1000, load_rgb=False):
     """Load a subset of training samples for comparison.
     
     Args:
         dataset: Dataset to load from
         num_samples: Number of samples to load. If None, loads entire dataset.
         device: Device to load samples to
+        batch_size: Process in batches to manage memory
+        load_rgb: If True, load RGB images. If False, only load latents (memory efficient).
     """
     if num_samples is None:
         num_samples = len(dataset)
@@ -74,46 +76,73 @@ def load_training_samples(dataset, num_samples=None, device="cuda"):
     training_rgb = []
     training_metadata = []
     
-    for idx in tqdm(indices, desc="Loading training samples"):
-        try:
-            sample = dataset[idx]
-            
-            # Get latent if available
-            if "latent" in sample:
-                lat = sample["latent"]
-                if isinstance(lat, torch.Tensor):
-                    training_latents.append(lat)
-                else:
-                    training_latents.append(torch.tensor(lat))
-            
-            # Get RGB if available
-            if "rgb" in sample:
-                rgb = sample["rgb"]
-                if isinstance(rgb, torch.Tensor):
-                    training_rgb.append(rgb)
-                else:
-                    training_rgb.append(torch.tensor(rgb))
-            
-            # Get metadata
-            metadata = {}
-            if hasattr(dataset, 'df') and idx < len(dataset.df):
-                row = dataset.df.iloc[idx]
-                metadata = {
-                    'index': idx,
-                    'scene_id': row.get('scene_id', 'unknown'),
-                    'room_id': row.get('room_id', 'unknown'),
-                    'path': row.get('path', 'unknown')
-                }
-            training_metadata.append(metadata)
-        except Exception as e:
-            print(f"Warning: Failed to load sample {idx}: {e}")
-            continue
+    # Process in batches to manage memory
+    num_batches = (len(indices) + batch_size - 1) // batch_size
     
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(indices))
+        batch_indices = indices[start_idx:end_idx]
+        
+        batch_latents = []
+        batch_rgb = []
+        batch_metadata = []
+        
+        for idx in tqdm(batch_indices, desc=f"Loading batch {batch_idx+1}/{num_batches}", leave=False):
+            try:
+                sample = dataset[idx]
+                
+                # Get latent if available
+                if "latent" in sample:
+                    lat = sample["latent"]
+                    if isinstance(lat, torch.Tensor):
+                        batch_latents.append(lat.cpu())  # Keep on CPU initially
+                    else:
+                        batch_latents.append(torch.tensor(lat))
+                
+                # Get RGB if available and requested
+                if load_rgb and "rgb" in sample:
+                    rgb = sample["rgb"]
+                    if isinstance(rgb, torch.Tensor):
+                        batch_rgb.append(rgb.cpu())  # Keep on CPU initially
+                    else:
+                        batch_rgb.append(torch.tensor(rgb))
+                
+                # Get metadata
+                metadata = {}
+                if hasattr(dataset, 'df') and idx < len(dataset.df):
+                    row = dataset.df.iloc[idx]
+                    metadata = {
+                        'index': idx,
+                        'scene_id': row.get('scene_id', 'unknown'),
+                        'room_id': row.get('room_id', 'unknown'),
+                        'path': row.get('path', 'unknown')
+                    }
+                batch_metadata.append(metadata)
+            except Exception as e:
+                print(f"Warning: Failed to load sample {idx}: {e}")
+                continue
+        
+        # Stack batch and move to device (more memory efficient)
+        if batch_latents:
+            training_latents.append(torch.stack(batch_latents))
+        if batch_rgb:
+            training_rgb.append(torch.stack(batch_rgb))
+        training_metadata.extend(batch_metadata)
+        
+        # Clear batch from CPU memory
+        del batch_latents, batch_rgb
+    
+    # Concatenate all batches and move to device
     result = {'metadata': training_metadata}
     if training_latents:
-        result['latents'] = torch.stack(training_latents).to(device)
+        print(f"Concatenating {len(training_latents)} batches of latents...")
+        result['latents'] = torch.cat(training_latents, dim=0).to(device)
+        del training_latents
     if training_rgb:
-        result['rgb'] = torch.stack(training_rgb).to(device)
+        print(f"Concatenating {len(training_rgb)} batches of RGB...")
+        result['rgb'] = torch.cat(training_rgb, dim=0).to(device)
+        del training_rgb
     
     return result
 
@@ -488,23 +517,22 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     config["dataset"]["manifest"] = manifest_path
     print(f"Using manifest: {manifest_path}")
     
-    # Ensure we load both RGB and latent for memorization testing
-    # Check if layout_path exists in manifest to know if RGB is available
+    # Only load latents for comparison (memory efficient)
+    # RGB will be decoded later only for visualization of closest matches
     import pandas as pd
     manifest_df = pd.read_csv(manifest_path)
-    has_layout_path = "layout_path" in manifest_df.columns
     has_latent_path = "latent_path" in manifest_df.columns
     
-    # Update outputs to include both if available
+    # Update outputs to only include latent (we'll decode RGB for visualization later)
     if "outputs" not in config["dataset"]:
         config["dataset"]["outputs"] = {}
     
-    # Keep existing outputs, but add RGB if layout_path exists
+    # Only load latent for comparison (saves memory)
     if has_latent_path and "latent" not in config["dataset"]["outputs"]:
         config["dataset"]["outputs"]["latent"] = "latent_path"
-    if has_layout_path:
-        config["dataset"]["outputs"]["rgb"] = "layout_path"
-        print("Added RGB output to dataset config (from layout_path)")
+    
+    # Store layout_path info for later RGB decoding if needed
+    has_layout_path = "layout_path" in manifest_df.columns
     
     dataset = build_dataset(config)
     # If num_training is None, use entire dataset
@@ -513,11 +541,12 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
         print(f"Checking against entire dataset: {num_training} samples")
     else:
         print(f"Checking against {num_training} training samples (dataset has {len(dataset)} total)")
-    training_samples = load_training_samples(dataset, num_samples=num_training, device=device)
-    print(f"Loaded {len(training_samples['metadata'])} training samples")
+    # Only load latents (not RGB) to save memory
+    training_samples = load_training_samples(dataset, num_samples=num_training, device=device, load_rgb=False)
+    print(f"Loaded {len(training_samples['metadata'])} training samples (latents only)")
     
-    if training_samples.get('latents') is None and training_samples.get('rgb') is None:
-        print("Error: Could not load training samples (no latents or RGB found)")
+    if training_samples.get('latents') is None:
+        print("Error: Could not load training samples (no latents found)")
         return
     
     # Generate samples
@@ -532,23 +561,14 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     
     print(f"Generated {len(generated_samples.get('latents', generated_samples.get('rgb', [])))} samples")
     
-    # Compute distances and metrics
+    # Compute distances and metrics (only in latent space for memory efficiency)
     print("\n" + "="*60)
-    print("Computing memorization metrics...")
+    print("Computing memorization metrics (latent space only)...")
     print("="*60)
     
     results = {}
     
-    # RGB space distances
-    if generated_samples.get('rgb') is not None and training_samples.get('rgb') is not None:
-        print("Computing RGB space distances...")
-        rgb_distances, rgb_nn_indices = compute_pixel_distances(
-            generated_samples['rgb'], training_samples['rgb']
-        )
-        results['rgb_l2_distances'] = rgb_distances
-        results['rgb_nn_indices'] = rgb_nn_indices
-    
-    # Latent space distances
+    # Latent space distances (only comparison we do)
     if generated_samples.get('latents') is not None and training_samples.get('latents') is not None:
         print("Computing latent space distances...")
         latent_results = compute_latent_distances(
@@ -559,50 +579,21 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
         results['latent_cosine_similarities'] = latent_results['cosine_similarities']
         results['latent_nn_indices_cosine'] = latent_results['nn_indices_cosine']
     
-    # Diversity metrics
-    if generated_samples.get('rgb') is not None:
-        print("Computing diversity metrics...")
-        results['diversity'] = compute_diversity_metrics(generated_samples['rgb'])
+    # Diversity metrics (compute on latents instead of RGB)
+    if generated_samples.get('latents') is not None:
+        print("Computing diversity metrics (latent space)...")
+        # Convert latents to format expected by diversity function (flatten for pairwise)
+        latent_flat = generated_samples['latents'].flatten(start_dim=1)  # [N, C*H*W]
+        results['diversity'] = compute_diversity_metrics_latent(latent_flat)
     
     # Compute statistics and check thresholds
     print("\n" + "="*60)
-    print("Memorization Analysis Results")
+    print("Memorization Analysis Results (Latent Space)")
     print("="*60)
     
     summary = {}
     
-    # RGB space analysis
-    if 'rgb_l2_distances' in results:
-        distances = results['rgb_l2_distances']
-        mean_dist = np.mean(distances)
-        median_dist = np.median(distances)
-        min_dist = np.min(distances)
-        max_dist = np.max(distances)
-        
-        # Threshold for memorization (adjust based on your data scale)
-        threshold = 0.001  # Very small distance suggests exact match
-        memorized_count = (distances < threshold).sum()
-        memorized_ratio = memorized_count / len(distances)
-        
-        summary['rgb'] = {
-            'mean_distance': float(mean_dist),
-            'median_distance': float(median_dist),
-            'min_distance': float(min_dist),
-            'max_distance': float(max_dist),
-            'memorized_count': int(memorized_count),
-            'memorized_ratio': float(memorized_ratio),
-            'threshold': threshold
-        }
-        
-        print(f"\nRGB Space Analysis:")
-        print(f"  Mean distance:     {mean_dist:.6f}")
-        print(f"  Median distance:    {median_dist:.6f}")
-        print(f"  Min distance:       {min_dist:.6f}")
-        print(f"  Max distance:       {max_dist:.6f}")
-        print(f"  Memorized samples:  {memorized_count}/{len(distances)} ({memorized_ratio:.2%})")
-        print(f"  Threshold:          {threshold}")
-    
-    # Latent space analysis
+    # Latent space analysis (primary metric)
     if 'latent_l2_distances' in results:
         distances = results['latent_l2_distances']
         similarities = results['latent_cosine_similarities']

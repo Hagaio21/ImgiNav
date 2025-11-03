@@ -3,9 +3,9 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/scripts/hpc_scripts/logs/memorization_check.%J.%I.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/scripts/hpc_scripts/logs/memorization_check.%J.%I.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=16000]"
+#BSUB -R "rusage[mem=64000]"
 #BSUB -gpu "num=1"
-#BSUB -W 4:00
+#BSUB -W 8:00
 #BSUB -q gpuv100
 
 set -euo pipefail
