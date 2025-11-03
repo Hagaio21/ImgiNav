@@ -8,7 +8,7 @@ experiment:
   epochs_target: 1000  # Target epochs for learning rate scheduler
 
 dataset:
-  manifest: "/work3/s233249/ImgiNav/datasets/layouts_latents.csv"  # Manifest with latent_path column (created by preembed_latents.py)
+  manifest: "/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"  # Augmented dataset manifest with original + augmented images and latents
   outputs:
     latent: "latent_path"  # Use pre-embedded latents for faster training
   filters:

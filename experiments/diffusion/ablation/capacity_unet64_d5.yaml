@@ -4,7 +4,7 @@ experiment:
   save_path: /work3/s233249/ImgiNav/experiments/diffusion/ablation/capacity_unet64_d5
   epochs_target: 1000
 dataset:
-  manifest: /work3/s233249/ImgiNav/datasets/layouts_latents.csv  # Manifest with latent_path column (created by preembed_latents.py)
+  manifest: /work3/s233249/ImgiNav/datasets/augmented/manifest.csv  # Augmented dataset manifest with original + augmented images and latents
   outputs:
     latent: latent_path  # Use pre-embedded latents for faster training
   filters:
