@@ -292,9 +292,12 @@ def main():
         phase_dir.mkdir(parents=True, exist_ok=True)
         print(f"Phase directory: {phase_dir} (for shared metrics/samples)")
     
-    # Build components
-    print("Building model...")
-    model = build_model(config)
+    # Check for latest checkpoint (automatic resume)
+    latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
+    start_epoch = 0
+    best_val_loss = float("inf")
+    training_history = []
+    extra_state = {}
     
     # Convert device string to device object
     if isinstance(device, str):
@@ -302,7 +305,32 @@ def main():
     else:
         device_obj = device
     
-    model = model.to(device_obj)
+    should_resume = latest_checkpoint.exists()
+    if should_resume:
+        print(f"\nFound latest checkpoint: {latest_checkpoint}")
+        print("Resuming training...")
+        
+        # Load checkpoint with extra state, using current config
+        model, extra_state = Autoencoder.load_checkpoint(
+            latest_checkpoint,
+            map_location=device_obj,
+            return_extra=True,
+            config=config
+        )
+        model = model.to(device_obj)
+        
+        # Restore training state
+        start_epoch = extra_state.get("epoch", 1) - 1  # epoch in checkpoint is 1-indexed
+        best_val_loss = extra_state.get("best_val_loss", float("inf"))
+        training_history = extra_state.get("training_history", [])
+        
+        print(f"  Resuming from epoch {start_epoch + 1}")
+        print(f"  Best validation loss so far: {best_val_loss:.6f}")
+    else:
+        # Build components
+        print("Building model...")
+        model = build_model(config)
+        model = model.to(device_obj)
     
     # Enable cudnn benchmark for faster convolutions (optimizes for input sizes)
     if device_obj.type == "cuda":
@@ -358,6 +386,11 @@ def main():
     
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)
+    if should_resume:
+        optimizer_state = extra_state.get("optimizer_state")
+        if optimizer_state:
+            optimizer.load_state_dict(optimizer_state)
+            print("  Loaded optimizer state from checkpoint")
     
     # Enable mixed precision training by default (can be disabled in config)
     use_amp = config.get("training", {}).get("use_amp", True)  # Default to True for speedup
@@ -369,7 +402,10 @@ def main():
         print("Mixed precision training disabled (use_amp: false)")
     
     # Training configuration (all from config)
-    num_epochs = config["training"]["epochs"]
+    epochs_to_train = config["training"]["epochs"]  # Additional epochs to train
+    
+    # Calculate end epoch: start_epoch + additional epochs to train
+    end_epoch = start_epoch + epochs_to_train
     save_interval = config["training"].get("save_interval", 1)
     eval_interval = config["training"].get("eval_interval", 1)
     sample_interval = config["training"].get("sample_interval", 5)
@@ -380,7 +416,10 @@ def main():
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
     early_stopping_restore_best = config["training"].get("early_stopping_restore_best", True)
     
-    print(f"\nStarting training for {num_epochs} epochs...")
+    print(f"\nTraining configuration:")
+    print(f"  Additional epochs to train: {epochs_to_train}")
+    print(f"  Starting from epoch: {start_epoch + 1}")
+    print(f"  Will train until epoch: {end_epoch}")
     print(f"  Save interval: every {save_interval} epoch(s)")
     if val_loader:
         print(f"  Evaluation: every epoch")
@@ -392,10 +431,8 @@ def main():
         if early_stopping_restore_best:
             print(f"  Will restore best checkpoint on early stop")
     
-    best_val_loss = float("inf")
     checkpoint_files = []
     epochs_without_improvement = 0
-    training_history = []
     
     # CSV file path for metrics (in experiment folder)
     metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
@@ -405,11 +442,11 @@ def main():
     if phase_dir:
         phase_metrics_path = phase_dir / f"{exp_name}_metrics.csv"
     
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, end_epoch):
         # Training
         avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
         
-        print(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {avg_loss:.6f}")
+        print(f"Epoch {epoch + 1}/{end_epoch} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():
             print(f"  Train {k}: {v:.6f}")
         
@@ -486,16 +523,19 @@ def main():
             df.to_csv(phase_metrics_path, index=False)
         
         # Save checkpoint at specified interval
-        should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == num_epochs
+        should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
         if should_save:
             checkpoint_path = output_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
             # Save checkpoint with config inside (via save_checkpoint method)
             model.save_checkpoint(checkpoint_path, include_config=True)
             checkpoint_files.append(checkpoint_path)
         
-        # Always save latest checkpoint
+        # Always save latest checkpoint (for resume - includes optimizer state)
         latest_path = output_dir / f"{exp_name}_checkpoint_latest.pt"
-        model.save_checkpoint(latest_path, include_config=True)
+        model.save_checkpoint(latest_path, include_config=True,
+                            epoch=epoch + 1, best_val_loss=best_val_loss,
+                            optimizer_state=optimizer.state_dict(),
+                            training_history=training_history)
         
         # Clean up old checkpoints if keeping only N
         if keep_checkpoints and len(checkpoint_files) > keep_checkpoints:

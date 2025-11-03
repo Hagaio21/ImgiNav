@@ -78,12 +78,14 @@ class SigmoidScheduler(NoiseScheduler):
 
 class ExponentialScheduler(NoiseScheduler):
     def build_schedule(self, num_steps):
-        steps = torch.arange(num_steps, dtype=torch.float32)
-        alpha_bars = torch.exp(-5 * steps / num_steps)
-        betas = torch.zeros(num_steps)
-        betas[0] = 1 - alpha_bars[0]
-        betas[1:] = 1 - (alpha_bars[1:] / alpha_bars[:-1])
-        betas = torch.clamp(betas, 1e-4, 0.999)
+        steps = torch.arange(num_steps + 1, dtype=torch.float32)
+        # Use larger decay rate to ensure alpha_bar_T ≈ 0
+        # exp(-10) ≈ 4.5e-5, ensuring proper noise destruction
+        alpha_bars = torch.exp(-10 * steps / num_steps)
+        # Ensure final alpha_bar is small
+        alpha_bars = torch.clamp(alpha_bars, min=1e-6, max=1.0)
+        betas = 1 - (alpha_bars[1:] / alpha_bars[:-1])
+        betas = torch.clamp(betas, min=1e-4, max=0.999)
         alphas = 1 - betas
         return alphas, betas
 

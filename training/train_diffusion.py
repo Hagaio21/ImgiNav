@@ -376,12 +376,15 @@ def main():
     
     # Training configuration
     epochs_target = config.get("experiment", {}).get("epochs_target", 1000)
-    num_epochs = config["training"].get("epochs", epochs_target)  # Can be less than target
+    epochs_to_train = config["training"].get("epochs", epochs_target)  # Additional epochs to train
     save_interval = config["training"].get("save_interval", 10)
     eval_interval = config["training"].get("eval_interval", 1)
     sample_interval = config["training"].get("sample_interval", 10)
     keep_checkpoints = config["training"].get("keep_checkpoints", None)
     max_grad_norm = config["training"].get("max_grad_norm", None)
+    
+    # Calculate end epoch: start_epoch + additional epochs to train
+    end_epoch = start_epoch + epochs_to_train
     
     # Early stopping
     early_stopping_patience = config["training"].get("early_stopping_patience", None)
@@ -390,7 +393,9 @@ def main():
     
     print(f"\nTraining configuration:")
     print(f"  Epochs target (for scheduler): {epochs_target}")
-    print(f"  Training epochs: {num_epochs} (starting from {start_epoch + 1})")
+    print(f"  Additional epochs to train: {epochs_to_train}")
+    print(f"  Starting from epoch: {start_epoch + 1}")
+    print(f"  Will train until epoch: {end_epoch}")
     print(f"  Save interval: every {save_interval} epoch(s)")
     if val_loader:
         print(f"  Evaluation: every {eval_interval} epoch(s)")
@@ -414,11 +419,11 @@ def main():
     else:
         device_obj = device
     
-    for epoch in range(start_epoch, num_epochs):
+    for epoch in range(start_epoch, end_epoch):
         # Training
         avg_loss, avg_logs = train_epoch(model, train_loader, scheduler, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm)
         
-        print(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {avg_loss:.6f}")
+        print(f"Epoch {epoch + 1}/{end_epoch} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():
             print(f"  Train {k}: {v:.6f}")
         
@@ -482,7 +487,7 @@ def main():
         df.to_csv(metrics_csv_path, index=False)
         
         # Save checkpoint at interval (model state only - includes all nested components)
-        should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == num_epochs
+        should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
         if should_save:
             checkpoint_path = output_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
             model.save_checkpoint(checkpoint_path, include_config=True)
