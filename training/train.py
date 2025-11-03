@@ -460,8 +460,8 @@ def main():
     if phase_dir:
         phase_metrics_path = phase_dir / f"{exp_name}_metrics.csv"
     
-    def extract_normalizer_stats(model, sample_batch=None):
-        """Extract normalizer parameters and actual latent statistics from encoder and decoder if they exist."""
+    def extract_normalizer_stats(model):
+        """Extract normalizer parameters from encoder and decoder if they exist (for backward compatibility)."""
         stats = {}
         if hasattr(model.encoder, 'latent_normalizer') and model.encoder.latent_normalizer is not None:
             enc_norm = model.encoder.latent_normalizer
@@ -493,40 +493,6 @@ def main():
             if 'enc_shift_mean' in stats:
                 stats['shift_diff_mean'] = abs(stats['enc_shift_mean'] - stats['dec_shift_mean'])
                 stats['scale_diff_mean'] = abs(stats['enc_scale_mean'] - stats['dec_scale_mean'])
-        
-        # Measure actual latent statistics (mean and std) from a sample batch
-        if sample_batch is not None:
-            model.eval()
-            with torch.no_grad():
-                # Get a batch of images
-                if isinstance(sample_batch, dict):
-                    images = sample_batch.get("rgb")
-                else:
-                    images = sample_batch
-                
-                if images is not None:
-                    # Encode to get normalized latents
-                    encoder_out = model.encoder(images)
-                    if "latent" in encoder_out:
-                        latents = encoder_out["latent"]
-                    elif "mu" in encoder_out:
-                        latents = encoder_out["mu"]
-                    else:
-                        latents = None
-                    
-                    if latents is not None:
-                        # Compute actual mean and std of normalized latents (should be ~0 and ~1)
-                        latent_mean = latents.mean().item()
-                        latent_std = latents.std().item()
-                        # Per-channel statistics
-                        latent_mean_per_ch = latents.mean(dim=(0, 2, 3)).cpu().tolist()  # (C,)
-                        latent_std_per_ch = latents.std(dim=(0, 2, 3)).cpu().tolist()  # (C,)
-                        
-                        stats['latent_mean'] = float(latent_mean)
-                        stats['latent_std'] = float(latent_std)
-                        stats['latent_mean_per_ch'] = json.dumps(latent_mean_per_ch)
-                        stats['latent_std_per_ch'] = json.dumps(latent_std_per_ch)
-            model.train()
         
         return stats
     
@@ -579,21 +545,45 @@ def main():
         
         # Plot 4: Actual latent statistics (mean and std should be ~0 and ~1)
         ax = axes[1, 1]
-        if 'latent_mean' in df.columns:
-            ax.plot(epochs, df['latent_mean'], label='Latent mean', linewidth=2, color='purple', marker='o', markersize=3)
+        
+        # Check for latent statistics from standardization loss first (more accurate)
+        if 'train_LatentStd_MeanVal' in df.columns:
+            ax.plot(epochs, df['train_LatentStd_MeanVal'], label='Latent mean (train)', linewidth=2, color='purple', marker='o', markersize=3)
+            if 'val_LatentStd_MeanVal' in df.columns:
+                ax.plot(epochs, df['val_LatentStd_MeanVal'], label='Latent mean (val)', linewidth=2, color='purple', marker='o', markersize=3, linestyle='--', alpha=0.7)
             ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Target: 0')
-        if 'latent_std' in df.columns:
+            
             ax2 = ax.twinx()
-            ax2.plot(epochs, df['latent_std'], label='Latent std', linewidth=2, color='brown', marker='s', markersize=3)
+            ax2.plot(epochs, df['train_LatentStd_StdVal'], label='Latent std (train)', linewidth=2, color='brown', marker='s', markersize=3)
+            if 'val_LatentStd_StdVal' in df.columns:
+                ax2.plot(epochs, df['val_LatentStd_StdVal'], label='Latent std (val)', linewidth=2, color='brown', marker='s', markersize=3, linestyle='--', alpha=0.7)
             ax2.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Target: 1')
             ax2.set_ylabel('Latent Std', color='brown')
             ax2.tick_params(axis='y', labelcolor='brown')
             ax2.legend(loc='upper right')
+        elif 'latent_mean' in df.columns:
+            # Fallback to direct measurement if available
+            ax.plot(epochs, df['latent_mean'], label='Latent mean', linewidth=2, color='purple', marker='o', markersize=3)
+            ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Target: 0')
+            if 'latent_std' in df.columns:
+                ax2 = ax.twinx()
+                ax2.plot(epochs, df['latent_std'], label='Latent std', linewidth=2, color='brown', marker='s', markersize=3)
+                ax2.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Target: 1')
+                ax2.set_ylabel('Latent Std', color='brown')
+                ax2.tick_params(axis='y', labelcolor='brown')
+                ax2.legend(loc='upper right')
+        else:
+            # No latent statistics available
+            ax.text(0.5, 0.5, 'No latent statistics available', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('Latent Statistics (not available)')
+        
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Latent Mean', color='purple')
         ax.set_title('Actual Latent Statistics (should be ~0 mean, ~1 std)')
         ax.tick_params(axis='y', labelcolor='purple')
-        ax.legend(loc='upper left')
+        if 'train_LatentStd_MeanVal' in df.columns or 'latent_mean' in df.columns:
+            ax.legend(loc='upper left')
         ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -603,6 +593,87 @@ def main():
         plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
         plt.close()
         print(f"  Saved normalizer convergence plot: {plot_path}")
+    
+    def _plot_latent_statistics(df, output_dir, exp_name):
+        """Plot latent statistics from standardization loss."""
+        # Check if latent statistics columns exist (from LatentStandardizationLoss)
+        has_train_stats = 'train_LatentStd_MeanVal' in df.columns
+        has_val_stats = 'val_LatentStd_MeanVal' in df.columns
+        
+        if not has_train_stats and not has_val_stats:
+            return  # No latent statistics to plot
+        
+        epochs = df['epoch'].values
+        
+        # Create figure with subplots
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle(f'Latent Statistics - {exp_name}', fontsize=16, fontweight='bold')
+        
+        # Plot 1: Latent Mean over time
+        ax = axes[0, 0]
+        if has_train_stats:
+            ax.plot(epochs, df['train_LatentStd_MeanVal'], label='Train mean', linewidth=2, marker='o', markersize=3, color='blue')
+        if has_val_stats:
+            ax.plot(epochs, df['val_LatentStd_MeanVal'], label='Val mean', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
+        ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Target: 0')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Latent Mean')
+        ax.set_title('Latent Mean (should → 0)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Plot 2: Latent Std over time
+        ax = axes[0, 1]
+        if has_train_stats:
+            ax.plot(epochs, df['train_LatentStd_StdVal'], label='Train std', linewidth=2, marker='o', markersize=3, color='green')
+        if has_val_stats:
+            ax.plot(epochs, df['val_LatentStd_StdVal'], label='Val std', linewidth=2, marker='s', markersize=3, color='orange', linestyle='--')
+        ax.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Target: 1')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Latent Std')
+        ax.set_title('Latent Std (should → 1)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Plot 3: Mean Loss component
+        ax = axes[1, 0]
+        if has_train_stats:
+            ax.plot(epochs, df['train_LatentStd_Mean'], label='Train mean loss', linewidth=2, marker='o', markersize=3, color='purple')
+        if has_val_stats:
+            ax.plot(epochs, df['val_LatentStd_Mean'], label='Val mean loss', linewidth=2, marker='s', markersize=3, color='cyan', linestyle='--')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Mean Loss Component')
+        ax.set_title('Mean Deviation Loss (should → 0)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        if len(df) > 1 and has_train_stats:
+            max_val = df['train_LatentStd_Mean'].max()
+            if max_val > 0:
+                ax.set_yscale('log')
+        
+        # Plot 4: Std Loss component
+        ax = axes[1, 1]
+        if has_train_stats:
+            ax.plot(epochs, df['train_LatentStd_Std'], label='Train std loss', linewidth=2, marker='o', markersize=3, color='brown')
+        if has_val_stats:
+            ax.plot(epochs, df['val_LatentStd_Std'], label='Val std loss', linewidth=2, marker='s', markersize=3, color='pink', linestyle='--')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Std Loss Component')
+        ax.set_title('Std Deviation Loss (should → 0)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        if len(df) > 1 and has_train_stats:
+            max_val = df['train_LatentStd_Std'].max()
+            if max_val > 0:
+                ax.set_yscale('log')
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = output_dir / f'{exp_name}_latent_statistics.png'
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved latent statistics plot: {plot_path}")
     
     for epoch in range(start_epoch, end_epoch):
         # Training
@@ -619,37 +690,9 @@ def main():
             **{f"train_{k}": float(v) for k, v in avg_logs.items()}
         }
         
-        # Extract and log normalizer statistics if available
-        # Get a sample batch for latent statistics measurement
-        sample_batch = None
-        if val_loader:
-            try:
-                sample_iter = iter(val_loader)
-                sample_batch = next(sample_iter)
-                # Move to device
-                if isinstance(device, str):
-                    device_obj = torch.device(device)
-                else:
-                    device_obj = device
-                sample_batch = {k: v.to(device_obj, non_blocking=True) if isinstance(v, torch.Tensor) else v 
-                               for k, v in sample_batch.items()}
-            except:
-                pass
-        elif train_loader:
-            # Fallback to train loader if no val loader
-            try:
-                sample_iter = iter(train_loader)
-                sample_batch = next(sample_iter)
-                if isinstance(device, str):
-                    device_obj = torch.device(device)
-                else:
-                    device_obj = device
-                sample_batch = {k: v.to(device_obj, non_blocking=True) if isinstance(v, torch.Tensor) else v 
-                               for k, v in sample_batch.items()}
-            except:
-                pass
-        
-        norm_stats = extract_normalizer_stats(model, sample_batch=sample_batch)
+        # Extract normalizer statistics if available (for backward compatibility with old models)
+        # Note: This is only relevant if normalization layers are still present
+        norm_stats = extract_normalizer_stats(model)
         if norm_stats:
             epoch_log.update(norm_stats)
             # Print normalizer convergence info
@@ -726,6 +769,9 @@ def main():
         # Plot normalizer convergence if available (overwrites same file each time)
         if norm_stats:
             _plot_normalizer_convergence(df, output_dir, exp_name)
+        
+        # Plot latent statistics if available (from LatentStandardizationLoss)
+        _plot_latent_statistics(df, output_dir, exp_name)
         
         # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch

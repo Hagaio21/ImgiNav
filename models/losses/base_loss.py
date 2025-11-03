@@ -68,6 +68,41 @@ class KLDLoss(LossComponent):
 
 
 @register_loss
+class LatentStandardizationLoss(LossComponent):
+    """
+    Loss that encourages latents to be approximately N(0,1).
+    Penalizes mean deviation from 0 and std deviation from 1.
+    """
+    def forward(self, preds, targets=None):
+        # Extract latent from encoder output
+        latent = preds.get(self.key)  # key should be "latent" or "mu"
+        if latent is None:
+            device = next(iter(preds.values())).device if preds else torch.device("cpu")
+            return torch.tensor(0.0, device=device), {}
+        
+        # Flatten latents to compute global mean and std
+        latent_flat = latent.reshape(latent.shape[0], -1)
+        
+        # Compute mean and std
+        latent_mean = latent_flat.mean()
+        latent_std = latent_flat.std()
+        
+        # Penalize mean ≠ 0 and std ≠ 1
+        mean_loss = latent_mean.pow(2)  # L2 penalty on mean
+        std_loss = (latent_std - 1.0).pow(2)  # L2 penalty on std deviation from 1
+        
+        # Combined loss
+        loss = (mean_loss + std_loss) * self.weight
+        
+        return loss, {
+            f"LatentStd_Mean": mean_loss.detach(),
+            f"LatentStd_Std": std_loss.detach(),
+            f"LatentStd_MeanVal": latent_mean.detach(),
+            f"LatentStd_StdVal": latent_std.detach(),
+        }
+
+
+@register_loss
 class CrossEntropyLoss(LossComponent):
     def _build(self):
         super()._build()

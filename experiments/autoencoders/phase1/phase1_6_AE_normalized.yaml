@@ -1,9 +1,9 @@
 # Phase 1.6: Normalized Autoencoder Training
-# Based on Phase 1.5 final autoencoder, but with latent normalization enabled
+# Based on Phase 1.5 final autoencoder, but with latent standardization loss
 # This ensures latents are standardized (zero mean, unit variance) for diffusion compatibility
 # Architecture: 32×32×16 = 16,384 dims (same as Phase 1.5)
-# Encoder: Deterministic AE with normalization
-# Loss: MSE=1.0, Seg=0.1 (same as Phase 1.5)
+# Encoder: Deterministic AE (no normalization layers, uses loss-based standardization)
+# Loss: MSE=1.0, Seg=0.2, LatentStd=0.1
 
 experiment:
   name: "phase1_6_AE_normalized"
@@ -29,7 +29,6 @@ autoencoder:
     activation: SiLU
     norm_groups: 8
     variational: false  # Deterministic AE (Phase 1.2 winner)
-    normalize_latents: true  # Enable normalization for diffusion compatibility
   
   decoder:
     latent_channels: 16  # 32×32×16 latent space
@@ -37,7 +36,6 @@ autoencoder:
     upsampling_steps: 4  # 32 -> 512 (32×32 spatial resolution)
     activation: SiLU
     norm_groups: 8
-    denormalize_latents: true  # Must match encoder setting
     heads:
       - type: RGBHead
         name: rgb
@@ -75,4 +73,7 @@ training:
         key: segmentation
         target: segmentation
         weight: 0.2  # Segmentation loss (same as Phase 1.5)
+      - type: LatentStandardizationLoss
+        key: latent  # Extract "latent" from encoder output
+        weight: 0.1  # Encourages latents to be ~N(0,1) for diffusion compatibility
 
