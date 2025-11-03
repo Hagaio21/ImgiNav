@@ -140,37 +140,42 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
                     # If relative, resolve relative to manifest directory
                     layout_path = (manifest_dir / layout_path).resolve()
                 
-                # For augmented dataset structure: 
-                # images/name.png -> latents/name.pt
-                # Always save latents in latents/ folder (mirroring images/ structure)
-                if "images" in layout_path.parts:
-                    # Replace "images" with "latents" in path
+                # For augmented dataset: create latents in /work3/s233249/ImgiNav/datasets/augmented/latents/
+                # Structure: images/name.png -> latents/name.pt
+                # Find the augmented directory in the path
+                latent_base_dir = None
+                if "augmented" in layout_path.parts:
+                    # Find the augmented directory and use it as base
                     parts = list(layout_path.parts)
-                    for j, part in enumerate(parts):
-                        if part == "images":
-                            parts[j] = "latents"
+                    for i, part in enumerate(parts):
+                        if part == "augmented":
+                            # Use everything up to and including "augmented" as base
+                            latent_base_dir = Path(*parts[:i+1])
                             break
-                    # Change extension to .pt (preserve absolute path)
-                    latent_path_full = Path(*parts).with_suffix('.pt')
-                else:
-                    # If no images/ folder, create latents/name.pt structure
-                    # Preserve absolute path structure
-                    if layout_path.name:
-                        # Keep the same parent directory structure, just change to latents/ folder
-                        # Convert name to Path to use with_suffix, then convert back to string for Path construction
-                        name_with_suffix = Path(layout_path.name).with_suffix('.pt')
-                        latent_path_full = layout_path.parent / "latents" / name_with_suffix
-                    else:
-                        latent_path_full = layout_path.with_suffix('.pt')
                 
-                # Ensure latent_path_full is absolute
+                if latent_base_dir is None:
+                    # Fallback: use manifest directory's parent (assuming it's in datasets/augmented/)
+                    latent_base_dir = manifest_dir.parent if manifest_dir.name != "augmented" else manifest_dir
+                
+                # Create latent path: augmented/latents/filename.pt
+                latent_dir = latent_base_dir / "latents"
+                
+                # Get filename from layout_path and change extension
+                if layout_path.name:
+                    latent_filename = Path(layout_path.name).with_suffix('.pt')
+                    latent_path_full = latent_dir / latent_filename
+                else:
+                    # Fallback: use hash of path or index
+                    latent_filename = f"latent_{sample_idx}.pt"
+                    latent_path_full = latent_dir / latent_filename
+                
+                # Ensure path is absolute (for cross-environment compatibility)
                 if not latent_path_full.is_absolute():
                     latent_path_full = latent_path_full.resolve()
                 
                 # Skip if exists and not overwriting
                 if latent_path_full.exists() and not overwrite:
-                    # Store absolute path in manifest
-                    latent_paths.append(str(latent_path_full))
+                    latent_paths.append(str(latent_path_full.resolve()))
                     skipped += 1
                     continue
                 
@@ -178,8 +183,7 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
                 try:
                     latent_path_full.parent.mkdir(parents=True, exist_ok=True)
                     torch.save(latents[i].cpu(), latent_path_full)
-                    # Store absolute path in manifest
-                    latent_paths.append(str(latent_path_full))
+                    latent_paths.append(str(latent_path_full.resolve()))
                     processed += 1
                 except Exception as e:
                     print(f"Error saving latent for {layout_path}: {e}")
@@ -187,8 +191,19 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
                     failed += 1
     
     # Create output manifest with latent_path column
+    # Ensure all paths are absolute for cross-environment compatibility
     df_output = df.copy()
-    df_output["latent_path"] = latent_paths
+    df_output["latent_path"] = ""
+    
+    for idx in range(len(df_output)):
+        if latent_paths[idx]:
+            path_obj = Path(latent_paths[idx])
+            # Convert to absolute if not already
+            if not path_obj.is_absolute():
+                path_obj = (manifest_dir / path_obj).resolve()
+            else:
+                path_obj = path_obj.resolve()
+            df_output.loc[idx, "latent_path"] = str(path_obj)
     
     # Ensure layout_path column is also absolute for consistency
     if "layout_path" in df_output.columns:

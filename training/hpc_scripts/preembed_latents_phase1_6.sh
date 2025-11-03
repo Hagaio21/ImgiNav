@@ -25,8 +25,10 @@ AUTOENCODER_CONFIG="${BASE_DIR}/experiments/autoencoders/phase1/phase1_6_AE_norm
 AUTOENCODER_CHECKPOINT="/work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt"
 
 # Dataset paths
-INPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
-OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_latents.csv"
+# Input: manifest with images (after cleaning and augmentations)
+INPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/augmented/manifest_images.csv"
+# Output: manifest with latent_path column added
+OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
 
 # Pre-embedding parameters
 BATCH_SIZE=16
