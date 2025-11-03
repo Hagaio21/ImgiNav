@@ -213,8 +213,14 @@ class DiffusionModel(BaseModel):
             t_batch = t.expand(batch_size)
             
             with torch.no_grad():
-                # Use EMA UNet for stable sampling
-                unet = getattr(self, 'unet_ema', self.unet)
+                # Use EMA UNet for stable sampling (fallback to live UNet if EMA doesn't exist)
+                # Note: In early training, EMA might be very close to initialization
+                if hasattr(self, 'unet_ema'):
+                    unet = self.unet_ema
+                    unet.eval()  # Ensure eval mode
+                else:
+                    unet = self.unet
+                    unet.eval()
                 pred_noise = unet(latents, t_batch, cond)
             
             # DDIM step
