@@ -188,9 +188,6 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                     print(f"[Diagnostic] Gradient norm: {total_grad_norm:.6f} (from {param_count} parameters)")
                     if total_grad_norm < 1e-6:
                         print(f"  WARNING: Gradients are very small! Model may not be learning.")
-            
-            # Update EMA UNet after optimizer step
-            model.update_ema()
         else:
             outputs = model(latents, t, cond=cond, noise=noise)
             # Use the original noise as target (not from outputs to avoid any potential issues)
@@ -217,9 +214,6 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                     print(f"[Diagnostic] Gradient norm: {total_grad_norm:.6f} (from {param_count} parameters)")
                     if total_grad_norm < 1e-6:
                         print(f"  WARNING: Gradients are very small! Model may not be learning.")
-            
-            # Update EMA UNet after optimizer step
-            model.update_ema()
         
         # Step scheduler
         if scheduler:
@@ -436,35 +430,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     num_steps = model.scheduler.num_steps
     print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps)...")
     
-    # Diagnostic: Check EMA UNet vs live UNet difference
-    use_live_unet_for_sampling = False
-    if hasattr(model, 'unet_ema') and hasattr(model, 'unet'):
-        with torch.no_grad():
-            # Sample a random input to compare outputs
-            test_shape = (1, model.unet.in_channels, 32, 32)  # Assuming 32x32 latents
-            test_latents = torch.randn(test_shape, device=device_obj)
-            test_t = torch.randint(0, num_steps, (1,), device=device_obj, dtype=torch.long)
-            
-            live_pred = model.unet(test_latents, test_t.expand(1))
-            ema_pred = model.unet_ema(test_latents, test_t.expand(1))
-            diff = (live_pred - ema_pred).abs().mean().item()
-            print(f"  [Diagnostic] EMA vs Live UNet difference: {diff:.6f}")
-            if diff < 1e-6:
-                print(f"    WARNING: EMA and Live UNet are identical! EMA may not be updating.")
-                use_live_unet_for_sampling = True  # Use live UNet if EMA hasn't updated
-            elif diff < 0.01:
-                print(f"    INFO: EMA is very close to live UNet. Consider using live UNet for early sampling.")
-                # For early training, use live UNet if EMA hasn't diverged much
-                use_live_unet_for_sampling = True
-    
-    # Temporarily patch the model to use live UNet if EMA is too similar
-    original_unet_ema = None
-    if use_live_unet_for_sampling and hasattr(model, 'unet_ema'):
-        print(f"  Using LIVE UNet for sampling (EMA too similar to initialization)")
-        # Temporarily replace EMA with live UNet for this sampling
-        original_unet_ema = model.unet_ema
-        model.unet_ema = model.unet
-    
     with torch.no_grad():
         sample_output = model.sample(
             batch_size=sample_batch_size,
@@ -474,10 +439,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             device=device_obj,
             verbose=False
         )
-    
-    # Restore original EMA if we patched it
-    if original_unet_ema is not None:
-        model.unet_ema = original_unet_ema
     
     if "rgb" in sample_output:
         samples = sample_output["rgb"]  # Already in [0, 1]

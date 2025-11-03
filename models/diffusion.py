@@ -84,16 +84,7 @@ class DiffusionModel(BaseModel):
         if freeze_blocks:
             self.unet.freeze_blocks(freeze_blocks)
         
-        # EMA UNet for stable sampling (initialized with same weights as live UNet)
-        self.unet_ema = DualUNet.from_config(unet_cfg)
-        self.unet_ema.load_state_dict(self.unet.state_dict())
-        self.unet_ema.eval()  # Always in eval mode
-        # Freeze EMA UNet parameters
-        for param in self.unet_ema.parameters():
-            param.requires_grad = False
-        
-        # EMA decay rate (can be configured, default to 0.9999)
-        self.ema_decay = unet_cfg.get("ema_decay", 0.9999)
+        # EMA removed - using live UNet directly for sampling
 
         # noise scheduler
         sched_type = sched_cfg.get("type", "CosineScheduler")
@@ -213,14 +204,9 @@ class DiffusionModel(BaseModel):
             t_batch = t.expand(batch_size)
             
             with torch.no_grad():
-                # Use EMA UNet for stable sampling (fallback to live UNet if EMA doesn't exist)
-                # Note: In early training, EMA might be very close to initialization
-                if hasattr(self, 'unet_ema'):
-                    unet = self.unet_ema
-                    unet.eval()  # Ensure eval mode
-                else:
-                    unet = self.unet
-                    unet.eval()
+                # Use live UNet for sampling
+                unet = self.unet
+                unet.eval()
                 pred_noise = unet(latents, t_batch, cond)
             
             # DDIM step
@@ -307,23 +293,6 @@ class DiffusionModel(BaseModel):
         return result
 
     # ------------------------------------------------------------------
-    # EMA Updates
-    # ------------------------------------------------------------------
-    def update_ema(self):
-        """Update EMA UNet weights with current UNet weights."""
-        if not hasattr(self, 'unet_ema'):
-            return
-        
-        with torch.no_grad():
-            # Exponential moving average: ema_param = decay * ema_param + (1 - decay) * live_param
-            for ema_param, live_param in zip(self.unet_ema.parameters(), self.unet.parameters()):
-                ema_param.data.mul_(self.ema_decay).add_(live_param.data, alpha=1 - self.ema_decay)
-            
-            # Also update buffers (e.g., running stats in BatchNorm)
-            for ema_buffer, live_buffer in zip(self.unet_ema.buffers(), self.unet.buffers()):
-                ema_buffer.data.mul_(self.ema_decay).add_(live_buffer.data, alpha=1 - self.ema_decay)
-
-    # ------------------------------------------------------------------
     # Config I/O
     # ------------------------------------------------------------------
     @classmethod
@@ -361,16 +330,12 @@ class DiffusionModel(BaseModel):
         # Verify all components are included
         has_decoder = any(k.startswith("decoder.") for k in state_dict.keys())
         has_unet = any(k.startswith("unet.") for k in state_dict.keys())
-        has_unet_ema = any(k.startswith("unet_ema.") for k in state_dict.keys())
         has_scheduler = any(k.startswith("scheduler.") for k in state_dict.keys())
         
         if not has_decoder:
             raise RuntimeError("Decoder not found in state_dict - checkpoint incomplete!")
         if not has_unet:
             raise RuntimeError("UNet not found in state_dict - checkpoint incomplete!")
-        # EMA UNet should exist if model was built with EMA (new checkpoints)
-        if hasattr(self, 'unet_ema') and not has_unet_ema:
-            raise RuntimeError("EMA UNet not found in state_dict - checkpoint incomplete!")
         if not has_scheduler:
             raise RuntimeError("Scheduler not found in state_dict - checkpoint incomplete!")
         
@@ -432,7 +397,7 @@ class DiffusionModel(BaseModel):
         # Build model from config
         model = cls.from_config(model_config) if model_config else cls()
 
-        # Load state dict (restores all component weights including decoder, EMA UNet, and scheduler with noise_scale)
+        # Load state dict (restores all component weights including decoder and scheduler with noise_scale)
         model.load_state_dict(payload["state_dict"], strict=False)
         
         # noise_scale and noise_offset are now loaded from scheduler's state_dict automatically
