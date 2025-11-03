@@ -5,7 +5,7 @@
 #BSUB -n 8
 #BSUB -R "rusage[mem=16000]"
 #BSUB -W 12:00
-#BSUB -q normal
+#BSUB -q hpc
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
