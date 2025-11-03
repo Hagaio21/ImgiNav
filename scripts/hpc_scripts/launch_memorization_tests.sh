@@ -49,21 +49,17 @@ echo ""
 echo "Submitting job array for ${NUM_MODELS} models..."
 echo ""
 
-# Submit job array
-job_id=$(bsub < "${JOB_SCRIPT}" | grep -oP '<\K[0-9]+')
+# Submit job array (same way as training scripts)
+bsub < "${JOB_SCRIPT}"
 
-if [ -n "${job_id}" ]; then
-    echo "✓ Job array submitted: ${job_id}[1-${NUM_MODELS}]"
-    echo ""
-    echo "Monitor jobs with:"
-    echo "  bjobs ${job_id}"
-    echo ""
+echo ""
+echo "✓ Job array submitted!"
+echo ""
+echo "Monitor jobs with:"
+echo "  bjobs"
+echo ""
     echo "Check results in:"
-    echo "  /work3/s233249/ImgiNav/outputs/memorization_checks/"
-    echo ""
-    echo "Individual job logs:"
-    echo "  /work3/s233249/ImgiNav/ImgiNav/scripts/hpc_scripts/logs/memorization_check.${job_id}.*.out"
-else
-    echo "✗ Failed to submit job array"
-    exit 1
-fi
+    echo "  /work3/s233249/ImgiNav/ImgiNav/analysis/memorization/"
+echo ""
+echo "Individual job logs:"
+echo "  /work3/s233249/ImgiNav/ImgiNav/scripts/hpc_scripts/logs/memorization_check.*.*.out"
