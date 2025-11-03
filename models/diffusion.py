@@ -416,6 +416,10 @@ class DiffusionModel(BaseModel):
                 if "autoencoder" in merged_config:
                     merged_config["autoencoder"] = {k: v for k, v in merged_config["autoencoder"].items() 
                                                     if k != "checkpoint"}
+                # IMPORTANT: Use scheduler from user config (not saved config) to allow changing num_steps
+                # The scheduler buffers will be rebuilt to match the new num_steps
+                if "scheduler" in config:
+                    merged_config["scheduler"] = config["scheduler"]
                 model_config = merged_config
             else:
                 # No user config - use saved config as-is

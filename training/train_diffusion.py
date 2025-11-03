@@ -135,6 +135,13 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         # Sample random timesteps uniformly from [0, num_steps)
         # This ensures uniform distribution across all timesteps
         num_steps = model.scheduler.num_steps
+        
+        # Diagnostic: Check num_steps on first batch
+        if batch_idx == 0 and epoch == 1:
+            print(f"\n[Diagnostic] First batch - Scheduler num_steps: {num_steps}")
+            if num_steps < 100:
+                print(f"  ERROR: num_steps is {num_steps}, expected ~1000! Check scheduler config.")
+        
         t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj, dtype=torch.long)
         
         # Track timesteps for accurate mean calculation
@@ -279,6 +286,16 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         accurate_mean_t = all_t_flat.mean().item()
         accurate_std_t = all_t_flat.std().item()
         num_steps = model.scheduler.num_steps
+        
+        # Diagnostic: Print actual num_steps to verify it's correct (once per epoch)
+        if epoch == 1:  # Print summary after first epoch
+            print(f"\n[Diagnostic] Epoch {epoch} - Scheduler num_steps: {num_steps}")
+            print(f"  Actual timestep range across all batches: [{all_t_flat.min().item():.1f}, {all_t_flat.max().item():.1f}]")
+            print(f"  Expected range: [0, {num_steps - 1}]")
+            print(f"  Actual mean: {accurate_mean_t:.2f}, Expected mean: {expected_mean:.2f}")
+            if num_steps < 100:
+                print(f"  ERROR: num_steps is {num_steps}, expected ~1000! Check scheduler config or checkpoint.")
+        
         expected_mean = (num_steps - 1) / 2.0
         expected_std = (num_steps - 1) / (2 * (3 ** 0.5))
         
