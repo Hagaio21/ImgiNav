@@ -129,45 +129,38 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
                 
                 layout_path = Path(layout_path_str)
                 
-                # If layout_path is relative, resolve relative to manifest_dir
-                if not layout_path.is_absolute():
-                    layout_path_full = manifest_dir / layout_path
-                else:
-                    layout_path_full = layout_path
-                
                 # For augmented dataset structure: 
                 # images/name.png -> latents/name.pt
-                # Check if layout_path contains "images" subdirectory
+                # Always save latents in latents/ folder (mirroring images/ structure)
                 if "images" in layout_path.parts:
                     # Replace "images" with "latents" in path
                     parts = list(layout_path.parts)
-                    images_idx = None
                     for i, part in enumerate(parts):
                         if part == "images":
-                            images_idx = i
+                            parts[i] = "latents"
                             break
-                    if images_idx is not None:
-                        parts[images_idx] = "latents"
-                        # Keep relative path structure
-                        latent_path = Path(*parts).with_suffix('.pt')
-                        # Full path for saving
-                        latent_path_full = manifest_dir / latent_path if not latent_path.is_absolute() else latent_path
-                    else:
-                        # Fallback: same directory structure, different extension
-                        latent_path = layout_path.with_suffix('.pt')
-                        latent_path_full = manifest_dir / latent_path if not latent_path.is_absolute() else latent_path
+                    # Change extension to .pt
+                    latent_path = Path(*parts).with_suffix('.pt')
                 else:
-                    # Fallback: create latent in same directory as image
-                    latent_path = layout_path.with_suffix('.pt')
-                    latent_path_full = manifest_dir / latent_path if not latent_path.is_absolute() else latent_path
+                    # If no images/ folder, assume we're in augmented dataset root
+                    # Create latents/name.pt structure
+                    if layout_path.name:
+                        latent_path = Path("latents") / layout_path.name.with_suffix('.pt')
+                    else:
+                        latent_path = layout_path.with_suffix('.pt')
+                
+                # Full path for saving (relative to manifest_dir)
+                if layout_path.is_absolute():
+                    # If layout_path is absolute, make latent_path absolute too
+                    latent_path_full = manifest_dir.parent / latent_path if not latent_path.is_absolute() else latent_path
+                else:
+                    # If layout_path is relative, latent_path is also relative
+                    latent_path_full = manifest_dir / latent_path
                 
                 # Skip if exists and not overwriting
                 if latent_path_full.exists() and not overwrite:
-                    # Use relative path for manifest
-                    if layout_path.is_absolute():
-                        latent_paths.append(str(latent_path_full))
-                    else:
-                        latent_paths.append(str(latent_path))
+                    # Use relative path for manifest (always relative to match layout_path style)
+                    latent_paths.append(str(latent_path))
                     skipped += 1
                     continue
                 
@@ -176,10 +169,7 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
                     latent_path_full.parent.mkdir(parents=True, exist_ok=True)
                     torch.save(latents[i].cpu(), latent_path_full)
                     # Use relative path for manifest (matches layout_path style)
-                    if layout_path.is_absolute():
-                        latent_paths.append(str(latent_path_full))
-                    else:
-                        latent_paths.append(str(latent_path))
+                    latent_paths.append(str(latent_path))
                     processed += 1
                 except Exception as e:
                     print(f"Error saving latent for {layout_path}: {e}")

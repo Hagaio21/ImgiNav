@@ -27,12 +27,110 @@ import shutil
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data_preparation.create_augmented_dataset import (
-    is_white_image,
-    apply_mirror_flip,
-    apply_rotation_90,
-    generate_all_augmentations
-)
+
+def is_white_image(image_tensor, threshold=0.95, white_threshold=0.9):
+    """
+    Check if an image is mostly white (>95% whitish pixels by default).
+    
+    A "whitish pixel" is one where all RGB channels are above the threshold.
+    
+    Args:
+        image_tensor: Tensor of shape [C, H, W] in range [0, 1]
+        threshold: Fraction of pixels that must be white (default: 0.95 = 95%)
+        white_threshold: Pixel value threshold for "white" in [0, 1] range (default: 0.9 = 230/255)
+    
+    Returns:
+        True if image is mostly white, False otherwise
+    """
+    # image_tensor is in [0, 1] range after normalization
+    # Check if all channels (R, G, B) are above threshold for each pixel
+    # Shape: [C, H, W] where C=3 (RGB)
+    white_mask = (image_tensor > white_threshold).all(dim=0)  # All channels > threshold
+    
+    # Count white pixels
+    total_pixels = white_mask.numel()
+    white_pixels = white_mask.sum().item()
+    white_ratio = white_pixels / total_pixels
+    
+    return white_ratio >= threshold
+
+
+def apply_mirror_flip(image_tensor):
+    """
+    Apply horizontal mirror (flip) to an image tensor.
+    
+    Args:
+        image_tensor: Tensor of shape [C, H, W] or [1, C, H, W]
+    
+    Returns:
+        Mirrored image tensor
+    """
+    if image_tensor.dim() == 3:
+        image_tensor = image_tensor.unsqueeze(0)
+    
+    # Flip horizontally (along width dimension)
+    flipped = torch.flip(image_tensor, dims=[-1])
+    
+    if flipped.shape[0] == 1:
+        flipped = flipped.squeeze(0)
+    
+    return flipped
+
+
+def apply_rotation_90(image_tensor, k):
+    """
+    Apply 90-degree rotation to an image tensor.
+    
+    Args:
+        image_tensor: Tensor of shape [C, H, W] or [1, C, H, W]
+        k: Number of 90-degree clockwise rotations (0, 1, 2, 3 for 0°, 90°, 180°, 270°)
+    
+    Returns:
+        Rotated image tensor
+    """
+    if image_tensor.dim() == 3:
+        image_tensor = image_tensor.unsqueeze(0)
+    
+    # Rotate k*90 degrees clockwise
+    rotated = torch.rot90(image_tensor, k=k, dims=[-2, -1])
+    
+    if rotated.shape[0] == 1:
+        rotated = rotated.squeeze(0)
+    
+    return rotated
+
+
+def generate_all_augmentations(image_tensor):
+    """
+    Generate all augmentation variants: 1 original + 7 augmented.
+    
+    Variants:
+    - Original (0°)
+    - Original rotated 90° (1)
+    - Original rotated 180° (2)
+    - Original rotated 270° (3)
+    - Mirrored (0°)
+    - Mirrored rotated 90° (1)
+    - Mirrored rotated 180° (2)
+    - Mirrored rotated 270° (3)
+    
+    Returns:
+        List of 8 augmented tensors (original + 7 variants)
+    """
+    variants = []
+    
+    # Original + 3 rotations (0°, 90°, 180°, 270°)
+    for k in range(4):
+        rotated = apply_rotation_90(image_tensor, k)
+        variants.append(rotated)
+    
+    # Mirrored + 3 rotations (0°, 90°, 180°, 270°)
+    mirrored = apply_mirror_flip(image_tensor)
+    for k in range(4):
+        rotated = apply_rotation_90(mirrored, k)
+        variants.append(rotated)
+    
+    return variants
 
 
 def create_augmentations(
