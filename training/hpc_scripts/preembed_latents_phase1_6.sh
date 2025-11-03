@@ -29,7 +29,7 @@ INPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
 OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_latents.csv"
 
 # Pre-embedding parameters
-BATCH_SIZE=32
+BATCH_SIZE=16
 NUM_WORKERS=8
 
 # =============================================================================
