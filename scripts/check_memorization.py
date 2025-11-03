@@ -39,7 +39,11 @@ from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
+import seaborn as sns
 from scipy.stats import entropy
+
+# Set seaborn style
+sns.set_style("darkgrid")
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -243,50 +247,52 @@ def compute_diversity_metrics(samples):
 
 
 def plot_distributions(results, output_dir):
-    """Plot distance distributions and statistics."""
+    """Plot distance distributions and statistics using seaborn."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Set seaborn style
+    sns.set_style("darkgrid")
+    plt.rcParams['figure.facecolor'] = 'white'
+    
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.patch.set_facecolor('white')
     
     # RGB L2 distances
     if 'rgb_l2_distances' in results:
         ax = axes[0, 0]
         distances = results['rgb_l2_distances']
-        ax.hist(distances, bins=50, alpha=0.7, edgecolor='black')
-        ax.axvline(np.mean(distances), color='r', linestyle='--', label=f'Mean: {np.mean(distances):.6f}')
-        ax.axvline(np.median(distances), color='g', linestyle='--', label=f'Median: {np.median(distances):.6f}')
-        ax.set_xlabel('L2 Distance (RGB space)')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Nearest Neighbor Distances (RGB)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        sns.histplot(distances, bins=50, ax=ax, kde=True, stat='density')
+        ax.axvline(np.mean(distances), color='r', linestyle='--', linewidth=2, label=f'Mean: {np.mean(distances):.6f}')
+        ax.axvline(np.median(distances), color='g', linestyle='--', linewidth=2, label=f'Median: {np.median(distances):.6f}')
+        ax.set_xlabel('L2 Distance (RGB space)', fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_title('Nearest Neighbor Distances (RGB)', fontsize=12, fontweight='bold')
+        ax.legend(fontsize=9)
     
     # Latent L2 distances
     if 'latent_l2_distances' in results:
         ax = axes[0, 1]
         distances = results['latent_l2_distances']
-        ax.hist(distances, bins=50, alpha=0.7, edgecolor='black')
-        ax.axvline(np.mean(distances), color='r', linestyle='--', label=f'Mean: {np.mean(distances):.6f}')
-        ax.axvline(np.median(distances), color='g', linestyle='--', label=f'Median: {np.median(distances):.6f}')
-        ax.set_xlabel('L2 Distance (Latent space)')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Nearest Neighbor Distances (Latent)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        sns.histplot(distances, bins=50, ax=ax, kde=True, stat='density')
+        ax.axvline(np.mean(distances), color='r', linestyle='--', linewidth=2, label=f'Mean: {np.mean(distances):.6f}')
+        ax.axvline(np.median(distances), color='g', linestyle='--', linewidth=2, label=f'Median: {np.median(distances):.6f}')
+        ax.set_xlabel('L2 Distance (Latent space)', fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_title('Nearest Neighbor Distances (Latent)', fontsize=12, fontweight='bold')
+        ax.legend(fontsize=9)
     
     # Cosine similarities
     if 'latent_cosine_similarities' in results:
         ax = axes[1, 0]
         similarities = results['latent_cosine_similarities']
-        ax.hist(similarities, bins=50, alpha=0.7, edgecolor='black')
-        ax.axvline(np.mean(similarities), color='r', linestyle='--', label=f'Mean: {np.mean(similarities):.4f}')
-        ax.axvline(np.median(similarities), color='g', linestyle='--', label=f'Median: {np.median(similarities):.4f}')
-        ax.set_xlabel('Cosine Similarity')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Nearest Neighbor Cosine Similarities (Latent)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        sns.histplot(similarities, bins=50, ax=ax, kde=True, stat='density')
+        ax.axvline(np.mean(similarities), color='r', linestyle='--', linewidth=2, label=f'Mean: {np.mean(similarities):.4f}')
+        ax.axvline(np.median(similarities), color='g', linestyle='--', linewidth=2, label=f'Median: {np.median(similarities):.4f}')
+        ax.set_xlabel('Cosine Similarity', fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.set_title('Nearest Neighbor Cosine Similarities (Latent)', fontsize=12, fontweight='bold')
+        ax.legend(fontsize=9)
     
     # Diversity metrics
     if 'diversity' in results:
@@ -299,13 +305,14 @@ def plot_distributions(results, output_dir):
             div.get('min_pairwise_distance', 0),
             div.get('unique_ratio', 0)
         ]
-        ax.bar(metrics, values, alpha=0.7, edgecolor='black')
-        ax.set_ylabel('Value')
-        ax.set_title('Generated Samples Diversity')
-        ax.grid(True, alpha=0.3, axis='y')
+        sns.barplot(x=metrics, y=values, ax=ax, palette='muted', edgecolor='black', linewidth=1.5)
+        ax.set_ylabel('Value', fontsize=11)
+        ax.set_title('Generated Samples Diversity', fontsize=12, fontweight='bold')
+        ax.tick_params(axis='x', labelsize=9)
+        ax.tick_params(axis='y', labelsize=9)
     
     plt.tight_layout()
-    plt.savefig(output_dir / 'memorization_analysis.png', dpi=150, bbox_inches='tight')
+    plt.savefig(output_dir / 'memorization_analysis.png', dpi=150, bbox_inches='tight', facecolor='white')
     print(f"Saved plot to {output_dir / 'memorization_analysis.png'}")
     plt.close()
 
