@@ -18,8 +18,8 @@ bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet64_d4.sh"
 sleep 2
 bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet128_d4.sh"
 sleep 2
-# bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet256_d4.sh"
-# sleep 2
+bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet256_d4.sh"
+sleep 2
 bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet128_d3.sh"
 sleep 2
 
