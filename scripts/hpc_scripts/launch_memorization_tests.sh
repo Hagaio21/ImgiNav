@@ -22,8 +22,24 @@ declare -a CONFIG_FILES=(
 # Function to find the best checkpoint for a config
 find_checkpoint() {
     local config_file="$1"
-    local exp_name=$(grep -A1 "^experiment:" "$config_file" | grep "name:" | awk '{print $2}' | tr -d '"')
-    local save_path=$(grep -A1 "^experiment:" "$config_file" | grep "save_path:" | awk '{print $2}' | tr -d '"')
+    
+    # Extract experiment name (can be on line after experiment: or anywhere in experiment section)
+    local exp_name=$(grep "^experiment:" -A 10 "$config_file" | grep "name:" | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    
+    # Extract save_path (can be on line after experiment: or anywhere in experiment section)
+    local save_path=$(grep "^experiment:" -A 10 "$config_file" | grep "save_path:" | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    
+    # Validate we got both values
+    if [ -z "${exp_name}" ] || [ -z "${save_path}" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Check if save_path exists
+    if [ ! -d "${save_path}" ]; then
+        echo ""
+        return 1
+    fi
     
     # Try best checkpoint first
     local best_ckpt="${save_path}/${exp_name}_checkpoint_best.pt"
@@ -40,8 +56,8 @@ find_checkpoint() {
     fi
     
     # Try any checkpoint
-    local any_ckpt=$(find "${save_path}" -name "${exp_name}_checkpoint_*.pt" | head -1)
-    if [ -n "${any_ckpt}" ]; then
+    local any_ckpt=$(find "${save_path}" -name "${exp_name}_checkpoint_*.pt" 2>/dev/null | head -1)
+    if [ -n "${any_ckpt}" ] && [ -f "${any_ckpt}" ]; then
         echo "${any_ckpt}"
         return 0
     fi
@@ -66,8 +82,8 @@ for config_file in "${CONFIG_FILES[@]}"; do
         continue
     fi
     
-    # Extract experiment name
-    exp_name=$(grep -A1 "^experiment:" "${config_file}" | grep "name:" | awk '{print $2}' | tr -d '"' | tr -d "'")
+    # Extract experiment name (more robust parsing)
+    exp_name=$(grep "^experiment:" -A 10 "${config_file}" | grep "name:" | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
     if [ -z "${exp_name}" ]; then
         exp_name=$(basename "${config_file}" .yaml)
     fi
