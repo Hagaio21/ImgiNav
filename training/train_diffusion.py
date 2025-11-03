@@ -90,6 +90,9 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
     total_samples = 0
     log_dict = {}
     
+    # Track timesteps across all batches for accurate mean calculation
+    all_timesteps = []
+    
     if isinstance(device, str):
         device_obj = torch.device(device)
     else:
@@ -133,6 +136,9 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         # This ensures uniform distribution across all timesteps
         num_steps = model.scheduler.num_steps
         t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj, dtype=torch.long)
+        
+        # Track timesteps for accurate mean calculation
+        all_timesteps.append(t.cpu().float())
         
         # Sample standard normal noise N(0,1)
         noise = model.scheduler.randn_like(latents)
@@ -225,15 +231,19 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         # Compute corruption metrics (every N batches to avoid overhead)
         if batch_idx % 100 == 0:  # Log every 100 batches
             with torch.no_grad():
-                # Compute corruption metrics
+                # Compute corruption metrics (per-batch values, timestep stats will be overwritten at end)
                 corruption_metrics = compute_corruption_metrics(
                     outputs["latent"], outputs["noisy_latent"], t, model.scheduler
                 )
                 # Add to log_dict (will be averaged)
+                # Note: mean_timestep and timestep_std from corruption_metrics are per-batch and will be overwritten
+                # with accurate epoch-wide values at the end
                 for k, v in corruption_metrics.items():
                     if k not in log_dict:
                         log_dict[k] = 0.0
-                    log_dict[k] += v * batch_size
+                    # Skip timestep stats - they'll be computed accurately from all batches at the end
+                    if k not in ["mean_timestep", "timestep_std", "expected_timestep_mean", "expected_timestep_std"]:
+                        log_dict[k] += v * batch_size
                 
                 # Diagnostic: Check noise prediction accuracy
                 pred_noise = outputs["pred_noise"]
@@ -262,6 +272,21 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                 log_dict["target_noise_mean"] += target_noise_mean * batch_size
         
         pbar.set_postfix({"loss": loss_val, **{k: v/total_samples for k, v in log_dict.items()}})
+    
+    # Compute accurate timestep mean from all batches (overwrite per-batch estimates)
+    if all_timesteps:
+        all_t_flat = torch.cat(all_timesteps)
+        accurate_mean_t = all_t_flat.mean().item()
+        accurate_std_t = all_t_flat.std().item()
+        num_steps = model.scheduler.num_steps
+        expected_mean = (num_steps - 1) / 2.0
+        expected_std = (num_steps - 1) / (2 * (3 ** 0.5))
+        
+        # Overwrite with accurate timestep statistics computed from all batches
+        log_dict["mean_timestep"] = accurate_mean_t * total_samples
+        log_dict["timestep_std"] = accurate_std_t * total_samples
+        log_dict["expected_timestep_mean"] = expected_mean * total_samples
+        log_dict["expected_timestep_std"] = expected_std * total_samples
     
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
