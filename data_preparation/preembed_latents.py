@@ -157,7 +157,9 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
                     # Preserve absolute path structure
                     if layout_path.name:
                         # Keep the same parent directory structure, just change to latents/ folder
-                        latent_path_full = layout_path.parent / "latents" / layout_path.name.with_suffix('.pt')
+                        # Convert name to Path to use with_suffix, then convert back to string for Path construction
+                        name_with_suffix = Path(layout_path.name).with_suffix('.pt')
+                        latent_path_full = layout_path.parent / "latents" / name_with_suffix
                     else:
                         latent_path_full = layout_path.with_suffix('.pt')
                 
