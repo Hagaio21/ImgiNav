@@ -417,6 +417,11 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     print("\n" + "="*60)
     print("Loading training data...")
     print("="*60)
+    # Override manifest path in config with the provided one
+    if "dataset" not in config:
+        config["dataset"] = {}
+    config["dataset"]["manifest"] = manifest_path
+    print(f"Using manifest: {manifest_path}")
     dataset = build_dataset(config)
     training_samples = load_training_samples(dataset, num_samples=num_training, device=device)
     print(f"Loaded {len(training_samples['metadata'])} training samples")
