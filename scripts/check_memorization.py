@@ -344,7 +344,7 @@ def plot_distributions(results, output_dir):
             div.get('min_pairwise_distance', 0),
             div.get('unique_ratio', 0)
         ]
-        sns.barplot(x=metrics, y=values, ax=ax, palette='muted', edgecolor='black', linewidth=1.5)
+        sns.barplot(x=metrics, y=values, ax=ax, hue=metrics, palette='muted', edgecolor='black', linewidth=1.5, legend=False)
         ax.set_ylabel('Value', fontsize=11)
         ax.set_title('Generated Samples Diversity (Latent)', fontsize=12, fontweight='bold')
         ax.tick_params(axis='x', labelsize=9)
@@ -524,30 +524,16 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     if not diffusion_cfg.get("autoencoder") or not diffusion_cfg["autoencoder"].get("checkpoint"):
         raise ValueError("Config must contain 'autoencoder.checkpoint' path")
     
-    model = DiffusionModel.from_config(diffusion_cfg)
+    # Load checkpoint using proper class method
+    # The checkpoint may contain its own config, but we'll use the provided config
+    # to ensure consistency with the current setup (autoencoder path, etc.)
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    model = DiffusionModel.load_checkpoint(
+        checkpoint_path, 
+        map_location=device,
+        config=diffusion_cfg  # Use config from file (ensures correct autoencoder path)
+    )
     
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
-    
-    # Handle DataParallel prefix
-    if state_dict and len(state_dict) > 0:
-        first_key = list(state_dict.keys())[0]
-        if first_key.startswith('module.'):
-            state_dict = {k[7:]: v for k, v in state_dict.items()}
-        elif first_key.startswith('unet.'):
-            # Already prefixed with unet, use as-is
-            pass
-        else:
-            # Add unet prefix if not present
-            state_dict = {f'unet.{k}': v for k, v in state_dict.items()}
-    
-    # Load into unet
-    missing_keys, unexpected_keys = model.unet.load_state_dict(state_dict, strict=False)
-    if missing_keys:
-        print(f"Warning: Missing keys in checkpoint: {len(missing_keys)}")
-    if unexpected_keys:
-        print(f"Warning: Unexpected keys in checkpoint: {len(unexpected_keys)}")
     model = model.to(device).eval()
     print("Model loaded successfully")
     
