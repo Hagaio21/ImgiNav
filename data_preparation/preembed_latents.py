@@ -92,6 +92,9 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
     skipped = 0
     failed = 0
     
+    # Collect latents for statistics computation
+    all_latents = []
+    
     output_manifest_dir = output_manifest_path.parent
     output_manifest_dir.mkdir(parents=True, exist_ok=True)
     
@@ -110,6 +113,9 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
                 latents = encoder_out["mu"]  # Use mu for VAE
             else:
                 raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
+            
+            # Collect latents for statistics (detach and move to CPU to save memory)
+            all_latents.append(latents.detach().cpu())
             
             # Save latents for each sample in batch
             batch_start_idx = batch_idx * batch_size
@@ -182,6 +188,57 @@ def encode_dataset(encoder, manifest_path, output_manifest_path, batch_size=32,
     
     # Save new manifest
     df_output.to_csv(output_manifest_path, index=False)
+    
+    # Compute latent statistics
+    print("\nComputing latent statistics...")
+    if all_latents:
+        # Concatenate all latents
+        all_latents_tensor = torch.cat(all_latents, dim=0)
+        
+        # Flatten for global statistics
+        latent_flat = all_latents_tensor.reshape(all_latents_tensor.shape[0], -1)
+        
+        # Compute global statistics
+        latent_mean = latent_flat.mean().item()
+        latent_std = latent_flat.std().item()
+        
+        # Compute per-channel statistics (if spatial dimensions exist)
+        if all_latents_tensor.ndim == 4:  # [B, C, H, W]
+            per_channel_mean = all_latents_tensor.mean(dim=(0, 2, 3)).cpu().numpy()  # [C]
+            per_channel_std = all_latents_tensor.std(dim=(0, 2, 3)).cpu().numpy()  # [C]
+            
+            print(f"\n{'='*60}")
+            print(f"Latent Statistics Summary")
+            print(f"{'='*60}")
+            print(f"Global Statistics:")
+            print(f"  Mean: {latent_mean:.6f} (target: 0.0)")
+            print(f"  Std:  {latent_std:.6f} (target: 1.0)")
+            print(f"  Mean deviation: {abs(latent_mean):.6f}")
+            print(f"  Std deviation:  {abs(latent_std - 1.0):.6f}")
+            print(f"\nPer-Channel Statistics:")
+            print(f"  Channel | Mean      | Std       | Mean Dev | Std Dev")
+            print(f"  {'-'*55}")
+            for ch_idx in range(len(per_channel_mean)):
+                ch_mean = per_channel_mean[ch_idx]
+                ch_std = per_channel_std[ch_idx]
+                mean_dev = abs(ch_mean)
+                std_dev = abs(ch_std - 1.0)
+                print(f"  {ch_idx:7d} | {ch_mean:9.6f} | {ch_std:9.6f} | {mean_dev:9.6f} | {std_dev:9.6f}")
+            print(f"{'='*60}")
+            
+            # Check if standardized
+            if abs(latent_mean) < 0.1 and 0.9 < latent_std < 1.1:
+                print("✓ Latents appear to be well-standardized (~N(0,1))")
+            elif abs(latent_mean) < 0.5 and 0.5 < latent_std < 1.5:
+                print("⚠ Latents are somewhat standardized but could be better")
+            else:
+                print("✗ Latents are NOT well-standardized - may need retraining")
+        else:
+            print(f"\nGlobal Statistics:")
+            print(f"  Mean: {latent_mean:.6f} (target: 0.0)")
+            print(f"  Std:  {latent_std:.6f} (target: 1.0)")
+    else:
+        print("⚠ No latents collected for statistics (all skipped?)")
     
     print(f"\n✓ Encoding complete!")
     print(f"  Processed: {processed}")

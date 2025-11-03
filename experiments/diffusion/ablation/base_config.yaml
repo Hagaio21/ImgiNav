@@ -17,13 +17,14 @@ dataset:
 
 # Autoencoder checkpoint (decoder will be extracted from it)
 # Only decoder needed since we're using pre-embedded latents
+# Phase 1.6: Normalized autoencoder with standardized latents ~N(0,1)
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_5_AE_final/phase1_5_AE_final_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
   frozen: true  # Freeze decoder during diffusion training
 
 unet:
-  in_channels: 16  # Matches latent_channels from Phase 1.5
-  out_channels: 16  # Matches latent_channels from Phase 1.5
+  in_channels: 16  # Matches latent_channels from Phase 1.6
+  out_channels: 16  # Matches latent_channels from Phase 1.6
   base_channels: 128  # Will vary: 64, 128, 256
   depth: 4  # Will vary: 3, 4, 5
   num_res_blocks: 2
@@ -70,6 +71,7 @@ training:
   max_grad_norm: 1.0  # Set to null/omit to disable gradient clipping
   
   # Loss (simple MSE on noise prediction)
+  # Note: Latents are standardized ~N(0,1) from Phase 1.6, so standard N(0,1) noise is used
   loss:
     type: MSELoss
     key: "pred_noise"
