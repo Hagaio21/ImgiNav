@@ -45,6 +45,7 @@ class DualUNet(BaseComponent):
         fusion_mode = self._init_kwargs.get("fusion_mode", "none")
         cond_mult = self._init_kwargs.get("cond_mult", 1.0)
         norm_groups = self._init_kwargs.get("norm_groups", 8)
+        dropout = self._init_kwargs.get("dropout", 0.0)
 
         self.time_mlp = TimeEmbedding(time_dim)
         self.use_cond = cond_ch > 0
@@ -59,10 +60,10 @@ class DualUNet(BaseComponent):
 
         for i in range(depth):
             ch = base_ch * (2 ** i)
-            self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups))
+            self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout))
             if self.use_cond:
                 cond_c = int(base_ch * cond_mult * (2 ** i))
-                self.cond_downs.append(DownBlock(cond_prev_ch, cond_c, time_dim, num_res_blocks, norm_groups))
+                self.cond_downs.append(DownBlock(cond_prev_ch, cond_c, time_dim, num_res_blocks, norm_groups, dropout))
                 fusion_cfg = {
                     "mode": fusion_mode,
                     "x_channels": ch,
@@ -73,7 +74,7 @@ class DualUNet(BaseComponent):
             prev_ch = ch
             feats.append(ch)
 
-        self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups)
+        self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups, dropout)
         self.bottleneck_fusion = ConditionFusion(
             mode=fusion_mode,
             x_channels=prev_ch,
@@ -82,7 +83,7 @@ class DualUNet(BaseComponent):
 
         self.ups = nn.ModuleList()
         for ch in reversed(feats):
-            self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups))
+            self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout))
             prev_ch = ch
 
         self.final = nn.Conv2d(prev_ch, out_ch, 1)
@@ -177,5 +178,6 @@ class DualUNet(BaseComponent):
             "fusion_mode": self._init_kwargs.get("fusion_mode", "none"),
             "cond_mult": self._init_kwargs.get("cond_mult", 1.0),
             "norm_groups": self._init_kwargs.get("norm_groups", 8),
+            "dropout": self._init_kwargs.get("dropout", 0.0),
         })
         return cfg

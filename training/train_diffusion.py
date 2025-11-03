@@ -435,7 +435,10 @@ def main():
     
     for epoch in range(start_epoch, end_epoch):
         # Training
-        avg_loss, avg_logs = train_epoch(model, train_loader, scheduler, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm)
+        avg_loss, avg_logs = train_epoch(
+            model, train_loader, scheduler, loss_fn, optimizer, device, epoch + 1, 
+            use_amp=use_amp, max_grad_norm=max_grad_norm
+        )
         
         print(f"Epoch {epoch + 1}/{end_epoch} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():

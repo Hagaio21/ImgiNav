@@ -31,6 +31,7 @@ unet:
   cond_channels: 0  # Unconditional for now
   fusion_mode: "none"
   norm_groups: 8
+  dropout: 0.1  # Dropout for regularization to prevent memorization
 
 scheduler:
   type: "CosineScheduler"  # Will vary: LinearScheduler, CosineScheduler, QuadraticScheduler
@@ -46,7 +47,13 @@ training:
   epochs: 500  # Long training
   learning_rate: 0.0001
   optimizer: AdamW
-  weight_decay: 0.01
+  weight_decay: 0.05  # Increased from 0.01 for stronger regularization
+  
+  # Spatial augmentation (rotation + translation) to prevent memorization
+  use_spatial_augmentation: true
+  aug_rotation: 15.0  # Degrees (±15)
+  aug_translate: 0.05  # Fraction of size (±5%)
+  aug_prob: 0.5  # 50% chance to apply
   
   # Checkpoint settings - only best and latest
   save_interval: 99999  # Very large number to disable periodic checkpoints
