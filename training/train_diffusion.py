@@ -74,7 +74,8 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         if use_amp and device_obj.type == "cuda":
             with torch.amp.autocast('cuda'):
                 outputs = model(latents, t, cond=cond, noise=noise)
-                loss, logs = loss_fn(outputs, {"noise": noise})
+                # Use the noise from outputs (scaled if latent_std is set) for loss computation
+                loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             
             optimizer.zero_grad()
             scaler = getattr(train_epoch, '_scaler', None)
@@ -93,7 +94,8 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             model.update_ema()
         else:
             outputs = model(latents, t, cond=cond, noise=noise)
-            loss, logs = loss_fn(outputs, {"noise": noise})
+            # Use the noise from outputs (scaled if latent_std is set) for loss computation
+            loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             
             optimizer.zero_grad()
             loss.backward()
@@ -166,10 +168,12 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
             if use_amp and device_obj.type == "cuda":
                 with torch.amp.autocast('cuda'):
                     outputs = model(latents, t, cond=cond, noise=noise)
-                    loss, logs = loss_fn(outputs, {"noise": noise})
+                    # Use the noise from outputs (scaled if latent_std is set) for loss computation
+                    loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             else:
                 outputs = model(latents, t, cond=cond, noise=noise)
-                loss, logs = loss_fn(outputs, {"noise": noise})
+                # Use the noise from outputs (scaled if latent_std is set) for loss computation
+                loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             
             batch_size = latents.shape[0]
             loss_val = loss.item()
@@ -187,33 +191,26 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
     return avg_loss, avg_logs
 
 
-def compute_latent_statistics(model, dataloader, device, num_samples=1000):
+def compute_latent_statistics_from_dataset(dataloader, device, num_samples=1000):
     """
-    Compute mean and std of latents from dataset for standardization.
-    Only computes if model doesn't already have statistics set.
+    Compute mean and std of latents directly from dataset dataloader.
+    Works with pre-embedded latents (no model needed).
     
     Args:
-        model: DiffusionModel instance
         dataloader: DataLoader with latents
         device: Device to compute on
         num_samples: Number of samples to use for statistics computation
     
     Returns:
-        mean: Tensor of shape (1, C, 1, 1) or None if stats already set
-        std: Tensor of shape (1, C, 1, 1) or None if stats already set
+        mean: Tensor of shape (1, C, 1, 1) or None
+        std: Tensor of shape (1, C, 1, 1) or None
     """
-    # If stats already set, skip computation
-    if model.latent_mean is not None and model.latent_std is not None:
-        print("  Latent statistics already set, skipping computation")
-        return model.latent_mean, model.latent_std
-    
     if isinstance(device, str):
         device_obj = torch.device(device)
     else:
         device_obj = device
     
     print(f"  Computing latent statistics from {num_samples} samples...")
-    model.eval()
     
     all_latents = []
     samples_collected = 0
@@ -225,16 +222,9 @@ def compute_latent_statistics(model, dataloader, device, num_samples=1000):
             
             latents = batch.get("latent")
             if latents is None:
-                if "rgb" in batch and model._has_encoder:
-                    encoder_out = model.encoder(batch["rgb"])
-                    if "latent" in encoder_out:
-                        latents = encoder_out["latent"]
-                    elif "mu" in encoder_out:
-                        latents = encoder_out["mu"]
-                    else:
-                        continue
-                else:
-                    continue
+                # If no latent, we can't compute statistics without model
+                print("  Warning: No latents found in batch (may need model for encoding)")
+                continue
             
             all_latents.append(latents.cpu())
             samples_collected += latents.shape[0]
@@ -249,7 +239,7 @@ def compute_latent_statistics(model, dataloader, device, num_samples=1000):
     # Concatenate all latents
     all_latents = torch.cat(all_latents, dim=0)
     
-    # Compute statistics
+    # Compute statistics (for noise scaling, we primarily use std)
     mean = all_latents.mean(dim=(0, 2, 3), keepdim=True).to(device_obj)  # (1, C, 1, 1)
     std = all_latents.std(dim=(0, 2, 3), keepdim=True).to(device_obj)  # (1, C, 1, 1)
     
@@ -257,19 +247,9 @@ def compute_latent_statistics(model, dataloader, device, num_samples=1000):
     print(f"    Mean: {mean.squeeze().cpu().numpy()}")
     print(f"    Std: {std.squeeze().cpu().numpy()}")
     
-    # Check if standardization is needed (mean≈0, std≈1)
-    mean_abs = mean.abs().max().item()
-    std_mean = std.mean().item()
-    std_std = std.std().item()
-    
-    needs_standardization = mean_abs > 0.1 or abs(std_mean - 1.0) > 0.1 or std_std > 0.1
-    
-    if needs_standardization:
-        print(f"  Latents need standardization (mean abs max: {mean_abs:.4f}, std mean: {std_mean:.4f}, std std: {std_std:.4f})")
-    else:
-        print(f"  Latents are already normalized (mean≈0, std≈1)")
-    
     return mean, std
+
+
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None):
@@ -360,7 +340,51 @@ def main():
     # CSV file path for metrics (defined early so we can load from it if needed)
     metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
     
+    # Build dataset first (needed for computing latent statistics before building model)
+    print("Building dataset...")
+    dataset = build_dataset(config)
+    
+    # Build validation dataset
+    train_split = config["training"].get("train_split", 0.8)
+    split_seed = config["training"].get("split_seed", 42)
+    
+    if train_split < 1.0:
+        train_dataset, val_dataset = dataset.split(train_split=train_split, random_seed=split_seed)
+    else:
+        train_dataset = dataset
+        val_dataset = None
+    
+    # Prepare device object
+    if isinstance(device, str):
+        device_obj = torch.device(device)
+    else:
+        device_obj = device
+    
+    # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
+    
+    # For new training (not resuming): compute latent statistics and update scheduler config
+    if not should_resume:
+        # Compute latent statistics from dataset before building model
+        print("\nComputing latent statistics for noise scaling...")
+        train_loader_temp = train_dataset.make_dataloader(
+            batch_size=config["training"]["batch_size"],
+            shuffle=False,  # Don't shuffle for statistics computation
+            num_workers=config["training"].get("num_workers", 4),
+            use_weighted_sampling=False  # Don't use weighted sampling for statistics
+        )
+        mean, std = compute_latent_statistics_from_dataset(train_loader_temp, device_obj, num_samples=1000)
+        
+        if std is not None:
+            # Update scheduler config with noise_scale before building model
+            # The scheduler will receive this tensor in _init_kwargs and register it as a buffer
+            if "scheduler" not in config:
+                config["scheduler"] = {}
+            config["scheduler"]["noise_scale"] = std.cpu()  # Store as CPU tensor, scheduler will register as buffer
+            print(f"  Updated scheduler config with noise_scale (computed from latent std)")
+        else:
+            print("  Warning: Could not compute latent statistics, scheduler will be built without noise_scale")
+    
     if should_resume:
         print(f"\nFound latest checkpoint: {latest_checkpoint}")
         print("Resuming training...")
@@ -373,7 +397,7 @@ def main():
             return_extra=True,
             config=config  # Use current config file, not saved config
         )
-        model = model.to(device)
+        model = model.to(device_obj)
         
         # Restore training state
         start_epoch = extra_state.get("epoch", 1) - 1  # epoch in checkpoint is 1-indexed
@@ -396,18 +420,14 @@ def main():
         print(f"  Best validation loss so far: {best_val_loss:.6f}")
         if training_history:
             print(f"  Loaded {len(training_history)} previous epochs from history")
+        
+        if model.scheduler.noise_scale is not None:
+            print(f"\nNoise scaling already set in scheduler (loaded from checkpoint)")
     else:
-        # Build model from scratch
+        # Build model from scratch (scheduler config already includes noise_scale if computed)
         print("Building model...")
         # DiffusionModel.from_config automatically extracts and builds from config
         model = DiffusionModel.from_config(config)
-        
-        # Convert device string to device object
-        if isinstance(device, str):
-            device_obj = torch.device(device)
-        else:
-            device_obj = device
-        
         model = model.to(device_obj)
         
         # Enable cudnn benchmark
@@ -417,16 +437,8 @@ def main():
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Build dataset
-    print("Building dataset...")
-    dataset = build_dataset(config)
-    
-    # Build validation dataset
-    train_split = config["training"].get("train_split", 0.8)
-    split_seed = config["training"].get("split_seed", 42)
-    
+    # Build data loaders for training
     if train_split < 1.0:
-        train_dataset, val_dataset = dataset.split(train_split=train_split, random_seed=split_seed)
         val_loader = val_dataset.make_dataloader(
             batch_size=config["training"].get("batch_size", 16),
             shuffle=False,
@@ -434,7 +446,6 @@ def main():
         )
         print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)}")
     else:
-        train_dataset = dataset
         val_loader = None
     
     train_loader = train_dataset.make_dataloader(
@@ -444,16 +455,6 @@ def main():
         use_weighted_sampling=config["training"].get("use_weighted_sampling", False)
     )
     print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
-    
-    # Compute latent statistics if not already set (e.g., from checkpoint)
-    if model.latent_mean is None or model.latent_std is None:
-        print("\nComputing latent statistics...")
-        mean, std = compute_latent_statistics(model, train_loader, device_obj, num_samples=1000)
-        if mean is not None and std is not None:
-            model.set_latent_stats(mean, std)
-            print("  Latent statistics set for standardization")
-    else:
-        print(f"\nLatent statistics already set (loaded from checkpoint)")
     
     # Build loss function
     print("Building loss function...")

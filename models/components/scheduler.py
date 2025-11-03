@@ -12,9 +12,43 @@ class NoiseScheduler(BaseComponent):
         self.register_buffer("alphas", alphas)
         self.register_buffer("betas", betas)
         self.register_buffer("alpha_bars", alpha_bars)
+        
+        # Noise scaling parameters (set by diffusion model based on latent statistics)
+        # noise_scale: scale factor for noise (typically latent std)
+        # noise_offset: offset for noise (typically latent mean, default 0)
+        noise_scale = self._init_kwargs.get("noise_scale", None)
+        noise_offset = self._init_kwargs.get("noise_offset", None)
+        if noise_scale is not None:
+            self.register_buffer("noise_scale", noise_scale)
+        else:
+            self.noise_scale = None
+        if noise_offset is not None:
+            self.register_buffer("noise_offset", noise_offset)
+        else:
+            self.noise_offset = None
 
     def build_schedule(self, num_steps: int):
         raise NotImplementedError
+
+    def set_noise_scale(self, noise_scale):
+        """Set noise scale (typically latent std)."""
+        if noise_scale is not None:
+            if not hasattr(self, 'noise_scale') or self.noise_scale is None:
+                self.register_buffer("noise_scale", noise_scale)
+            else:
+                self.noise_scale.data.copy_(noise_scale)
+        else:
+            self.noise_scale = None
+    
+    def set_noise_offset(self, noise_offset):
+        """Set noise offset (typically latent mean)."""
+        if noise_offset is not None:
+            if not hasattr(self, 'noise_offset') or self.noise_offset is None:
+                self.register_buffer("noise_offset", noise_offset)
+            else:
+                self.noise_offset.data.copy_(noise_offset)
+        else:
+            self.noise_offset = None
 
     def to(self, device):
         # Buffers are automatically moved by nn.Module.to(), but we override
@@ -33,7 +67,28 @@ class NoiseScheduler(BaseComponent):
         while sqrt_alpha_bar.dim() < x0.dim():
             sqrt_alpha_bar = sqrt_alpha_bar.unsqueeze(-1)
             sqrt_one_minus = sqrt_one_minus.unsqueeze(-1)
+        
+        # Apply noise scaling if set (ensure noise_scale is on same device as noise)
+        if self.noise_scale is not None:
+            noise_scale = self.noise_scale.to(noise.device)
+            noise = noise * noise_scale
+        if self.noise_offset is not None:
+            noise_offset = self.noise_offset.to(noise.device)
+            noise = noise + noise_offset
+        
         return sqrt_alpha_bar * x0 + sqrt_one_minus * noise
+    
+    def scale_noise(self, noise):
+        """Scale noise using noise_scale and noise_offset."""
+        if self.noise_scale is not None:
+            # Ensure noise_scale is on same device as noise
+            noise_scale = self.noise_scale.to(noise.device)
+            noise = noise * noise_scale
+        if self.noise_offset is not None:
+            # Ensure noise_offset is on same device as noise
+            noise_offset = self.noise_offset.to(noise.device)
+            noise = noise + noise_offset
+        return noise
 
 
 class LinearScheduler(NoiseScheduler):

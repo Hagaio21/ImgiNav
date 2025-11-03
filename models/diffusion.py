@@ -94,10 +94,6 @@ class DiffusionModel(BaseModel):
         
         # EMA decay rate (can be configured, default to 0.9999)
         self.ema_decay = unet_cfg.get("ema_decay", 0.9999)
-        
-        # Latent statistics for standardization (computed once before training)
-        self.latent_mean = None
-        self.latent_std = None
 
         # noise scheduler
         sched_type = sched_cfg.get("type", "CosineScheduler")
@@ -161,14 +157,11 @@ class DiffusionModel(BaseModel):
                 latents = x0_or_latents  # Direct tensor
             if noise is None:
                 noise = torch.randn_like(latents)
-        
-        # Standardize latents if statistics are available
-        if self.latent_mean is not None and self.latent_std is not None:
-            latents = self.standardize_latents(latents)
-            # Standardize noise as well (it should already be ~N(0,1), but ensure consistency)
-            # Noise is already standard normal, so no need to standardize
 
-        # add noise
+        # Scale noise if scheduler has noise_scale set (for loss computation)
+        scaled_noise = self.scheduler.scale_noise(noise) if self.scheduler.noise_scale is not None else noise
+        
+        # add noise (scheduler handles noise scaling if configured)
         noisy_latents = self.scheduler.add_noise(latents, noise, t)
 
         # predict noise using live UNet (EMA UNet only used at sampling time)
@@ -179,7 +172,7 @@ class DiffusionModel(BaseModel):
             "latent": latents,
             "noisy_latent": noisy_latents,
             "pred_noise": pred_noise,
-            "noise": noise,  # Return the noise used (in latent space)
+            "noise": scaled_noise,  # Return the scaled noise used (for loss computation)
         }
 
     # ------------------------------------------------------------------
@@ -199,7 +192,10 @@ class DiffusionModel(BaseModel):
             latent_shape = (latent_ch, spatial_res, spatial_res)
         
         self.scheduler = self.scheduler.to(device)
+        # Start with random noise (scheduler will scale if noise_scale is set)
         latents = torch.randn((batch_size, *latent_shape), device=device)
+        if self.scheduler.noise_scale is not None:
+            latents = self.scheduler.scale_noise(latents)
         
         # Create timestep schedule
         if method == "ddim":
@@ -243,6 +239,9 @@ class DiffusionModel(BaseModel):
                 if eta > 0 and i < len(timesteps) - 1:
                     sigma = eta * ((1 - alpha_bar_prev) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_prev)).sqrt()
                     noise = sigma * torch.randn_like(latents)
+                    # Scale noise using scheduler's noise_scale if set
+                    if self.scheduler.noise_scale is not None:
+                        noise = self.scheduler.scale_noise(noise)
                 else:
                     noise = 0
                 
@@ -275,6 +274,9 @@ class DiffusionModel(BaseModel):
                     
                     # Sample x_{t-1} with noise
                     noise = torch.randn_like(latents)
+                    # Scale noise using scheduler's noise_scale if set
+                    if self.scheduler.noise_scale is not None:
+                        noise = self.scheduler.scale_noise(noise)
                     latents = pred_mean + posterior_variance.sqrt() * noise
                 else:
                     # Last step: predict x_0 and use it directly (no noise)
@@ -286,19 +288,13 @@ class DiffusionModel(BaseModel):
             if return_history:
                 history.append(latents.clone())
         
-        # Unstandardize latents before decoding if statistics are available
-        # (During sampling, latents are in standardized space, need to convert back)
-        if self.latent_mean is not None and self.latent_std is not None:
-            latents_for_decode = latents * self.latent_std + self.latent_mean
-        else:
-            latents_for_decode = latents
-        
+        # Latents are already in the correct space (noise was scaled, so latents match original distribution)
         # Build output dict
-        result = {"latent": latents_for_decode}
+        result = {"latent": latents}
         
         # Decode to RGB if decoder is available
         with torch.no_grad():
-            decoded_out = self.decoder({"latent": latents_for_decode})
+            decoded_out = self.decoder({"latent": latents})
             if "rgb" in decoded_out:
                 rgb = decoded_out["rgb"]
                 # Denormalize from [-1, 1] to [0, 1]
@@ -329,11 +325,11 @@ class DiffusionModel(BaseModel):
                 ema_buffer.data.mul_(self.ema_decay).add_(live_buffer.data, alpha=1 - self.ema_decay)
 
     # ------------------------------------------------------------------
-    # Latent Standardization
+    # Noise Scaling
     # ------------------------------------------------------------------
-    def compute_latent_stats(self, latents):
+    def compute_latent_statistics(self, latents):
         """
-        Compute mean and std of latents for standardization.
+        Compute mean and std of latents for noise scaling.
         
         Args:
             latents: Tensor of shape (N, C, H, W)
@@ -347,33 +343,18 @@ class DiffusionModel(BaseModel):
         std = latents.std(dim=(0, 2, 3), keepdim=True)  # (1, C, 1, 1)
         return mean, std
     
-    def standardize_latents(self, latents):
+    def set_noise_scaling(self, noise_scale=None, noise_offset=None):
         """
-        Standardize latents to have mean≈0 and std≈1.
-        Uses stored statistics if available, otherwise computes from input.
+        Set noise scaling parameters in the scheduler.
         
         Args:
-            latents: Tensor of shape (N, C, H, W)
-        
-        Returns:
-            Standardized latents
+            noise_scale: Scale factor for noise (typically latent std)
+            noise_offset: Offset for noise (typically latent mean, usually None)
         """
-        if self.latent_mean is not None and self.latent_std is not None:
-            # Use stored statistics
-            mean = self.latent_mean
-            std = self.latent_std
-        else:
-            # Compute from current batch (should only happen during first forward if stats not set)
-            mean, std = self.compute_latent_stats(latents)
-        
-        # Avoid division by zero
-        std = std.clamp(min=1e-8)
-        return (latents - mean) / std
-    
-    def set_latent_stats(self, mean, std):
-        """Set latent statistics for standardization."""
-        self.latent_mean = mean
-        self.latent_std = std
+        if noise_scale is not None:
+            self.scheduler.set_noise_scale(noise_scale)
+        if noise_offset is not None:
+            self.scheduler.set_noise_offset(noise_offset)
 
     # ------------------------------------------------------------------
     # Config I/O
@@ -430,10 +411,8 @@ class DiffusionModel(BaseModel):
         if include_config:
             payload["config"] = self.to_config()
         
-        # Save latent statistics if available
-        if self.latent_mean is not None and self.latent_std is not None:
-            payload["latent_mean"] = self.latent_mean
-            payload["latent_std"] = self.latent_std
+        # noise_scale and noise_offset are now stored in scheduler's state_dict (as buffers)
+        # No need to save them separately
         
         payload.update(extra_state)
         torch.save(payload, path)
@@ -485,12 +464,10 @@ class DiffusionModel(BaseModel):
         # Build model from config
         model = cls.from_config(model_config) if model_config else cls()
 
-        # Load state dict (restores all component weights including decoder and EMA UNet)
+        # Load state dict (restores all component weights including decoder, EMA UNet, and scheduler with noise_scale)
         model.load_state_dict(payload["state_dict"], strict=False)
         
-        # Load latent statistics if available
-        if "latent_mean" in payload and "latent_std" in payload:
-            model.set_latent_stats(payload["latent_mean"], payload["latent_std"])
+        # noise_scale and noise_offset are now loaded from scheduler's state_dict automatically
 
         if return_extra:
             # Return model and any extra state (optimizer, epoch, etc.)
