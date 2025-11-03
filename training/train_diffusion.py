@@ -268,6 +268,9 @@ def main():
     best_val_loss = float("inf")
     training_history = []
     
+    # CSV file path for metrics (defined early so we can load from it if needed)
+    metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
+    
     should_resume = not args.no_resume and latest_checkpoint.exists()
     if should_resume:
         print(f"\nFound latest checkpoint: {latest_checkpoint}")
@@ -288,8 +291,22 @@ def main():
         best_val_loss = extra_state.get("best_val_loss", float("inf"))
         training_history = extra_state.get("training_history", [])
         
+        # If checkpoint doesn't have training_history, try loading from CSV
+        if not training_history and metrics_csv_path.exists():
+            try:
+                df = pd.read_csv(metrics_csv_path)
+                # Filter out epochs >= start_epoch + 1 to avoid duplicates
+                # (start_epoch is 0-indexed, CSV epochs are 1-indexed)
+                df_filtered = df[df['epoch'] < (start_epoch + 1)]
+                training_history = df_filtered.to_dict('records')
+                print(f"  Loaded {len(training_history)} epochs from CSV file (filtered to epochs < {start_epoch + 1})")
+            except Exception as e:
+                print(f"  Warning: Could not load metrics from CSV: {e}")
+        
         print(f"  Resuming from epoch {start_epoch + 1}")
         print(f"  Best validation loss so far: {best_val_loss:.6f}")
+        if training_history:
+            print(f"  Loaded {len(training_history)} previous epochs from history")
     else:
         # Build model from scratch
         print("Building model...")
@@ -406,9 +423,6 @@ def main():
         print(f"  Keeping only last {keep_checkpoints} checkpoints")
     if early_stopping_patience:
         print(f"  Early stopping: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
-    
-    # Metrics CSV path
-    metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
     
     # Training loop
     epochs_without_improvement = 0

@@ -299,6 +299,9 @@ def main():
     training_history = []
     extra_state = {}
     
+    # CSV file path for metrics (defined early so we can load from it if needed)
+    metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
+    
     # Convert device string to device object
     if isinstance(device, str):
         device_obj = torch.device(device)
@@ -324,8 +327,22 @@ def main():
         best_val_loss = extra_state.get("best_val_loss", float("inf"))
         training_history = extra_state.get("training_history", [])
         
+        # If checkpoint doesn't have training_history, try loading from CSV
+        if not training_history and metrics_csv_path.exists():
+            try:
+                df = pd.read_csv(metrics_csv_path)
+                # Filter out epochs >= start_epoch + 1 to avoid duplicates
+                # (start_epoch is 0-indexed, CSV epochs are 1-indexed)
+                df_filtered = df[df['epoch'] < (start_epoch + 1)]
+                training_history = df_filtered.to_dict('records')
+                print(f"  Loaded {len(training_history)} epochs from CSV file (filtered to epochs < {start_epoch + 1})")
+            except Exception as e:
+                print(f"  Warning: Could not load metrics from CSV: {e}")
+        
         print(f"  Resuming from epoch {start_epoch + 1}")
         print(f"  Best validation loss so far: {best_val_loss:.6f}")
+        if training_history:
+            print(f"  Loaded {len(training_history)} previous epochs from history")
     else:
         # Build components
         print("Building model...")
@@ -433,9 +450,6 @@ def main():
     
     checkpoint_files = []
     epochs_without_improvement = 0
-    
-    # CSV file path for metrics (in experiment folder)
-    metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
     
     # Also save metrics to phase folder if phase is specified (for analysis)
     phase_metrics_path = None
