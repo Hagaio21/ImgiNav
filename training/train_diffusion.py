@@ -376,14 +376,20 @@ def main():
         mean, std = compute_latent_statistics_from_dataset(train_loader_temp, device_obj, num_samples=1000)
         
         if std is not None:
-            # Update scheduler config with noise_scale before building model
-            # The scheduler will receive this tensor in _init_kwargs and register it as a buffer
+            # Update scheduler config with noise_scale and noise_offset before building model
+            # The scheduler will receive these tensors in _init_kwargs and register them as buffers
             if "scheduler" not in config:
                 config["scheduler"] = {}
             config["scheduler"]["noise_scale"] = std.cpu()  # Store as CPU tensor, scheduler will register as buffer
-            print(f"  Updated scheduler config with noise_scale (computed from latent std)")
+            if mean is not None:
+                config["scheduler"]["noise_offset"] = mean.cpu()  # Store as CPU tensor, scheduler will register as buffer
+                print(f"  Updated scheduler config with noise_scale (latent std) and noise_offset (latent mean)")
+                print(f"    noise_scale shape: {std.shape}, noise_offset shape: {mean.shape}")
+            else:
+                print(f"  Updated scheduler config with noise_scale (latent std)")
+                print(f"    noise_scale shape: {std.shape}, noise_offset: None")
         else:
-            print("  Warning: Could not compute latent statistics, scheduler will be built without noise_scale")
+            print("  Warning: Could not compute latent statistics, scheduler will be built without noise scaling")
     
     if should_resume:
         print(f"\nFound latest checkpoint: {latest_checkpoint}")
@@ -422,7 +428,12 @@ def main():
             print(f"  Loaded {len(training_history)} previous epochs from history")
         
         if model.scheduler.noise_scale is not None:
-            print(f"\nNoise scaling already set in scheduler (loaded from checkpoint)")
+            print(f"\nNoise scaling loaded from checkpoint:")
+            print(f"  noise_scale (latent std): shape {model.scheduler.noise_scale.shape}")
+            if model.scheduler.noise_offset is not None:
+                print(f"  noise_offset (latent mean): shape {model.scheduler.noise_offset.shape}")
+            else:
+                print(f"  noise_offset: None")
     else:
         # Build model from scratch (scheduler config already includes noise_scale if computed)
         print("Building model...")
