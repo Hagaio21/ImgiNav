@@ -373,7 +373,7 @@ def create_augmentations(
         
         # Create manifest row - preserve all original metadata
         manifest_row = row.to_dict()
-        manifest_row["layout_path"] = str(copied_path.relative_to(output_dir.parent))
+        manifest_row["layout_path"] = str(copied_path.resolve())  # Use absolute path
         manifest_row["latent_path"] = None  # Will be filled by embedding script
         manifest_row["is_empty"] = False
         manifest_row["is_augmented"] = False
