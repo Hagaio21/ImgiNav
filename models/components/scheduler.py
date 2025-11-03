@@ -6,16 +6,20 @@ class NoiseScheduler(BaseComponent):
     def _build(self):
         num_steps = self._init_kwargs.get("num_steps", 1000)
         self.num_steps = num_steps
-        self.alphas, self.betas = self.build_schedule(num_steps)
-        self.alpha_bars = torch.cumprod(self.alphas, dim=0)
+        alphas, betas = self.build_schedule(num_steps)
+        alpha_bars = torch.cumprod(alphas, dim=0)
+        # Register as buffers so they're included in state_dict
+        self.register_buffer("alphas", alphas)
+        self.register_buffer("betas", betas)
+        self.register_buffer("alpha_bars", alpha_bars)
 
     def build_schedule(self, num_steps: int):
         raise NotImplementedError
 
     def to(self, device):
-        self.alphas = self.alphas.to(device)
-        self.betas = self.betas.to(device)
-        self.alpha_bars = self.alpha_bars.to(device)
+        # Buffers are automatically moved by nn.Module.to(), but we override
+        # to ensure immediate movement and return self for chaining
+        super().to(device)
         return self
 
     def add_noise(self, x0, noise, t):

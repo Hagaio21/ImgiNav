@@ -565,12 +565,34 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     has_layout_path = "layout_path" in manifest_df.columns
     
     dataset = build_dataset(config)
-    # If num_training is None, use entire dataset
+    
+    # Filter out empty images from memorization check
+    # Empty images are similar by default and skew memorization metrics
+    if hasattr(dataset, 'manifest') or has_layout_path:
+        import pandas as pd
+        manifest_df_check = pd.read_csv(manifest_path)
+        if "is_empty" in manifest_df_check.columns:
+            # Count empty samples
+            empty_count = (manifest_df_check["is_empty"] == True).sum()
+            total_count = len(manifest_df_check)
+            print(f"\nFiltering empty images for memorization check:")
+            print(f"  Total samples in manifest: {total_count}")
+            print(f"  Empty samples (will be excluded): {empty_count}")
+            print(f"  Non-empty samples (will be used): {total_count - empty_count}")
+            
+            # Update dataset filters to exclude empty images
+            if "filters" not in config["dataset"]:
+                config["dataset"]["filters"] = {}
+            config["dataset"]["filters"]["is_empty"] = [False]
+            # Rebuild dataset with filter
+            dataset = build_dataset(config)
+    
+    # If num_training is None, use entire dataset (after filtering)
     if num_training is None:
         num_training = len(dataset)
-        print(f"Checking against entire dataset: {num_training} samples")
+        print(f"\nChecking against entire dataset (after filtering): {num_training} samples")
     else:
-        print(f"Checking against {num_training} training samples (dataset has {len(dataset)} total)")
+        print(f"Checking against {num_training} training samples (dataset has {len(dataset)} total after filtering)")
     # Only load latents (not RGB) to save memory
     training_samples = load_training_samples(dataset, num_samples=num_training, device=device, load_rgb=False)
     print(f"Loaded {len(training_samples['metadata'])} training samples (latents only)")

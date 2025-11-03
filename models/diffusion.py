@@ -19,16 +19,28 @@ class DiffusionModel(BaseModel):
         unet_cfg = self._init_kwargs.get("unet", {})
         sched_cfg = self._init_kwargs.get("scheduler", {})
 
-        # Load decoder from checkpoint (cannot train decoder, only load from checkpoint)
-        # Accept either autoencoder checkpoint or decoder checkpoint
+        # Build decoder: 
+        # - If checkpoint path provided: load from external checkpoint (initial training)
+        # - If no checkpoint path: build from config (loading from diffusion checkpoint, weights in state_dict)
         if ae_cfg:
-            # Autoencoder checkpoint provided
+            # Autoencoder config provided
             ae_checkpoint = ae_cfg.get("checkpoint")
-            if not ae_checkpoint:
-                raise ValueError("'autoencoder' config must provide a 'checkpoint' path (diffusion cannot train autoencoder)")
-            # Load autoencoder from checkpoint and extract decoder
-            autoencoder = Autoencoder.load_checkpoint(ae_checkpoint, map_location="cpu")
-            self.decoder = autoencoder.decoder
+            if ae_checkpoint:
+                # Checkpoint path provided - load from external checkpoint (initial training)
+                autoencoder = Autoencoder.load_checkpoint(ae_checkpoint, map_location="cpu")
+                self.decoder = autoencoder.decoder
+            else:
+                # No checkpoint path - build from config (loading from diffusion checkpoint)
+                # Decoder config should be in autoencoder.decoder subconfig
+                decoder_subcfg = ae_cfg.get("decoder")
+                if decoder_subcfg:
+                    # Remove checkpoint if present (shouldn't be, but just in case)
+                    decoder_subcfg = decoder_subcfg.copy()
+                    decoder_subcfg.pop("checkpoint", None)
+                    self.decoder = Decoder.from_config(decoder_subcfg)
+                else:
+                    raise ValueError("Cannot build decoder: no checkpoint path and no decoder config in autoencoder config")
+            
             self.encoder = None  # Not needed for pre-embedded latents
             self.autoencoder = None
             self._has_encoder = False
@@ -36,14 +48,19 @@ class DiffusionModel(BaseModel):
             if ae_cfg.get("frozen", False):
                 self.decoder.freeze()
         elif decoder_cfg:
-            # Decoder checkpoint provided (should be autoencoder checkpoint that contains decoder)
+            # Decoder config provided
             decoder_checkpoint = decoder_cfg.get("checkpoint")
-            if not decoder_checkpoint:
-                raise ValueError("'decoder' config must provide a 'checkpoint' path (diffusion cannot train decoder)")
-            # Load autoencoder from checkpoint and extract decoder
-            # Note: decoder checkpoint should actually be an autoencoder checkpoint
-            autoencoder = Autoencoder.load_checkpoint(decoder_checkpoint, map_location="cpu")
-            self.decoder = autoencoder.decoder
+            if decoder_checkpoint:
+                # Checkpoint path provided - load from external checkpoint (initial training)
+                # Note: decoder checkpoint should actually be an autoencoder checkpoint
+                autoencoder = Autoencoder.load_checkpoint(decoder_checkpoint, map_location="cpu")
+                self.decoder = autoencoder.decoder
+            else:
+                # No checkpoint path - build from config (loading from diffusion checkpoint)
+                decoder_cfg_copy = decoder_cfg.copy()
+                decoder_cfg_copy.pop("checkpoint", None)  # Remove checkpoint key if present
+                self.decoder = Decoder.from_config(decoder_cfg_copy)
+            
             self.encoder = None
             self.autoencoder = None
             self._has_encoder = False
@@ -51,7 +68,7 @@ class DiffusionModel(BaseModel):
             if decoder_cfg.get("frozen", False):
                 self.decoder.freeze()
         else:
-            raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config with 'checkpoint' path")
+            raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config")
 
         # UNet backbone
         self.unet = DualUNet.from_config(unet_cfg)
@@ -292,3 +309,88 @@ class DiffusionModel(BaseModel):
     # ------------------------------------------------------------------
     # Checkpointing (inherited from BaseModel, can override if needed)
     # ------------------------------------------------------------------
+    def save_checkpoint(self, path, include_config=True, **extra_state):
+        """
+        Save diffusion model checkpoint with all components nested.
+        
+        Ensures decoder, UNet, and scheduler are all included in state_dict,
+        even if frozen. All components are nested within the diffusion model.
+        """
+        path = Path(path)
+        state_dict = self.state_dict()
+        
+        # Verify all components are included
+        has_decoder = any(k.startswith("decoder.") for k in state_dict.keys())
+        has_unet = any(k.startswith("unet.") for k in state_dict.keys())
+        has_scheduler = any(k.startswith("scheduler.") for k in state_dict.keys())
+        
+        if not has_decoder:
+            raise RuntimeError("Decoder not found in state_dict - checkpoint incomplete!")
+        if not has_unet:
+            raise RuntimeError("UNet not found in state_dict - checkpoint incomplete!")
+        if not has_scheduler:
+            raise RuntimeError("Scheduler not found in state_dict - checkpoint incomplete!")
+        
+        payload = {"state_dict": state_dict}
+        if include_config:
+            payload["config"] = self.to_config()
+        payload.update(extra_state)
+        torch.save(payload, path)
+    
+    @classmethod
+    def load_checkpoint(cls, path, map_location="cpu", return_extra=False, config=None):
+        """
+        Load diffusion model checkpoint.
+        
+        When loading a diffusion checkpoint, the decoder config comes from the saved checkpoint,
+        not from an external autoencoder checkpoint. All components (decoder, UNet, scheduler)
+        are saved in the checkpoint's state_dict and config.
+        """
+        path = Path(path)
+        payload = torch.load(path, map_location=map_location)
+        
+        # Check if decoder state exists in checkpoint (it should for diffusion checkpoints)
+        state_dict = payload.get("state_dict", payload)
+        has_decoder_state = any(key.startswith("decoder.") for key in state_dict.keys())
+        
+        # Use saved config from checkpoint (contains decoder config)
+        saved_config = payload.get("config")
+        
+        # If user provided config, merge it but prefer decoder from saved checkpoint
+        if has_decoder_state and saved_config and isinstance(saved_config, dict):
+            # Decoder state is in checkpoint - use saved decoder config
+            if config and isinstance(config, dict):
+                # Merge user config with saved config, but keep decoder from saved config
+                merged_config = config.copy()
+                if "decoder" in saved_config:
+                    # Use decoder from saved checkpoint (no checkpoint path needed)
+                    merged_config["decoder"] = saved_config["decoder"]
+                elif "autoencoder" in saved_config and "decoder" in saved_config["autoencoder"]:
+                    # Saved config has nested decoder in autoencoder
+                    merged_config["decoder"] = saved_config["autoencoder"]["decoder"]
+                # Remove any autoencoder checkpoint paths - not needed when loading from diffusion checkpoint
+                if "autoencoder" in merged_config:
+                    merged_config["autoencoder"] = {k: v for k, v in merged_config["autoencoder"].items() 
+                                                    if k != "checkpoint"}
+                model_config = merged_config
+            else:
+                # No user config - use saved config as-is
+                model_config = saved_config
+        else:
+            # No decoder state in checkpoint (shouldn't happen for diffusion checkpoints)
+            # Use provided config or saved config
+            model_config = config if config is not None else saved_config
+        
+        # Build model from config
+        model = cls.from_config(model_config) if model_config else cls()
+        
+        # Load state dict (restores all component weights including decoder)
+        model.load_state_dict(payload["state_dict"])
+        
+        if return_extra:
+            # Return model and any extra state (optimizer, epoch, etc.)
+            extra_state = {k: v for k, v in payload.items() 
+                          if k not in ["state_dict", "config"]}
+            return model, extra_state
+        
+        return model
