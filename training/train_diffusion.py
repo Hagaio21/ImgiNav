@@ -79,7 +79,7 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             optimizer.zero_grad()
             scaler = getattr(train_epoch, '_scaler', None)
             if scaler is None and use_amp:
-                scaler = torch.cuda.amp.GradScaler()
+                scaler = torch.amp.GradScaler('cuda')
                 train_epoch._scaler = scaler
             
             scaler.scale(loss).backward()
@@ -89,6 +89,8 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
+            # Update EMA UNet after optimizer step
+            model.update_ema()
         else:
             outputs = model(latents, t, cond=cond, noise=noise)
             loss, logs = loss_fn(outputs, {"noise": noise})
@@ -99,6 +101,8 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             if max_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
+            # Update EMA UNet after optimizer step
+            model.update_ema()
         
         # Step scheduler
         if scheduler:
@@ -181,6 +185,91 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
     
     return avg_loss, avg_logs
+
+
+def compute_latent_statistics(model, dataloader, device, num_samples=1000):
+    """
+    Compute mean and std of latents from dataset for standardization.
+    Only computes if model doesn't already have statistics set.
+    
+    Args:
+        model: DiffusionModel instance
+        dataloader: DataLoader with latents
+        device: Device to compute on
+        num_samples: Number of samples to use for statistics computation
+    
+    Returns:
+        mean: Tensor of shape (1, C, 1, 1) or None if stats already set
+        std: Tensor of shape (1, C, 1, 1) or None if stats already set
+    """
+    # If stats already set, skip computation
+    if model.latent_mean is not None and model.latent_std is not None:
+        print("  Latent statistics already set, skipping computation")
+        return model.latent_mean, model.latent_std
+    
+    if isinstance(device, str):
+        device_obj = torch.device(device)
+    else:
+        device_obj = device
+    
+    print(f"  Computing latent statistics from {num_samples} samples...")
+    model.eval()
+    
+    all_latents = []
+    samples_collected = 0
+    
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = {k: v.to(device_obj, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+                    for k, v in batch.items()}
+            
+            latents = batch.get("latent")
+            if latents is None:
+                if "rgb" in batch and model._has_encoder:
+                    encoder_out = model.encoder(batch["rgb"])
+                    if "latent" in encoder_out:
+                        latents = encoder_out["latent"]
+                    elif "mu" in encoder_out:
+                        latents = encoder_out["mu"]
+                    else:
+                        continue
+                else:
+                    continue
+            
+            all_latents.append(latents.cpu())
+            samples_collected += latents.shape[0]
+            
+            if samples_collected >= num_samples:
+                break
+    
+    if len(all_latents) == 0:
+        print("  Warning: No latents found for statistics computation")
+        return None, None
+    
+    # Concatenate all latents
+    all_latents = torch.cat(all_latents, dim=0)
+    
+    # Compute statistics
+    mean = all_latents.mean(dim=(0, 2, 3), keepdim=True).to(device_obj)  # (1, C, 1, 1)
+    std = all_latents.std(dim=(0, 2, 3), keepdim=True).to(device_obj)  # (1, C, 1, 1)
+    
+    print(f"  Latent statistics computed:")
+    print(f"    Mean: {mean.squeeze().cpu().numpy()}")
+    print(f"    Std: {std.squeeze().cpu().numpy()}")
+    
+    # Check if standardization is needed (mean≈0, std≈1)
+    mean_abs = mean.abs().max().item()
+    std_mean = std.mean().item()
+    std_std = std.std().item()
+    
+    needs_standardization = mean_abs > 0.1 or abs(std_mean - 1.0) > 0.1 or std_std > 0.1
+    
+    if needs_standardization:
+        print(f"  Latents need standardization (mean abs max: {mean_abs:.4f}, std mean: {std_mean:.4f}, std std: {std_std:.4f})")
+    else:
+        print(f"  Latents are already normalized (mean≈0, std≈1)")
+    
+    return mean, std
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None):
@@ -356,6 +445,16 @@ def main():
     )
     print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
+    # Compute latent statistics if not already set (e.g., from checkpoint)
+    if model.latent_mean is None or model.latent_std is None:
+        print("\nComputing latent statistics...")
+        mean, std = compute_latent_statistics(model, train_loader, device_obj, num_samples=1000)
+        if mean is not None and std is not None:
+            model.set_latent_stats(mean, std)
+            print("  Latent statistics set for standardization")
+    else:
+        print(f"\nLatent statistics already set (loaded from checkpoint)")
+    
     # Build loss function
     print("Building loss function...")
     loss_fn = build_loss(config)
@@ -387,7 +486,7 @@ def main():
     use_amp = config.get("training", {}).get("use_amp", True)
     if use_amp and isinstance(device, str) and device == "cuda":
         print("Using mixed precision training (FP16)")
-        train_epoch._scaler = torch.cuda.amp.GradScaler()
+        train_epoch._scaler = torch.amp.GradScaler('cuda')
     elif not use_amp:
         print("Mixed precision training disabled (use_amp: false)")
     

@@ -83,6 +83,21 @@ class DiffusionModel(BaseModel):
         freeze_blocks = unet_cfg.get("freeze_blocks", None)
         if freeze_blocks:
             self.unet.freeze_blocks(freeze_blocks)
+        
+        # EMA UNet for stable sampling (initialized with same weights as live UNet)
+        self.unet_ema = DualUNet.from_config(unet_cfg)
+        self.unet_ema.load_state_dict(self.unet.state_dict())
+        self.unet_ema.eval()  # Always in eval mode
+        # Freeze EMA UNet parameters
+        for param in self.unet_ema.parameters():
+            param.requires_grad = False
+        
+        # EMA decay rate (can be configured, default to 0.9999)
+        self.ema_decay = unet_cfg.get("ema_decay", 0.9999)
+        
+        # Latent statistics for standardization (computed once before training)
+        self.latent_mean = None
+        self.latent_std = None
 
         # noise scheduler
         sched_type = sched_cfg.get("type", "CosineScheduler")
@@ -146,22 +161,25 @@ class DiffusionModel(BaseModel):
                 latents = x0_or_latents  # Direct tensor
             if noise is None:
                 noise = torch.randn_like(latents)
+        
+        # Standardize latents if statistics are available
+        if self.latent_mean is not None and self.latent_std is not None:
+            latents = self.standardize_latents(latents)
+            # Standardize noise as well (it should already be ~N(0,1), but ensure consistency)
+            # Noise is already standard normal, so no need to standardize
 
         # add noise
         noisy_latents = self.scheduler.add_noise(latents, noise, t)
 
-        # predict noise
+        # predict noise using live UNet (EMA UNet only used at sampling time)
         pred_noise = self.unet(noisy_latents, t, cond)
 
-        # decode reconstruction - decoder expects dict
-        decoded = self.decoder({"latent": noisy_latents})
-
+        # Do NOT decode during training - decoder should only see clean latents at sampling time
         return {
             "latent": latents,
             "noisy_latent": noisy_latents,
             "pred_noise": pred_noise,
             "noise": noise,  # Return the noise used (in latent space)
-            **decoded,
         }
 
     # ------------------------------------------------------------------
@@ -200,7 +218,9 @@ class DiffusionModel(BaseModel):
             t_batch = t.expand(batch_size)
             
             with torch.no_grad():
-                pred_noise = self.unet(latents, t_batch, cond)
+                # Use EMA UNet for stable sampling
+                unet = getattr(self, 'unet_ema', self.unet)
+                pred_noise = unet(latents, t_batch, cond)
             
             # DDIM step
             if method == "ddim":
@@ -266,12 +286,19 @@ class DiffusionModel(BaseModel):
             if return_history:
                 history.append(latents.clone())
         
+        # Unstandardize latents before decoding if statistics are available
+        # (During sampling, latents are in standardized space, need to convert back)
+        if self.latent_mean is not None and self.latent_std is not None:
+            latents_for_decode = latents * self.latent_std + self.latent_mean
+        else:
+            latents_for_decode = latents
+        
         # Build output dict
-        result = {"latent": latents}
+        result = {"latent": latents_for_decode}
         
         # Decode to RGB if decoder is available
         with torch.no_grad():
-            decoded_out = self.decoder({"latent": latents})
+            decoded_out = self.decoder({"latent": latents_for_decode})
             if "rgb" in decoded_out:
                 rgb = decoded_out["rgb"]
                 # Denormalize from [-1, 1] to [0, 1]
@@ -283,6 +310,70 @@ class DiffusionModel(BaseModel):
             result["history"] = history
         
         return result
+
+    # ------------------------------------------------------------------
+    # EMA Updates
+    # ------------------------------------------------------------------
+    def update_ema(self):
+        """Update EMA UNet weights with current UNet weights."""
+        if not hasattr(self, 'unet_ema'):
+            return
+        
+        with torch.no_grad():
+            # Exponential moving average: ema_param = decay * ema_param + (1 - decay) * live_param
+            for ema_param, live_param in zip(self.unet_ema.parameters(), self.unet.parameters()):
+                ema_param.data.mul_(self.ema_decay).add_(live_param.data, alpha=1 - self.ema_decay)
+            
+            # Also update buffers (e.g., running stats in BatchNorm)
+            for ema_buffer, live_buffer in zip(self.unet_ema.buffers(), self.unet.buffers()):
+                ema_buffer.data.mul_(self.ema_decay).add_(live_buffer.data, alpha=1 - self.ema_decay)
+
+    # ------------------------------------------------------------------
+    # Latent Standardization
+    # ------------------------------------------------------------------
+    def compute_latent_stats(self, latents):
+        """
+        Compute mean and std of latents for standardization.
+        
+        Args:
+            latents: Tensor of shape (N, C, H, W)
+        
+        Returns:
+            mean: Tensor of shape (1, C, 1, 1)
+            std: Tensor of shape (1, C, 1, 1)
+        """
+        # Compute per-channel statistics
+        mean = latents.mean(dim=(0, 2, 3), keepdim=True)  # (1, C, 1, 1)
+        std = latents.std(dim=(0, 2, 3), keepdim=True)  # (1, C, 1, 1)
+        return mean, std
+    
+    def standardize_latents(self, latents):
+        """
+        Standardize latents to have mean≈0 and std≈1.
+        Uses stored statistics if available, otherwise computes from input.
+        
+        Args:
+            latents: Tensor of shape (N, C, H, W)
+        
+        Returns:
+            Standardized latents
+        """
+        if self.latent_mean is not None and self.latent_std is not None:
+            # Use stored statistics
+            mean = self.latent_mean
+            std = self.latent_std
+        else:
+            # Compute from current batch (should only happen during first forward if stats not set)
+            mean, std = self.compute_latent_stats(latents)
+        
+        # Avoid division by zero
+        std = std.clamp(min=1e-8)
+        return (latents - mean) / std
+    
+    def set_latent_stats(self, mean, std):
+        """Set latent statistics for standardization."""
+        self.latent_mean = mean
+        self.latent_std = std
 
     # ------------------------------------------------------------------
     # Config I/O
@@ -322,18 +413,28 @@ class DiffusionModel(BaseModel):
         # Verify all components are included
         has_decoder = any(k.startswith("decoder.") for k in state_dict.keys())
         has_unet = any(k.startswith("unet.") for k in state_dict.keys())
+        has_unet_ema = any(k.startswith("unet_ema.") for k in state_dict.keys())
         has_scheduler = any(k.startswith("scheduler.") for k in state_dict.keys())
         
         if not has_decoder:
             raise RuntimeError("Decoder not found in state_dict - checkpoint incomplete!")
         if not has_unet:
             raise RuntimeError("UNet not found in state_dict - checkpoint incomplete!")
+        # EMA UNet should exist if model was built with EMA (new checkpoints)
+        if hasattr(self, 'unet_ema') and not has_unet_ema:
+            raise RuntimeError("EMA UNet not found in state_dict - checkpoint incomplete!")
         if not has_scheduler:
             raise RuntimeError("Scheduler not found in state_dict - checkpoint incomplete!")
         
         payload = {"state_dict": state_dict}
         if include_config:
             payload["config"] = self.to_config()
+        
+        # Save latent statistics if available
+        if self.latent_mean is not None and self.latent_std is not None:
+            payload["latent_mean"] = self.latent_mean
+            payload["latent_std"] = self.latent_std
+        
         payload.update(extra_state)
         torch.save(payload, path)
     
@@ -383,10 +484,14 @@ class DiffusionModel(BaseModel):
         
         # Build model from config
         model = cls.from_config(model_config) if model_config else cls()
+
+        # Load state dict (restores all component weights including decoder and EMA UNet)
+        model.load_state_dict(payload["state_dict"], strict=False)
         
-        # Load state dict (restores all component weights including decoder)
-        model.load_state_dict(payload["state_dict"])
-        
+        # Load latent statistics if available
+        if "latent_mean" in payload and "latent_std" in payload:
+            model.set_latent_stats(payload["latent_mean"], payload["latent_std"])
+
         if return_extra:
             # Return model and any extra state (optimizer, epoch, etc.)
             extra_state = {k: v for k, v in payload.items() 
