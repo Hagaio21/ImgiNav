@@ -25,6 +25,61 @@ from models.diffusion import DiffusionModel
 from torchvision.utils import save_image, make_grid
 
 
+def compute_corruption_metrics(clean_latents, noisy_latents, t, scheduler):
+    """
+    Compute metrics to verify data corruption in diffusion process.
+    Note: t is sampled uniformly, and corruption should increase with t.
+    
+    Returns:
+        dict with metrics:
+            - corruption_snr: Signal-to-noise ratio (lower = more corrupted)
+            - corruption_mse: MSE between clean and noisy latents
+            - corruption_ratio: Ratio of noise to signal
+            - expected_noise_ratio: Expected noise ratio from scheduler
+            - mean_timestep: Average timestep for this batch (for verification)
+            - timestep_std: Std of timesteps (should be ~num_steps/sqrt(12) for uniform)
+    """
+    with torch.no_grad():
+        # Verify timestep distribution (should be uniform)
+        t_float = t.float()
+        mean_t = t_float.mean().item()
+        std_t = t_float.std().item()
+        num_steps = scheduler.num_steps
+        # Expected std for uniform [0, num_steps-1] is approximately num_steps/sqrt(12)
+        expected_std = (num_steps - 1) / (2 * (3 ** 0.5))
+        
+        # Compute difference (noise added)
+        noise_added = noisy_latents - clean_latents
+        
+        # Signal-to-noise ratio (SNR)
+        signal_power = clean_latents.pow(2).mean()
+        noise_power = noise_added.pow(2).mean()
+        snr = signal_power / (noise_power + 1e-8)
+        
+        # MSE between clean and noisy
+        mse = torch.nn.functional.mse_loss(clean_latents, noisy_latents)
+        
+        # Corruption ratio (noise magnitude relative to signal magnitude)
+        signal_mag = clean_latents.abs().mean()
+        noise_mag = noise_added.abs().mean()
+        corruption_ratio = noise_mag / (signal_mag + 1e-8)
+        
+        # Expected alpha_bar for this timestep (for verification)
+        alpha_bars = scheduler.alpha_bars.to(t.device)
+        alpha_bar_t = alpha_bars[t.long()].mean()
+        expected_noise_ratio = (1 - alpha_bar_t).sqrt()
+        
+        return {
+            "corruption_snr": snr.item(),
+            "corruption_mse": mse.item(),
+            "corruption_ratio": corruption_ratio.item(),
+            "expected_noise_ratio": expected_noise_ratio.item(),
+            "mean_timestep": mean_t,
+            "timestep_std": std_t,
+            "expected_timestep_std": expected_std,
+        }
+
+
 def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch, use_amp=False, max_grad_norm=None):
     """Train for one epoch."""
     model.train()
@@ -40,7 +95,7 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
     non_blocking = device_obj.type == "cuda"
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    for batch in pbar:
+    for batch_idx, batch in enumerate(pbar):
         batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
         
         # Diffusion training: need latents and timesteps
@@ -60,9 +115,10 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             else:
                 raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
         
-        # Sample random timesteps
+        # Sample random timesteps uniformly from [0, num_steps)
+        # This ensures uniform distribution across all timesteps
         num_steps = model.scheduler.num_steps
-        t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
+        t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj, dtype=torch.long)
         
         # Sample standard normal noise N(0,1)
         noise = model.scheduler.randn_like(latents)
@@ -120,6 +176,19 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                 log_dict[k] = 0.0
             log_dict[k] += v.detach().item() * batch_size
         
+        # Compute corruption metrics (every N batches to avoid overhead)
+        if batch_idx % 100 == 0:  # Log every 100 batches
+            with torch.no_grad():
+                # Compute corruption metrics
+                corruption_metrics = compute_corruption_metrics(
+                    outputs["latent"], outputs["noisy_latent"], t, model.scheduler
+                )
+                # Add to log_dict (will be averaged)
+                for k, v in corruption_metrics.items():
+                    if k not in log_dict:
+                        log_dict[k] = 0.0
+                    log_dict[k] += v * batch_size
+        
         pbar.set_postfix({"loss": loss_val, **{k: v/total_samples for k, v in log_dict.items()}})
     
     avg_loss = total_loss / total_samples
@@ -143,7 +212,7 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
     non_blocking = device_obj.type == "cuda"
     
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating"):
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
             batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
             latents = batch.get("latent")
@@ -161,7 +230,8 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
                     raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
             
             num_steps = model.scheduler.num_steps
-            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
+            # Sample random timesteps uniformly from [0, num_steps)
+            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj, dtype=torch.long)
             # Sample standard normal noise N(0,1)
             noise = model.scheduler.randn_like(latents)
             cond = batch.get("cond", None)
@@ -185,6 +255,17 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
                 if k not in log_dict:
                     log_dict[k] = 0.0
                 log_dict[k] += v.item() * batch_size
+            
+            # Compute corruption metrics (every N batches to avoid overhead)
+            if batch_idx % 100 == 0:  # Log every 100 batches
+                with torch.no_grad():
+                    corruption_metrics = compute_corruption_metrics(
+                        outputs["latent"], outputs["noisy_latent"], t, model.scheduler
+                    )
+                    for k, v in corruption_metrics.items():
+                        if k not in log_dict:
+                            log_dict[k] = 0.0
+                        log_dict[k] += v * batch_size
     
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
