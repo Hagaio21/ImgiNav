@@ -57,7 +57,7 @@ echo "Config: ${CONFIG_FILE}"
 echo "Experiment: ${EXP_NAME}"
 echo ""
 
-# Find checkpoint
+# Find checkpoint - ALWAYS use best checkpoint
 SAVE_PATH=$(grep "^experiment:" -A 10 "${CONFIG_FILE}" | grep "save_path:" | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
 
 if [ -z "${SAVE_PATH}" ] || [ ! -d "${SAVE_PATH}" ]; then
@@ -65,20 +65,13 @@ if [ -z "${SAVE_PATH}" ] || [ ! -d "${SAVE_PATH}" ]; then
     exit 1
 fi
 
-# Try best checkpoint first
+# Always check for best checkpoint first
 CHECKPOINT_PATH="${SAVE_PATH}/${EXP_NAME}_checkpoint_best.pt"
-if [ ! -f "${CHECKPOINT_PATH}" ]; then
-    # Try latest checkpoint
-    CHECKPOINT_PATH="${SAVE_PATH}/${EXP_NAME}_checkpoint_latest.pt"
-fi
 
 if [ ! -f "${CHECKPOINT_PATH}" ]; then
-    # Try any checkpoint
-    CHECKPOINT_PATH=$(find "${SAVE_PATH}" -name "${EXP_NAME}_checkpoint_*.pt" 2>/dev/null | head -1)
-fi
-
-if [ -z "${CHECKPOINT_PATH}" ] || [ ! -f "${CHECKPOINT_PATH}" ]; then
-    echo "ERROR: No checkpoint found for ${EXP_NAME}" >&2
+    echo "ERROR: Best checkpoint not found: ${CHECKPOINT_PATH}" >&2
+    echo "Available checkpoints in ${SAVE_PATH}:" >&2
+    ls -lh "${SAVE_PATH}"/*.pt 2>/dev/null | head -5 >&2 || echo "  (none found)" >&2
     exit 1
 fi
 
