@@ -317,15 +317,44 @@ def plot_distributions(results, output_dir):
     plt.close()
 
 
-def save_closest_matches(generated_samples, training_samples, results, output_dir, top_k=20):
-    """Save visualizations of the closest matches."""
+def save_closest_matches(generated_samples, training_samples, results, output_dir, top_k=20, use_latent=False):
+    """Save visualizations of the closest matches.
+    
+    Args:
+        generated_samples: Dictionary with 'rgb' or 'latents'
+        training_samples: Dictionary with 'rgb' or 'latents'
+        results: Dictionary with distance/similarity metrics
+        output_dir: Output directory
+        top_k: Number of closest matches to save
+        use_latent: If True, use latent similarities instead of RGB distances
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     matches_dir = output_dir / 'closest_matches'
     matches_dir.mkdir(exist_ok=True)
     
+    closest = []
+    
     # Find top K closest matches
-    if 'rgb_l2_distances' in results:
+    if use_latent and 'latent_cosine_similarities' in results:
+        similarities = results['latent_cosine_similarities']
+        nn_indices = results['latent_nn_indices_cosine']
+        
+        # Get top K most similar (highest cosine similarity)
+        top_k_actual = min(top_k, len(similarities))
+        # Sort by similarity descending (most similar first)
+        top_indices = np.argsort(similarities)[::-1][:top_k_actual]
+        
+        # Save closest matches
+        for gen_idx in top_indices:
+            train_idx = nn_indices[gen_idx]
+            closest.append({
+                'generated_idx': int(gen_idx),
+                'training_idx': int(train_idx),
+                'cosine_similarity': float(similarities[gen_idx]),
+                'l2_distance': float(results.get('latent_l2_distances', [0] * len(similarities))[gen_idx]) if 'latent_l2_distances' in results else None
+            })
+    elif 'rgb_l2_distances' in results:
         distances = results['rgb_l2_distances']
         nn_indices = results['rgb_nn_indices']
         
@@ -334,37 +363,55 @@ def save_closest_matches(generated_samples, training_samples, results, output_di
         top_indices = np.argsort(distances)[:top_k_actual]
         
         # Save closest matches
-        closest = []
         for gen_idx in top_indices:
             train_idx = nn_indices[gen_idx]
             closest.append({
                 'generated_idx': int(gen_idx),
                 'training_idx': int(train_idx),
-                'distance': float(distances[gen_idx])
+                'rgb_l2_distance': float(distances[gen_idx])
             })
+    else:
+        print("Warning: No distance/similarity metrics available for closest matches")
+        return
+    
+    # Create visualization grid for top matches if RGB is available
+    # Try to decode latents to RGB if needed
+    gen_rgb_available = generated_samples.get('rgb') is not None
+    train_rgb_available = training_samples.get('rgb') is not None
+    
+    # If we have latents but not RGB, try to decode them
+    if not gen_rgb_available and generated_samples.get('latents') is not None:
+        # Note: We'd need the model's decoder here, but for now just skip visualization
+        # if RGB isn't directly available
+        pass
+    
+    if gen_rgb_available and train_rgb_available:
+        gen_rgb = generated_samples['rgb']
+        train_rgb = training_samples['rgb']
         
-        # Create visualization grid for top matches
-        if generated_samples.get('rgb') is not None and training_samples.get('rgb') is not None:
-            gen_rgb = generated_samples['rgb']
-            train_rgb = training_samples['rgb']
-            
-            rows = []
-            for i, match in enumerate(closest[:min(10, len(closest))]):
-                gen_img = gen_rgb[match['generated_idx']]
-                train_img = train_rgb[match['training_idx']]
+        rows = []
+        for i, match in enumerate(closest[:min(10, len(closest))]):
+            gen_idx = match['generated_idx']
+            train_idx = match['training_idx']
+            if gen_idx < len(gen_rgb) and train_idx < len(train_rgb):
+                gen_img = gen_rgb[gen_idx]
+                train_img = train_rgb[train_idx]
                 # Side by side
                 pair = torch.cat([gen_img, train_img], dim=2)  # Concatenate horizontally
                 rows.append(pair)
-            
-            if rows:
-                grid = make_grid(torch.stack(rows), nrow=1, padding=2)
-                save_image(grid, matches_dir / 'top_closest_matches.png', normalize=False)
-                print(f"Saved closest matches visualization to {matches_dir / 'top_closest_matches.png'}")
         
-        # Save matches to CSV
+        if rows:
+            grid = make_grid(torch.stack(rows), nrow=1, padding=2)
+            save_image(grid, matches_dir / 'top_closest_matches.png', normalize=False)
+            print(f"Saved closest matches visualization to {matches_dir / 'top_closest_matches.png'}")
+    
+    # Save matches to CSV (always create this)
+    if closest:
         matches_df = pd.DataFrame(closest)
         matches_df.to_csv(matches_dir / 'closest_matches.csv', index=False)
         print(f"Saved {len(closest)} closest matches to {matches_dir / 'closest_matches.csv'}")
+    else:
+        print("Warning: No closest matches found to save")
 
 
 def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
@@ -440,6 +487,25 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
         config["dataset"] = {}
     config["dataset"]["manifest"] = manifest_path
     print(f"Using manifest: {manifest_path}")
+    
+    # Ensure we load both RGB and latent for memorization testing
+    # Check if layout_path exists in manifest to know if RGB is available
+    import pandas as pd
+    manifest_df = pd.read_csv(manifest_path)
+    has_layout_path = "layout_path" in manifest_df.columns
+    has_latent_path = "latent_path" in manifest_df.columns
+    
+    # Update outputs to include both if available
+    if "outputs" not in config["dataset"]:
+        config["dataset"]["outputs"] = {}
+    
+    # Keep existing outputs, but add RGB if layout_path exists
+    if has_latent_path and "latent" not in config["dataset"]["outputs"]:
+        config["dataset"]["outputs"]["latent"] = "latent_path"
+    if has_layout_path:
+        config["dataset"]["outputs"]["rgb"] = "layout_path"
+        print("Added RGB output to dataset config (from layout_path)")
+    
     dataset = build_dataset(config)
     # If num_training is None, use entire dataset
     if num_training is None:
@@ -630,9 +696,12 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     # Create plots
     plot_distributions(results, output_dir)
     
-    # Save closest matches
+    # Save closest matches (using RGB if available, otherwise latent)
     if 'rgb_l2_distances' in results:
         save_closest_matches(generated_samples, training_samples, results, output_dir, top_k=20)
+    elif 'latent_cosine_similarities' in results:
+        # Use latent similarities if RGB not available
+        save_closest_matches(generated_samples, training_samples, results, output_dir, top_k=20, use_latent=True)
     
     print("\n" + "="*60)
     print("Memorization check complete!")
