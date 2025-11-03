@@ -64,8 +64,8 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         num_steps = model.scheduler.num_steps
         t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
         
-        # Sample noise
-        noise = torch.randn_like(latents)
+        # Sample noise (in correct distribution from scheduler _build)
+        noise = model.scheduler.randn_like(latents)
         
         # Conditioning (optional)
         cond = batch.get("cond", None)
@@ -162,7 +162,8 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
             
             num_steps = model.scheduler.num_steps
             t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
-            noise = torch.randn_like(latents)
+            # Sample noise (in correct distribution from scheduler _build)
+            noise = model.scheduler.randn_like(latents)
             cond = batch.get("cond", None)
             
             if use_amp and device_obj.type == "cuda":

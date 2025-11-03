@@ -56,38 +56,43 @@ class NoiseScheduler(BaseComponent):
         super().to(device)
         return self
 
-    def add_noise(self, x0, noise, t):
+    def add_noise(self, x0, noise, t, return_scaled_noise=False):
+        """
+        Add noise to x0 using the diffusion schedule.
+        
+        Args:
+            x0: Clean latents
+            noise: Noise tensor (already in correct distribution from randn_like)
+            t: Timestep tensor
+            return_scaled_noise: If True, also return the noise used
+        
+        Returns:
+            noisy_x: Noisy latents
+            (noise): Noise used (only if return_scaled_noise=True)
+        """
         t = t.long().view(-1)
-        # Move alpha_bars to same device as t if needed
         alpha_bars = self.alpha_bars.to(t.device)
         sqrt_alpha_bar = alpha_bars[t].sqrt().to(x0.device)
         sqrt_one_minus = (1 - alpha_bars[t]).sqrt().to(x0.device)
         # Reshape to broadcast correctly: [B] -> [B, 1, 1, 1, ...]
-        # Add dimensions to match spatial dimensions of x0
         while sqrt_alpha_bar.dim() < x0.dim():
             sqrt_alpha_bar = sqrt_alpha_bar.unsqueeze(-1)
             sqrt_one_minus = sqrt_one_minus.unsqueeze(-1)
         
-        # Apply noise scaling if set (ensure noise_scale is on same device as noise)
-        if self.noise_scale is not None:
-            noise_scale = self.noise_scale.to(noise.device)
-            noise = noise * noise_scale
-        if self.noise_offset is not None:
-            noise_offset = self.noise_offset.to(noise.device)
-            noise = noise + noise_offset
+        # Noise is already in correct distribution (from randn_like)
+        noisy_x = sqrt_alpha_bar * x0 + sqrt_one_minus * noise
         
-        return sqrt_alpha_bar * x0 + sqrt_one_minus * noise
+        if return_scaled_noise:
+            return noisy_x, noise
+        return noisy_x
     
-    def scale_noise(self, noise):
-        """Scale noise using noise_scale and noise_offset."""
+    def randn_like(self, tensor):
+        """Generate noise in the distribution N(noise_offset, noise_scale^2) using buffers from _build."""
+        noise = torch.randn_like(tensor)
         if self.noise_scale is not None:
-            # Ensure noise_scale is on same device as noise
-            noise_scale = self.noise_scale.to(noise.device)
-            noise = noise * noise_scale
+            noise = noise * self.noise_scale.to(noise.device)
         if self.noise_offset is not None:
-            # Ensure noise_offset is on same device as noise
-            noise_offset = self.noise_offset.to(noise.device)
-            noise = noise + noise_offset
+            noise = noise + self.noise_offset.to(noise.device)
         return noise
 
 
