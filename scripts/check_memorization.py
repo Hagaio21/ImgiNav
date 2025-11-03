@@ -49,15 +49,26 @@ from models.datasets.datasets import ManifestDataset
 from training.utils import load_config, build_dataset
 
 
-def load_training_samples(dataset, num_samples=5000, device="cuda"):
-    """Load a subset of training samples for comparison."""
-    print(f"Loading {num_samples} training samples...")
+def load_training_samples(dataset, num_samples=None, device="cuda"):
+    """Load a subset of training samples for comparison.
+    
+    Args:
+        dataset: Dataset to load from
+        num_samples: Number of samples to load. If None, loads entire dataset.
+        device: Device to load samples to
+    """
+    if num_samples is None:
+        num_samples = len(dataset)
+        print(f"Loading entire dataset: {num_samples} training samples...")
+        indices = np.arange(len(dataset))  # Use all indices
+    else:
+        print(f"Loading {num_samples} training samples...")
+        num_samples = min(num_samples, len(dataset))
+        indices = np.random.choice(len(dataset), num_samples, replace=False)
+    
     training_latents = []
     training_rgb = []
     training_metadata = []
-    
-    num_samples = min(num_samples, len(dataset))
-    indices = np.random.choice(len(dataset), num_samples, replace=False)
     
     for idx in tqdm(indices, desc="Loading training samples"):
         try:
@@ -350,7 +361,7 @@ def save_closest_matches(generated_samples, training_samples, results, output_di
 
 
 def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
-                       num_generate=100, num_training=5000, method="ddpm"):
+                       num_generate=1000, num_training=None, method="ddpm"):
     """Main function to check for memorization."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -423,6 +434,12 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     config["dataset"]["manifest"] = manifest_path
     print(f"Using manifest: {manifest_path}")
     dataset = build_dataset(config)
+    # If num_training is None, use entire dataset
+    if num_training is None:
+        num_training = len(dataset)
+        print(f"Checking against entire dataset: {num_training} samples")
+    else:
+        print(f"Checking against {num_training} training samples (dataset has {len(dataset)} total)")
     training_samples = load_training_samples(dataset, num_samples=num_training, device=device)
     print(f"Loaded {len(training_samples['metadata'])} training samples")
     
@@ -650,14 +667,14 @@ def main():
     parser.add_argument(
         "--num_generate",
         type=int,
-        default=100,
-        help="Number of samples to generate for testing"
+        default=1000,
+        help="Number of samples to generate for testing (default: 1000)"
     )
     parser.add_argument(
         "--num_training",
         type=int,
-        default=5000,
-        help="Number of training samples to compare against"
+        default=None,
+        help="Number of training samples to compare against (default: None = entire dataset). Omit to use entire dataset."
     )
     parser.add_argument(
         "--method",

@@ -104,13 +104,13 @@ echo "  Manifest: ${MANIFEST_PATH}"
 echo "  Output: ${OUTPUT_DIR}"
 echo ""
 
+# Build command - omit --num_training to use entire dataset
 python "${MEMORIZATION_SCRIPT}" \
     --config "${CONFIG_FILE}" \
     --checkpoint "${CHECKPOINT_PATH}" \
     --manifest "${MANIFEST_PATH}" \
     --output "${OUTPUT_DIR}" \
-    --num_generate 100 \
-    --num_training 5000 \
+    --num_generate 1000 \
     --method ddpm
 
 echo ""
