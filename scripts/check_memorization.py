@@ -275,9 +275,14 @@ def compute_diversity_metrics(samples):
     }
 
 
-def compute_diversity_metrics_latent(latents_flat):
-    """Compute diversity metrics on flattened latents."""
-    return compute_diversity_metrics(latents_flat)
+def compute_diversity_metrics_latent(latents):
+    """Compute diversity metrics on latents (flattened internally)."""
+    # Flatten spatial dimensions if needed
+    if latents.dim() > 2:
+        flat = latents.view(latents.size(0), -1)
+    else:
+        flat = latents
+    return compute_diversity_metrics(flat)
 
 
 def plot_distributions(results, output_dir):
@@ -289,24 +294,13 @@ def plot_distributions(results, output_dir):
     sns.set_style("darkgrid")
     plt.rcParams['figure.facecolor'] = 'white'
     
+    # Create 2x2 grid: L2 distances, Cosine similarities, Diversity
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.patch.set_facecolor('white')
     
-    # RGB L2 distances
-    if 'rgb_l2_distances' in results:
-        ax = axes[0, 0]
-        distances = results['rgb_l2_distances']
-        sns.histplot(distances, bins=50, ax=ax, kde=True, stat='density')
-        ax.axvline(np.mean(distances), color='r', linestyle='--', linewidth=2, label=f'Mean: {np.mean(distances):.6f}')
-        ax.axvline(np.median(distances), color='g', linestyle='--', linewidth=2, label=f'Median: {np.median(distances):.6f}')
-        ax.set_xlabel('L2 Distance (RGB space)', fontsize=11)
-        ax.set_ylabel('Density', fontsize=11)
-        ax.set_title('Nearest Neighbor Distances (RGB)', fontsize=12, fontweight='bold')
-        ax.legend(fontsize=9)
-    
     # Latent L2 distances
     if 'latent_l2_distances' in results:
-        ax = axes[0, 1]
+        ax = axes[0, 0]
         distances = results['latent_l2_distances']
         sns.histplot(distances, bins=50, ax=ax, kde=True, stat='density')
         ax.axvline(np.mean(distances), color='r', linestyle='--', linewidth=2, label=f'Mean: {np.mean(distances):.6f}')
@@ -315,10 +309,12 @@ def plot_distributions(results, output_dir):
         ax.set_ylabel('Density', fontsize=11)
         ax.set_title('Nearest Neighbor Distances (Latent)', fontsize=12, fontweight='bold')
         ax.legend(fontsize=9)
+    else:
+        axes[0, 0].set_visible(False)
     
     # Cosine similarities
     if 'latent_cosine_similarities' in results:
-        ax = axes[1, 0]
+        ax = axes[0, 1]
         similarities = results['latent_cosine_similarities']
         sns.histplot(similarities, bins=50, ax=ax, kde=True, stat='density')
         ax.axvline(np.mean(similarities), color='r', linestyle='--', linewidth=2, label=f'Mean: {np.mean(similarities):.4f}')
@@ -327,10 +323,12 @@ def plot_distributions(results, output_dir):
         ax.set_ylabel('Density', fontsize=11)
         ax.set_title('Nearest Neighbor Cosine Similarities (Latent)', fontsize=12, fontweight='bold')
         ax.legend(fontsize=9)
+    else:
+        axes[0, 1].set_visible(False)
     
     # Diversity metrics
     if 'diversity' in results:
-        ax = axes[1, 1]
+        ax = axes[1, 0]
         div = results['diversity']
         metrics = ['Mean\nPairwise\nDist', 'Std\nPairwise\nDist', 'Min\nPairwise\nDist', 'Unique\nRatio']
         values = [
@@ -341,9 +339,14 @@ def plot_distributions(results, output_dir):
         ]
         sns.barplot(x=metrics, y=values, ax=ax, palette='muted', edgecolor='black', linewidth=1.5)
         ax.set_ylabel('Value', fontsize=11)
-        ax.set_title('Generated Samples Diversity', fontsize=12, fontweight='bold')
+        ax.set_title('Generated Samples Diversity (Latent)', fontsize=12, fontweight='bold')
         ax.tick_params(axis='x', labelsize=9)
         ax.tick_params(axis='y', labelsize=9)
+    else:
+        axes[1, 0].set_visible(False)
+    
+    # Hide last subplot (not needed)
+    axes[1, 1].set_visible(False)
     
     plt.tight_layout()
     plt.savefig(output_dir / 'memorization_analysis.png', dpi=150, bbox_inches='tight', facecolor='white')
@@ -351,7 +354,7 @@ def plot_distributions(results, output_dir):
     plt.close()
 
 
-def save_closest_matches(generated_samples, training_samples, results, output_dir, top_k=20, use_latent=False):
+def save_closest_matches(generated_samples, training_samples, results, output_dir, model=None, dataset=None, top_k=20, use_latent=False):
     """Save visualizations of the closest matches.
     
     Args:
@@ -359,6 +362,8 @@ def save_closest_matches(generated_samples, training_samples, results, output_di
         training_samples: Dictionary with 'rgb' or 'latents'
         results: Dictionary with distance/similarity metrics
         output_dir: Output directory
+        model: Diffusion model (for decoding latents to RGB)
+        dataset: Dataset (for loading training RGB if needed)
         top_k: Number of closest matches to save
         use_latent: If True, use latent similarities instead of RGB distances
     """
@@ -369,8 +374,8 @@ def save_closest_matches(generated_samples, training_samples, results, output_di
     
     closest = []
     
-    # Find top K closest matches
-    if use_latent and 'latent_cosine_similarities' in results:
+    # Find top K closest matches (always use latent space)
+    if 'latent_cosine_similarities' in results:
         similarities = results['latent_cosine_similarities']
         nn_indices = results['latent_nn_indices_cosine']
         
@@ -388,38 +393,63 @@ def save_closest_matches(generated_samples, training_samples, results, output_di
                 'cosine_similarity': float(similarities[gen_idx]),
                 'l2_distance': float(results.get('latent_l2_distances', [0] * len(similarities))[gen_idx]) if 'latent_l2_distances' in results else None
             })
-    elif 'rgb_l2_distances' in results:
-        distances = results['rgb_l2_distances']
-        nn_indices = results['rgb_nn_indices']
-        
-        # Get top K closest
-        top_k_actual = min(top_k, len(distances))
-        top_indices = np.argsort(distances)[:top_k_actual]
-        
-        # Save closest matches
-        for gen_idx in top_indices:
-            train_idx = nn_indices[gen_idx]
-            closest.append({
-                'generated_idx': int(gen_idx),
-                'training_idx': int(train_idx),
-                'rgb_l2_distance': float(distances[gen_idx])
-            })
     else:
         print("Warning: No distance/similarity metrics available for closest matches")
         return
     
-    # Create visualization grid for top matches if RGB is available
-    # Try to decode latents to RGB if needed
-    gen_rgb_available = generated_samples.get('rgb') is not None
-    train_rgb_available = training_samples.get('rgb') is not None
+    # Decode RGB for visualization
+    print(f"\nDecoding RGB for top {min(10, len(closest))} closest matches...")
     
-    # If we have latents but not RGB, try to decode them
-    if not gen_rgb_available and generated_samples.get('latents') is not None:
-        # Note: We'd need the model's decoder here, but for now just skip visualization
-        # if RGB isn't directly available
-        pass
+    gen_latents = generated_samples.get('latents')
+    train_latents = training_samples.get('latents')
     
-    if gen_rgb_available and train_rgb_available:
+    # Decode generated latents to RGB (if model available)
+    if gen_latents is not None and model is not None and hasattr(model, 'decoder'):
+        gen_rgb_decoded = []
+        with torch.no_grad():
+            # Decode only top matches
+            for match in closest[:min(10, len(closest))]:
+                gen_idx = match['generated_idx']
+                if gen_idx < len(gen_latents):
+                    latent = gen_latents[gen_idx:gen_idx+1]  # Keep batch dim
+                    decoded = model.decoder({"latent": latent})
+                    if "rgb" in decoded:
+                        rgb = decoded["rgb"][0]  # Remove batch dim
+                        # Denormalize from [-1, 1] to [0, 1]
+                        rgb = (rgb + 1.0) / 2.0
+                        rgb = torch.clamp(rgb, 0.0, 1.0)
+                        gen_rgb_decoded.append(rgb)
+        
+        # Decode training latents to RGB for matched samples
+        train_rgb_decoded = []
+        if train_latents is not None and model is not None and hasattr(model, 'decoder'):
+            with torch.no_grad():
+                for match in closest[:min(10, len(closest))]:
+                    train_idx = match['training_idx']
+                    if train_idx < len(train_latents):
+                        latent = train_latents[train_idx:train_idx+1]  # Keep batch dim
+                        decoded = model.decoder({"latent": latent})
+                        if "rgb" in decoded:
+                            rgb = decoded["rgb"][0]  # Remove batch dim
+                            # Denormalize from [-1, 1] to [0, 1]
+                            rgb = (rgb + 1.0) / 2.0
+                            rgb = torch.clamp(rgb, 0.0, 1.0)
+                            train_rgb_decoded.append(rgb)
+        
+        # Create visualization if we have both
+        if len(gen_rgb_decoded) == len(train_rgb_decoded) and len(gen_rgb_decoded) > 0:
+            rows = []
+            for gen_img, train_img in zip(gen_rgb_decoded, train_rgb_decoded):
+                # Side by side
+                pair = torch.cat([gen_img, train_img], dim=2)  # Concatenate horizontally
+                rows.append(pair)
+            
+            if rows:
+                grid = make_grid(torch.stack(rows), nrow=1, padding=2)
+                save_image(grid, matches_dir / 'top_closest_matches.png', normalize=False)
+                print(f"Saved closest matches visualization to {matches_dir / 'top_closest_matches.png'}")
+    elif generated_samples.get('rgb') is not None and training_samples.get('rgb') is not None:
+        # Fallback: use RGB if already available
         gen_rgb = generated_samples['rgb']
         train_rgb = training_samples['rgb']
         
@@ -438,6 +468,8 @@ def save_closest_matches(generated_samples, training_samples, results, output_di
             grid = make_grid(torch.stack(rows), nrow=1, padding=2)
             save_image(grid, matches_dir / 'top_closest_matches.png', normalize=False)
             print(f"Saved closest matches visualization to {matches_dir / 'top_closest_matches.png'}")
+    else:
+        print("Warning: Cannot decode RGB for visualization (no decoder available)")
     
     # Save matches to CSV (always create this)
     if closest:
@@ -587,9 +619,7 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     # Diversity metrics (compute on latents instead of RGB)
     if generated_samples.get('latents') is not None:
         print("Computing diversity metrics (latent space)...")
-        # Convert latents to format expected by diversity function (flatten for pairwise)
-        latent_flat = generated_samples['latents'].flatten(start_dim=1)  # [N, C*H*W]
-        results['diversity'] = compute_diversity_metrics_latent(latent_flat)
+        results['diversity'] = compute_diversity_metrics_latent(generated_samples['latents'])
     
     # Compute statistics and check thresholds
     print("\n" + "="*60)
@@ -671,13 +701,10 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     print(f"Saved summary to {output_dir / 'memorization_summary.json'}")
     
     # Save detailed results
+    num_generated = len(generated_samples.get('latents', generated_samples.get('rgb', [])))
     results_df = pd.DataFrame({
-        'generated_idx': range(len(generated_samples.get('rgb', generated_samples.get('latents', []))))
+        'generated_idx': range(num_generated)
     })
-    
-    if 'rgb_l2_distances' in results:
-        results_df['rgb_l2_distance'] = results['rgb_l2_distances']
-        results_df['rgb_nn_index'] = results['rgb_nn_indices']
     
     if 'latent_l2_distances' in results:
         results_df['latent_l2_distance'] = results['latent_l2_distances']
@@ -690,12 +717,10 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     # Create plots
     plot_distributions(results, output_dir)
     
-    # Save closest matches (using RGB if available, otherwise latent)
-    if 'rgb_l2_distances' in results:
-        save_closest_matches(generated_samples, training_samples, results, output_dir, top_k=20)
-    elif 'latent_cosine_similarities' in results:
-        # Use latent similarities if RGB not available
-        save_closest_matches(generated_samples, training_samples, results, output_dir, top_k=20, use_latent=True)
+    # Save closest matches (decode RGB from latents for visualization)
+    if 'latent_cosine_similarities' in results:
+        save_closest_matches(generated_samples, training_samples, results, output_dir, 
+                            model=model, dataset=dataset, top_k=20, use_latent=True)
     
     print("\n" + "="*60)
     print("Memorization check complete!")
