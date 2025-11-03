@@ -13,23 +13,17 @@ class NoiseScheduler(BaseComponent):
         self.register_buffer("betas", betas)
         self.register_buffer("alpha_bars", alpha_bars)
         
-        # Noise scaling parameters (set by diffusion model based on latent statistics)
-        # noise_scale: scale factor for noise (typically latent std)
-        # noise_offset: offset for noise (typically latent mean, default 0)
+        # Noise scaling parameters (from config - computed before scheduler build)
         noise_scale = self._init_kwargs.get("noise_scale", None)
         noise_offset = self._init_kwargs.get("noise_offset", None)
         if noise_scale is not None:
             if hasattr(self, 'noise_scale'):
                 delattr(self, 'noise_scale')
             self.register_buffer("noise_scale", noise_scale)
-        else:
-            self.noise_scale = None
         if noise_offset is not None:
             if hasattr(self, 'noise_offset'):
                 delattr(self, 'noise_offset')
             self.register_buffer("noise_offset", noise_offset)
-        else:
-            self.noise_offset = None
 
     def build_schedule(self, num_steps: int):
         raise NotImplementedError
