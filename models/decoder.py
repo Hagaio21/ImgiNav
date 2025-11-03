@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .components.base_component import BaseComponent
 from .components.heads import HEAD_REGISTRY
+from .components.normalization import LatentNormalizer
 
 
 class Decoder(BaseComponent):
@@ -12,6 +13,9 @@ class Decoder(BaseComponent):
         activation = getattr(nn, self._init_kwargs.get("activation", "SiLU"))()
         norm_groups = self._init_kwargs.get("norm_groups", 8)
         head_cfgs = self._init_kwargs.get("heads", [])
+        
+        # Add option to denormalize latents (must match encoder setting)
+        self.denormalize_latents = self._init_kwargs.get("denormalize_latents", False)
 
         layers = []
         in_ch = latent_ch
@@ -43,6 +47,12 @@ class Decoder(BaseComponent):
                 raise ValueError(f"Unknown head type '{head_type}'")
             cfg["in_channels"] = cfg.get("in_channels", out_ch)
             self.heads[head_name] = cls.from_config(cfg)
+        
+        # Add denormalizer for latents (must match encoder's normalizer)
+        if self.denormalize_latents:
+            self.latent_denormalizer = LatentNormalizer(latent_ch)
+        else:
+            self.latent_denormalizer = None
 
     def forward(self, z_or_dict):
         """
@@ -71,6 +81,10 @@ class Decoder(BaseComponent):
                 raise ValueError(f"Dict must contain 'latent' or 'mu'/'logvar'. Got keys: {list(z_or_dict.keys())}")
         else:
             raise TypeError(f"Decoder forward expects dict, got {type(z_or_dict)}")
+        
+        # Denormalize latents if requested (reverse the encoder normalization)
+        if self.latent_denormalizer is not None:
+            z = self.latent_denormalizer(z, reverse=True)
         
         feats = self.shared_decoder(z)
         return {name: head(feats) for name, head in self.heads.items()}

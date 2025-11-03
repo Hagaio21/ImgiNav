@@ -16,6 +16,16 @@ class Autoencoder(BaseModel):
         self.encoder = Encoder.from_config(encoder_cfg)
         self.decoder = Decoder.from_config(decoder_cfg)
         
+        # Sync normalizer parameters if both are enabled
+        # The encoder normalizer and decoder denormalizer should share the same parameters
+        if (hasattr(self.encoder, 'latent_normalizer') and 
+            self.encoder.latent_normalizer is not None and
+            hasattr(self.decoder, 'latent_denormalizer') and
+            self.decoder.latent_denormalizer is not None):
+            # Share parameters: decoder uses encoder's parameters (they must be identical)
+            self.decoder.latent_denormalizer.shift = self.encoder.latent_normalizer.shift
+            self.decoder.latent_denormalizer.log_scale = self.encoder.latent_normalizer.log_scale
+        
         # Freeze components if requested in config
         if encoder_cfg.get("frozen", False):
             self.encoder.freeze()

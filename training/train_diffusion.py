@@ -64,7 +64,7 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         num_steps = model.scheduler.num_steps
         t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
         
-        # Sample noise (in correct distribution from scheduler _build)
+        # Sample standard normal noise N(0,1)
         noise = model.scheduler.randn_like(latents)
         
         # Conditioning (optional)
@@ -74,7 +74,7 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         if use_amp and device_obj.type == "cuda":
             with torch.amp.autocast('cuda'):
                 outputs = model(latents, t, cond=cond, noise=noise)
-                # Use the noise from outputs (scaled if latent_std is set) for loss computation
+                # Use the noise from outputs for loss computation
                 loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             
             optimizer.zero_grad()
@@ -94,7 +94,7 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             model.update_ema()
         else:
             outputs = model(latents, t, cond=cond, noise=noise)
-            # Use the noise from outputs (scaled if latent_std is set) for loss computation
+            # Use the noise from outputs for loss computation
             loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             
             optimizer.zero_grad()
@@ -162,18 +162,18 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
             
             num_steps = model.scheduler.num_steps
             t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
-            # Sample noise (in correct distribution from scheduler _build)
+            # Sample standard normal noise N(0,1)
             noise = model.scheduler.randn_like(latents)
             cond = batch.get("cond", None)
             
             if use_amp and device_obj.type == "cuda":
                 with torch.amp.autocast('cuda'):
                     outputs = model(latents, t, cond=cond, noise=noise)
-                    # Use the noise from outputs (scaled if latent_std is set) for loss computation
+                    # Use the noise from outputs for loss computation
                     loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             else:
                 outputs = model(latents, t, cond=cond, noise=noise)
-                # Use the noise from outputs (scaled if latent_std is set) for loss computation
+                # Use the noise from outputs for loss computation
                 loss, logs = loss_fn(outputs, {"noise": outputs["noise"]})
             
             batch_size = latents.shape[0]
@@ -190,66 +190,6 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
     
     return avg_loss, avg_logs
-
-
-def compute_latent_statistics_from_dataset(dataloader, device, num_samples=1000):
-    """
-    Compute mean and std of latents directly from dataset dataloader.
-    Works with pre-embedded latents (no model needed).
-    
-    Args:
-        dataloader: DataLoader with latents
-        device: Device to compute on
-        num_samples: Number of samples to use for statistics computation
-    
-    Returns:
-        mean: Tensor of shape (1, C, 1, 1) or None
-        std: Tensor of shape (1, C, 1, 1) or None
-    """
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
-    
-    print(f"  Computing latent statistics from {num_samples} samples...")
-    
-    all_latents = []
-    samples_collected = 0
-    
-    with torch.no_grad():
-        for batch in dataloader:
-            batch = {k: v.to(device_obj, non_blocking=True) if isinstance(v, torch.Tensor) else v 
-                    for k, v in batch.items()}
-            
-            latents = batch.get("latent")
-            if latents is None:
-                # If no latent, we can't compute statistics without model
-                print("  Warning: No latents found in batch (may need model for encoding)")
-                continue
-            
-            all_latents.append(latents.cpu())
-            samples_collected += latents.shape[0]
-            
-            if samples_collected >= num_samples:
-                break
-    
-    if len(all_latents) == 0:
-        print("  Warning: No latents found for statistics computation")
-        return None, None
-    
-    # Concatenate all latents
-    all_latents = torch.cat(all_latents, dim=0)
-    
-    # Compute statistics (for noise scaling, we primarily use std)
-    mean = all_latents.mean(dim=(0, 2, 3), keepdim=True).to(device_obj)  # (1, C, 1, 1)
-    std = all_latents.std(dim=(0, 2, 3), keepdim=True).to(device_obj)  # (1, C, 1, 1)
-    
-    print(f"  Latent statistics computed:")
-    print(f"    Mean: {mean.squeeze().cpu().numpy()}")
-    print(f"    Std: {std.squeeze().cpu().numpy()}")
-    
-    return mean, std
-
 
 
 
@@ -364,34 +304,6 @@ def main():
     # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
     
-    # For new training (not resuming): compute latent statistics and update scheduler config
-    if not should_resume:
-        # Compute latent statistics from dataset before building model
-        print("\nComputing latent statistics for noise scaling...")
-        train_loader_temp = train_dataset.make_dataloader(
-            batch_size=config["training"]["batch_size"],
-            shuffle=False,  # Don't shuffle for statistics computation
-            num_workers=config["training"].get("num_workers", 4),
-            use_weighted_sampling=False  # Don't use weighted sampling for statistics
-        )
-        mean, std = compute_latent_statistics_from_dataset(train_loader_temp, device_obj, num_samples=1000)
-        
-        if std is not None:
-            # Update scheduler config with noise_scale and noise_offset before building model
-            # The scheduler will receive these tensors in _init_kwargs and register them as buffers
-            if "scheduler" not in config:
-                config["scheduler"] = {}
-            config["scheduler"]["noise_scale"] = std.cpu()  # Store as CPU tensor, scheduler will register as buffer
-            if mean is not None:
-                config["scheduler"]["noise_offset"] = mean.cpu()  # Store as CPU tensor, scheduler will register as buffer
-                print(f"  Updated scheduler config with noise_scale (latent std) and noise_offset (latent mean)")
-                print(f"    noise_scale shape: {std.shape}, noise_offset shape: {mean.shape}")
-            else:
-                print(f"  Updated scheduler config with noise_scale (latent std)")
-                print(f"    noise_scale shape: {std.shape}, noise_offset: None")
-        else:
-            print("  Warning: Could not compute latent statistics, scheduler will be built without noise scaling")
-    
     if should_resume:
         print(f"\nFound latest checkpoint: {latest_checkpoint}")
         print("Resuming training...")
@@ -428,15 +340,8 @@ def main():
         if training_history:
             print(f"  Loaded {len(training_history)} previous epochs from history")
         
-        if model.scheduler.noise_scale is not None:
-            print(f"\nNoise scaling loaded from checkpoint:")
-            print(f"  noise_scale (latent std): shape {model.scheduler.noise_scale.shape}")
-            if model.scheduler.noise_offset is not None:
-                print(f"  noise_offset (latent mean): shape {model.scheduler.noise_offset.shape}")
-            else:
-                print(f"  noise_offset: None")
     else:
-        # Build model from scratch (scheduler config already includes noise_scale if computed)
+        # Build model from scratch
         print("Building model...")
         # DiffusionModel.from_config automatically extracts and builds from config
         model = DiffusionModel.from_config(config)

@@ -158,10 +158,10 @@ class DiffusionModel(BaseModel):
             if noise is None:
                 noise = self.scheduler.randn_like(latents)
 
-        # add noise (scheduler handles noise scaling if configured)
-        # Get both noisy latents and the scaled noise that was actually used
+        # add noise (standard N(0,1) noise, latents should be normalized)
+        # Get both noisy latents and the noise that was used
         result = self.scheduler.add_noise(latents, noise, t, return_scaled_noise=True)
-        noisy_latents, scaled_noise = result
+        noisy_latents, noise_used = result
 
         # predict noise using live UNet (EMA UNet only used at sampling time)
         pred_noise = self.unet(noisy_latents, t, cond)
@@ -171,7 +171,7 @@ class DiffusionModel(BaseModel):
             "latent": latents,
             "noisy_latent": noisy_latents,
             "pred_noise": pred_noise,
-            "noise": scaled_noise,  # Return the scaled noise used (for loss computation)
+            "noise": noise_used,  # Return the noise used (for loss computation)
         }
 
     # ------------------------------------------------------------------
@@ -191,7 +191,7 @@ class DiffusionModel(BaseModel):
             latent_shape = (latent_ch, spatial_res, spatial_res)
         
         self.scheduler = self.scheduler.to(device)
-        # Start with random noise in correct distribution (from _build)
+        # Start with standard normal noise N(0,1)
         # Create a dummy tensor with the right shape, then generate noise
         dummy = torch.zeros((batch_size, *latent_shape), device=device)
         latents = self.scheduler.randn_like(dummy)
@@ -268,7 +268,7 @@ class DiffusionModel(BaseModel):
                     posterior_variance = ((1 - alpha_bar_prev) / (1 - alpha_bar_t).clamp(min=1e-8)) * beta_t
                     posterior_variance = torch.clamp(posterior_variance, min=1e-20)
                     
-                    # Sample x_{t-1} with noise (in correct distribution from _build)
+                    # Sample x_{t-1} with standard normal noise
                     noise = self.scheduler.randn_like(latents)
                     latents = pred_mean + posterior_variance.sqrt() * noise
                 else:
@@ -316,38 +316,6 @@ class DiffusionModel(BaseModel):
             # Also update buffers (e.g., running stats in BatchNorm)
             for ema_buffer, live_buffer in zip(self.unet_ema.buffers(), self.unet.buffers()):
                 ema_buffer.data.mul_(self.ema_decay).add_(live_buffer.data, alpha=1 - self.ema_decay)
-
-    # ------------------------------------------------------------------
-    # Noise Scaling
-    # ------------------------------------------------------------------
-    def compute_latent_statistics(self, latents):
-        """
-        Compute mean and std of latents for noise scaling.
-        
-        Args:
-            latents: Tensor of shape (N, C, H, W)
-        
-        Returns:
-            mean: Tensor of shape (1, C, 1, 1)
-            std: Tensor of shape (1, C, 1, 1)
-        """
-        # Compute per-channel statistics
-        mean = latents.mean(dim=(0, 2, 3), keepdim=True)  # (1, C, 1, 1)
-        std = latents.std(dim=(0, 2, 3), keepdim=True)  # (1, C, 1, 1)
-        return mean, std
-    
-    def set_noise_scaling(self, noise_scale=None, noise_offset=None):
-        """
-        Set noise scaling parameters in the scheduler.
-        
-        Args:
-            noise_scale: Scale factor for noise (typically latent std)
-            noise_offset: Offset for noise (typically latent mean, usually None)
-        """
-        if noise_scale is not None:
-            self.scheduler.set_noise_scale(noise_scale)
-        if noise_offset is not None:
-            self.scheduler.set_noise_offset(noise_offset)
 
     # ------------------------------------------------------------------
     # Config I/O

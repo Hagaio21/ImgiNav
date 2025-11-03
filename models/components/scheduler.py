@@ -12,41 +12,9 @@ class NoiseScheduler(BaseComponent):
         self.register_buffer("alphas", alphas)
         self.register_buffer("betas", betas)
         self.register_buffer("alpha_bars", alpha_bars)
-        
-        # Noise scaling parameters (from config - computed before scheduler build)
-        noise_scale = self._init_kwargs.get("noise_scale", None)
-        noise_offset = self._init_kwargs.get("noise_offset", None)
-        if noise_scale is not None:
-            if hasattr(self, 'noise_scale'):
-                delattr(self, 'noise_scale')
-            self.register_buffer("noise_scale", noise_scale)
-        if noise_offset is not None:
-            if hasattr(self, 'noise_offset'):
-                delattr(self, 'noise_offset')
-            self.register_buffer("noise_offset", noise_offset)
 
     def build_schedule(self, num_steps: int):
         raise NotImplementedError
-
-    def set_noise_scale(self, noise_scale):
-        """Set noise scale (typically latent std)."""
-        if noise_scale is not None:
-            if not hasattr(self, 'noise_scale') or self.noise_scale is None:
-                self.register_buffer("noise_scale", noise_scale)
-            else:
-                self.noise_scale.data.copy_(noise_scale)
-        else:
-            self.noise_scale = None
-    
-    def set_noise_offset(self, noise_offset):
-        """Set noise offset (typically latent mean)."""
-        if noise_offset is not None:
-            if not hasattr(self, 'noise_offset') or self.noise_offset is None:
-                self.register_buffer("noise_offset", noise_offset)
-            else:
-                self.noise_offset.data.copy_(noise_offset)
-        else:
-            self.noise_offset = None
 
     def to(self, device):
         # Buffers are automatically moved by nn.Module.to(), but we override
@@ -59,8 +27,8 @@ class NoiseScheduler(BaseComponent):
         Add noise to x0 using the diffusion schedule.
         
         Args:
-            x0: Clean latents
-            noise: Noise tensor (already in correct distribution from randn_like)
+            x0: Clean latents (should be normalized to ~N(0,1))
+            noise: Noise tensor (standard normal N(0,1) from randn_like)
             t: Timestep tensor
             return_scaled_noise: If True, also return the noise used
         
@@ -85,13 +53,8 @@ class NoiseScheduler(BaseComponent):
         return noisy_x
     
     def randn_like(self, tensor):
-        """Generate noise in the distribution N(noise_offset, noise_scale^2) using buffers from _build."""
-        noise = torch.randn_like(tensor)
-        if self.noise_scale is not None:
-            noise = noise * self.noise_scale.to(noise.device)
-        if self.noise_offset is not None:
-            noise = noise + self.noise_offset.to(noise.device)
-        return noise
+        """Generate standard normal noise N(0, 1)."""
+        return torch.randn_like(tensor)
 
 
 class LinearScheduler(NoiseScheduler):
