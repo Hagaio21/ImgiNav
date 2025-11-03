@@ -16,44 +16,20 @@ class Autoencoder(BaseModel):
         self.encoder = Encoder.from_config(encoder_cfg)
         self.decoder = Decoder.from_config(decoder_cfg)
         
-        # Sync normalizer parameters if both are enabled
-        # The encoder normalizer and decoder denormalizer should share the same parameters
-        if (hasattr(self.encoder, 'latent_normalizer') and 
-            self.encoder.latent_normalizer is not None and
-            hasattr(self.decoder, 'latent_denormalizer') and
-            self.decoder.latent_denormalizer is not None):
-            # Share parameters: decoder uses encoder's parameters (they must be identical)
-            self.decoder.latent_denormalizer.shift = self.encoder.latent_normalizer.shift
-            self.decoder.latent_denormalizer.log_scale = self.encoder.latent_normalizer.log_scale
-        
-        # Freeze components if requested in config
+
         if encoder_cfg.get("frozen", False):
             self.encoder.freeze()
         if decoder_cfg.get("frozen", False):
             self.decoder.freeze()
 
     def forward(self, x):
-        """
-        Forward pass. All components return dicts which are merged.
-        
-        Returns:
-            Dictionary containing all keys from encoder and decoder outputs.
-            Includes: "latent" (or "mu"/"logvar" for VAE), plus all decoder head outputs.
-        """
+
         encoder_out = self.encoder(x)  # Dict: {"latent": z} or {"mu": mu, "logvar": logvar}
         decoder_out = self.decoder(encoder_out)  # Dict: {head_name: output}
         return {**encoder_out, **decoder_out}  # Merge all keys
     
     def decode(self, z_or_dict):
-        """
-        Decode from latent(s). Accepts dict or tensor for convenience.
-        
-        Args:
-            z_or_dict: Either dict with "latent" key, or tensor (converted to dict)
-        
-        Returns:
-            Dictionary with decoder head outputs
-        """
+
         if isinstance(z_or_dict, dict):
             return self.decoder(z_or_dict)
         else:

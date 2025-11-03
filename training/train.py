@@ -17,6 +17,10 @@ from torchvision.utils import save_image, make_grid
 from PIL import Image
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for HPC
+import matplotlib.pyplot as plt
+import json
 
 # Suppress torchvision.io extension warning (we use PIL, not torchvision.io)
 warnings.filterwarnings("ignore", message=".*Failed to load image Python extension.*")
@@ -456,6 +460,150 @@ def main():
     if phase_dir:
         phase_metrics_path = phase_dir / f"{exp_name}_metrics.csv"
     
+    def extract_normalizer_stats(model, sample_batch=None):
+        """Extract normalizer parameters and actual latent statistics from encoder and decoder if they exist."""
+        stats = {}
+        if hasattr(model.encoder, 'latent_normalizer') and model.encoder.latent_normalizer is not None:
+            enc_norm = model.encoder.latent_normalizer
+            shift_enc = enc_norm.shift.data.detach().cpu()
+            scale_enc = torch.exp(enc_norm.log_scale.data.detach().cpu().clamp(min=-10, max=10))
+            # Compute mean/std across channels and spatial dimensions
+            stats['enc_shift_mean'] = float(shift_enc.mean().item())
+            stats['enc_shift_std'] = float(shift_enc.std().item())
+            stats['enc_scale_mean'] = float(scale_enc.mean().item())
+            stats['enc_scale_std'] = float(scale_enc.std().item())
+            # Per-channel values (stored as JSON string for CSV compatibility)
+            stats['enc_shift_per_ch'] = json.dumps(shift_enc.squeeze().tolist())
+            stats['enc_scale_per_ch'] = json.dumps(scale_enc.squeeze().tolist())
+        
+        if hasattr(model.decoder, 'latent_denormalizer') and model.decoder.latent_denormalizer is not None:
+            dec_norm = model.decoder.latent_denormalizer
+            shift_dec = dec_norm.shift.data.detach().cpu()
+            scale_dec = torch.exp(dec_norm.log_scale.data.detach().cpu().clamp(min=-10, max=10))
+            # Compute mean/std across channels and spatial dimensions
+            stats['dec_shift_mean'] = float(shift_dec.mean().item())
+            stats['dec_shift_std'] = float(shift_dec.std().item())
+            stats['dec_scale_mean'] = float(scale_dec.mean().item())
+            stats['dec_scale_std'] = float(scale_dec.std().item())
+            # Per-channel values (stored as JSON string for CSV compatibility)
+            stats['dec_shift_per_ch'] = json.dumps(shift_dec.squeeze().tolist())
+            stats['dec_scale_per_ch'] = json.dumps(scale_dec.squeeze().tolist())
+            
+            # Compute differences (should converge to zero)
+            if 'enc_shift_mean' in stats:
+                stats['shift_diff_mean'] = abs(stats['enc_shift_mean'] - stats['dec_shift_mean'])
+                stats['scale_diff_mean'] = abs(stats['enc_scale_mean'] - stats['dec_scale_mean'])
+        
+        # Measure actual latent statistics (mean and std) from a sample batch
+        if sample_batch is not None:
+            model.eval()
+            with torch.no_grad():
+                # Get a batch of images
+                if isinstance(sample_batch, dict):
+                    images = sample_batch.get("rgb")
+                else:
+                    images = sample_batch
+                
+                if images is not None:
+                    # Encode to get normalized latents
+                    encoder_out = model.encoder(images)
+                    if "latent" in encoder_out:
+                        latents = encoder_out["latent"]
+                    elif "mu" in encoder_out:
+                        latents = encoder_out["mu"]
+                    else:
+                        latents = None
+                    
+                    if latents is not None:
+                        # Compute actual mean and std of normalized latents (should be ~0 and ~1)
+                        latent_mean = latents.mean().item()
+                        latent_std = latents.std().item()
+                        # Per-channel statistics
+                        latent_mean_per_ch = latents.mean(dim=(0, 2, 3)).cpu().tolist()  # (C,)
+                        latent_std_per_ch = latents.std(dim=(0, 2, 3)).cpu().tolist()  # (C,)
+                        
+                        stats['latent_mean'] = float(latent_mean)
+                        stats['latent_std'] = float(latent_std)
+                        stats['latent_mean_per_ch'] = json.dumps(latent_mean_per_ch)
+                        stats['latent_std_per_ch'] = json.dumps(latent_std_per_ch)
+            model.train()
+        
+        return stats
+    
+    def _plot_normalizer_convergence(df, output_dir, exp_name):
+        """Plot normalizer parameter convergence from training history."""
+        # Check if normalizer columns exist
+        required_cols = ['enc_shift_mean', 'enc_scale_mean', 'dec_shift_mean', 'dec_scale_mean']
+        if not all(col in df.columns for col in required_cols):
+            return  # No normalizer data to plot
+        
+        epochs = df['epoch'].values
+        
+        # Create figure with subplots
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle(f'Normalizer Parameter Convergence - {exp_name}', fontsize=16, fontweight='bold')
+        
+        # Plot 1: Shift convergence (mean values) - ENCODER and DECODER together
+        ax = axes[0, 0]
+        ax.plot(epochs, df['enc_shift_mean'], label='Encoder shift', linewidth=2, marker='o', markersize=3, alpha=0.8, color='blue')
+        ax.plot(epochs, df['dec_shift_mean'], label='Decoder shift', linewidth=2, marker='s', markersize=3, alpha=0.8, color='red')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Shift (mean)')
+        ax.set_title('Shift Parameter: Encoder vs Decoder (should converge)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Plot 2: Scale convergence (mean values) - ENCODER and DECODER together
+        ax = axes[0, 1]
+        ax.plot(epochs, df['enc_scale_mean'], label='Encoder scale', linewidth=2, marker='o', markersize=3, alpha=0.8, color='green')
+        ax.plot(epochs, df['dec_scale_mean'], label='Decoder scale', linewidth=2, marker='s', markersize=3, alpha=0.8, color='orange')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Scale (mean)')
+        ax.set_title('Scale Parameter: Encoder vs Decoder (should converge)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Plot 3: Difference convergence (should go to zero)
+        ax = axes[1, 0]
+        if 'shift_diff_mean' in df.columns:
+            ax.plot(epochs, df['shift_diff_mean'], label='Shift difference', linewidth=2, color='red', marker='o', markersize=3)
+        if 'scale_diff_mean' in df.columns:
+            ax.plot(epochs, df['scale_diff_mean'], label='Scale difference', linewidth=2, color='blue', marker='s', markersize=3)
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Absolute Difference')
+        ax.set_title('Parameter Difference (should → 0)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        if len(df) > 1 and df['shift_diff_mean'].max() > 0:
+            ax.set_yscale('log')  # Log scale to see convergence better
+        
+        # Plot 4: Actual latent statistics (mean and std should be ~0 and ~1)
+        ax = axes[1, 1]
+        if 'latent_mean' in df.columns:
+            ax.plot(epochs, df['latent_mean'], label='Latent mean', linewidth=2, color='purple', marker='o', markersize=3)
+            ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Target: 0')
+        if 'latent_std' in df.columns:
+            ax2 = ax.twinx()
+            ax2.plot(epochs, df['latent_std'], label='Latent std', linewidth=2, color='brown', marker='s', markersize=3)
+            ax2.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Target: 1')
+            ax2.set_ylabel('Latent Std', color='brown')
+            ax2.tick_params(axis='y', labelcolor='brown')
+            ax2.legend(loc='upper right')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Latent Mean', color='purple')
+        ax.set_title('Actual Latent Statistics (should be ~0 mean, ~1 std)')
+        ax.tick_params(axis='y', labelcolor='purple')
+        ax.legend(loc='upper left')
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = output_dir / f'{exp_name}_normalizer_convergence.png'
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved normalizer convergence plot: {plot_path}")
+    
     for epoch in range(start_epoch, end_epoch):
         # Training
         avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
@@ -470,6 +618,45 @@ def main():
             "train_loss": float(avg_loss),
             **{f"train_{k}": float(v) for k, v in avg_logs.items()}
         }
+        
+        # Extract and log normalizer statistics if available
+        # Get a sample batch for latent statistics measurement
+        sample_batch = None
+        if val_loader:
+            try:
+                sample_iter = iter(val_loader)
+                sample_batch = next(sample_iter)
+                # Move to device
+                if isinstance(device, str):
+                    device_obj = torch.device(device)
+                else:
+                    device_obj = device
+                sample_batch = {k: v.to(device_obj, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+                               for k, v in sample_batch.items()}
+            except:
+                pass
+        elif train_loader:
+            # Fallback to train loader if no val loader
+            try:
+                sample_iter = iter(train_loader)
+                sample_batch = next(sample_iter)
+                if isinstance(device, str):
+                    device_obj = torch.device(device)
+                else:
+                    device_obj = device
+                sample_batch = {k: v.to(device_obj, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+                               for k, v in sample_batch.items()}
+            except:
+                pass
+        
+        norm_stats = extract_normalizer_stats(model, sample_batch=sample_batch)
+        if norm_stats:
+            epoch_log.update(norm_stats)
+            # Print normalizer convergence info
+            if 'shift_diff_mean' in norm_stats:
+                print(f"  Normalizer convergence:")
+                print(f"    Shift diff: {norm_stats['shift_diff_mean']:.6f} (enc: {norm_stats.get('enc_shift_mean', 0):.6f}, dec: {norm_stats.get('dec_shift_mean', 0):.6f})")
+                print(f"    Scale diff: {norm_stats['scale_diff_mean']:.6f} (enc: {norm_stats.get('enc_scale_mean', 0):.6f}, dec: {norm_stats.get('dec_scale_mean', 0):.6f})")
         
         # Evaluation (run every epoch if validation set exists)
         if val_loader:
@@ -535,6 +722,10 @@ def main():
         # Also save to phase folder if phase is specified (for analysis)
         if phase_metrics_path:
             df.to_csv(phase_metrics_path, index=False)
+        
+        # Plot normalizer convergence if available (overwrites same file each time)
+        if norm_stats:
+            _plot_normalizer_convergence(df, output_dir, exp_name)
         
         # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
