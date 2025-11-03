@@ -224,7 +224,8 @@ class ManifestDataset(BaseComponent, Dataset):
         """Compute inverse frequency weights for room_id balancing."""
         if "room_id" not in self.df.columns:
             return None
-        room_ids = self.df["room_id"].values
+        # Convert to string to handle mixed types (int/str)
+        room_ids = self.df["room_id"].astype(str).values
         unique_rooms, counts = np.unique(room_ids, return_counts=True)
         max_count = counts.max()
         weight_map = {rid: max_count / count for rid, count in zip(unique_rooms, counts)}
@@ -238,7 +239,8 @@ class ManifestDataset(BaseComponent, Dataset):
                 print("Warning: room_id column not found, falling back to regular sampling")
                 use_weighted_sampling = False
             else:
-                room_ids = self.df["room_id"].values
+                # Convert to string to handle mixed types (int/str)
+                room_ids = self.df["room_id"].astype(str).values
                 unique_rooms, counts = np.unique(room_ids, return_counts=True)
                 max_count = counts.max()
                 print(f"Room ID sampling weights:")
