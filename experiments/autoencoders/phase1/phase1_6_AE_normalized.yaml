@@ -74,5 +74,5 @@ training:
       - type: CrossEntropyLoss
         key: segmentation
         target: segmentation
-        weight: 0.1  # Segmentation loss (same as Phase 1.5)
+        weight: 0.2  # Segmentation loss (same as Phase 1.5)
 

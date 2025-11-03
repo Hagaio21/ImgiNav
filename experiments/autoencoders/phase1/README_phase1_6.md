@@ -42,15 +42,27 @@ The normalization layer:
 
 ## Running Experiment
 
-### Submit job:
+### On HPC (LSF):
 ```bash
-python training/train.py experiments/autoencoders/phase1/phase1_6_AE_normalized.yaml
+# Submit job to HPC
+bsub < training/hpc_scripts/run_phase1_6.sh
 ```
 
 ### Monitor progress:
 ```bash
+# Check job status
+bjobs
+
+# Watch logs
+tail -f training/hpc_scripts/logs/phase1_6_normalized.*.out
+
 # Watch metrics
 tail -f outputs/phase1_6_normalized_training/phase1_6_AE_normalized_metrics.csv
+```
+
+### Local/Alternative:
+```bash
+python training/train.py experiments/autoencoders/phase1/phase1_6_AE_normalized.yaml
 ```
 
 ## Output Locations
