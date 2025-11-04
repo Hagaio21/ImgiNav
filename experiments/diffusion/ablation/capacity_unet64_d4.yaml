@@ -24,10 +24,10 @@ unet:
   cond_channels: 0
   fusion_mode: none
   norm_groups: 8
-  dropout: 0.1  # Dropout for regularization to prevent memorization
+  dropout: 0.2  # Increased from 0.1 to prevent memorization with predictable augmentations
 scheduler:
   type: CosineScheduler
-  num_steps: 1000
+  num_steps: 500  # Reduced from 1000 for faster training and sampling
 training:
   seed: 42
   train_split: 0.8
@@ -38,10 +38,13 @@ training:
   epochs: 500
   learning_rate: 0.00015  # Slightly reduced for cosine scheduler stability (was 0.0002)
   optimizer: AdamW
-  weight_decay: 0.05  # Increased from 0.01 for stronger regularization
+  weight_decay: 0.1  # Increased from 0.05 for stronger regularization to prevent memorization
   save_interval: 99999
   eval_interval: 5
   sample_interval: 10
+  memorization_check_interval: 5  # Check every 5 epochs
+  memorization_num_generate: 100
+  memorization_num_training: 1000
   use_amp: true
   
   # Weighted sampling to balance room_id distribution
@@ -49,12 +52,6 @@ training:
   
   # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
   max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
-  
-  # Spatial augmentation (rotation + translation) to prevent memorization
-  use_spatial_augmentation: true
-  aug_rotation: 15.0  # Degrees (±15)
-  aug_translate: 0.05  # Fraction of size (±5%)
-  aug_prob: 0.5  # 50% chance to apply
   
   scheduler:
     type: cosine

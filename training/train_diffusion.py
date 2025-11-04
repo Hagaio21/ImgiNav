@@ -24,6 +24,18 @@ from training.utils import (
 from models.diffusion import DiffusionModel
 from torchvision.utils import save_image, make_grid
 
+# Import memorization check function (optional - if import fails, checks will be skipped)
+try:
+    import sys
+    scripts_path = Path(__file__).parent.parent / "scripts"
+    sys.path.insert(0, str(scripts_path))
+    from check_memorization import check_memorization
+    MEMORIZATION_CHECK_AVAILABLE = True
+except ImportError as e:
+    MEMORIZATION_CHECK_AVAILABLE = False
+    print(f"Warning: Could not import memorization check function: {e}")
+    print("  Memorization checks will be skipped during training.")
+
 
 def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch, use_amp=False, max_grad_norm=None):
     """Train for one epoch."""
@@ -71,8 +83,8 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             else:
                 raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
         
-        # Sample random timesteps uniformly from [0, num_steps)
-        # This ensures uniform distribution across all timesteps
+        # Sample random timesteps with importance sampling (weight towards higher timesteps)
+        # This prevents memorization by training more on noisy samples
         num_steps = model.scheduler.num_steps
         
         # Diagnostic: Check num_steps on first batch
@@ -81,7 +93,12 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             if num_steps < 100:
                 print(f"  ERROR: num_steps is {num_steps}, expected ~1000! Check scheduler config.")
         
-        t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj, dtype=torch.long)
+        # Importance sampling: weight higher timesteps more (more noise = harder to memorize)
+        # Linear weighting: t=0 gets weight 1.0, t=num_steps-1 gets weight 2.0
+        # This biases training towards higher timesteps while still covering all timesteps
+        weights = torch.linspace(1.0, 2.0, num_steps, device=device_obj)
+        probs = weights / weights.sum()
+        t = torch.multinomial(probs, num_samples=latents.shape[0], replacement=True)
         
         # Sample standard normal noise N(0,1)
         noise = model.scheduler.randn_like(latents)
@@ -209,8 +226,11 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
                     raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
             
             num_steps = model.scheduler.num_steps
-            # Sample random timesteps uniformly from [0, num_steps)
-            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj, dtype=torch.long)
+            # Use importance sampling in eval too (for consistency)
+            # Weight higher timesteps more to prevent memorization
+            weights = torch.linspace(1.0, 2.0, num_steps, device=device_obj)
+            probs = weights / weights.sum()
+            t = torch.multinomial(probs, num_samples=latents.shape[0], replacement=True)
             # Sample standard normal noise N(0,1)
             noise = model.scheduler.randn_like(latents)
             cond = batch.get("cond", None)
@@ -467,8 +487,13 @@ def main():
     save_interval = config["training"].get("save_interval", 10)
     eval_interval = config["training"].get("eval_interval", 1)
     sample_interval = config["training"].get("sample_interval", 10)
+    memorization_check_interval = config["training"].get("memorization_check_interval", None)
     keep_checkpoints = config["training"].get("keep_checkpoints", None)
     max_grad_norm = config["training"].get("max_grad_norm", None)
+    
+    # Memorization check settings (smaller numbers for faster checks during training)
+    memorization_num_generate = config["training"].get("memorization_num_generate", 100)
+    memorization_num_training = config["training"].get("memorization_num_training", 1000)
     
     # Calculate end epoch: start_epoch + additional epochs to train
     end_epoch = start_epoch + epochs_to_train
@@ -487,6 +512,8 @@ def main():
     if val_loader:
         print(f"  Evaluation: every {eval_interval} epoch(s)")
     print(f"  Sample interval: every {sample_interval} epoch(s) (DDPM)")
+    if memorization_check_interval:
+        print(f"  Memorization check: every {memorization_check_interval} epoch(s) (generate={memorization_num_generate}, compare={memorization_num_training})")
     if max_grad_norm is not None:
         print(f"  Gradient clipping: max_norm={max_grad_norm}")
     if keep_checkpoints:
@@ -566,6 +593,45 @@ def main():
         if should_sample and val_loader:
             save_samples(model, val_loader, device, output_dir, epoch + 1, 
                        sample_batch_size=64, exp_name=exp_name)  # 8x8 grid
+        
+        # Memorization check
+        if memorization_check_interval and (epoch + 1) % memorization_check_interval == 0:
+            if not MEMORIZATION_CHECK_AVAILABLE:
+                print(f"\n  Skipping memorization check at epoch {epoch + 1} (memorization check not available)")
+            else:
+                print(f"\n{'='*60}")
+                print(f"Running memorization check at epoch {epoch + 1}...")
+                print(f"{'='*60}")
+                try:
+                    # Get manifest path from config
+                    manifest_path = config.get("dataset", {}).get("manifest")
+                    if not manifest_path:
+                        print("  Warning: No manifest path in config, skipping memorization check")
+                    else:
+                        # Save temporary checkpoint for memorization check
+                        temp_checkpoint = output_dir / f"{exp_name}_checkpoint_temp_memorization.pt"
+                        model.save_checkpoint(temp_checkpoint, include_config=True)
+                        
+                        # Run memorization check
+                        memorization_output_dir = output_dir / "memorization_checks" / f"epoch_{epoch + 1:03d}"
+                        check_memorization(
+                            config_path=args.config,
+                            checkpoint_path=str(temp_checkpoint),
+                            manifest_path=str(manifest_path),
+                            output_dir=str(memorization_output_dir),
+                            num_generate=memorization_num_generate,
+                            num_training=memorization_num_training,
+                            method="ddpm"
+                        )
+                        
+                        # Clean up temporary checkpoint
+                        if temp_checkpoint.exists():
+                            temp_checkpoint.unlink()
+                        
+                        print(f"  Memorization check completed. Results saved to: {memorization_output_dir}")
+                except Exception as e:
+                    print(f"  Warning: Memorization check failed: {e}")
+                    print(f"  Continuing training...")
         
         training_history.append(epoch_log)
         
