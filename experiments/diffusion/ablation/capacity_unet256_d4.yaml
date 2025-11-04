@@ -36,7 +36,7 @@ training:
   num_workers: 8
   shuffle: true
   epochs: 500
-  learning_rate: 0.00015  # Slightly reduced for cosine scheduler stability (was 0.0002)
+  learning_rate: 0.0001  # Reduced for large model stability (256 base_channels needs lower LR)
   optimizer: AdamW
   weight_decay: 0.1  # Increased from 0.05 for stronger regularization to prevent memorization
   save_interval: 99999
@@ -51,8 +51,8 @@ training:
   # Weighted sampling to balance room_id distribution
   use_weighted_sampling: false  # Disabled: uniform sampling for first 20k steps to prevent red-blob collapse
   
-  # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
-  max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
+  # Gradient clipping for stability (prevents gradient explosion in large models)
+  max_grad_norm: 0.1  # Very aggressive clipping for 256 base_channels model to prevent gradient explosion
   
   scheduler:
     type: cosine
