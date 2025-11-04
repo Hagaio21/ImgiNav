@@ -10,7 +10,7 @@ __pycache__/
 venv/
 env/
 .venv/
-
+checkpoints/
 # IDE & Editor folders
 .vscode/
 .idea/

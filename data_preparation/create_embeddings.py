@@ -1,4 +1,41 @@
 #!/usr/bin/env python3
+"""
+Unified embedding creation for layouts, POVs, and graphs.
+
+This script can create embeddings for:
+- Layout images (RGB → latent using autoencoder) - for diffusion training
+- POV images (using ResNet18)
+- Graph data (using SentenceTransformer)
+
+Layout embeddings support two workflows:
+1. Manifest-based: Read from manifest CSV, encode RGB images, add latent_path column
+2. Directory-based: Scan directory for layouts, create embeddings
+
+Usage:
+    # Layout embeddings (manifest-based, for diffusion)
+    python create_embeddings.py --type layout \
+        --manifest datasets/manifest.csv \
+        --output-manifest datasets/manifest_with_latents.csv \
+        --autoencoder-config config.yaml \
+        --autoencoder-checkpoint checkpoint.pt
+    
+    # Layout embeddings (directory-based, legacy)
+    python create_embeddings.py --type layout \
+        --data-root datasets/ \
+        --autoencoder-config config.yaml \
+        --autoencoder-checkpoint checkpoint.pt
+    
+    # POV embeddings
+    python create_embeddings.py --type pov \
+        --manifest datasets/manifest.csv \
+        --output datasets/manifest_with_pov_emb.csv
+    
+    # Graph embeddings
+    python create_embeddings.py --type graph \
+        --manifest datasets/manifest.csv \
+        --output datasets/manifest_with_graph_emb.csv \
+        --taxonomy config/taxonomy.json
+"""
 
 import argparse
 import csv
@@ -11,21 +48,23 @@ from itertools import islice
 
 import torch
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from PIL import Image
 import torchvision.transforms as T
 import yaml
 from sentence_transformers import SentenceTransformer
+from torch.utils.data import DataLoader
 
 # Add parent directory to path for module imports
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-try:
-    from models.autoencoder import AutoEncoder
-except ImportError:
-    AutoEncoder = None  # Will fail gracefully if not available
 
+from models.autoencoder import Autoencoder
+from models.datasets.datasets import ManifestDataset
+from training.utils import load_config, build_dataset
 from utils.text_utils import graph2text
 from common.taxonomy import Taxonomy
+from common.file_io import read_manifest, create_manifest
 
 
 # =============================================================================
@@ -42,7 +81,6 @@ def batched(iterable: Iterator, n: int):
 
 
 def _process_batch_with_model(batch_items, model, transform, device, process_item_fn, encode_fn):
-
     batch_imgs = []
     valid_items = []
     
@@ -77,40 +115,19 @@ def _process_batch_with_model(batch_items, model, transform, device, process_ite
 # =============================================================================
 
 def load_autoencoder_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
-    if AutoEncoder is None:
-        raise ImportError("AutoEncoder module not available")
+    """Load autoencoder using the newer Autoencoder API."""
+    print(f"[INFO] Loading autoencoder from {checkpoint_path}")
     
-    print(f"[INFO] Loading config: {config_path}")
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    if "model" not in config:
-        raise KeyError(f"'model' key missing in config file {config_path}")
-
-    model_cfg = config["model"]
-    model = AutoEncoder.from_shape(
-        in_channels=model_cfg["in_channels"],
-        out_channels=model_cfg["out_channels"],
-        base_channels=model_cfg["base_channels"],
-        latent_channels=model_cfg["latent_channels"],
-        image_size=model_cfg["image_size"],
-        latent_base=model_cfg["latent_base"],
-        norm=model_cfg.get("norm"),
-        act=model_cfg.get("act", "relu"),
-        dropout=model_cfg.get("dropout", 0.0),
-        num_classes=model_cfg.get("num_classes", None),
-    )
-
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    state_dict = ckpt["model"] if "model" in ckpt else ckpt
+    # Load config
+    config = load_config(config_path)
+    ae_cfg = config.get("autoencoder", config)
     
-    # Handle potential DataParallel prefix
-    if state_dict and list(state_dict.keys())[0].startswith('module.'):
-        state_dict = {k[7:]: v for k, v in state_dict.items()}
-    
-    model.load_state_dict(state_dict)
-    model.to(device)
+    # Load model using newer API
+    model = Autoencoder.load_checkpoint(checkpoint_path, map_location=device)
+    model = model.to(device)
     model.eval()
-    print(f"[INFO] Loaded checkpoint: {checkpoint_path}")
+    
+    print(f"[INFO] Autoencoder loaded successfully")
     return model
 
 
@@ -127,7 +144,252 @@ def load_sentence_transformer_model(model_name: str = "all-MiniLM-L6-v2"):
 
 
 # =============================================================================
-# Layout Embeddings
+# Layout Embeddings (Manifest-based workflow for diffusion)
+# =============================================================================
+
+def create_layout_embeddings_from_manifest(
+    encoder, manifest_path, output_manifest_path, batch_size=32, 
+    num_workers=8, overwrite=False, device="cuda"
+):
+    """
+    Create layout embeddings from manifest (manifest-based workflow).
+    This is the preferred workflow for diffusion training.
+    """
+    manifest_path = Path(manifest_path)
+    output_manifest_path = Path(output_manifest_path)
+    manifest_dir = manifest_path.parent
+    
+    # Load manifest
+    df = pd.read_csv(manifest_path)
+    print(f"Loaded manifest with {len(df)} samples")
+    
+    # Apply the same filters that ManifestDataset will use
+    # Filter out rows with NaN values in required columns
+    required_cols = ["layout_path"]
+    df = df.dropna(subset=required_cols)
+    
+    # Apply filters (same as ManifestDataset)
+    filters = {"is_empty": [False]}
+    for key, value in filters.items():
+        if key in df.columns:
+            if isinstance(value, (list, tuple, set)):
+                df = df[df[key].isin(value)]
+            else:
+                df = df[df[key] == value]
+    df = df.reset_index(drop=True)
+    
+    print(f"After filtering (non-empty layouts): {len(df)} samples")
+    
+    # Create dataset for loading images (using filtered manifest)
+    dataset = ManifestDataset(
+        manifest=str(manifest_path),
+        outputs={"rgb": "layout_path"},
+        filters={"is_empty": [False]} if "is_empty" in df.columns else None,
+        return_path=False
+    )
+    
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, 
+                          num_workers=num_workers, pin_memory=True)
+    
+    # Verify that filtered dataframe matches dataset length
+    if len(df) != len(dataset):
+        raise ValueError(
+            f"Mismatch between filtered dataframe length ({len(df)}) "
+            f"and dataset length ({len(dataset)}). "
+            "They should match after applying the same filters."
+        )
+    
+    device_obj = torch.device(device)
+    encoder = encoder.to(device_obj)
+    
+    # Process all samples
+    latent_paths = []
+    processed = 0
+    skipped = 0
+    failed = 0
+    
+    # Collect latents for statistics computation
+    all_latents = []
+    
+    output_manifest_dir = output_manifest_path.parent
+    output_manifest_dir.mkdir(parents=True, exist_ok=True)
+    
+    print("Encoding images to latents...")
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding")):
+            rgb_images = batch["rgb"].to(device_obj, non_blocking=True)
+            
+            # Encode to latents
+            encoder_out = encoder(rgb_images)  # Returns dict
+            
+            # Extract latent from dict
+            if "latent" in encoder_out:
+                latents = encoder_out["latent"]
+            elif "mu" in encoder_out:
+                latents = encoder_out["mu"]  # Use mu for VAE
+            else:
+                raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
+            
+            # Collect latents for statistics (detach and move to CPU to save memory)
+            all_latents.append(latents.detach().cpu())
+            
+            # Save latents for each sample in batch
+            batch_start_idx = batch_idx * batch_size
+            for i in range(len(rgb_images)):
+                sample_idx = batch_start_idx + i
+                if sample_idx >= len(df):
+                    break
+                
+                row = df.iloc[sample_idx]
+                
+                # Determine output path for latent
+                layout_path_str = row.get("layout_path", "")
+                if not layout_path_str:
+                    latent_paths.append("")
+                    failed += 1
+                    continue
+                
+                layout_path = Path(layout_path_str)
+                
+                # Convert to absolute path if relative
+                if not layout_path.is_absolute():
+                    # If relative, resolve relative to manifest directory
+                    layout_path = (manifest_dir / layout_path).resolve()
+                
+                # For augmented dataset: create latents in /work3/s233249/ImgiNav/datasets/augmented/latents/
+                # Structure: images/name.png -> latents/name.pt
+                # Find the augmented directory in the path
+                latent_base_dir = None
+                if "augmented" in layout_path.parts:
+                    # Find the augmented directory and use it as base
+                    parts = list(layout_path.parts)
+                    for j, part in enumerate(parts):
+                        if part == "augmented":
+                            # Use everything up to and including "augmented" as base
+                            latent_base_dir = Path(*parts[:j+1])
+                            break
+                
+                if latent_base_dir is None:
+                    # Fallback: use manifest directory's parent (assuming it's in datasets/augmented/)
+                    latent_base_dir = manifest_dir.parent if manifest_dir.name != "augmented" else manifest_dir
+                
+                # Create latent path: augmented/latents/filename.pt
+                latent_dir = latent_base_dir / "latents"
+                
+                # Get filename from layout_path and change extension
+                if layout_path.name:
+                    latent_filename = Path(layout_path.name).with_suffix('.pt')
+                    latent_path_full = latent_dir / latent_filename
+                else:
+                    # Fallback: use hash of path or index
+                    latent_filename = f"latent_{sample_idx}.pt"
+                    latent_path_full = latent_dir / latent_filename
+                
+                # Ensure path is absolute (for cross-environment compatibility)
+                if not latent_path_full.is_absolute():
+                    latent_path_full = latent_path_full.resolve()
+                
+                # Skip if exists and not overwriting
+                if latent_path_full.exists() and not overwrite:
+                    latent_paths.append(str(latent_path_full.resolve()))
+                    skipped += 1
+                    continue
+                
+                # Save latent tensor
+                try:
+                    latent_path_full.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(latents[i].cpu(), latent_path_full)
+                    latent_paths.append(str(latent_path_full.resolve()))
+                    processed += 1
+                except Exception as e:
+                    print(f"Error saving latent for {layout_path}: {e}")
+                    latent_paths.append("")
+                    failed += 1
+    
+    # Create output manifest with latent_path column
+    # Ensure all paths are absolute for cross-environment compatibility
+    df_output = df.copy()
+    df_output["latent_path"] = ""
+    
+    for idx in range(len(df_output)):
+        if idx < len(latent_paths) and latent_paths[idx]:
+            path_obj = Path(latent_paths[idx])
+            # Convert to absolute if not already
+            if not path_obj.is_absolute():
+                path_obj = (manifest_dir / path_obj).resolve()
+            else:
+                path_obj = path_obj.resolve()
+            df_output.loc[idx, "latent_path"] = str(path_obj)
+    
+    # Ensure layout_path column is also absolute for consistency
+    if "layout_path" in df_output.columns:
+        df_output["layout_path"] = df_output["layout_path"].apply(
+            lambda p: str((manifest_dir / Path(p)).resolve()) if p and not Path(p).is_absolute() else str(p) if p else ""
+        )
+    
+    # Save new manifest
+    df_output.to_csv(output_manifest_path, index=False)
+    
+    # Compute latent statistics
+    print("\nComputing latent statistics...")
+    if all_latents:
+        # Concatenate all latents
+        all_latents_tensor = torch.cat(all_latents, dim=0)
+        
+        # Flatten for global statistics
+        latent_flat = all_latents_tensor.reshape(all_latents_tensor.shape[0], -1)
+        
+        # Compute global statistics
+        latent_mean = latent_flat.mean().item()
+        latent_std = latent_flat.std().item()
+        
+        # Compute per-channel statistics (if spatial dimensions exist)
+        if all_latents_tensor.ndim == 4:  # [B, C, H, W]
+            per_channel_mean = all_latents_tensor.mean(dim=(0, 2, 3)).cpu().numpy()  # [C]
+            per_channel_std = all_latents_tensor.std(dim=(0, 2, 3)).cpu().numpy()  # [C]
+            
+            print(f"\n{'='*60}")
+            print(f"Latent Statistics Summary")
+            print(f"{'='*60}")
+            print(f"Global Statistics:")
+            print(f"  Mean: {latent_mean:.6f} (target: 0.0)")
+            print(f"  Std:  {latent_std:.6f} (target: 1.0)")
+            print(f"  Mean deviation: {abs(latent_mean):.6f}")
+            print(f"  Std deviation:  {abs(latent_std - 1.0):.6f}")
+            print(f"\nPer-Channel Statistics:")
+            print(f"  Channel | Mean      | Std       | Mean Dev | Std Dev")
+            print(f"  {'-'*55}")
+            for ch_idx in range(len(per_channel_mean)):
+                ch_mean = per_channel_mean[ch_idx]
+                ch_std = per_channel_std[ch_idx]
+                mean_dev = abs(ch_mean)
+                std_dev = abs(ch_std - 1.0)
+                print(f"  {ch_idx:7d} | {ch_mean:9.6f} | {ch_std:9.6f} | {mean_dev:9.6f} | {std_dev:9.6f}")
+            print(f"{'='*60}")
+            
+            # Check if standardized
+            if abs(latent_mean) < 0.1 and 0.9 < latent_std < 1.1:
+                print("✓ Latents appear to be well-standardized (~N(0,1))")
+            elif abs(latent_mean) < 0.5 and 0.5 < latent_std < 1.5:
+                print("⚠ Latents are somewhat standardized but could be better")
+            else:
+                print("✗ Latents are NOT well-standardized - may need retraining")
+        else:
+            print(f"\nGlobal Statistics:")
+            print(f"  Mean: {latent_mean:.6f} (target: 0.0)")
+            print(f"  Std:  {latent_std:.6f} (target: 1.0)")
+    else:
+        print("⚠ No latents collected for statistics (all skipped?)")
+    
+    print(f"\n✓ Encoding complete!")
+    print(f"  Processed: {processed}")
+    print(f"  Skipped (existing): {skipped}")
+    print(f"  Failed: {failed}")
+    print(f"  Output manifest: {output_manifest_path}")
+
+
+# =============================================================================
+# Layout Embeddings (Directory-based workflow, legacy)
 # =============================================================================
 
 def parse_layout_path(path: Path, data_root: Path) -> Tuple[str, str, str]:
@@ -148,15 +410,27 @@ def parse_layout_path(path: Path, data_root: Path) -> Tuple[str, str, str]:
     return scene_id, type, room_id
 
 
-def create_layout_embeddings(model, data_root: Path, device: str = "cuda", 
+def create_layout_embeddings_from_directory(model, data_root: Path, device: str = "cuda", 
                             batch_size: int = 32, overwrite: bool = False) -> List[Dict[str, Any]]:
+    """
+    Create layout embeddings by scanning directory (legacy workflow).
+    """
     layout_paths = sorted(list(data_root.rglob("*layout.png")))
     
     if not layout_paths:
         raise RuntimeError(f"No layout images found under {data_root}")
     
+    # Get image size from encoder config (need to check model structure)
+    # For newer Autoencoder, encoder might have image_size attribute or we need to infer
+    try:
+        if hasattr(model, 'encoder') and hasattr(model.encoder, 'image_size'):
+            image_size = model.encoder.image_size
+        else:
+            image_size = 256  # Default fallback
+    except:
+        image_size = 256
+    
     # Prepare transform
-    image_size = model.encoder.image_size
     transform = T.Compose([
         T.Resize((image_size, image_size)),
         T.ToTensor(),
@@ -209,7 +483,14 @@ def create_layout_embeddings(model, data_root: Path, device: str = "cuda",
             return None, None
     
     def encode_layouts(imgs_tensor):
-        return model.encode_latent(imgs_tensor, deterministic=True)
+        # Use encoder from autoencoder
+        encoder_out = model.encode(imgs_tensor)
+        if "latent" in encoder_out:
+            return encoder_out["latent"]
+        elif "mu" in encoder_out:
+            return encoder_out["mu"]
+        else:
+            raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
     
     for i in tqdm(range(0, total_to_encode, batch_size), desc="Encoding layouts", unit="batch"):
         batch_job_paths = paths_to_encode[i:i + batch_size]
@@ -251,7 +532,6 @@ def create_pov_embeddings(manifest_path: Path, output_manifest: Path,
     ])
     
     # Read manifest
-    from common.file_io import read_manifest, create_manifest
     rows = read_manifest(manifest_path)
     
     print(f"Found {len(rows)} POV images to process")
@@ -326,8 +606,6 @@ def create_pov_embeddings(manifest_path: Path, output_manifest: Path,
 # Graph Embeddings
 # =============================================================================
 
-
-
 def create_graph_embeddings(manifest_path: Path, taxonomy_path: Path, 
                            output_manifest: Path, model_name: str = "all-MiniLM-L6-v2",
                            save_format: str = "pt"):
@@ -341,7 +619,6 @@ def create_graph_embeddings(manifest_path: Path, taxonomy_path: Path,
     
     # Read manifest
     print(f"Reading manifest: {manifest_path}")
-    from common.file_io import read_manifest, create_manifest
     rows = read_manifest(manifest_path)
     
     print(f"Found {len(rows)} graphs to process")
@@ -395,7 +672,6 @@ def create_graph_embeddings(manifest_path: Path, taxonomy_path: Path,
             output_rows.append(output_row)
     
     # Write output manifest
-    from common.file_io import create_manifest
     fieldnames = list(rows[0].keys()) + ['embedding_path']
     create_manifest(output_rows, output_manifest, fieldnames)
     
@@ -409,7 +685,6 @@ def create_graph_text_files(manifest_path: Path, taxonomy_path: Path):
     taxonomy = Taxonomy(taxonomy_path)
     
     print(f"Reading manifest: {manifest_path}")
-    from common.file_io import read_manifest
     rows = read_manifest(manifest_path)
     
     print(f"Found {len(rows)} graphs to process")
@@ -457,7 +732,7 @@ def main():
     # Common arguments
     parser.add_argument(
         "--manifest",
-        help="Path to input manifest CSV (required for pov and graph types)"
+        help="Path to input manifest CSV (required for layout manifest-based, pov and graph types)"
     )
     parser.add_argument(
         "--output",
@@ -465,7 +740,7 @@ def main():
         help="Path for output manifest or directory"
     )
     parser.add_argument(
-        "--batch_size",
+        "--batch-size",
         type=int,
         default=32,
         help="Batch size for processing"
@@ -484,16 +759,16 @@ def main():
     
     # Layout-specific arguments
     parser.add_argument(
-        "--config",
-        help="Path to AutoEncoder config YAML (required for layout type)"
+        "--autoencoder-config",
+        help="Path to Autoencoder config YAML (required for layout type)"
     )
     parser.add_argument(
-        "--ckpt",
-        help="Path to AutoEncoder checkpoint (required for layout type)"
+        "--autoencoder-checkpoint",
+        help="Path to Autoencoder checkpoint (required for layout type)"
     )
     parser.add_argument(
-        "--data_root",
-        help="Root folder containing scenes/rooms (required for layout type)"
+        "--data-root",
+        help="Root folder containing scenes/rooms (for layout directory-based workflow)"
     )
     parser.add_argument(
         "--device",
@@ -501,9 +776,19 @@ def main():
         help="Device to use (cuda or cpu)"
     )
     parser.add_argument(
-        "--manifest_out",
+        "--num-workers",
+        type=int,
+        default=8,
+        help="Number of DataLoader workers (for layout manifest-based workflow)"
+    )
+    parser.add_argument(
+        "--output-manifest",
+        help="Output manifest path (for layout manifest-based workflow)"
+    )
+    parser.add_argument(
+        "--manifest-out",
         default=None,
-        help="Output manifest filename (for layout type, saved in data_root)"
+        help="Output manifest filename (for layout directory-based workflow, saved in data-root)"
     )
     
     # Graph-specific arguments
@@ -522,27 +807,45 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
     
     if args.type == "layout":
-        if not args.config or not args.ckpt or not args.data_root:
-            parser.error("--config, --ckpt, and --data_root are required for layout type")
+        if not args.autoencoder_config or not args.autoencoder_checkpoint:
+            parser.error("--autoencoder-config and --autoencoder-checkpoint are required for layout type")
         
         print(f"[INFO] Using device: {device}")
-        model = load_autoencoder_model(args.config, args.ckpt, device=device)
-        manifest_data = create_layout_embeddings(
-            model,
-            Path(args.data_root),
-            device=device,
-            batch_size=args.batch_size,
-            overwrite=args.overwrite
-        )
+        model = load_autoencoder_model(args.autoencoder_config, args.autoencoder_checkpoint, device=device)
         
-        if manifest_data and args.manifest_out:
-            import pandas as pd
-            df = pd.DataFrame(manifest_data)
-            cols = ["scene", "type", "room_id", "layout_path", "layout_emb_path"]
-            df = df[cols]
-            output_csv_path = Path(args.data_root) / args.manifest_out
-            df.to_csv(output_csv_path, index=False, sep="|")
-            print(f"\n[INFO] Manifest saved to {output_csv_path}")
+        # Determine workflow: manifest-based or directory-based
+        if args.manifest and args.output_manifest:
+            # Manifest-based workflow (preferred for diffusion)
+            print("[INFO] Using manifest-based workflow")
+            create_layout_embeddings_from_manifest(
+                encoder=model.encoder,
+                manifest_path=args.manifest,
+                output_manifest_path=args.output_manifest,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                overwrite=args.overwrite,
+                device=str(device)
+            )
+        elif args.data_root:
+            # Directory-based workflow (legacy)
+            print("[INFO] Using directory-based workflow")
+            manifest_data = create_layout_embeddings_from_directory(
+                model,
+                Path(args.data_root),
+                device=str(device),
+                batch_size=args.batch_size,
+                overwrite=args.overwrite
+            )
+            
+            if manifest_data and args.manifest_out:
+                df = pd.DataFrame(manifest_data)
+                cols = ["scene", "type", "room_id", "layout_path", "layout_emb_path"]
+                df = df[cols]
+                output_csv_path = Path(args.data_root) / args.manifest_out
+                df.to_csv(output_csv_path, index=False, sep="|")
+                print(f"\n[INFO] Manifest saved to {output_csv_path}")
+        else:
+            parser.error("For layout type, either (--manifest + --output-manifest) or --data-root must be provided")
     
     elif args.type == "pov":
         if not args.manifest:
@@ -579,4 +882,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -14,7 +14,7 @@ set -euo pipefail
 # PATHS
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/data_preparation/preembed_latents.py"
+PYTHON_SCRIPT="${BASE_DIR}/data_preparation/create_embeddings.py"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Ensure log directory exists
@@ -101,10 +101,11 @@ cd "${BASE_DIR}"
 
 # Run pre-embedding
 python "${PYTHON_SCRIPT}" \
+  --type layout \
+  --manifest "${INPUT_MANIFEST}" \
+  --output-manifest "${OUTPUT_MANIFEST}" \
   --autoencoder-config "${AUTOENCODER_CONFIG}" \
   --autoencoder-checkpoint "${AUTOENCODER_CHECKPOINT}" \
-  --dataset-manifest "${INPUT_MANIFEST}" \
-  --output-manifest "${OUTPUT_MANIFEST}" \
   --batch-size "${BATCH_SIZE}" \
   --num-workers "${NUM_WORKERS}" \
   --device cuda
