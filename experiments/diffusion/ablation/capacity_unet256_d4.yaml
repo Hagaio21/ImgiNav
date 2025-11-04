@@ -32,11 +32,11 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 24  # Slightly smaller for larger UNet (base_channels: 256)
+  batch_size: 48  # Increased for gradient stability (larger UNet, so moderate increase)
   num_workers: 8
   shuffle: true
   epochs: 500
-  learning_rate: 0.0002  # Increased from 0.0001 for faster convergence
+  learning_rate: 0.00015  # Slightly reduced for cosine scheduler stability (was 0.0002)
   optimizer: AdamW
   weight_decay: 0.05  # Increased from 0.01 for stronger regularization
   save_interval: 99999
@@ -54,7 +54,7 @@ training:
   use_weighted_sampling: true
   
   # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
-  max_grad_norm: 1.0
+  max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
   
   scheduler:
     type: cosine

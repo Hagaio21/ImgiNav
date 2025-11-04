@@ -42,11 +42,11 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 32  # Increased for pre-embedded latents (32× smaller than images)
+  batch_size: 64  # Increased for pre-embedded latents (32× smaller than images) - larger batch for gradient stability
   num_workers: 8
   shuffle: true
   epochs: 500  # Long training
-  learning_rate: 0.0002  # Increased from 0.0001 for faster convergence
+  learning_rate: 0.00015  # Slightly reduced for cosine scheduler stability (was 0.0002)
   optimizer: AdamW
   weight_decay: 0.05  # Increased from 0.01 for stronger regularization
   
@@ -68,7 +68,7 @@ training:
   use_weighted_sampling: true
   
   # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
-  max_grad_norm: 1.0  # Set to null/omit to disable gradient clipping
+  max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
   
   # Loss (simple MSE on noise prediction)
   # Note: Latents are standardized ~N(0,1) from Phase 1.6, so standard N(0,1) noise is used

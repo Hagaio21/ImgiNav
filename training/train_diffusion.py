@@ -25,73 +25,12 @@ from models.diffusion import DiffusionModel
 from torchvision.utils import save_image, make_grid
 
 
-def compute_corruption_metrics(clean_latents, noisy_latents, t, scheduler):
-    """
-    Compute metrics to verify data corruption in diffusion process.
-    Note: t is sampled uniformly, and corruption should increase with t.
-    
-    Returns:
-        dict with metrics:
-            - corruption_snr: Signal-to-noise ratio (lower = more corrupted)
-            - corruption_mse: MSE between clean and noisy latents
-            - corruption_ratio: Ratio of noise to signal
-            - expected_noise_ratio: Expected noise ratio from scheduler
-            - mean_timestep: Average timestep for this batch (for verification)
-            - timestep_std: Std of timesteps (should be ~num_steps/sqrt(12) for uniform)
-    """
-    with torch.no_grad():
-        # Verify timestep distribution (should be uniform)
-        t_float = t.float()
-        mean_t = t_float.mean().item()
-        std_t = t_float.std().item()
-        num_steps = scheduler.num_steps
-        # Expected mean for uniform [0, num_steps-1] is (num_steps - 1) / 2
-        expected_mean = (num_steps - 1) / 2.0
-        # Expected std for uniform [0, num_steps-1] is (num_steps - 1) / sqrt(12)
-        expected_std = (num_steps - 1) / (2 * (3 ** 0.5))
-        
-        # Compute difference (noise added)
-        noise_added = noisy_latents - clean_latents
-        
-        # Signal-to-noise ratio (SNR)
-        signal_power = clean_latents.pow(2).mean()
-        noise_power = noise_added.pow(2).mean()
-        snr = signal_power / (noise_power + 1e-8)
-        
-        # MSE between clean and noisy
-        mse = torch.nn.functional.mse_loss(clean_latents, noisy_latents)
-        
-        # Corruption ratio (noise magnitude relative to signal magnitude)
-        signal_mag = clean_latents.abs().mean()
-        noise_mag = noise_added.abs().mean()
-        corruption_ratio = noise_mag / (signal_mag + 1e-8)
-        
-        # Expected alpha_bar for this timestep (for verification)
-        alpha_bars = scheduler.alpha_bars.to(t.device)
-        alpha_bar_t = alpha_bars[t.long()].mean()
-        expected_noise_ratio = (1 - alpha_bar_t).sqrt()
-        
-        return {
-            "corruption_snr": snr.item(),
-            "corruption_mse": mse.item(),
-            "corruption_ratio": corruption_ratio.item(),
-            "expected_noise_ratio": expected_noise_ratio.item(),
-            "mean_timestep": mean_t,
-            "expected_timestep_mean": expected_mean,
-            "timestep_std": std_t,
-            "expected_timestep_std": expected_std,
-        }
-
-
 def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch, use_amp=False, max_grad_norm=None):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
     total_samples = 0
     log_dict = {}
-    
-    # Track timesteps across all batches for accurate mean calculation
-    all_timesteps = []
     
     if isinstance(device, str):
         device_obj = torch.device(device)
@@ -143,9 +82,6 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                 print(f"  ERROR: num_steps is {num_steps}, expected ~1000! Check scheduler config.")
         
         t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj, dtype=torch.long)
-        
-        # Track timesteps for accurate mean calculation
-        all_timesteps.append(t.cpu().float())
         
         # Sample standard normal noise N(0,1)
         noise = model.scheduler.randn_like(latents)
@@ -229,76 +165,7 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                 log_dict[k] = 0.0
             log_dict[k] += v.detach().item() * batch_size
         
-        # Compute corruption metrics (every N batches to avoid overhead)
-        if batch_idx % 100 == 0:  # Log every 100 batches
-            with torch.no_grad():
-                # Compute corruption metrics (per-batch values, timestep stats will be overwritten at end)
-                corruption_metrics = compute_corruption_metrics(
-                    outputs["latent"], outputs["noisy_latent"], t, model.scheduler
-                )
-                # Add to log_dict (will be averaged)
-                # Note: mean_timestep and timestep_std from corruption_metrics are per-batch and will be overwritten
-                # with accurate epoch-wide values at the end
-                for k, v in corruption_metrics.items():
-                    if k not in log_dict:
-                        log_dict[k] = 0.0
-                    # Skip timestep stats - they'll be computed accurately from all batches at the end
-                    if k not in ["mean_timestep", "timestep_std", "expected_timestep_mean", "expected_timestep_std"]:
-                        log_dict[k] += v * batch_size
-                
-                # Diagnostic: Check noise prediction accuracy
-                pred_noise = outputs["pred_noise"]
-                target_noise = noise
-                noise_mse = torch.nn.functional.mse_loss(pred_noise, target_noise).item()
-                noise_l1 = torch.nn.functional.l1_loss(pred_noise, target_noise).item()
-                pred_noise_std = pred_noise.std().item()
-                target_noise_std = target_noise.std().item()
-                pred_noise_mean = pred_noise.mean().item()
-                target_noise_mean = target_noise.mean().item()
-                
-                # Add diagnostics to log_dict
-                if "noise_pred_mse" not in log_dict:
-                    log_dict["noise_pred_mse"] = 0.0
-                    log_dict["noise_pred_l1"] = 0.0
-                    log_dict["pred_noise_std"] = 0.0
-                    log_dict["target_noise_std"] = 0.0
-                    log_dict["pred_noise_mean"] = 0.0
-                    log_dict["target_noise_mean"] = 0.0
-                
-                log_dict["noise_pred_mse"] += noise_mse * batch_size
-                log_dict["noise_pred_l1"] += noise_l1 * batch_size
-                log_dict["pred_noise_std"] += pred_noise_std * batch_size
-                log_dict["target_noise_std"] += target_noise_std * batch_size
-                log_dict["pred_noise_mean"] += pred_noise_mean * batch_size
-                log_dict["target_noise_mean"] += target_noise_mean * batch_size
-        
         pbar.set_postfix({"loss": loss_val, **{k: v/total_samples for k, v in log_dict.items()}})
-    
-    # Compute accurate timestep mean from all batches (overwrite per-batch estimates)
-    if all_timesteps:
-        all_t_flat = torch.cat(all_timesteps)
-        accurate_mean_t = all_t_flat.mean().item()
-        accurate_std_t = all_t_flat.std().item()
-        num_steps = model.scheduler.num_steps
-        
-        # Calculate expected values first
-        expected_mean = (num_steps - 1) / 2.0
-        expected_std = (num_steps - 1) / (2 * (3 ** 0.5))
-        
-        # Diagnostic: Print actual num_steps to verify it's correct (once per epoch)
-        if epoch == 1:  # Print summary after first epoch
-            print(f"\n[Diagnostic] Epoch {epoch} - Scheduler num_steps: {num_steps}")
-            print(f"  Actual timestep range across all batches: [{all_t_flat.min().item():.1f}, {all_t_flat.max().item():.1f}]")
-            print(f"  Expected range: [0, {num_steps - 1}]")
-            print(f"  Actual mean: {accurate_mean_t:.2f}, Expected mean: {expected_mean:.2f}")
-            if num_steps < 100:
-                print(f"  ERROR: num_steps is {num_steps}, expected ~1000! Check scheduler config or checkpoint.")
-        
-        # Overwrite with accurate timestep statistics computed from all batches
-        log_dict["mean_timestep"] = accurate_mean_t * total_samples
-        log_dict["timestep_std"] = accurate_std_t * total_samples
-        log_dict["expected_timestep_mean"] = expected_mean * total_samples
-        log_dict["expected_timestep_std"] = expected_std * total_samples
     
     if total_samples == 0:
         raise RuntimeError("No samples processed in training epoch! Check dataloader.")
@@ -367,45 +234,6 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
                 if k not in log_dict:
                     log_dict[k] = 0.0
                 log_dict[k] += v.item() * batch_size
-            
-            # Compute corruption metrics (every N batches to avoid overhead)
-            if batch_idx % 100 == 0:  # Log every 100 batches
-                with torch.no_grad():
-                    corruption_metrics = compute_corruption_metrics(
-                        outputs["latent"], outputs["noisy_latent"], t, model.scheduler
-                    )
-                    for k, v in corruption_metrics.items():
-                        if k not in log_dict:
-                            log_dict[k] = 0.0
-                        # Skip timestep stats - they're per-batch estimates (less critical in eval)
-                        if k not in ["mean_timestep", "timestep_std", "expected_timestep_mean", "expected_timestep_std"]:
-                            log_dict[k] += v * batch_size
-                    
-                    # Diagnostic: Check noise prediction accuracy
-                    pred_noise = outputs["pred_noise"]
-                    target_noise = noise
-                    noise_mse = torch.nn.functional.mse_loss(pred_noise, target_noise).item()
-                    noise_l1 = torch.nn.functional.l1_loss(pred_noise, target_noise).item()
-                    pred_noise_std = pred_noise.std().item()
-                    target_noise_std = target_noise.std().item()
-                    pred_noise_mean = pred_noise.mean().item()
-                    target_noise_mean = target_noise.mean().item()
-                    
-                    # Add diagnostics to log_dict
-                    if "noise_pred_mse" not in log_dict:
-                        log_dict["noise_pred_mse"] = 0.0
-                        log_dict["noise_pred_l1"] = 0.0
-                        log_dict["pred_noise_std"] = 0.0
-                        log_dict["target_noise_std"] = 0.0
-                        log_dict["pred_noise_mean"] = 0.0
-                        log_dict["target_noise_mean"] = 0.0
-                    
-                    log_dict["noise_pred_mse"] += noise_mse * batch_size
-                    log_dict["noise_pred_l1"] += noise_l1 * batch_size
-                    log_dict["pred_noise_std"] += pred_noise_std * batch_size
-                    log_dict["target_noise_std"] += target_noise_std * batch_size
-                    log_dict["pred_noise_mean"] += pred_noise_mean * batch_size
-                    log_dict["target_noise_mean"] += target_noise_mean * batch_size
     
     if total_samples == 0:
         raise RuntimeError("No samples processed in evaluation epoch! Check dataloader.")
@@ -773,4 +601,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
