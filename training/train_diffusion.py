@@ -26,12 +26,7 @@ from torchvision.utils import save_image, make_grid
 
 # Import memorization check utilities (optional - if import fails, checks will be skipped)
 try:
-    import sys
-    from pathlib import Path
-    project_root = Path(__file__).parent.parent
-    scripts_path = project_root / "scripts"
-    sys.path.insert(0, str(project_root))  # Add project root to path
-    from scripts.memorization_utils import (
+    from training.memorization_utils import (
         load_training_samples,
         generate_samples,
         check_memorization

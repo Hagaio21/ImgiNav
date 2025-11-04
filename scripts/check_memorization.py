@@ -48,7 +48,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from models.diffusion import DiffusionModel
 from models.datasets.datasets import ManifestDataset
 from training.utils import load_config, build_dataset
-from scripts.memorization_utils import (
+from training.memorization_utils import (
     load_training_samples,
     generate_samples,
     compute_latent_distances,
