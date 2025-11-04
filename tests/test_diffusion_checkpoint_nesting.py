@@ -22,7 +22,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from models.diffusion import DiffusionModel
 from models.decoder import Decoder
-from models.components.unet import DualUNet
+from models.components.unet import Unet
 from models.components.scheduler import CosineScheduler
 
 
@@ -54,7 +54,7 @@ def test_checkpoint_nesting():
         print(f"   Decoder created: {sum(p.numel() for p in decoder.parameters())} parameters")
         
         # UNet
-        unet = DualUNet(
+        unet = Unet(
             in_channels=16,
             out_channels=16,
             base_channels=64,
@@ -148,7 +148,7 @@ def test_checkpoint_nesting():
         print("\n5. Loading separate checkpoints...")
         
         decoder_loaded = Decoder.load_checkpoint(decoder_path, map_location="cpu")
-        unet_loaded = DualUNet.load_checkpoint(unet_path, map_location="cpu")
+        unet_loaded = Unet.load_checkpoint(unet_path, map_location="cpu")
         scheduler_loaded = CosineScheduler.load_checkpoint(scheduler_path, map_location="cpu")
         
         print("   All separate checkpoints loaded")

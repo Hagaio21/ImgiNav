@@ -57,7 +57,7 @@ def make_diffusion_config(tmp_path: Path):
             }
         },
         "unet": {
-            "type": "DualUNet",
+            "type": "Unet",
             "in_channels": 4,
             "out_channels": 4,
             "base_channels": 16,

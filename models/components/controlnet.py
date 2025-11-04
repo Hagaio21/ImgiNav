@@ -1,7 +1,7 @@
 # models/components/controlnet.py
 import torch
 from .base_component import BaseComponent
-from .unet import DualUNet
+from .unet import Unet
 
 
 class ControlNet(BaseComponent):
@@ -13,7 +13,7 @@ class ControlNet(BaseComponent):
         if base_unet_cfg is None or adapter_cfg is None:
             raise ValueError("ControlNet requires both 'base_unet' and 'adapter' configs")
 
-        self.base_unet = DualUNet.from_config(base_unet_cfg)
+        self.base_unet = Unet.from_config(base_unet_cfg)
         self.base_unet.freeze_downblocks()
 
         from .control_adapter import ControlAdapter
