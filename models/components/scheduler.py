@@ -71,8 +71,9 @@ class CosineScheduler(NoiseScheduler):
         # Ensure alpha_bars are monotonically decreasing and in valid range
         alpha_bars = torch.clamp(alpha_bars, min=1e-6, max=1.0)
         betas = 1 - (alpha_bars[1:] / alpha_bars[:-1])
-        # Clamp betas to avoid numerical issues (like other schedulers do)
-        betas = torch.clamp(betas, min=1e-4, max=0.999)
+        # Clamp betas more aggressively to match linear scheduler range for stability
+        # This prevents extreme beta values that cause network collapse
+        betas = torch.clamp(betas, min=1e-4, max=0.02)  # Match linear scheduler max (was 0.999)
         alphas = 1 - betas
         return alphas, betas
 
