@@ -371,16 +371,33 @@ class DiffusionModel(BaseModel):
             if config and isinstance(config, dict):
                 # Merge user config with saved config, but keep decoder from saved config
                 merged_config = config.copy()
+                
+                # Get decoder config from saved checkpoint
+                saved_decoder_config = None
                 if "decoder" in saved_config:
-                    # Use decoder from saved checkpoint (no checkpoint path needed)
-                    merged_config["decoder"] = saved_config["decoder"]
-                elif "autoencoder" in saved_config and "decoder" in saved_config["autoencoder"]:
-                    # Saved config has nested decoder in autoencoder
-                    merged_config["decoder"] = saved_config["autoencoder"]["decoder"]
-                # Remove any autoencoder checkpoint paths - not needed when loading from diffusion checkpoint
-                if "autoencoder" in merged_config:
-                    merged_config["autoencoder"] = {k: v for k, v in merged_config["autoencoder"].items() 
-                                                    if k != "checkpoint"}
+                    saved_decoder_config = saved_config["decoder"]
+                elif "autoencoder" in saved_config:
+                    if "decoder" in saved_config["autoencoder"]:
+                        saved_decoder_config = saved_config["autoencoder"]["decoder"]
+                    elif isinstance(saved_config["autoencoder"], dict) and "decoder" not in saved_config["autoencoder"]:
+                        # Saved config might have decoder at top level when autoencoder is just metadata
+                        if "decoder" in saved_config:
+                            saved_decoder_config = saved_config["decoder"]
+                
+                if saved_decoder_config:
+                    # If user config has autoencoder section, put decoder config there
+                    if "autoencoder" in merged_config:
+                        # Put decoder config under autoencoder (remove checkpoint path)
+                        merged_config["autoencoder"] = {
+                            "decoder": saved_decoder_config,
+                            "frozen": merged_config["autoencoder"].get("frozen", False)
+                        }
+                    else:
+                        # Put decoder config at top level
+                        merged_config["decoder"] = saved_decoder_config
+                else:
+                    raise ValueError("Saved checkpoint config missing decoder config - checkpoint incomplete!")
+                
                 # IMPORTANT: Use scheduler from user config (not saved config) to allow changing num_steps
                 # The scheduler buffers will be rebuilt to match the new num_steps
                 if "scheduler" in config:

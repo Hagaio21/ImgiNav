@@ -24,16 +24,23 @@ from training.utils import (
 from models.diffusion import DiffusionModel
 from torchvision.utils import save_image, make_grid
 
-# Import memorization check function (optional - if import fails, checks will be skipped)
+# Import memorization check utilities (optional - if import fails, checks will be skipped)
 try:
     import sys
-    scripts_path = Path(__file__).parent.parent / "scripts"
-    sys.path.insert(0, str(scripts_path))
-    from check_memorization import check_memorization
+    from pathlib import Path
+    project_root = Path(__file__).parent.parent
+    scripts_path = project_root / "scripts"
+    sys.path.insert(0, str(project_root))  # Add project root to path
+    from scripts.memorization_utils import (
+        load_training_samples,
+        generate_samples,
+        check_memorization
+    )
+    from training.utils import build_dataset
     MEMORIZATION_CHECK_AVAILABLE = True
 except ImportError as e:
     MEMORIZATION_CHECK_AVAILABLE = False
-    print(f"Warning: Could not import memorization check function: {e}")
+    print(f"Warning: Could not import memorization check utilities: {e}")
     print("  Memorization checks will be skipped during training.")
 
 
@@ -83,8 +90,7 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             else:
                 raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
         
-        # Sample random timesteps with importance sampling (weight towards higher timesteps)
-        # This prevents memorization by training more on noisy samples
+        # Sample random timesteps uniformly (SNR weighting will be applied in loss)
         num_steps = model.scheduler.num_steps
         
         # Diagnostic: Check num_steps on first batch
@@ -93,12 +99,8 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
             if num_steps < 100:
                 print(f"  ERROR: num_steps is {num_steps}, expected ~1000! Check scheduler config.")
         
-        # Importance sampling: weight higher timesteps more (more noise = harder to memorize)
-        # Linear weighting: t=0 gets weight 1.0, t=num_steps-1 gets weight 2.0
-        # This biases training towards higher timesteps while still covering all timesteps
-        weights = torch.linspace(1.0, 2.0, num_steps, device=device_obj)
-        probs = weights / weights.sum()
-        t = torch.multinomial(probs, num_samples=latents.shape[0], replacement=True)
+        # Uniform timestep sampling (SNR weighting applied in loss computation)
+        t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
         
         # Sample standard normal noise N(0,1)
         noise = model.scheduler.randn_like(latents)
@@ -110,8 +112,19 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         if use_amp and device_obj.type == "cuda":
             with torch.amp.autocast('cuda'):
                 outputs = model(latents, t, cond=cond, noise=noise)
-                # Use the original noise as target (not from outputs to avoid any potential issues)
-                loss, logs = loss_fn(outputs, {"noise": noise})
+                
+                # SNR-weighted loss: w = snr / (1 + snr) where snr = alpha_bar / (1 - alpha_bar)
+                # This prevents over-training low-noise steps and red-blob collapse
+                alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+                alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+                snr = alpha_bar / (1 - alpha_bar + 1e-8)  # Signal-to-noise ratio
+                w = snr / (1 + snr)  # SNR weighting
+                
+                # Compute weighted MSE loss
+                pred_noise = outputs["pred_noise"]
+                noise_target = noise
+                loss = ((pred_noise - noise_target).pow(2) * w).mean()
+                logs = {"mse_loss": loss.detach()}
             
             optimizer.zero_grad()
             scaler = getattr(train_epoch, '_scaler', None)
@@ -143,8 +156,19 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
                         print(f"  WARNING: Gradients are very small! Model may not be learning.")
         else:
             outputs = model(latents, t, cond=cond, noise=noise)
-            # Use the original noise as target (not from outputs to avoid any potential issues)
-            loss, logs = loss_fn(outputs, {"noise": noise})
+            
+            # SNR-weighted loss: w = snr / (1 + snr) where snr = alpha_bar / (1 - alpha_bar)
+            # This prevents over-training low-noise steps and red-blob collapse
+            alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+            alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+            snr = alpha_bar / (1 - alpha_bar + 1e-8)  # Signal-to-noise ratio
+            w = snr / (1 + snr)  # SNR weighting
+            
+            # Compute weighted MSE loss
+            pred_noise = outputs["pred_noise"]
+            noise_target = noise
+            loss = ((pred_noise - noise_target).pow(2) * w).mean()
+            logs = {"mse_loss": loss.detach()}
             
             optimizer.zero_grad()
             loss.backward()
@@ -226,11 +250,8 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
                     raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
             
             num_steps = model.scheduler.num_steps
-            # Use importance sampling in eval too (for consistency)
-            # Weight higher timesteps more to prevent memorization
-            weights = torch.linspace(1.0, 2.0, num_steps, device=device_obj)
-            probs = weights / weights.sum()
-            t = torch.multinomial(probs, num_samples=latents.shape[0], replacement=True)
+            # Uniform timestep sampling (SNR weighting applied in loss computation)
+            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
             # Sample standard normal noise N(0,1)
             noise = model.scheduler.randn_like(latents)
             cond = batch.get("cond", None)
@@ -238,12 +259,32 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
             if use_amp and device_obj.type == "cuda":
                 with torch.amp.autocast('cuda'):
                     outputs = model(latents, t, cond=cond, noise=noise)
-                    # Use the original noise as target (not from outputs to avoid any potential issues)
-                    loss, logs = loss_fn(outputs, {"noise": noise})
+                    
+                    # SNR-weighted loss: w = snr / (1 + snr) where snr = alpha_bar / (1 - alpha_bar)
+                    alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+                    alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+                    snr = alpha_bar / (1 - alpha_bar + 1e-8)  # Signal-to-noise ratio
+                    w = snr / (1 + snr)  # SNR weighting
+                    
+                    # Compute weighted MSE loss
+                    pred_noise = outputs["pred_noise"]
+                    noise_target = noise
+                    loss = ((pred_noise - noise_target).pow(2) * w).mean()
+                    logs = {"mse_loss": loss.detach()}
             else:
                 outputs = model(latents, t, cond=cond, noise=noise)
-                # Use the original noise as target (not from outputs to avoid any potential issues)
-                loss, logs = loss_fn(outputs, {"noise": noise})
+                
+                # SNR-weighted loss: w = snr / (1 + snr) where snr = alpha_bar / (1 - alpha_bar)
+                alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+                alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+                snr = alpha_bar / (1 - alpha_bar + 1e-8)  # Signal-to-noise ratio
+                w = snr / (1 + snr)  # SNR weighting
+                
+                # Compute weighted MSE loss
+                pred_noise = outputs["pred_noise"]
+                noise_target = noise
+                loss = ((pred_noise - noise_target).pow(2) * w).mean()
+                logs = {"mse_loss": loss.detach()}
             
             batch_size = latents.shape[0]
             loss_val = loss.item()
@@ -442,7 +483,7 @@ def main():
         batch_size=config["training"]["batch_size"],
         shuffle=config["training"].get("shuffle", True),
         num_workers=config["training"].get("num_workers", 4),
-        use_weighted_sampling=config["training"].get("use_weighted_sampling", False)
+        use_weighted_sampling=False  # Disabled: uniform sampling for first 20k steps to prevent red-blob collapse
     )
     print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
@@ -608,30 +649,43 @@ def main():
                     if not manifest_path:
                         print("  Warning: No manifest path in config, skipping memorization check")
                     else:
-                        # Save temporary checkpoint for memorization check
-                        temp_checkpoint = output_dir / f"{exp_name}_checkpoint_temp_memorization.pt"
-                        model.save_checkpoint(temp_checkpoint, include_config=True)
-                        
-                        # Run memorization check
+                        # Run memorization check using current model (in eval mode)
                         memorization_output_dir = output_dir / "memorization_checks" / f"epoch_{epoch + 1:03d}"
-                        check_memorization(
-                            config_path=args.config,
-                            checkpoint_path=str(temp_checkpoint),
-                            manifest_path=str(manifest_path),
-                            output_dir=str(memorization_output_dir),
-                            num_generate=memorization_num_generate,
-                            num_training=memorization_num_training,
+                        
+                        # Load training samples
+                        dataset_config = config.get("dataset", {})
+                        training_dataset = build_dataset(config)
+                        training_samples = load_training_samples(
+                            training_dataset, 
+                            num_samples=memorization_num_training,
+                            device=device,
+                            load_rgb=False
+                        )
+                        
+                        # Generate samples
+                        generated_samples = generate_samples(
+                            model,
+                            num_samples=memorization_num_generate,
+                            device=device,
                             method="ddpm"
                         )
                         
-                        # Clean up temporary checkpoint
-                        if temp_checkpoint.exists():
-                            temp_checkpoint.unlink()
+                        # Run memorization check
+                        check_memorization(
+                            model=model,
+                            training_samples=training_samples,
+                            generated_samples=generated_samples,
+                            output_dir=str(memorization_output_dir),
+                            method="ddpm",
+                            device=device
+                        )
                         
                         print(f"  Memorization check completed. Results saved to: {memorization_output_dir}")
                 except Exception as e:
                     print(f"  Warning: Memorization check failed: {e}")
                     print(f"  Continuing training...")
+                    import traceback
+                    traceback.print_exc()
         
         training_history.append(epoch_log)
         

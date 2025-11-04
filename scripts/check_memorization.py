@@ -48,238 +48,16 @@ sys.path.append(str(Path(__file__).parent.parent))
 from models.diffusion import DiffusionModel
 from models.datasets.datasets import ManifestDataset
 from training.utils import load_config, build_dataset
-
-
-def load_training_samples(dataset, num_samples=None, device="cuda", batch_size=1000, load_rgb=False):
-    """Load a subset of training samples for comparison.
-    
-    Args:
-        dataset: Dataset to load from
-        num_samples: Number of samples to load. If None, loads entire dataset.
-        device: Device to load samples to
-        batch_size: Process in batches to manage memory
-        load_rgb: If True, load RGB images. If False, only load latents (memory efficient).
-    """
-    if num_samples is None:
-        num_samples = len(dataset)
-        print(f"Loading entire dataset: {num_samples} training samples...")
-        indices = np.arange(len(dataset))  # Use all indices
-    else:
-        print(f"Loading {num_samples} training samples...")
-        num_samples = min(num_samples, len(dataset))
-        indices = np.random.choice(len(dataset), num_samples, replace=False)
-    
-    training_latents = []
-    training_rgb = []
-    training_metadata = []
-    
-    # Process in batches to manage memory
-    num_batches = (len(indices) + batch_size - 1) // batch_size
-    
-    for batch_idx in range(num_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min(start_idx + batch_size, len(indices))
-        batch_indices = indices[start_idx:end_idx]
-        
-        batch_latents = []
-        batch_rgb = []
-        batch_metadata = []
-        
-        for idx in tqdm(batch_indices, desc=f"Loading batch {batch_idx+1}/{num_batches}", leave=False):
-            try:
-                sample = dataset[idx]
-                
-                # Get latent if available
-                if "latent" in sample:
-                    lat = sample["latent"]
-                    if isinstance(lat, torch.Tensor):
-                        batch_latents.append(lat.cpu())  # Keep on CPU initially
-                    else:
-                        batch_latents.append(torch.tensor(lat))
-                
-                # Get RGB if available and requested
-                if load_rgb and "rgb" in sample:
-                    rgb = sample["rgb"]
-                    if isinstance(rgb, torch.Tensor):
-                        batch_rgb.append(rgb.cpu())  # Keep on CPU initially
-                    else:
-                        batch_rgb.append(torch.tensor(rgb))
-                
-                # Get metadata
-                metadata = {}
-                if hasattr(dataset, 'df') and idx < len(dataset.df):
-                    row = dataset.df.iloc[idx]
-                    metadata = {
-                        'index': idx,
-                        'scene_id': row.get('scene_id', 'unknown'),
-                        'room_id': row.get('room_id', 'unknown'),
-                        'path': row.get('path', 'unknown')
-                    }
-                batch_metadata.append(metadata)
-            except Exception as e:
-                print(f"Warning: Failed to load sample {idx}: {e}")
-                continue
-        
-        # Stack batch and move to device (more memory efficient)
-        if batch_latents:
-            training_latents.append(torch.stack(batch_latents))
-        if batch_rgb:
-            training_rgb.append(torch.stack(batch_rgb))
-        training_metadata.extend(batch_metadata)
-        
-        # Clear batch from CPU memory
-        del batch_latents, batch_rgb
-    
-    # Concatenate all batches and move to device
-    result = {'metadata': training_metadata}
-    if training_latents:
-        print(f"Concatenating {len(training_latents)} batches of latents...")
-        result['latents'] = torch.cat(training_latents, dim=0).to(device)
-        del training_latents
-    if training_rgb:
-        print(f"Concatenating {len(training_rgb)} batches of RGB...")
-        result['rgb'] = torch.cat(training_rgb, dim=0).to(device)
-        del training_rgb
-    
-    return result
-
-
-def generate_samples(model, num_samples, batch_size=16, device="cuda", method="ddpm"):
-    """Generate samples from the diffusion model."""
-    print(f"Generating {num_samples} samples using {method}...")
-    all_latents = []
-    all_rgb = []
-    
-    model.eval()
-    with torch.no_grad():
-        for _ in tqdm(range(0, num_samples, batch_size), desc="Generating"):
-            batch_size_actual = min(batch_size, num_samples - len(all_latents))
-            
-            sample_output = model.sample(
-                batch_size=batch_size_actual,
-                num_steps=model.scheduler.num_steps if method == "ddpm" else 50,
-                method=method,
-                eta=0.0,
-                device=device,
-                verbose=False
-            )
-            
-            if "latent" in sample_output:
-                all_latents.append(sample_output["latent"])
-            if "rgb" in sample_output:
-                all_rgb.append(sample_output["rgb"])
-    
-    result = {}
-    if all_latents:
-        result['latents'] = torch.cat(all_latents, dim=0)
-    if all_rgb:
-        result['rgb'] = torch.cat(all_rgb, dim=0)
-    
-    return result
-
-
-def compute_pixel_distances(generated, training):
-    """Compute L2 distances in pixel/RGB space."""
-    # Flatten spatial dimensions
-    gen_flat = generated.view(generated.size(0), -1)
-    train_flat = training.view(training.size(0), -1)
-    
-    # Compute pairwise distances (batch for memory efficiency)
-    min_distances = []
-    nn_indices = []
-    
-    batch_size = 64  # Process in batches to avoid OOM
-    for i in range(0, len(gen_flat), batch_size):
-        gen_batch = gen_flat[i:i+batch_size]
-        distances = torch.cdist(gen_batch, train_flat, p=2)
-        min_dist, nn_idx = distances.min(dim=1)
-        min_distances.append(min_dist.cpu())
-        nn_indices.append(nn_idx.cpu())
-    
-    return torch.cat(min_distances).numpy(), torch.cat(nn_indices).numpy()
-
-
-def compute_latent_distances(generated, training):
-    """Compute distances in latent space."""
-    # Flatten latents
-    gen_flat = generated.view(generated.size(0), -1)
-    train_flat = training.view(training.size(0), -1)
-    
-    # L2 distance
-    min_distances = []
-    nn_indices = []
-    
-    batch_size = 64
-    for i in range(0, len(gen_flat), batch_size):
-        gen_batch = gen_flat[i:i+batch_size]
-        distances = torch.cdist(gen_batch, train_flat, p=2)
-        min_dist, nn_idx = distances.min(dim=1)
-        min_distances.append(min_dist.cpu())
-        nn_indices.append(nn_idx.cpu())
-    
-    l2_distances = torch.cat(min_distances).numpy()
-    nn_indices_l2 = torch.cat(nn_indices).numpy()
-    
-    # Cosine similarity
-    gen_norm = F.normalize(gen_flat, p=2, dim=1)
-    train_norm = F.normalize(train_flat, p=2, dim=1)
-    
-    max_similarities = []
-    nn_indices_cosine = []
-    
-    for i in range(0, len(gen_norm), batch_size):
-        gen_batch = gen_norm[i:i+batch_size]
-        similarities = gen_batch @ train_norm.T
-        max_sim, nn_idx = similarities.max(dim=1)
-        max_similarities.append(max_sim.cpu())
-        nn_indices_cosine.append(nn_idx.cpu())
-    
-    cosine_similarities = torch.cat(max_similarities).numpy()
-    nn_indices_cosine = torch.cat(nn_indices_cosine).numpy()
-    
-    return {
-        'l2_distances': l2_distances,
-        'nn_indices_l2': nn_indices_l2,
-        'cosine_similarities': cosine_similarities,
-        'nn_indices_cosine': nn_indices_cosine
-    }
-
-
-def compute_diversity_metrics(samples):
-    """Compute diversity metrics among generated samples."""
-    flat = samples.view(samples.size(0), -1)
-    
-    # Pairwise distances
-    pairwise_dist = torch.cdist(flat, flat, p=2)
-    
-    # Remove diagonal
-    mask = ~torch.eye(len(pairwise_dist), dtype=bool, device=pairwise_dist.device)
-    pairwise_dist = pairwise_dist[mask]
-    
-    mean_pairwise_dist = pairwise_dist.mean().item()
-    std_pairwise_dist = pairwise_dist.std().item()
-    min_pairwise_dist = pairwise_dist.min().item()
-    
-    # Unique ratio (samples with distance > threshold)
-    threshold = 0.01
-    unique_ratio = (pairwise_dist > threshold).float().mean().item()
-    
-    return {
-        'mean_pairwise_distance': mean_pairwise_dist,
-        'std_pairwise_distance': std_pairwise_dist,
-        'min_pairwise_distance': min_pairwise_dist,
-        'unique_ratio': unique_ratio
-    }
-
-
-def compute_diversity_metrics_latent(latents):
-    """Compute diversity metrics on latents (flattened internally)."""
-    # Flatten spatial dimensions if needed
-    if latents.dim() > 2:
-        flat = latents.view(latents.size(0), -1)
-    else:
-        flat = latents
-    return compute_diversity_metrics(flat)
+from scripts.memorization_utils import (
+    load_training_samples,
+    generate_samples,
+    compute_latent_distances,
+    compute_diversity_metrics_latent,
+    check_memorization as check_memorization_core,
+    plot_perturbation_results,
+    perturbation_test,
+    sample_from_latent
+)
 
 
 def plot_distributions(results, output_dir):
@@ -487,55 +265,79 @@ def save_closest_matches(generated_samples, training_samples, results, output_di
         print("Warning: No closest matches found to save")
 
 
-def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
-                       num_generate=1000, num_training=None, method="ddpm"):
-    """Main function to check for memorization."""
+def check_memorization(config_path, manifest_path, output_dir,
+                       num_generate=1000, num_training=None, method="ddpm", latent_perturbation_std=0.0,
+                       model=None, checkpoint_path=None, run_perturbation_test=False, num_perturbation_samples=20):
+    """Main function to check for memorization.
+    
+    Args:
+        model: Optional model object to use directly (if provided, checkpoint_path is ignored)
+        checkpoint_path: Path to checkpoint (only used if model is None)
+        latent_perturbation_std: If > 0, adds Gaussian noise to training latents before comparison.
+                                  This tests if the model memorizes exact latents vs. learning patterns.
+                                  Small values (0.01-0.05) are recommended.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load model
-    print("\n" + "="*60)
-    print("Loading model...")
-    print("="*60)
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    # Extract diffusion config - handle nested structure
-    if "model" in config and "diffusion" in config["model"]:
-        diffusion_cfg = config["model"]["diffusion"]
-    elif "diffusion" in config:
-        diffusion_cfg = config["diffusion"]
+    # Load model if not provided
+    if model is None:
+        if checkpoint_path is None:
+            raise ValueError("Either model or checkpoint_path must be provided")
+        
+        print("\n" + "="*60)
+        print("Loading model...")
+        print("="*60)
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Extract diffusion config - handle nested structure
+        if "model" in config and "diffusion" in config["model"]:
+            diffusion_cfg = config["model"]["diffusion"]
+        elif "diffusion" in config:
+            diffusion_cfg = config["diffusion"]
+        else:
+            # Assume top-level config is already the diffusion config
+            # Extract relevant parts
+            diffusion_cfg = {
+                "autoencoder": config.get("autoencoder"),
+                "unet": config.get("unet", {}),
+                "scheduler": config.get("scheduler", {})
+            }
+            # If autoencoder not at top level, check if it's nested
+            if not diffusion_cfg["autoencoder"] and "model" in config:
+                diffusion_cfg["autoencoder"] = config["model"].get("autoencoder")
+        
+        # Ensure autoencoder config has checkpoint
+        if not diffusion_cfg.get("autoencoder") or not diffusion_cfg["autoencoder"].get("checkpoint"):
+            raise ValueError("Config must contain 'autoencoder.checkpoint' path")
+        
+        # Load checkpoint using proper class method
+        # The checkpoint may contain its own config, but we'll use the provided config
+        # to ensure consistency with the current setup (autoencoder path, etc.)
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        model = DiffusionModel.load_checkpoint(
+            checkpoint_path, 
+            map_location=device,
+            config=diffusion_cfg  # Use config from file (ensures correct autoencoder path)
+        )
+        
+        model = model.to(device).eval()
+        print("Model loaded successfully")
     else:
-        # Assume top-level config is already the diffusion config
-        # Extract relevant parts
-        diffusion_cfg = {
-            "autoencoder": config.get("autoencoder"),
-            "unet": config.get("unet", {}),
-            "scheduler": config.get("scheduler", {})
-        }
-        # If autoencoder not at top level, check if it's nested
-        if not diffusion_cfg["autoencoder"] and "model" in config:
-            diffusion_cfg["autoencoder"] = config["model"].get("autoencoder")
-    
-    # Ensure autoencoder config has checkpoint
-    if not diffusion_cfg.get("autoencoder") or not diffusion_cfg["autoencoder"].get("checkpoint"):
-        raise ValueError("Config must contain 'autoencoder.checkpoint' path")
-    
-    # Load checkpoint using proper class method
-    # The checkpoint may contain its own config, but we'll use the provided config
-    # to ensure consistency with the current setup (autoencoder path, etc.)
-    print(f"Loading checkpoint from: {checkpoint_path}")
-    model = DiffusionModel.load_checkpoint(
-        checkpoint_path, 
-        map_location=device,
-        config=diffusion_cfg  # Use config from file (ensures correct autoencoder path)
-    )
-    
-    model = model.to(device).eval()
-    print("Model loaded successfully")
+        # Use provided model (set to eval mode and ensure on correct device)
+        print("\n" + "="*60)
+        print("Using provided model...")
+        print("="*60)
+        model = model.to(device).eval()
+        print("Model ready (already loaded)")
+        
+        # Still need config for dataset loading
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
     
     # Load training dataset
     print("\n" + "="*60)
@@ -613,123 +415,38 @@ def check_memorization(config_path, checkpoint_path, manifest_path, output_dir,
     
     print(f"Generated {len(generated_samples.get('latents', generated_samples.get('rgb', [])))} samples")
     
-    # Compute distances and metrics (only in latent space for memory efficiency)
-    print("\n" + "="*60)
-    print("Computing memorization metrics (latent space only)...")
-    print("="*60)
+    # Use the core memorization check function from utils
+    summary = check_memorization_core(
+        model=model,
+        training_samples=training_samples,
+        generated_samples=generated_samples,
+        output_dir=output_dir,
+        latent_perturbation_std=latent_perturbation_std,
+        run_perturbation_test=run_perturbation_test,
+        num_perturbation_samples=num_perturbation_samples,
+        method=method,
+        device=device
+    )
     
-    results = {}
-    
-    # Latent space distances (only comparison we do)
-    if generated_samples.get('latents') is not None and training_samples.get('latents') is not None:
-        print("Computing latent space distances...")
-        latent_results = compute_latent_distances(
-            generated_samples['latents'], training_samples['latents']
-        )
-        results['latent_l2_distances'] = latent_results['l2_distances']
-        results['latent_nn_indices_l2'] = latent_results['nn_indices_l2']
-        results['latent_cosine_similarities'] = latent_results['cosine_similarities']
-        results['latent_nn_indices_cosine'] = latent_results['nn_indices_cosine']
-    
-    # Diversity metrics (compute on latents instead of RGB)
-    if generated_samples.get('latents') is not None:
-        print("Computing diversity metrics (latent space)...")
-        results['diversity'] = compute_diversity_metrics_latent(generated_samples['latents'])
-    
-    # Compute statistics and check thresholds
-    print("\n" + "="*60)
-    print("Memorization Analysis Results (Latent Space)")
-    print("="*60)
-    
-    summary = {}
-    
-    # Latent space analysis (primary metric)
-    if 'latent_l2_distances' in results:
-        distances = results['latent_l2_distances']
-        similarities = results['latent_cosine_similarities']
-        
-        mean_dist = np.mean(distances)
-        mean_sim = np.mean(similarities)
-        max_sim = np.max(similarities)
-        
-        # Threshold for memorization in latent space
-        sim_threshold = 0.99  # Very high cosine similarity
-        memorized_count = (similarities > sim_threshold).sum()
-        memorized_ratio = memorized_count / len(similarities)
-        
-        summary['latent'] = {
-            'mean_l2_distance': float(mean_dist),
-            'mean_cosine_similarity': float(mean_sim),
-            'max_cosine_similarity': float(max_sim),
-            'memorized_count': int(memorized_count),
-            'memorized_ratio': float(memorized_ratio),
-            'similarity_threshold': sim_threshold
-        }
-        
-        print(f"\nLatent Space Analysis:")
-        print(f"  Mean L2 distance:         {mean_dist:.6f}")
-        print(f"  Mean cosine similarity:    {mean_sim:.4f}")
-        print(f"  Max cosine similarity:     {max_sim:.4f}")
-        print(f"  Memorized samples:         {memorized_count}/{len(similarities)} ({memorized_ratio:.2%})")
-        print(f"  Similarity threshold:      {sim_threshold}")
-    
-    # Diversity analysis
-    if 'diversity' in results:
-        div = results['diversity']
-        summary['diversity'] = div
-        
-        print(f"\nDiversity Metrics:")
-        print(f"  Mean pairwise distance:   {div['mean_pairwise_distance']:.6f}")
-        print(f"  Std pairwise distance:    {div['std_pairwise_distance']:.6f}")
-        print(f"  Min pairwise distance:   {div['min_pairwise_distance']:.6f}")
-        print(f"  Unique ratio:             {div['unique_ratio']:.2%}")
-    
-    # Overall assessment
-    print("\n" + "="*60)
-    print("Assessment:")
-    print("="*60)
-    
-    max_memorized_ratio = 0.0
-    if 'latent' in summary:
-        max_memorized_ratio = summary['latent']['memorized_ratio']
-    
-    if max_memorized_ratio < 0.01:
-        print("✓ Model shows no significant memorization (< 1% samples)")
-    elif max_memorized_ratio < 0.05:
-        print("⚠ Model shows minimal memorization (1-5% samples)")
-    else:
-        print("✗ Model shows significant memorization (> 5% samples)")
-    
-    # Save results
-    print("\n" + "="*60)
-    print("Saving results...")
-    print("="*60)
-    
-    # Save summary
+    # Add metadata to summary
     summary['num_generated'] = num_generate
     summary['num_training'] = num_training
     summary['method'] = method
     
+    # Save updated summary
+    import json
     with open(output_dir / 'memorization_summary.json', 'w') as f:
-        import json
         json.dump(summary, f, indent=2)
-    print(f"Saved summary to {output_dir / 'memorization_summary.json'}")
     
-    # Save detailed results
-    num_generated = len(generated_samples.get('latents', generated_samples.get('rgb', [])))
-    results_df = pd.DataFrame({
-        'generated_idx': range(num_generated)
-    })
+    # Create plots and save closest matches
+    # Load results from saved files for plotting
+    results_df = pd.read_csv(output_dir / 'memorization_results.csv')
+    results = {}
+    if 'latent_l2_distance' in results_df.columns:
+        results['latent_l2_distances'] = results_df['latent_l2_distance'].values
+        results['latent_cosine_similarities'] = results_df['latent_cosine_similarity'].values
+        results['latent_nn_indices_cosine'] = results_df['latent_nn_index'].values
     
-    if 'latent_l2_distances' in results:
-        results_df['latent_l2_distance'] = results['latent_l2_distances']
-        results_df['latent_cosine_similarity'] = results['latent_cosine_similarities']
-        results_df['latent_nn_index'] = results['latent_nn_indices_cosine']
-    
-    results_df.to_csv(output_dir / 'memorization_results.csv', index=False)
-    print(f"Saved detailed results to {output_dir / 'memorization_results.csv'}")
-    
-    # Create plots
     plot_distributions(results, output_dir)
     
     # Save closest matches (decode RGB from latents for visualization)
@@ -759,8 +476,9 @@ def main():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        required=True,
-        help="Path to diffusion model checkpoint"
+        required=False,
+        default=None,
+        help="Path to diffusion model checkpoint (required if not using --model)"
     )
     parser.add_argument(
         "--manifest",
@@ -793,17 +511,40 @@ def main():
         default="ddpm",
         help="Sampling method to use"
     )
+    parser.add_argument(
+        "--latent_perturbation_std",
+        type=float,
+        default=0.0,
+        help="Standard deviation of latent perturbation to apply to training samples (default: 0.0 = no perturbation). Use small values (e.g., 0.01-0.05) to test robustness."
+    )
+    parser.add_argument(
+        "--run_perturbation_test",
+        action="store_true",
+        help="Run perturbation test: add noise to latents and compare outputs (tests memorization vs generalization)"
+    )
+    parser.add_argument(
+        "--num_perturbation_samples",
+        type=int,
+        default=20,
+        help="Number of latents to test in perturbation test (default: 20)"
+    )
     
     args = parser.parse_args()
     
+    if args.checkpoint is None:
+        raise ValueError("--checkpoint is required when running from command line")
+    
     check_memorization(
         config_path=args.config,
-        checkpoint_path=args.checkpoint,
         manifest_path=args.manifest,
         output_dir=args.output,
         num_generate=args.num_generate,
         num_training=args.num_training,
-        method=args.method
+        method=args.method,
+        latent_perturbation_std=args.latent_perturbation_std,
+        checkpoint_path=args.checkpoint,
+        run_perturbation_test=args.run_perturbation_test,
+        num_perturbation_samples=args.num_perturbation_samples
     )
 
 

@@ -61,8 +61,8 @@ training:
   # Mixed precision for efficiency
   use_amp: true
   
-  # Weighted sampling to balance room_id distribution
-  use_weighted_sampling: true
+  # Weighted sampling disabled: uniform sampling for first 20k steps to prevent red-blob collapse
+  use_weighted_sampling: false
   
   # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
   max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
