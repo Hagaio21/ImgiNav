@@ -8,7 +8,6 @@ from .utils import (
 )
 from .taxonomy import (
     Taxonomy,
-    load_taxonomy,
     load_valid_colors,
     build_taxonomy,
     build_taxonomy_full,
@@ -27,7 +26,6 @@ __all__ = [
     'ensure_columns_exist',
     # Taxonomy
     'Taxonomy',
-    'load_taxonomy',
     'load_valid_colors',
     'build_taxonomy',
     'build_taxonomy_full',

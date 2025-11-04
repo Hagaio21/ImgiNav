@@ -38,3 +38,5 @@ wandb
 python-dotenv
 rich
 typer
+gradio>=4.0.0
+sentence-transformers>=2.2.0

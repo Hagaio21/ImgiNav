@@ -35,3 +35,4 @@ src/layout_generator.egg-info
 *.csv
 training/runs
 visualization/saved_embeddings/
+app/
