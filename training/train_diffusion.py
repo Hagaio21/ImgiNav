@@ -300,6 +300,9 @@ def train_epoch(model, dataloader, scheduler, loss_fn, optimizer, device, epoch,
         log_dict["expected_timestep_mean"] = expected_mean * total_samples
         log_dict["expected_timestep_std"] = expected_std * total_samples
     
+    if total_samples == 0:
+        raise RuntimeError("No samples processed in training epoch! Check dataloader.")
+    
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
     
@@ -374,7 +377,9 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
                     for k, v in corruption_metrics.items():
                         if k not in log_dict:
                             log_dict[k] = 0.0
-                        log_dict[k] += v * batch_size
+                        # Skip timestep stats - they're per-batch estimates (less critical in eval)
+                        if k not in ["mean_timestep", "timestep_std", "expected_timestep_mean", "expected_timestep_std"]:
+                            log_dict[k] += v * batch_size
                     
                     # Diagnostic: Check noise prediction accuracy
                     pred_noise = outputs["pred_noise"]
@@ -401,6 +406,9 @@ def eval_epoch(model, dataloader, scheduler, loss_fn, device, use_amp=False):
                     log_dict["target_noise_std"] += target_noise_std * batch_size
                     log_dict["pred_noise_mean"] += pred_noise_mean * batch_size
                     log_dict["target_noise_mean"] += target_noise_mean * batch_size
+    
+    if total_samples == 0:
+        raise RuntimeError("No samples processed in evaluation epoch! Check dataloader.")
     
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
