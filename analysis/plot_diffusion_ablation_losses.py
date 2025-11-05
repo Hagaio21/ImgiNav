@@ -108,10 +108,16 @@ def create_loss_curves(all_data, experiment_info, output_dir):
     fig.suptitle('Diffusion Ablation: Loss Curves Comparison', fontsize=16, fontweight='bold')
     
     # Sort experiments by capacity then depth for consistent ordering
-    sorted_exps = sorted(all_data.items(), key=lambda x: (
-        experiment_info[x[0]].get('capacity', 0),
-        experiment_info[x[0]].get('depth', 0)
-    ))
+    # Handle None values by treating them as 0 for sorting
+    def sort_key(item):
+        exp_name = item[0]
+        info = experiment_info[exp_name]
+        capacity = info.get('capacity')
+        depth = info.get('depth')
+        return (capacity if capacity is not None else 0, 
+                depth if depth is not None else 0)
+    
+    sorted_exps = sorted(all_data.items(), key=sort_key)
     
     # Plot 1: Training Loss
     ax1 = axes[0]
