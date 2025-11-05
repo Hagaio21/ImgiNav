@@ -5,7 +5,7 @@
 #BSUB -n 1
 #BSUB -R "rusage[mem=4000]"
 #BSUB -W 00:30
-#BSUB -q normal
+#BSUB -q hpc
 
 set -euo pipefail
 
