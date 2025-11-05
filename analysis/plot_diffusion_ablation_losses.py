@@ -134,15 +134,22 @@ def create_loss_curves(all_data, experiment_info, output_dir):
     ax1.set_yscale('log')  # Log scale often better for loss curves
     
     # Plot 2: Validation Loss
+    # Note: Validation loss is computed every 5 epochs (eval_interval), so filter empty values
     ax2 = axes[1]
     for i, (exp_name, df) in enumerate(sorted_exps):
         if 'val_loss' in df.columns:
             color = EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)]
-            ax2.plot(df['epoch'], df['val_loss'], 
-                    label=exp_name, color=color, linewidth=2, alpha=0.8)
+            # Filter out empty/NaN values (validation only computed every 5 epochs)
+            # Empty cells in CSV are read as empty strings, so filter those out too
+            val_mask = df['val_loss'].notna() & (df['val_loss'].astype(str).str.strip() != '')
+            val_df = df.loc[val_mask, ['epoch', 'val_loss']]
+            if len(val_df) > 0:
+                ax2.plot(val_df['epoch'], val_df['val_loss'], 
+                        label=exp_name, color=color, linewidth=2, alpha=0.8,
+                        marker='o', markersize=3)
     ax2.set_xlabel('Epoch', fontsize=12)
     ax2.set_ylabel('Validation Loss', fontsize=12)
-    ax2.set_title('Validation Loss', fontsize=14, fontweight='bold')
+    ax2.set_title('Validation Loss (every 5 epochs)', fontsize=14, fontweight='bold')
     ax2.legend(loc='upper right', frameon=True, fancybox=False, shadow=False, fontsize=9)
     ax2.grid(True, alpha=0.3)
     ax2.set_yscale('log')  # Log scale often better for loss curves
@@ -176,11 +183,17 @@ def create_loss_curves(all_data, experiment_info, output_dir):
     for i, (exp_name, df) in enumerate(sorted_exps):
         if 'val_loss' in df.columns:
             color = EXPERIMENT_COLORS[i % len(EXPERIMENT_COLORS)]
-            ax.plot(df['epoch'], df['val_loss'], 
-                   label=exp_name, color=color, linewidth=2.5, alpha=0.8)
+            # Filter out empty/NaN values (validation only computed every 5 epochs)
+            # Empty cells in CSV are read as empty strings, so filter those out too
+            val_mask = df['val_loss'].notna() & (df['val_loss'].astype(str).str.strip() != '')
+            val_df = df.loc[val_mask, ['epoch', 'val_loss']]
+            if len(val_df) > 0:
+                ax.plot(val_df['epoch'], val_df['val_loss'], 
+                       label=exp_name, color=color, linewidth=2.5, alpha=0.8,
+                       marker='o', markersize=4)
     ax.set_xlabel('Epoch', fontsize=12)
     ax.set_ylabel('Validation Loss', fontsize=12)
-    ax.set_title('Diffusion Ablation: Validation Loss Comparison', fontsize=14, fontweight='bold')
+    ax.set_title('Diffusion Ablation: Validation Loss Comparison (every 5 epochs)', fontsize=14, fontweight='bold')
     ax.legend(loc='best', frameon=True, fancybox=False, shadow=False, fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_yscale('log')
@@ -196,6 +209,7 @@ def create_capacity_depth_heatmap(all_data, experiment_info, output_dir):
     output_path = Path(output_dir)
     
     # Collect final losses
+    # Note: Validation loss is computed every 5 epochs, so we need to find the last non-NaN value
     capacity_depth_loss = {}
     for exp_name, df in all_data.items():
         info = experiment_info[exp_name]
@@ -206,9 +220,14 @@ def create_capacity_depth_heatmap(all_data, experiment_info, output_dir):
             continue
         
         if 'val_loss' in df.columns:
-            final_loss = df['val_loss'].iloc[-1]
-            if (capacity, depth) not in capacity_depth_loss:
-                capacity_depth_loss[(capacity, depth)] = final_loss
+            # Get the last non-empty validation loss value
+            # Empty cells in CSV are read as empty strings, so filter those out too
+            val_mask = df['val_loss'].notna() & (df['val_loss'].astype(str).str.strip() != '')
+            val_losses = df.loc[val_mask, 'val_loss']
+            if len(val_losses) > 0:
+                final_loss = val_losses.iloc[-1]
+                if (capacity, depth) not in capacity_depth_loss:
+                    capacity_depth_loss[(capacity, depth)] = final_loss
     
     if not capacity_depth_loss:
         print("  Warning: No capacity/depth data for heatmap")
