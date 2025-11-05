@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_capacity_unet256_d4.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_capacity_unet256_d4.%J.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=16000]"
+#BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
 #BSUB -W 24:00
 #BSUB -q gpuv100

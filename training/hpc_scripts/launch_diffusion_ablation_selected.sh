@@ -13,20 +13,20 @@ echo "=========================================="
 echo ""
 
 # V100 experiments (4 total)
-echo "Submitting to V100 queue..."
-bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet64_d4.sh"
-sleep 2
+# echo "Submitting to V100 queue..."
+# bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet64_d4.sh"
+# sleep 2
 bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet128_d4.sh"
 sleep 2
-bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet256_d4.sh"
-sleep 2
+# bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet256_d4.sh"
+# sleep 2
 bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet128_d3.sh"
 sleep 2
 
 echo ""
 echo "Submitting to L40s queue..."
 # L40s experiments (2 total)
-bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet64_d5.sh"
+# bsub < "${SCRIPT_DIR}/run_diffusion_capacity_unet64_d5.sh"
 # sleep 2
 # bsub < "${SCRIPT_DIR}/run_diffusion_scheduler_linear.sh"
 
