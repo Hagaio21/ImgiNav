@@ -248,9 +248,14 @@ class ControlNetDiffusionModel(BaseModel):
         latents = self.scheduler.randn_like(dummy)
         
         # Create timestep schedule
+        # For both DDIM and DDPM, we go from high noise (T-1) to low noise (0)
         if method == "ddim":
             step_size = self.scheduler.num_steps // num_steps
-            timesteps = torch.arange(0, self.scheduler.num_steps, step_size, device=device).long()
+            # Create evenly spaced timesteps from T-1 down to 0
+            timesteps = torch.arange(self.scheduler.num_steps - 1, -1, -step_size, device=device).long()
+            # Ensure we always include t=0 as the final step
+            if timesteps[-1] != 0:
+                timesteps = torch.cat([timesteps, torch.tensor([0], device=device)])
         else:
             timesteps = torch.arange(self.scheduler.num_steps - 1, -1, -1, device=device).long()
         
@@ -272,23 +277,33 @@ class ControlNetDiffusionModel(BaseModel):
                 alpha_bars = self.scheduler.alpha_bars.to(device)
                 
                 alpha_bar_t = alpha_bars[t].view(-1, 1, 1, 1)
-                if i > 0:
-                    alpha_bar_prev = alpha_bars[timesteps[i-1]].view(-1, 1, 1, 1)
+                
+                # Get previous timestep (next in sequence since we're going backwards)
+                if i < len(timesteps) - 1:
+                    t_prev = timesteps[i + 1]
+                    alpha_bar_prev = alpha_bars[t_prev].view(-1, 1, 1, 1)
                 else:
+                    # Last step: use alpha_bar_0 = 1.0 (fully denoised)
                     alpha_bar_prev = torch.tensor(1.0, device=device, dtype=alpha_bar_t.dtype).view(-1, 1, 1, 1)
                 
-                # Predict x0
-                pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                # Predict x0 from current noisy latents
+                pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt().clamp(min=1e-8)
                 pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
                 
                 # DDIM update (deterministic if eta=0)
+                # Standard DDIM formula: x_{t-1} = sqrt(alpha_bar_{t-1}) * pred_x0 + sqrt(1 - alpha_bar_{t-1} - sigma_t^2) * epsilon + sigma_t * z
                 if eta > 0 and i < len(timesteps) - 1:
-                    sigma = eta * ((1 - alpha_bar_prev) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_prev)).sqrt()
+                    # Add stochastic noise if eta > 0
+                    sigma = eta * ((1 - alpha_bar_prev) / (1 - alpha_bar_t).clamp(min=1e-8) * (1 - alpha_bar_t / alpha_bar_prev.clamp(min=1e-8))).sqrt()
+                    sigma = torch.clamp(sigma, min=0.0, max=1.0)
+                    pred_dir = (1 - alpha_bar_prev - sigma**2).sqrt().clamp(min=0.0) * pred_noise
                     noise_step = sigma * self.scheduler.randn_like(latents)
                 else:
+                    # Deterministic DDIM (eta=0): x_{t-1} = sqrt(alpha_bar_{t-1}) * pred_x0 + sqrt(1 - alpha_bar_{t-1}) * epsilon
+                    pred_dir = (1 - alpha_bar_prev).sqrt() * pred_noise
                     noise_step = 0
                 
-                latents = alpha_bar_prev.sqrt() * pred_x0 + (1 - alpha_bar_prev).sqrt() * pred_noise + noise_step
+                latents = alpha_bar_prev.sqrt() * pred_x0 + pred_dir + noise_step
             
             else:
                 # DDPM step
