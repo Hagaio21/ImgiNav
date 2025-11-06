@@ -21,8 +21,12 @@ import seaborn as sns
 from pathlib import Path
 import json
 import argparse
+import sys
 from collections import defaultdict
 import yaml
+
+# Add project root to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Load room_id to class mapping
 def load_room_id_mapping():
