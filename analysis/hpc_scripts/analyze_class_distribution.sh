@@ -8,6 +8,7 @@
 #BSUB -q hpc
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
 # =============================================================================
 # PATHS
