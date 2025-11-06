@@ -15,7 +15,7 @@ export MKL_INTERFACE_LAYER=LP64
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/analysis/analyze_class_distribution.py"
-MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
+MANIFEST="/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
 OUTPUT_DIR="${BASE_DIR}/analysis/class_distribution_results"
 LOG_DIR="${BASE_DIR}/analysis/hpc_scripts/logs"
 RARE_THRESHOLD_PERCENTILE=10.0
