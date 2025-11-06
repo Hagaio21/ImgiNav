@@ -49,7 +49,10 @@ training:
   use_amp: true
   
   # Weighted sampling to balance room_id distribution
-  use_weighted_sampling: false  # Disabled: uniform sampling for first 20k steps to prevent red-blob collapse
+  use_weighted_sampling: true
+  group_rare_classes: true
+  class_grouping_path: /work3/s233249/ImgiNav/ImgiNav/analysis/class_distribution_results/class_distribution_stats.json
+  max_weight: 20  # Cap weights to prevent over-sampling extremely rare classes (prevents memorization)
   
   # Gradient clipping for stability (prevents gradient explosion in large models)
   max_grad_norm: 0.1  # Very aggressive clipping for 256 base_channels model to prevent gradient explosion

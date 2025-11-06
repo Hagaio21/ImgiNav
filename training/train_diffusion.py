@@ -480,7 +480,10 @@ def main():
         num_workers=config["training"].get("num_workers", 4),
         use_weighted_sampling=config["training"].get("use_weighted_sampling", False),
         group_rare_classes=config["training"].get("group_rare_classes", False),
-        class_grouping_path=config["training"].get("class_grouping_path", None)
+        class_grouping_path=config["training"].get("class_grouping_path", None),
+        max_weight=config["training"].get("max_weight", None),
+        exclude_extremely_rare=config["training"].get("exclude_extremely_rare", False),
+        min_samples_threshold=config["training"].get("min_samples_threshold", 50)
     )
     print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
