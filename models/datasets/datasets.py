@@ -325,7 +325,7 @@ class ManifestDataset(BaseComponent, Dataset):
         
         weights = np.array([weight_map[gid] for gid in grouped_class_ids], dtype=np.float32)
         
-        return torch.from_numpy(weights), class_grouping
+        return torch.from_numpy(weights), class_grouping, weight_map
     
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, 
                        use_weighted_sampling=False, group_rare_classes=False, class_grouping_path=None,
@@ -356,11 +356,12 @@ class ManifestDataset(BaseComponent, Dataset):
                 print("Warning: room_id column not found, falling back to regular sampling")
                 use_weighted_sampling = False
             else:
-                weights, class_grouping = result
+                weights, class_grouping, weight_map = result
                 
-                # Print weight information
+                # Print weight information using the capped weight_map
                 if class_grouping:
-                    # Show grouped class weights
+                    # Show grouped class weights from the capped weight_map
+                    # Compute grouped class IDs and counts once
                     grouped_class_ids = []
                     for _, row in self.df.iterrows():
                         if "sample_type" in row and row["sample_type"] == "scene":
@@ -371,25 +372,29 @@ class ManifestDataset(BaseComponent, Dataset):
                             cid = str(row["room_id"])
                         grouped_id = class_grouping.get(cid, cid)
                         grouped_class_ids.append(grouped_id)
-                    
                     unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
-                    max_count = group_counts.max()
+                    count_map = {gid: count for gid, count in zip(unique_groups, group_counts)}
+                    
                     print(f"Class sampling weights (with rare class grouping):")
-                    for gid, count in zip(unique_groups, group_counts):
-                        weight = max_count / count
+                    for gid in sorted(weight_map.keys()):
+                        weight = weight_map[gid]
+                        count = count_map.get(gid, 0)
+                        
                         if gid == "rare":
                             rare_classes = [k for k, v in class_grouping.items() if v == "rare"]
                             print(f"  {gid:20s}: weight={weight:.2f}, count={count:6d} (includes {len(rare_classes)} rare classes)")
                         else:
                             print(f"  {gid:20s}: weight={weight:.2f}, count={count:6d}")
                 else:
-                    # Show individual class weights
+                    # Show individual class weights from the capped weight_map
                     room_ids = self.df["room_id"].astype(str).values
                     unique_rooms, counts = np.unique(room_ids, return_counts=True)
-                    max_count = counts.max()
+                    count_map = {rid: count for rid, count in zip(unique_rooms, counts)}
+                    
                     print(f"Class sampling weights:")
-                    for rid, count in zip(unique_rooms, counts):
-                        weight = max_count / count
+                    for rid in sorted(weight_map.keys()):
+                        weight = weight_map[rid]
+                        count = count_map.get(rid, 0)
                         print(f"  {rid:20s}: weight={weight:.2f}, count={count:6d}")
         
         if use_weighted_sampling:
