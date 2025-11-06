@@ -1,0 +1,508 @@
+{
+  "total_samples": 50015,
+  "scene_count": 6807,
+  "room_count": 43208,
+  "pov_count": 0,
+  "total_classes": 32,
+  "rare_threshold_count": 38.0,
+  "rare_threshold_percentile": 10.0,
+  "rare_classes_count": 3,
+  "common_classes_count": 29,
+  "class_statistics": [
+    {
+      "class_id": "scene",
+      "class_name": "scene",
+      "count": 6807,
+      "percentage": 13.609917024892532
+    },
+    {
+      "class_id": "3017",
+      "class_name": "kitchen",
+      "count": 5394,
+      "percentage": 10.78476457062881
+    },
+    {
+      "class_id": "3020",
+      "class_name": "livindiningroom",
+      "count": 4636,
+      "percentage": 9.26921923422973
+    },
+    {
+      "class_id": "3005",
+      "class_name": "bathroom",
+      "count": 4448,
+      "percentage": 8.89333200039988
+    },
+    {
+      "class_id": "3024",
+      "class_name": "masterbedroom",
+      "count": 4418,
+      "percentage": 8.8333499950015
+    },
+    {
+      "class_id": "3003",
+      "class_name": "balcony",
+      "count": 4160,
+      "percentage": 8.317504748575427
+    },
+    {
+      "class_id": "3029",
+      "class_name": "secondbedroom",
+      "count": 3131,
+      "percentage": 6.260121963410977
+    },
+    {
+      "class_id": "3007",
+      "class_name": "bedroom",
+      "count": 2217,
+      "percentage": 4.432670198940318
+    },
+    {
+      "class_id": "3021",
+      "class_name": "livingroom",
+      "count": 1760,
+      "percentage": 3.5189443167049883
+    },
+    {
+      "class_id": "3001",
+      "class_name": "aisle",
+      "count": 1640,
+      "percentage": 3.2790162951114663
+    },
+    {
+      "class_id": "3019",
+      "class_name": "library",
+      "count": 1546,
+      "percentage": 3.091072678196541
+    },
+    {
+      "class_id": "3026",
+      "class_name": "otherroom",
+      "count": 1441,
+      "percentage": 2.8811356593022093
+    },
+    {
+      "class_id": "3023",
+      "class_name": "masterbathroom",
+      "count": 1400,
+      "percentage": 2.7991602519244227
+    },
+    {
+      "class_id": "3016",
+      "class_name": "kidsroom",
+      "count": 1234,
+      "percentage": 2.467259822053384
+    },
+    {
+      "class_id": "3028",
+      "class_name": "secondbathroom",
+      "count": 996,
+      "percentage": 1.991402579226232
+    },
+    {
+      "class_id": "3015",
+      "class_name": "hallway",
+      "count": 979,
+      "percentage": 1.9574127761671496
+    },
+    {
+      "class_id": "3011",
+      "class_name": "diningroom",
+      "count": 826,
+      "percentage": 1.6515045486354094
+    },
+    {
+      "class_id": "3009",
+      "class_name": "corridor",
+      "count": 633,
+      "percentage": 1.2656203139058282
+    },
+    {
+      "class_id": "3008",
+      "class_name": "cloakroom",
+      "count": 612,
+      "percentage": 1.2236329101269618
+    },
+    {
+      "class_id": "3012",
+      "class_name": "elderlyroom",
+      "count": 312,
+      "percentage": 0.6238128561431571
+    },
+    {
+      "class_id": "3031",
+      "class_name": "storageroom",
+      "count": 308,
+      "percentage": 0.615815255423373
+    },
+    {
+      "class_id": "3013",
+      "class_name": "equipmentroom",
+      "count": 267,
+      "percentage": 0.5338398480455863
+    },
+    {
+      "class_id": "3018",
+      "class_name": "laundryroom",
+      "count": 246,
+      "percentage": 0.4918524442667199
+    },
+    {
+      "class_id": "3006",
+      "class_name": "bedroom_variant1",
+      "count": 184,
+      "percentage": 0.367889633110067
+    },
+    {
+      "class_id": "3032",
+      "class_name": "terrace",
+      "count": 122,
+      "percentage": 0.24392682195341397
+    },
+    {
+      "class_id": "3022",
+      "class_name": "lounge",
+      "count": 94,
+      "percentage": 0.18794361691492553
+    },
+    {
+      "class_id": "3030",
+      "class_name": "stairwell",
+      "count": 85,
+      "percentage": 0.16994901529541137
+    },
+    {
+      "class_id": "3010",
+      "class_name": "courtyard",
+      "count": 38,
+      "percentage": 0.07597720683794862
+    },
+    {
+      "class_id": "3004",
+      "class_name": "bathroom_variant1",
+      "count": 38,
+      "percentage": 0.07597720683794862
+    },
+    {
+      "class_id": "3025",
+      "class_name": "nannyroom",
+      "count": 29,
+      "percentage": 0.05798260521843447
+    },
+    {
+      "class_id": "3002",
+      "class_name": "auditorium",
+      "count": 10,
+      "percentage": 0.019994001799460162
+    },
+    {
+      "class_id": "3014",
+      "class_name": "garage",
+      "count": 4,
+      "percentage": 0.007997600719784064
+    }
+  ],
+  "room_statistics": [
+    {
+      "room_id": "3017",
+      "room_name": "kitchen",
+      "count": 5394,
+      "percentage": 12.483799296426588
+    },
+    {
+      "room_id": "3020",
+      "room_name": "livindiningroom",
+      "count": 4636,
+      "percentage": 10.72949453804851
+    },
+    {
+      "room_id": "3005",
+      "room_name": "bathroom",
+      "count": 4448,
+      "percentage": 10.294389927791151
+    },
+    {
+      "room_id": "3024",
+      "room_name": "masterbedroom",
+      "count": 4418,
+      "percentage": 10.224958341047955
+    },
+    {
+      "room_id": "3003",
+      "room_name": "balcony",
+      "count": 4160,
+      "percentage": 9.627846695056471
+    },
+    {
+      "room_id": "3029",
+      "room_name": "secondbedroom",
+      "count": 3131,
+      "percentage": 7.246343269764859
+    },
+    {
+      "room_id": "3007",
+      "room_name": "bedroom",
+      "count": 2217,
+      "percentage": 5.130994260322162
+    },
+    {
+      "room_id": "3021",
+      "room_name": "livingroom",
+      "count": 1760,
+      "percentage": 4.0733197556008145
+    },
+    {
+      "room_id": "3001",
+      "room_name": "aisle",
+      "count": 1640,
+      "percentage": 3.795593408628032
+    },
+    {
+      "room_id": "3019",
+      "room_name": "library",
+      "count": 1546,
+      "percentage": 3.578041103499352
+    },
+    {
+      "room_id": "3026",
+      "room_name": "otherroom",
+      "count": 1441,
+      "percentage": 3.335030549898167
+    },
+    {
+      "room_id": "3023",
+      "room_name": "masterbathroom",
+      "count": 1400,
+      "percentage": 3.2401407146824663
+    },
+    {
+      "room_id": "3016",
+      "room_name": "kidsroom",
+      "count": 1234,
+      "percentage": 2.8559526013701166
+    },
+    {
+      "room_id": "3028",
+      "room_name": "secondbathroom",
+      "count": 996,
+      "percentage": 2.3051286798740973
+    },
+    {
+      "room_id": "3015",
+      "room_name": "hallway",
+      "count": 979,
+      "percentage": 2.265784114052953
+    },
+    {
+      "room_id": "3011",
+      "room_name": "diningroom",
+      "count": 826,
+      "percentage": 1.9116830216626552
+    },
+    {
+      "room_id": "3009",
+      "room_name": "corridor",
+      "count": 633,
+      "percentage": 1.4650064802814293
+    },
+    {
+      "room_id": "3008",
+      "room_name": "cloakroom",
+      "count": 612,
+      "percentage": 1.4164043695611923
+    },
+    {
+      "room_id": "3012",
+      "room_name": "elderlyroom",
+      "count": 312,
+      "percentage": 0.7220885021292354
+    },
+    {
+      "room_id": "3031",
+      "room_name": "storageroom",
+      "count": 308,
+      "percentage": 0.7128309572301426
+    },
+    {
+      "room_id": "3013",
+      "room_name": "equipmentroom",
+      "count": 267,
+      "percentage": 0.6179411220144417
+    },
+    {
+      "room_id": "3018",
+      "room_name": "laundryroom",
+      "count": 246,
+      "percentage": 0.5693390112942047
+    },
+    {
+      "room_id": "3006",
+      "room_name": "bedroom_variant1",
+      "count": 184,
+      "percentage": 0.425847065358267
+    },
+    {
+      "room_id": "3032",
+      "room_name": "terrace",
+      "count": 122,
+      "percentage": 0.2823551194223292
+    },
+    {
+      "room_id": "3022",
+      "room_name": "lounge",
+      "count": 94,
+      "percentage": 0.21755230512867985
+    },
+    {
+      "room_id": "3030",
+      "room_name": "stairwell",
+      "count": 85,
+      "percentage": 0.19672282910572114
+    },
+    {
+      "room_id": "3010",
+      "room_name": "courtyard",
+      "count": 38,
+      "percentage": 0.08794667654138123
+    },
+    {
+      "room_id": "3004",
+      "room_name": "bathroom_variant1",
+      "count": 38,
+      "percentage": 0.08794667654138123
+    },
+    {
+      "room_id": "3025",
+      "room_name": "nannyroom",
+      "count": 29,
+      "percentage": 0.06711720051842252
+    },
+    {
+      "room_id": "3002",
+      "room_name": "auditorium",
+      "count": 10,
+      "percentage": 0.023143862247731902
+    },
+    {
+      "room_id": "3014",
+      "room_name": "garage",
+      "count": 4,
+      "percentage": 0.009257544899092762
+    }
+  ],
+  "rare_classes": [
+    {
+      "class_id": "3025",
+      "class_name": "nannyroom",
+      "count": 29
+    },
+    {
+      "class_id": "3002",
+      "class_name": "auditorium",
+      "count": 10
+    },
+    {
+      "class_id": "3014",
+      "class_name": "garage",
+      "count": 4
+    }
+  ],
+  "class_grouping": {
+    "scene": "scene",
+    "3017": "3017",
+    "3020": "3020",
+    "3005": "3005",
+    "3024": "3024",
+    "3003": "3003",
+    "3029": "3029",
+    "3007": "3007",
+    "3021": "3021",
+    "3001": "3001",
+    "3019": "3019",
+    "3026": "3026",
+    "3023": "3023",
+    "3016": "3016",
+    "3028": "3028",
+    "3015": "3015",
+    "3011": "3011",
+    "3009": "3009",
+    "3008": "3008",
+    "3012": "3012",
+    "3031": "3031",
+    "3013": "3013",
+    "3018": "3018",
+    "3006": "3006",
+    "3032": "3032",
+    "3022": "3022",
+    "3030": "3030",
+    "3010": "3010",
+    "3004": "3004",
+    "3025": "rare",
+    "3002": "rare",
+    "3014": "rare"
+  },
+  "grouped_weights": {
+    "scene": 1.0,
+    "3017": 1.2619577308120133,
+    "3020": 1.4682916307161347,
+    "3005": 1.5303507194244603,
+    "3024": 1.5407424173834314,
+    "3003": 1.6362980769230768,
+    "3029": 2.174065793676142,
+    "3007": 3.0703653585926927,
+    "3021": 3.8676136363636364,
+    "3001": 4.150609756097561,
+    "3019": 4.402975420439844,
+    "3026": 4.72380291464261,
+    "3023": 4.8621428571428575,
+    "3016": 5.516207455429497,
+    "3028": 6.8343373493975905,
+    "3015": 6.953013278855975,
+    "3011": 8.2409200968523,
+    "3009": 10.753554502369669,
+    "3008": 11.122549019607844,
+    "3012": 21.817307692307693,
+    "3031": 22.100649350649352,
+    "3013": 25.49438202247191,
+    "3018": 27.670731707317074,
+    "3006": 36.994565217391305,
+    "3032": 55.795081967213115,
+    "3022": 72.41489361702128,
+    "3030": 80.08235294117647,
+    "3010": 179.1315789473684,
+    "3004": 179.1315789473684,
+    "rare": 158.30232558139534
+  },
+  "grouped_counts": {
+    "scene": 6807,
+    "3017": 5394,
+    "3020": 4636,
+    "3005": 4448,
+    "3024": 4418,
+    "3003": 4160,
+    "3029": 3131,
+    "3007": 2217,
+    "3021": 1760,
+    "3001": 1640,
+    "3019": 1546,
+    "3026": 1441,
+    "3023": 1400,
+    "3016": 1234,
+    "3028": 996,
+    "3015": 979,
+    "3011": 826,
+    "3009": 633,
+    "3008": 612,
+    "3012": 312,
+    "3031": 308,
+    "3013": 267,
+    "3018": 246,
+    "3006": 184,
+    "3032": 122,
+    "3022": 94,
+    "3030": 85,
+    "3010": 38,
+    "3004": 38,
+    "rare": 43
+  }
+}
