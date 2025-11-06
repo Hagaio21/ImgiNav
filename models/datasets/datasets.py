@@ -220,33 +220,136 @@ class ManifestDataset(BaseComponent, Dataset):
         
         return train_dataset, val_dataset
     
-    def _compute_room_id_weights(self):
-        """Compute inverse frequency weights for room_id balancing."""
+    def _compute_room_id_weights(self, group_rare_classes=False, class_grouping_path=None):
+        """
+        Compute inverse frequency weights for room_id balancing.
+        
+        Args:
+            group_rare_classes: If True, group rare classes into a single "rare" category
+            class_grouping_path: Path to JSON file with class grouping (from analyze_class_distribution.py)
+                                If None and group_rare_classes=True, will compute grouping automatically
+        
+        Returns:
+            torch.Tensor of weights, or None if room_id column not found
+        """
         if "room_id" not in self.df.columns:
             return None
+        
         # Convert to string to handle mixed types (int/str)
         room_ids = self.df["room_id"].astype(str).values
-        unique_rooms, counts = np.unique(room_ids, return_counts=True)
-        max_count = counts.max()
-        weight_map = {rid: max_count / count for rid, count in zip(unique_rooms, counts)}
-        weights = np.array([weight_map[rid] for rid in room_ids], dtype=np.float32)
-        return torch.from_numpy(weights)
+        
+        # Determine sample_type column
+        if "sample_type" in self.df.columns:
+            sample_type_col = "sample_type"
+        elif "type" in self.df.columns:
+            sample_type_col = "type"
+        else:
+            sample_type_col = None
+        
+        # Create class_id: scene vs room_id
+        def get_class_id(row):
+            if sample_type_col and row[sample_type_col] == "scene":
+                return "scene"
+            elif row["room_id"] in ["0000", "0"] or pd.isna(row["room_id"]):
+                return "scene"
+            else:
+                return str(row["room_id"])
+        
+        class_ids = self.df.apply(get_class_id, axis=1).values
+        
+        # Load or compute class grouping
+        class_grouping = None
+        if group_rare_classes:
+            if class_grouping_path and Path(class_grouping_path).exists():
+                import json
+                with open(class_grouping_path, 'r') as f:
+                    grouping_data = json.load(f)
+                    class_grouping = grouping_data.get("class_grouping", {})
+                    print(f"Loaded class grouping from {class_grouping_path}")
+            else:
+                # Auto-compute grouping: group classes below 10th percentile
+                unique_classes, counts = np.unique(class_ids, return_counts=True)
+                threshold_count = np.percentile(counts, 10)
+                class_grouping = {}
+                for class_id in unique_classes:
+                    count = counts[unique_classes == class_id][0]
+                    if count < threshold_count and class_id != "scene":
+                        class_grouping[class_id] = "rare"
+                    else:
+                        class_grouping[class_id] = class_id
+                print(f"Auto-computed class grouping (threshold: {threshold_count:.0f} samples)")
+        
+        # Apply grouping if enabled
+        if class_grouping:
+            grouped_class_ids = np.array([class_grouping.get(cid, cid) for cid in class_ids])
+        else:
+            grouped_class_ids = class_ids
+        
+        # Compute weights for grouped classes
+        unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
+        max_count = group_counts.max()
+        weight_map = {gid: max_count / count for gid, count in zip(unique_groups, group_counts)}
+        weights = np.array([weight_map[gid] for gid in grouped_class_ids], dtype=np.float32)
+        
+        return torch.from_numpy(weights), class_grouping
     
-    def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, use_weighted_sampling=False):
+    def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, 
+                       use_weighted_sampling=False, group_rare_classes=False, class_grouping_path=None):
+        """
+        Create a DataLoader for this dataset.
+        
+        Args:
+            batch_size: Batch size
+            shuffle: Whether to shuffle (ignored if use_weighted_sampling=True)
+            num_workers: Number of worker processes
+            pin_memory: Pin memory for faster GPU transfer
+            persistent_workers: Keep workers alive between epochs
+            use_weighted_sampling: Use weighted random sampling based on class distribution
+            group_rare_classes: If True, group rare classes into a single category for weighting
+            class_grouping_path: Path to JSON file with class grouping (from analyze_class_distribution.py)
+        """
         if use_weighted_sampling:
-            weights = self._compute_room_id_weights()
-            if weights is None:
+            result = self._compute_room_id_weights(group_rare_classes=group_rare_classes, 
+                                                   class_grouping_path=class_grouping_path)
+            if result is None:
                 print("Warning: room_id column not found, falling back to regular sampling")
                 use_weighted_sampling = False
             else:
-                # Convert to string to handle mixed types (int/str)
-                room_ids = self.df["room_id"].astype(str).values
-                unique_rooms, counts = np.unique(room_ids, return_counts=True)
-                max_count = counts.max()
-                print(f"Room ID sampling weights:")
-                for rid, count in zip(unique_rooms, counts):
-                    weight = max_count / count
-                    print(f"  {rid}: weight={weight:.2f}, count={count}")
+                weights, class_grouping = result
+                
+                # Print weight information
+                if class_grouping:
+                    # Show grouped class weights
+                    grouped_class_ids = []
+                    for _, row in self.df.iterrows():
+                        if "sample_type" in row and row["sample_type"] == "scene":
+                            cid = "scene"
+                        elif str(row["room_id"]) in ["0000", "0"] or pd.isna(row["room_id"]):
+                            cid = "scene"
+                        else:
+                            cid = str(row["room_id"])
+                        grouped_id = class_grouping.get(cid, cid)
+                        grouped_class_ids.append(grouped_id)
+                    
+                    unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
+                    max_count = group_counts.max()
+                    print(f"Class sampling weights (with rare class grouping):")
+                    for gid, count in zip(unique_groups, group_counts):
+                        weight = max_count / count
+                        if gid == "rare":
+                            rare_classes = [k for k, v in class_grouping.items() if v == "rare"]
+                            print(f"  {gid:20s}: weight={weight:.2f}, count={count:6d} (includes {len(rare_classes)} rare classes)")
+                        else:
+                            print(f"  {gid:20s}: weight={weight:.2f}, count={count:6d}")
+                else:
+                    # Show individual class weights
+                    room_ids = self.df["room_id"].astype(str).values
+                    unique_rooms, counts = np.unique(room_ids, return_counts=True)
+                    max_count = counts.max()
+                    print(f"Class sampling weights:")
+                    for rid, count in zip(unique_rooms, counts):
+                        weight = max_count / count
+                        print(f"  {rid:20s}: weight={weight:.2f}, count={count:6d}")
         
         if use_weighted_sampling:
             sampler = WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)

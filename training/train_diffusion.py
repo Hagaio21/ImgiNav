@@ -478,7 +478,9 @@ def main():
         batch_size=config["training"]["batch_size"],
         shuffle=config["training"].get("shuffle", True),
         num_workers=config["training"].get("num_workers", 4),
-        use_weighted_sampling=False  # Disabled: uniform sampling for first 20k steps to prevent red-blob collapse
+        use_weighted_sampling=config["training"].get("use_weighted_sampling", False),
+        group_rare_classes=config["training"].get("group_rare_classes", False),
+        class_grouping_path=config["training"].get("class_grouping_path", None)
     )
     print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
