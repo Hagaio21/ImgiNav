@@ -39,13 +39,17 @@ EXPERIMENT_COLORS = [
 
 
 def parse_experiment_name(dir_name):
-    """Extract capacity and depth from directory name like 'capacity_unet64_d4'."""
-    match = re.match(r'capacity_unet(\d+)_d(\d+)', dir_name)
+    """Extract capacity, depth, and resblocks from directory name like 'capacity_unet64_d4' or 'capacity_unet256_d4_rb3'."""
+    match = re.match(r'capacity_unet(\d+)_d(\d+)(?:_rb(\d+))?', dir_name)
     if match:
         capacity = int(match.group(1))
         depth = int(match.group(2))
-        return capacity, depth, f"{capacity}_d{depth}"
-    return None, None, dir_name
+        resblocks = int(match.group(3)) if match.group(3) else None
+        if resblocks:
+            return capacity, depth, resblocks, f"{capacity}_d{depth}_rb{resblocks}"
+        else:
+            return capacity, depth, None, f"{capacity}_d{depth}"
+    return None, None, None, dir_name
 
 
 def load_all_metrics(ablation_dir):
@@ -72,7 +76,7 @@ def load_all_metrics(ablation_dir):
         csv_file = csv_files[0]
         
         # Parse experiment name
-        capacity, depth, short_name = parse_experiment_name(exp_dir.name)
+        capacity, depth, resblocks, short_name = parse_experiment_name(exp_dir.name)
         
         # Load CSV
         try:
@@ -82,11 +86,15 @@ def load_all_metrics(ablation_dir):
                 continue
             
             # Store with short name for display
-            display_name = f"capacity_{capacity}_d{depth}" if capacity else exp_dir.name
+            if capacity is not None:
+                display_name = short_name
+            else:
+                display_name = exp_dir.name
             all_data[display_name] = df
             experiment_info[display_name] = {
                 'capacity': capacity,
                 'depth': depth,
+                'resblocks': resblocks,
                 'full_name': exp_dir.name,
                 'csv_file': csv_file
             }
@@ -107,15 +115,17 @@ def create_loss_curves(all_data, experiment_info, output_dir):
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     fig.suptitle('Diffusion Ablation: Loss Curves Comparison', fontsize=16, fontweight='bold')
     
-    # Sort experiments by capacity then depth for consistent ordering
+    # Sort experiments by capacity, then depth, then resblocks for consistent ordering
     # Handle None values by treating them as 0 for sorting
     def sort_key(item):
         exp_name = item[0]
         info = experiment_info[exp_name]
         capacity = info.get('capacity')
         depth = info.get('depth')
+        resblocks = info.get('resblocks')
         return (capacity if capacity is not None else 0, 
-                depth if depth is not None else 0)
+                depth if depth is not None else 0,
+                resblocks if resblocks is not None else 0)
     
     sorted_exps = sorted(all_data.items(), key=sort_key)
     
