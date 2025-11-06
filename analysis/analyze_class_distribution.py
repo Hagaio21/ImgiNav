@@ -196,7 +196,7 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
         scene_room_dist = {}
     
     # ============================================================
-    # 5. Identify rare classes
+    # 5. Identify rare classes (check both augmented and original counts)
     # ============================================================
     print("\n" + "="*60)
     print("5. Rare Class Identification")
@@ -209,16 +209,41 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
     # Minimum sample threshold to prevent memorization
     # Classes below this are extremely rare and likely to cause memorization
     min_samples_for_training = 50  # Minimum samples to avoid memorization (adjust based on your needs)
+    min_original_samples = 10  # Minimum ORIGINAL (non-augmented) samples to avoid memorization
+    
+    # Check original (non-augmented) sample counts for memorization risk
+    original_counts = {}
+    if "is_augmented" in df.columns:
+        original_df = df[df["is_augmented"] == False]
+        if len(original_df) > 0:
+            original_class_counts = original_df["class_id"].value_counts()
+            original_counts = original_class_counts.to_dict()
+            print(f"  Found {len(original_df)} original (non-augmented) samples")
     
     print(f"  Rare class threshold (count < {threshold_count:.0f}, {rare_threshold_percentile}th percentile)")
-    print(f"  Minimum samples for training: {min_samples_for_training} (classes below this may cause memorization)")
+    print(f"  Minimum samples for training: {min_samples_for_training} (augmented)")
+    if original_counts:
+        print(f"  Minimum original samples: {min_original_samples} (for memorization risk assessment)")
     print(f"  Total classes: {len(class_stats)}")
     
     rare_classes = []
     common_classes = []
     extremely_rare_classes = []  # Classes that are too rare and may cause memorization
+    memorization_risk_classes = []  # Classes with few original samples (memorization risk)
     
     for stat in class_stats:
+        class_id = stat["class_id"]
+        original_count = original_counts.get(class_id, stat["count"]) if original_counts else stat["count"]
+        
+        # Check memorization risk based on original sample count
+        if original_counts and original_count < min_original_samples:
+            memorization_risk_classes.append({
+                **stat,
+                "original_count": int(original_count),
+                "augmented_count": stat["count"]
+            })
+        
+        # Check rarity based on augmented count (for weighting)
         if stat["count"] < min_samples_for_training:
             extremely_rare_classes.append(stat)
             rare_classes.append(stat)  # Also include in rare for grouping
@@ -230,12 +255,22 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
     print(f"  Rare classes: {len(rare_classes)}")
     print(f"  Common classes: {len(common_classes)}")
     print(f"  ⚠️  EXTREMELY RARE (may cause memorization): {len(extremely_rare_classes)}")
+    if memorization_risk_classes:
+        print(f"  ⚠️  MEMORIZATION RISK (few original samples): {len(memorization_risk_classes)}")
     
     if rare_classes:
         print("\n  Rare classes list:")
         for stat in sorted(rare_classes, key=lambda x: x["count"]):
             warning = " ⚠️ MEMORIZATION RISK" if stat["count"] < min_samples_for_training else ""
             print(f"    {stat['class_name']:20s} (id: {stat['class_id']:>6s}): {stat['count']:6d} samples{warning}")
+    
+    if memorization_risk_classes:
+        print("\n  ⚠️  MEMORIZATION RISK: Classes with few original (non-augmented) samples:")
+        for stat in sorted(memorization_risk_classes, key=lambda x: x["original_count"]):
+            print(f"    {stat['class_name']:20s} (id: {stat['class_id']:>6s}): {stat['original_count']:3d} original → {stat['augmented_count']:6d} augmented")
+        print(f"\n  Recommendation: These {len(memorization_risk_classes)} classes have very few unique examples.")
+        print(f"    Even with augmentations, the model may memorize these patterns.")
+        print(f"    Consider excluding them or using max_weight to limit over-sampling.")
     
     if extremely_rare_classes:
         print("\n  ⚠️  WARNING: Extremely rare classes (high memorization risk):")
@@ -295,11 +330,14 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
         "rare_classes_count": len(rare_classes),
         "common_classes_count": len(common_classes),
         "extremely_rare_classes_count": len(extremely_rare_classes),
+        "memorization_risk_classes_count": len(memorization_risk_classes),
         "min_samples_for_training": min_samples_for_training,
+        "min_original_samples": min_original_samples,
         "class_statistics": class_stats,
         "room_statistics": room_stats,
         "rare_classes": [{"class_id": s["class_id"], "class_name": s["class_name"], "count": s["count"]} for s in rare_classes],
         "extremely_rare_classes": [{"class_id": s["class_id"], "class_name": s["class_name"], "count": s["count"]} for s in extremely_rare_classes],
+        "memorization_risk_classes": [{"class_id": s["class_id"], "class_name": s["class_name"], "original_count": s["original_count"], "augmented_count": s["augmented_count"]} for s in memorization_risk_classes],
         "class_grouping": class_grouping,
         "grouped_weights": {k: float(v) for k, v in grouped_weights.items()},
         "grouped_counts": {k: int(v) for k, v in grouped_counts.items()}
@@ -386,59 +424,119 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
         plt.savefig(output_dir / "room_id_distribution.png", dpi=200)
         plt.close()
     
-    # Plot 5: Pie chart of all classes
-    plt.figure(figsize=(12, 12))
+    # Plot 5: Pie chart of all classes (with legend, no labels on slices)
+    # Group small classes into "Others" for cleaner visualization
+    plt.figure(figsize=(14, 10))
     
-    # Prepare data for pie chart
-    # If too many classes, show top N and group the rest
-    max_classes_in_pie = 15
-    if len(class_stats) > max_classes_in_pie:
-        # Show top N-1 classes individually, group the rest
-        top_classes = class_stats[:max_classes_in_pie - 1]
-        other_classes = class_stats[max_classes_in_pie - 1:]
+    # Determine threshold for grouping: use classes that are < 2% of total or bottom 50%
+    min_percentage_for_main = 2.0  # Minimum percentage to show individually
+    min_count_for_main = int(total_samples * min_percentage_for_main / 100)
+    
+    # Separate into main classes and others
+    main_classes = []
+    other_classes = []
+    for stat in class_stats:
+        if stat["count"] >= min_count_for_main:
+            main_classes.append(stat)
+        else:
+            other_classes.append(stat)
+    
+    # If we have too many main classes, take top N and group rest
+    max_main_classes = 12
+    if len(main_classes) > max_main_classes:
+        # Take top N-1 main classes, group the rest with others
+        top_main = main_classes[:max_main_classes - 1]
+        remaining_main = main_classes[max_main_classes - 1:]
+        other_classes = remaining_main + other_classes
+        main_classes = top_main
+    
+    # Prepare pie chart data
+    if other_classes:
         other_total = sum(s["count"] for s in other_classes)
-        
-        pie_labels = [s["class_name"] for s in top_classes] + [f"Others ({len(other_classes)} classes)"]
-        pie_counts = [s["count"] for s in top_classes] + [other_total]
-        pie_colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in top_classes] + ['lightgray']
+        pie_labels = [s["class_name"] for s in main_classes] + [f"Others ({len(other_classes)} classes)"]
+        pie_counts = [s["count"] for s in main_classes] + [other_total]
+        pie_colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in main_classes] + ['lightgray']
     else:
-        # Show all classes
-        pie_labels = [s["class_name"] for s in class_stats]
-        pie_counts = [s["count"] for s in class_stats]
-        pie_colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in class_stats]
+        pie_labels = [s["class_name"] for s in main_classes]
+        pie_counts = [s["count"] for s in main_classes]
+        pie_colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in main_classes]
     
     # Create pie chart with seaborn styling
     sns.set_style("whitegrid")
     colors = sns.color_palette("husl", len(pie_labels)) if len(pie_labels) <= 10 else sns.color_palette("Set3", len(pie_labels))
     
-    # Use custom colors for rare/common distinction if not too many classes
-    if len(class_stats) <= max_classes_in_pie:
+    # Use custom colors for rare/common distinction
+    if len(main_classes) <= max_main_classes:
         colors = pie_colors
     
+    # Create pie chart without labels on slices, use legend instead
     wedges, texts, autotexts = plt.pie(
         pie_counts,
-        labels=pie_labels,
+        labels=None,  # No labels on slices
         autopct='%1.1f%%',
         startangle=90,
         colors=colors,
-        textprops={'fontsize': 9}
+        textprops={'fontsize': 9, 'color': 'white', 'fontweight': 'bold'}
     )
     
-    # Improve text readability
-    for autotext in autotexts:
-        autotext.set_color('white')
-        autotext.set_fontweight('bold')
-        autotext.set_fontsize(8)
+    # Create legend with class names and percentages
+    legend_labels = []
+    for i, (label, count) in enumerate(zip(pie_labels, pie_counts)):
+        percentage = (count / total_samples) * 100
+        legend_labels.append(f"{label}: {count:,} ({percentage:.1f}%)")
     
-    plt.title(f"Class Distribution Pie Chart\n(Total: {total_samples} samples, {len(class_stats)} classes)", 
+    # Place legend outside the pie chart
+    plt.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1, 0, 0.5, 1), 
+               fontsize=9, frameon=True, fancybox=True, shadow=True)
+    
+    plt.title(f"Class Distribution Pie Chart\n(Total: {total_samples:,} samples, {len(class_stats)} classes)", 
               fontsize=14, fontweight='bold', pad=20)
     plt.tight_layout()
     plt.savefig(output_dir / "class_distribution_pie.png", dpi=200, bbox_inches='tight')
     plt.close()
     
+    # Plot 5b: Pie chart of "Others" breakdown (if we grouped classes)
+    if other_classes and len(other_classes) > 0:
+        plt.figure(figsize=(12, 10))
+        
+        # Sort others by count
+        other_classes_sorted = sorted(other_classes, key=lambda x: -x["count"])
+        other_labels = [s["class_name"] for s in other_classes_sorted]
+        other_counts = [s["count"] for s in other_classes_sorted]
+        other_colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in other_classes_sorted]
+        
+        # Create pie chart for others
+        sns.set_style("whitegrid")
+        other_palette = sns.color_palette("Set3", len(other_labels))
+        
+        wedges, texts, autotexts = plt.pie(
+            other_counts,
+            labels=None,  # No labels on slices
+            autopct='%1.1f%%',
+            startangle=90,
+            colors=other_colors,
+            textprops={'fontsize': 8, 'color': 'white', 'fontweight': 'bold'}
+        )
+        
+        # Create legend
+        other_legend_labels = []
+        other_total = sum(other_counts)
+        for label, count in zip(other_labels, other_counts):
+            percentage = (count / other_total) * 100
+            other_legend_labels.append(f"{label}: {count:,} ({percentage:.1f}%)")
+        
+        plt.legend(wedges, other_legend_labels, loc="center left", bbox_to_anchor=(1, 0, 0.5, 1), 
+                   fontsize=9, frameon=True, fancybox=True, shadow=True)
+        
+        plt.title(f"'Others' Class Breakdown\n({len(other_classes)} classes, {other_total:,} total samples)", 
+                  fontsize=14, fontweight='bold', pad=20)
+        plt.tight_layout()
+        plt.savefig(output_dir / "class_distribution_others_pie.png", dpi=200, bbox_inches='tight')
+        plt.close()
+    
     # Plot 6: Pie chart of grouped classes (if grouping was done)
     if class_grouping and len(grouped_counts) > 0:
-        plt.figure(figsize=(10, 10))
+        plt.figure(figsize=(12, 10))
         
         grouped_labels = []
         grouped_sizes = []
@@ -460,20 +558,26 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
         sns.set_style("whitegrid")
         colors = sns.color_palette("husl", len(grouped_labels))
         
+        # Create pie chart with legend instead of labels on slices
         wedges, texts, autotexts = plt.pie(
             grouped_sizes,
-            labels=grouped_labels,
+            labels=None,  # No labels on slices
             autopct='%1.1f%%',
             startangle=90,
             colors=grouped_colors_list,
-            textprops={'fontsize': 10}
+            textprops={'fontsize': 10, 'color': 'white', 'fontweight': 'bold'}
         )
         
-        for autotext in autotexts:
-            autotext.set_color('white')
-            autotext.set_fontweight('bold')
+        # Create legend
+        legend_labels = []
+        for label, size in zip(grouped_labels, grouped_sizes):
+            percentage = (size / total_samples) * 100
+            legend_labels.append(f"{label}: {size:,} ({percentage:.1f}%)")
         
-        plt.title(f"Grouped Class Distribution (Rare Classes Combined)\n(Total: {total_samples} samples)", 
+        plt.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1, 0, 0.5, 1), 
+                   fontsize=10, frameon=True, fancybox=True, shadow=True)
+        
+        plt.title(f"Grouped Class Distribution (Rare Classes Combined)\n(Total: {total_samples:,} samples)", 
                   fontsize=14, fontweight='bold', pad=20)
         plt.tight_layout()
         plt.savefig(output_dir / "class_distribution_grouped_pie.png", dpi=200, bbox_inches='tight')
@@ -485,6 +589,8 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
     print(f"  - class_distribution_all.png")
     print(f"  - scene_room_distribution.png")
     print(f"  - class_distribution_pie.png")
+    if other_classes and len(other_classes) > 0:
+        print(f"  - class_distribution_others_pie.png")
     if len(room_stats) > 0:
         print(f"  - room_id_distribution.png")
     if class_grouping and len(grouped_counts) > 0:
