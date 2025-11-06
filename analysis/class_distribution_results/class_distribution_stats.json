@@ -6,8 +6,12 @@
   "total_classes": 29,
   "rare_threshold_count": 40.0,
   "rare_threshold_percentile": 10.0,
-  "rare_classes_count": 2,
-  "common_classes_count": 27,
+  "rare_classes_count": 5,
+  "common_classes_count": 24,
+  "extremely_rare_classes_count": 5,
+  "memorization_risk_classes_count": 6,
+  "min_samples_for_training": 50,
+  "min_original_samples": 10,
   "class_statistics": [
     {
       "class_id": "scene",
@@ -356,6 +360,21 @@
   ],
   "rare_classes": [
     {
+      "class_id": "3013",
+      "class_name": "equipmentroom",
+      "count": 40
+    },
+    {
+      "class_id": "3017",
+      "class_name": "kitchen",
+      "count": 40
+    },
+    {
+      "class_id": "3028",
+      "class_name": "secondbathroom",
+      "count": 40
+    },
+    {
       "class_id": "3014",
       "class_name": "garage",
       "count": 16
@@ -364,6 +383,71 @@
       "class_id": "3003",
       "class_name": "balcony",
       "count": 8
+    }
+  ],
+  "extremely_rare_classes": [
+    {
+      "class_id": "3013",
+      "class_name": "equipmentroom",
+      "count": 40
+    },
+    {
+      "class_id": "3017",
+      "class_name": "kitchen",
+      "count": 40
+    },
+    {
+      "class_id": "3028",
+      "class_name": "secondbathroom",
+      "count": 40
+    },
+    {
+      "class_id": "3014",
+      "class_name": "garage",
+      "count": 16
+    },
+    {
+      "class_id": "3003",
+      "class_name": "balcony",
+      "count": 8
+    }
+  ],
+  "memorization_risk_classes": [
+    {
+      "class_id": "3002",
+      "class_name": "auditorium",
+      "original_count": 8,
+      "augmented_count": 64
+    },
+    {
+      "class_id": "3013",
+      "class_name": "equipmentroom",
+      "original_count": 5,
+      "augmented_count": 40
+    },
+    {
+      "class_id": "3017",
+      "class_name": "kitchen",
+      "original_count": 5,
+      "augmented_count": 40
+    },
+    {
+      "class_id": "3028",
+      "class_name": "secondbathroom",
+      "original_count": 5,
+      "augmented_count": 40
+    },
+    {
+      "class_id": "3014",
+      "class_name": "garage",
+      "original_count": 2,
+      "augmented_count": 16
+    },
+    {
+      "class_id": "3003",
+      "class_name": "balcony",
+      "original_count": 1,
+      "augmented_count": 8
     }
   ],
   "class_grouping": {
@@ -391,9 +475,9 @@
     "3025": "3025",
     "3010": "3010",
     "3002": "3002",
-    "3013": "3013",
-    "3017": "3017",
-    "3028": "3028",
+    "3013": "rare",
+    "3017": "rare",
+    "3028": "rare",
     "3014": "rare",
     "3003": "rare"
   },
@@ -422,10 +506,7 @@
     "3025": 407.125,
     "3010": 592.1818181818181,
     "3002": 814.25,
-    "3013": 1302.8,
-    "3017": 1302.8,
-    "3028": 1302.8,
-    "rare": 2171.3333333333335
+    "rare": 361.8888888888889
   },
   "grouped_counts": {
     "scene": 52112,
@@ -452,9 +533,6 @@
     "3025": 128,
     "3010": 88,
     "3002": 64,
-    "3013": 40,
-    "3017": 40,
-    "3028": 40,
-    "rare": 24
+    "rare": 144
   }
 }
