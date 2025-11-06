@@ -206,25 +206,43 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
     counts_array = np.array([stat["count"] for stat in class_stats])
     threshold_count = np.percentile(counts_array, rare_threshold_percentile)
     
+    # Minimum sample threshold to prevent memorization
+    # Classes below this are extremely rare and likely to cause memorization
+    min_samples_for_training = 50  # Minimum samples to avoid memorization (adjust based on your needs)
+    
     print(f"  Rare class threshold (count < {threshold_count:.0f}, {rare_threshold_percentile}th percentile)")
+    print(f"  Minimum samples for training: {min_samples_for_training} (classes below this may cause memorization)")
     print(f"  Total classes: {len(class_stats)}")
     
     rare_classes = []
     common_classes = []
+    extremely_rare_classes = []  # Classes that are too rare and may cause memorization
     
     for stat in class_stats:
-        if stat["count"] < threshold_count:
+        if stat["count"] < min_samples_for_training:
+            extremely_rare_classes.append(stat)
+            rare_classes.append(stat)  # Also include in rare for grouping
+        elif stat["count"] < threshold_count:
             rare_classes.append(stat)
         else:
             common_classes.append(stat)
     
     print(f"  Rare classes: {len(rare_classes)}")
     print(f"  Common classes: {len(common_classes)}")
+    print(f"  ⚠️  EXTREMELY RARE (may cause memorization): {len(extremely_rare_classes)}")
     
     if rare_classes:
         print("\n  Rare classes list:")
         for stat in sorted(rare_classes, key=lambda x: x["count"]):
+            warning = " ⚠️ MEMORIZATION RISK" if stat["count"] < min_samples_for_training else ""
+            print(f"    {stat['class_name']:20s} (id: {stat['class_id']:>6s}): {stat['count']:6d} samples{warning}")
+    
+    if extremely_rare_classes:
+        print("\n  ⚠️  WARNING: Extremely rare classes (high memorization risk):")
+        for stat in sorted(extremely_rare_classes, key=lambda x: x["count"]):
             print(f"    {stat['class_name']:20s} (id: {stat['class_id']:>6s}): {stat['count']:6d} samples")
+        print(f"\n  Recommendation: Consider excluding these {len(extremely_rare_classes)} classes or")
+        print(f"    grouping them more aggressively to prevent memorization.")
     
     # ============================================================
     # 6. Suggested weighting strategy
@@ -276,9 +294,12 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
         "rare_threshold_percentile": rare_threshold_percentile,
         "rare_classes_count": len(rare_classes),
         "common_classes_count": len(common_classes),
+        "extremely_rare_classes_count": len(extremely_rare_classes),
+        "min_samples_for_training": min_samples_for_training,
         "class_statistics": class_stats,
         "room_statistics": room_stats,
         "rare_classes": [{"class_id": s["class_id"], "class_name": s["class_name"], "count": s["count"]} for s in rare_classes],
+        "extremely_rare_classes": [{"class_id": s["class_id"], "class_name": s["class_name"], "count": s["count"]} for s in extremely_rare_classes],
         "class_grouping": class_grouping,
         "grouped_weights": {k: float(v) for k, v in grouped_weights.items()},
         "grouped_counts": {k: int(v) for k, v in grouped_counts.items()}

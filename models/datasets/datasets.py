@@ -220,7 +220,8 @@ class ManifestDataset(BaseComponent, Dataset):
         
         return train_dataset, val_dataset
     
-    def _compute_room_id_weights(self, group_rare_classes=False, class_grouping_path=None):
+    def _compute_room_id_weights(self, group_rare_classes=False, class_grouping_path=None, 
+                                 max_weight=None, exclude_extremely_rare=False, min_samples_threshold=50):
         """
         Compute inverse frequency weights for room_id balancing.
         
@@ -228,6 +229,10 @@ class ManifestDataset(BaseComponent, Dataset):
             group_rare_classes: If True, group rare classes into a single "rare" category
             class_grouping_path: Path to JSON file with class grouping (from analyze_class_distribution.py)
                                 If None and group_rare_classes=True, will compute grouping automatically
+            max_weight: Maximum weight to cap (prevents over-sampling extremely rare classes)
+                       If None, no capping is applied
+            exclude_extremely_rare: If True, exclude classes below min_samples_threshold from training
+            min_samples_threshold: Minimum samples required for a class to be included in training
         
         Returns:
             torch.Tensor of weights, or None if room_id column not found
@@ -285,16 +290,46 @@ class ManifestDataset(BaseComponent, Dataset):
         else:
             grouped_class_ids = class_ids
         
+        # Exclude extremely rare classes if requested
+        if exclude_extremely_rare:
+            # Load extremely rare class list from grouping file if available
+            extremely_rare_class_ids = set()
+            if class_grouping_path and Path(class_grouping_path).exists():
+                import json
+                with open(class_grouping_path, 'r') as f:
+                    grouping_data = json.load(f)
+                    extremely_rare = grouping_data.get("extremely_rare_classes", [])
+                    extremely_rare_class_ids = {c["class_id"] for c in extremely_rare}
+            
+            # Filter out extremely rare classes
+            if extremely_rare_class_ids:
+                mask = np.array([cid not in extremely_rare_class_ids for cid in class_ids])
+                if mask.sum() == 0:
+                    print("Warning: All classes would be excluded! Disabling exclusion.")
+                else:
+                    self.df = self.df[mask].reset_index(drop=True)
+                    class_ids = class_ids[mask]
+                    grouped_class_ids = grouped_class_ids[mask] if class_grouping else class_ids
+                    print(f"Excluded {len(extremely_rare_class_ids)} extremely rare classes from training")
+        
         # Compute weights for grouped classes
         unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
         max_count = group_counts.max()
         weight_map = {gid: max_count / count for gid, count in zip(unique_groups, group_counts)}
+        
+        # Cap weights if requested (prevents over-sampling extremely rare classes)
+        if max_weight is not None:
+            weight_map = {gid: min(w, max_weight) for gid, w in weight_map.items()}
+            if any(w == max_weight for w in weight_map.values()):
+                print(f"Capped weights at {max_weight} to prevent over-sampling")
+        
         weights = np.array([weight_map[gid] for gid in grouped_class_ids], dtype=np.float32)
         
         return torch.from_numpy(weights), class_grouping
     
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, 
-                       use_weighted_sampling=False, group_rare_classes=False, class_grouping_path=None):
+                       use_weighted_sampling=False, group_rare_classes=False, class_grouping_path=None,
+                       max_weight=None, exclude_extremely_rare=False, min_samples_threshold=50):
         """
         Create a DataLoader for this dataset.
         
@@ -307,10 +342,16 @@ class ManifestDataset(BaseComponent, Dataset):
             use_weighted_sampling: Use weighted random sampling based on class distribution
             group_rare_classes: If True, group rare classes into a single category for weighting
             class_grouping_path: Path to JSON file with class grouping (from analyze_class_distribution.py)
+            max_weight: Maximum weight to cap (prevents over-sampling extremely rare classes)
+            exclude_extremely_rare: If True, exclude classes below min_samples_threshold from training
+            min_samples_threshold: Minimum samples required for a class to be included
         """
         if use_weighted_sampling:
             result = self._compute_room_id_weights(group_rare_classes=group_rare_classes, 
-                                                   class_grouping_path=class_grouping_path)
+                                                   class_grouping_path=class_grouping_path,
+                                                   max_weight=max_weight,
+                                                   exclude_extremely_rare=exclude_extremely_rare,
+                                                   min_samples_threshold=min_samples_threshold)
             if result is None:
                 print("Warning: room_id column not found, falling back to regular sampling")
                 use_weighted_sampling = False
