@@ -86,10 +86,14 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
         sample_type_col = "sample_type"
     
     # Create class identifier: scene vs room_id
+    # Handle case where room_id column contains "scene" for scene types
     def get_class_id(row):
-        if row[sample_type_col] == "scene" or row["room_id_str"] in ["0000", "0", "nan"]:
+        if row[sample_type_col] == "scene":
+            return "scene"
+        elif row["room_id_str"] in ["0000", "0", "nan", "scene"]:
             return "scene"
         else:
+            # For rooms, use the room_id (which should be numeric like "3024")
             return row["room_id_str"]
     
     df["class_id"] = df.apply(get_class_id, axis=1)
@@ -348,7 +352,8 @@ def analyze_class_distribution(manifest_path, output_dir, rare_threshold_percent
         room_names = [s["room_name"] for s in room_stats]
         room_counts = [s["count"] for s in room_stats]
         
-        rare_room_ids = [s["room_id"] for s in rare_classes if s["class_id"] != "scene"]
+        # Get rare room IDs from rare_classes (use class_id, not room_id)
+        rare_room_ids = [s["class_id"] for s in rare_classes if s["class_id"] != "scene"]
         room_colors = ['red' if s["room_id"] in rare_room_ids else 'steelblue' for s in room_stats]
         
         plt.barh(range(len(room_names)), room_counts, color=room_colors)
