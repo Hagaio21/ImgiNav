@@ -297,7 +297,7 @@ def main():
         "--output-dir",
         type=str,
         default=None,
-        help="Output directory for plots (default: ablation-dir/analysis)"
+        help="Output directory for plots (default: analysis/diffusion_ablation_results)"
     )
     
     args = parser.parse_args()
@@ -306,7 +306,10 @@ def main():
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = ablation_dir / "analysis"
+        # Default to analysis folder instead of ablation experiments folder
+        # Get the analysis folder relative to the script location
+        script_dir = Path(__file__).parent
+        output_dir = script_dir / "diffusion_ablation_results"
     
     print("=" * 80)
     print("Diffusion Ablation: Loss Curve Analysis")

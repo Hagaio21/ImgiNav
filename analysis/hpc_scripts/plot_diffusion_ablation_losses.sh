@@ -18,7 +18,8 @@ LOG_DIR="${BASE_DIR}/analysis/hpc_scripts/logs"
 
 # Ablation experiments directory
 ABLATION_DIR="/work3/s233249/ImgiNav/experiments/diffusion/ablation"
-OUTPUT_DIR="${ABLATION_DIR}/analysis"
+# Output to analysis folder instead of ablation experiments folder
+OUTPUT_DIR="${BASE_DIR}/analysis/diffusion_ablation_results"
 
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"
