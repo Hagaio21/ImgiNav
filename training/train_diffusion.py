@@ -387,8 +387,9 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}")
     
-    # Check for latest checkpoint
-    latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
+    # Check for latest checkpoint (in checkpoints subdirectory)
+    checkpoint_dir = output_dir / "checkpoints"
+    latest_checkpoint = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
     start_epoch = 0
     best_val_loss = float("inf")
     training_history = []
