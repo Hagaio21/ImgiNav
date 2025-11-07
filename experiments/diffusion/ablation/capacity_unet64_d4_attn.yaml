@@ -10,7 +10,7 @@ dataset:
   filters:
     is_empty:
     - false
-    is_augmented: false  # Only use real (non-augmented) samples
+    is_augmented: true  # Only use real (non-augmented) samples
   return_path: false
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
