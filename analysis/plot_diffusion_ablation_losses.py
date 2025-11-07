@@ -39,17 +39,32 @@ EXPERIMENT_COLORS = [
 
 
 def parse_experiment_name(dir_name):
-    """Extract capacity, depth, and resblocks from directory name like 'capacity_unet64_d4' or 'capacity_unet256_d4_rb3'."""
-    match = re.match(r'capacity_unet(\d+)_d(\d+)(?:_rb(\d+))?', dir_name)
+    """Extract capacity, depth, resblocks, and attention flag from directory name.
+    
+    Examples:
+        'capacity_unet64_d4' -> (64, 4, None, False, "64_d4")
+        'capacity_unet256_d4_rb3' -> (256, 4, 3, False, "256_d4_rb3")
+        'capacity_unet32_d3_attn' -> (32, 3, None, True, "32_d3_attn")
+        'capacity_unet64_d4_attn' -> (64, 4, None, True, "64_d4_attn")
+    """
+    match = re.match(r'capacity_unet(\d+)_d(\d+)(?:_rb(\d+))?(?:_attn)?', dir_name)
     if match:
         capacity = int(match.group(1))
         depth = int(match.group(2))
         resblocks = int(match.group(3)) if match.group(3) else None
+        has_attention = match.group(0).endswith('_attn')
+        
+        # Build short name
         if resblocks:
-            return capacity, depth, resblocks, f"{capacity}_d{depth}_rb{resblocks}"
+            short_name = f"{capacity}_d{depth}_rb{resblocks}"
         else:
-            return capacity, depth, None, f"{capacity}_d{depth}"
-    return None, None, None, dir_name
+            short_name = f"{capacity}_d{depth}"
+        
+        if has_attention:
+            short_name += "_attn"
+        
+        return capacity, depth, resblocks, has_attention, short_name
+    return None, None, None, False, dir_name
 
 
 def load_all_metrics(ablation_dir):
@@ -76,7 +91,7 @@ def load_all_metrics(ablation_dir):
         csv_file = csv_files[0]
         
         # Parse experiment name
-        capacity, depth, resblocks, short_name = parse_experiment_name(exp_dir.name)
+        capacity, depth, resblocks, has_attention, short_name = parse_experiment_name(exp_dir.name)
         
         # Load CSV
         try:
@@ -95,6 +110,7 @@ def load_all_metrics(ablation_dir):
                 'capacity': capacity,
                 'depth': depth,
                 'resblocks': resblocks,
+                'has_attention': has_attention,
                 'full_name': exp_dir.name,
                 'csv_file': csv_file
             }
@@ -115,17 +131,20 @@ def create_loss_curves(all_data, experiment_info, output_dir):
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     fig.suptitle('Diffusion Ablation: Loss Curves Comparison', fontsize=16, fontweight='bold')
     
-    # Sort experiments by capacity, then depth, then resblocks for consistent ordering
+    # Sort experiments by capacity, then depth, then resblocks, then attention for consistent ordering
     # Handle None values by treating them as 0 for sorting
+    # Attention experiments come after non-attention ones with same config
     def sort_key(item):
         exp_name = item[0]
         info = experiment_info[exp_name]
         capacity = info.get('capacity')
         depth = info.get('depth')
         resblocks = info.get('resblocks')
+        has_attention = info.get('has_attention', False)
         return (capacity if capacity is not None else 0, 
                 depth if depth is not None else 0,
-                resblocks if resblocks is not None else 0)
+                resblocks if resblocks is not None else 0,
+                1 if has_attention else 0)  # Sort attention experiments after non-attention
     
     sorted_exps = sorted(all_data.items(), key=sort_key)
     
