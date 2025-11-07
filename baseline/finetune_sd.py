@@ -146,7 +146,7 @@ def finetune_sd_unet(
     print(f"Dataset size: {len(dataset)}")
     print(f"Batches per epoch: {len(dataloader)}")
     
-    # Optimizer
+    # Optimizer (reduced learning rate for stability)
     optimizer = torch.optim.AdamW(
         unet.parameters(),
         lr=learning_rate,
@@ -154,6 +154,9 @@ def finetune_sd_unet(
         weight_decay=0.01,
         eps=1e-8
     )
+    
+    # Use gradient scaler for mixed precision training
+    scaler = torch.cuda.amp.GradScaler() if device == "cuda" else None
     
     # Learning rate scheduler
     num_update_steps_per_epoch = len(dataloader)
@@ -182,6 +185,11 @@ def finetune_sd_unet(
             with torch.no_grad():
                 latents = vae.encode(images).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
+                
+                # Check for NaN/Inf in latents
+                if torch.isnan(latents).any() or torch.isinf(latents).any():
+                    print(f"\nWARNING: NaN/Inf detected in latents at step {global_step}, skipping batch")
+                    continue
             
             # Sample noise and timesteps
             noise = torch.randn_like(latents)
@@ -202,15 +210,47 @@ def finetune_sd_unet(
                 )
                 text_embeddings = text_encoder(text_inputs.input_ids.to(device_obj))[0]
             
-            # Predict noise
-            model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
+            # Predict noise with mixed precision
+            if device == "cuda" and scaler is not None:
+                with torch.cuda.amp.autocast():
+                    model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
+                    loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+                
+                # Check for NaN/Inf
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"\nERROR: NaN/Inf loss detected at step {global_step}, epoch {epoch + 1}")
+                    print(f"  Loss value: {loss.item()}")
+                    print(f"  Model pred stats: min={model_pred.min().item():.4f}, max={model_pred.max().item():.4f}, mean={model_pred.mean().item():.4f}")
+                    print(f"  Noise stats: min={noise.min().item():.4f}, max={noise.max().item():.4f}, mean={noise.mean().item():.4f}")
+                    print(f"  Latents stats: min={latents.min().item():.4f}, max={latents.max().item():.4f}, mean={latents.mean().item():.4f}")
+                    print("  Stopping training to prevent further issues.")
+                    break
+                
+                # Backward with gradient scaling
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(unet.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
+                loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+                
+                # Check for NaN/Inf
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"\nERROR: NaN/Inf loss detected at step {global_step}, epoch {epoch + 1}")
+                    print(f"  Loss value: {loss.item()}")
+                    print(f"  Model pred stats: min={model_pred.min().item():.4f}, max={model_pred.max().item():.4f}, mean={model_pred.mean().item():.4f}")
+                    print(f"  Noise stats: min={noise.min().item():.4f}, max={noise.max().item():.4f}, mean={noise.mean().item():.4f}")
+                    print(f"  Latents stats: min={latents.min().item():.4f}, max={latents.max().item():.4f}, mean={latents.mean().item():.4f}")
+                    print("  Stopping training to prevent further issues.")
+                    break
+                
+                # Backward
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(unet.parameters(), max_norm=1.0)
+                optimizer.step()
             
-            # Compute loss
-            loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
-            
-            # Backward
-            loss.backward()
-            optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
             

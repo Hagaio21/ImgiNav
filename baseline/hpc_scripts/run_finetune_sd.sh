@@ -24,7 +24,7 @@ OUTPUT_DIR="${BASE_DIR}/outputs/baseline_sd_finetuned"
 # Training parameters
 EPOCHS=50
 BATCH_SIZE=4
-LEARNING_RATE=1e-5
+LEARNING_RATE=5e-6  # Reduced from 1e-5 for stability (NaN loss prevention)
 NUM_WORKERS=8
 SAVE_STEPS=500
 
