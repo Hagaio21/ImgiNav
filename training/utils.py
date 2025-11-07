@@ -124,8 +124,14 @@ def get_device(config):
     return device
 
 
-def build_scheduler(optimizer, config):
-    """Build learning rate scheduler from config."""
+def build_scheduler(optimizer, config, last_epoch=-1):
+    """Build learning rate scheduler from config.
+    
+    Args:
+        optimizer: Optimizer to attach scheduler to
+        config: Training config dict
+        last_epoch: Last epoch number (for resuming training). Default -1 means start from beginning.
+    """
     training_cfg = config.get("training", {})
     
     scheduler_type = training_cfg.get("scheduler", {}).get("type", None)
@@ -135,15 +141,15 @@ def build_scheduler(optimizer, config):
     epochs_target = config.get("experiment", {}).get("epochs_target", training_cfg.get("epochs", 100))
     
     if scheduler_type.lower() == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_target)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_target, last_epoch=last_epoch)
     elif scheduler_type.lower() == "linear":
         start_factor = training_cfg.get("scheduler", {}).get("start_factor", 1.0)
         end_factor = training_cfg.get("scheduler", {}).get("end_factor", 0.0)
-        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=start_factor, end_factor=end_factor, total_iters=epochs_target)
+        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=start_factor, end_factor=end_factor, total_iters=epochs_target, last_epoch=last_epoch)
     elif scheduler_type.lower() == "step":
         step_size = training_cfg.get("scheduler", {}).get("step_size", epochs_target // 3)
         gamma = training_cfg.get("scheduler", {}).get("gamma", 0.1)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma, last_epoch=last_epoch)
     else:
         print(f"  Warning: Unknown scheduler type '{scheduler_type}', not using scheduler")
         return None

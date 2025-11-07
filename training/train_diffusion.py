@@ -547,8 +547,8 @@ def main():
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)
     
-    # Build learning rate scheduler
-    scheduler = build_scheduler(optimizer, config)
+    # Build learning rate scheduler (account for already-trained epochs when resuming)
+    scheduler = build_scheduler(optimizer, config, last_epoch=start_epoch)
     
     # Training settings
     epochs = config["training"].get("epochs", 100)

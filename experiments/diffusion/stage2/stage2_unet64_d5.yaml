@@ -23,6 +23,7 @@ dataset:
     segmentation: "layout_path"
   filters:
     is_empty: [false]
+    is_augmented: false  # Only use real (non-augmented) samples
   return_path: false
 
 unet:
