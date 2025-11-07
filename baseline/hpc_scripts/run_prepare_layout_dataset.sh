@@ -8,16 +8,17 @@
 #BSUB -q hpc
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 SCRIPT_PATH="${BASE_DIR}/baseline/prepare_layout_dataset.py"
 LOG_DIR="${BASE_DIR}/baseline/hpc_scripts/logs"
 
 # Input manifest (augmented dataset)
-INPUT_MANIFEST="${BASE_DIR}/datasets/augmented/manifest.csv"
+INPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
 
 # Output directory for layout images
-OUTPUT_DIR="${BASE_DIR}/datasets/sd_finetuning_images"
+OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/sd_finetuning_images"
 
 # Number of samples to extract
 NUM_SAMPLES=5000
