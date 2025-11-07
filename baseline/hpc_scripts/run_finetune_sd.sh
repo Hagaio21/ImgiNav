@@ -16,7 +16,7 @@ SCRIPT_PATH="${BASE_DIR}/baseline/finetune_sd.py"
 LOG_DIR="${BASE_DIR}/baseline/hpc_scripts/logs"
 
 # Input dataset directory (from prepare_layout_dataset.sh)
-DATASET_DIR="${BASE_DIR}/datasets/sd_finetuning_images"
+DATASET_DIR="/work3/s233249/ImgiNav/datasets/sd_finetuning_images"
 
 # Output directory for fine-tuned model
 OUTPUT_DIR="${BASE_DIR}/outputs/baseline_sd_finetuned"
