@@ -58,6 +58,16 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
 fi
 
 # ----------------------------------------------------------------------
+# Set Hugging Face cache to /work3 (more space than home directory)
+HF_CACHE_DIR="/work3/s233249/.cache/huggingface"
+mkdir -p "${HF_CACHE_DIR}"
+export HF_HOME="${HF_CACHE_DIR}"
+export HF_HUB_CACHE="${HF_CACHE_DIR}/hub"
+export TRANSFORMERS_CACHE="${HF_CACHE_DIR}/transformers"
+export HF_DATASETS_CACHE="${HF_CACHE_DIR}/datasets"
+echo "Hugging Face cache directory: ${HF_CACHE_DIR}"
+
+# ----------------------------------------------------------------------
 # Run script
 cd "${BASE_DIR}"
 python "${SCRIPT_PATH}" \

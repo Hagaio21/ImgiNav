@@ -473,6 +473,15 @@ def main():
         # Build model from config (fresh start)
         print("\nBuilding model from config...")
         diffusion_cfg = config.get("diffusion", {})
+        
+        # If no diffusion section, extract from top-level config (for ablation configs)
+        if not diffusion_cfg:
+            diffusion_cfg = {
+                "autoencoder": config.get("autoencoder"),
+                "unet": config.get("unet", {}),
+                "scheduler": config.get("scheduler", {})
+            }
+        
         if "type" in diffusion_cfg:
             diffusion_cfg = {k: v for k, v in diffusion_cfg.items() if k != "type"}
         model = DiffusionModel(**diffusion_cfg)
