@@ -557,7 +557,9 @@ def main():
     optimizer = build_optimizer(model, config)
     
     # Build learning rate scheduler (account for already-trained epochs when resuming)
-    scheduler = build_scheduler(optimizer, config, last_epoch=start_epoch)
+    # Use last_epoch=-1 for fresh start, or start_epoch for resume
+    last_epoch = start_epoch if start_epoch > 0 else -1
+    scheduler = build_scheduler(optimizer, config, last_epoch=last_epoch)
     
     # Training settings
     epochs = config["training"].get("epochs", 100)

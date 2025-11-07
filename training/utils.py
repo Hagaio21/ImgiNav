@@ -140,6 +140,14 @@ def build_scheduler(optimizer, config, last_epoch=-1):
     
     epochs_target = config.get("experiment", {}).get("epochs_target", training_cfg.get("epochs", 100))
     
+    # When resuming (last_epoch >= 0), ensure optimizer param_groups have initial_lr
+    # This is required by PyTorch schedulers when resuming
+    if last_epoch >= 0:
+        for param_group in optimizer.param_groups:
+            if "initial_lr" not in param_group:
+                # Set initial_lr to current LR (from config) so scheduler can resume correctly
+                param_group["initial_lr"] = param_group.get("lr", 0.001)
+    
     if scheduler_type.lower() == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_target, last_epoch=last_epoch)
     elif scheduler_type.lower() == "linear":
