@@ -578,6 +578,9 @@ def main():
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
+    memorization_check_interval = config["training"].get("memorization_check_interval", None)
+    memorization_num_generate = config["training"].get("memorization_num_generate", 100)
+    memorization_num_training = config["training"].get("memorization_num_training", 1000)
     
     print(f"\nStarting training...")
     print(f"  Epochs: {epochs}")
@@ -585,6 +588,8 @@ def main():
     print(f"  Learning rate: {optimizer.param_groups[0]['lr']}")
     print(f"  Mixed precision: {use_amp}")
     print(f"  Max grad norm: {max_grad_norm}")
+    if memorization_check_interval:
+        print(f"  Memorization check interval: {memorization_check_interval} epochs")
     
     # Training loop
     for epoch in range(start_epoch, epochs):
@@ -617,6 +622,51 @@ def main():
         # Save samples
         if val_loader and (epoch + 1) % sample_interval == 0:
             save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name)
+        
+        # Memorization check
+        if MEMORIZATION_CHECK_AVAILABLE and memorization_check_interval and (epoch + 1) % memorization_check_interval == 0:
+            print(f"\n{'='*60}")
+            print(f"Running memorization check (epoch {epoch + 1})...")
+            print(f"{'='*60}")
+            try:
+                # Load training samples
+                training_samples = load_training_samples(
+                    train_dataset,
+                    num_samples=memorization_num_training,
+                    device=device_obj,
+                    load_rgb=False  # Only load latents for memory efficiency
+                )
+                
+                # Generate samples
+                generated_samples = generate_samples(
+                    model,
+                    num_samples=memorization_num_generate,
+                    batch_size=min(batch_size, 16),  # Smaller batch for generation
+                    device=device_obj,
+                    method="ddim"  # Use DDIM for faster generation
+                )
+                
+                # Run memorization check
+                memorization_dir = output_dir / "memorization_checks" / f"epoch_{epoch + 1:03d}"
+                results = check_memorization(
+                    model,
+                    training_samples,
+                    generated_samples,
+                    memorization_dir,
+                    latent_perturbation_std=0.0,
+                    run_perturbation_test=False,
+                    method="ddim",
+                    device=device_obj
+                )
+                
+                print(f"  Memorization check complete. Results saved to: {memorization_dir}")
+                if 'latent_l2_distances' in results:
+                    mean_l2 = results['latent_l2_distances'].mean().item()
+                    print(f"  Mean L2 distance to nearest training sample: {mean_l2:.4f}")
+            except Exception as e:
+                print(f"  Warning: Memorization check failed: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Save checkpoint
         is_best = val_loss < best_val_loss
