@@ -195,23 +195,28 @@ def train_discriminator(
         # Save best
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save({
-                "state_dict": discriminator.state_dict(),
-                "config": discriminator.to_config(),
-                "epoch": epoch + 1,
-                "val_loss": avg_val_loss,
-                "val_acc": val_acc
-            }, output_dir / "discriminator_best.pt")
+            # Save to losses/checkpoints folder
+            losses_checkpoint_dir = Path("models/losses/checkpoints")
+            losses_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            
+            discriminator.save_checkpoint(
+                losses_checkpoint_dir / "discriminator_best.pt",
+                epoch=epoch + 1,
+                val_loss=avg_val_loss,
+                val_acc=val_acc
+            )
             print(f"  Saved best checkpoint (val_loss={best_val_loss:.4f}, val_acc={val_acc:.4f})")
     
     # Save final
-    torch.save({
-        "state_dict": discriminator.state_dict(),
-        "config": discriminator.to_config(),
-        "epoch": epochs,
-        "val_loss": avg_val_loss,
-        "val_acc": val_acc
-    }, output_dir / "discriminator_final.pt")
+    losses_checkpoint_dir = Path("models/losses/checkpoints")
+    losses_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    discriminator.save_checkpoint(
+        losses_checkpoint_dir / "discriminator_final.pt",
+        epoch=epochs,
+        val_loss=avg_val_loss,
+        val_acc=val_acc
+    )
     
     # Save history
     df = pd.DataFrame(history)
