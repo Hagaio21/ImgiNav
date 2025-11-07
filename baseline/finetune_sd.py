@@ -27,9 +27,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from diffusers import StableDiffusionPipeline, DDPMScheduler, UNet2DConditionModel
+    from diffusers import StableDiffusionPipeline, DDPMScheduler
     from diffusers.optimization import get_scheduler
-    from transformers import CLIPTextModel, CLIPTokenizer
     DIFFUSERS_AVAILABLE = True
 except ImportError:
     DIFFUSERS_AVAILABLE = False
@@ -106,10 +105,10 @@ def finetune_sd_unet(
     print(f"Loading Stable Diffusion model: {model_id}")
     print(f"Device: {device}")
     
-    # Load pipeline (use dtype instead of deprecated torch_dtype)
+    # Load pipeline
     pipe = StableDiffusionPipeline.from_pretrained(
         model_id,
-        dtype=torch.float16 if device == "cuda" else torch.float32,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         safety_checker=None,
         requires_safety_checker=False
     )
@@ -123,6 +122,8 @@ def finetune_sd_unet(
     noise_scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
     
     # Freeze VAE and text encoder
+    # Convert VAE to float32 for encoding (needed for dtype consistency)
+    vae = vae.to(torch.float32)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     
@@ -181,14 +182,15 @@ def finetune_sd_unet(
         
         for batch_idx, batch in enumerate(dataloader):
             # Get images
-            images = batch["pixel_values"].to(device_obj, dtype=torch.float16 if device == "cuda" else torch.float32)
+            images = batch["pixel_values"].to(device_obj)
             
-            # Encode images to latents
+            # Encode images to latents (VAE requires float32)
             with torch.no_grad():
-                latents = vae.encode(images).latent_dist.sample()
+                # VAE is in float32, so convert images to float32 for encoding
+                images_fp32 = images.to(torch.float32)
+                latents = vae.encode(images_fp32).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
-                # Convert to float32 for UNet training (UNet is in float32)
-                latents = latents.to(torch.float32)
+                # Latents are already in float32 (VAE output matches VAE dtype)
                 
                 # Check for NaN/Inf in latents
                 if torch.isnan(latents).any() or torch.isinf(latents).any():
@@ -221,38 +223,28 @@ def finetune_sd_unet(
                 with torch.amp.autocast('cuda'):
                     model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
                     loss = F.mse_loss(model_pred, noise, reduction="mean")
-                
-                # Check for NaN/Inf
-                if torch.isnan(loss) or torch.isinf(loss):
-                    print(f"\nERROR: NaN/Inf loss detected at step {global_step}, epoch {epoch + 1}")
-                    print(f"  Loss value: {loss.item()}")
-                    print(f"  Model pred stats: min={model_pred.min().item():.4f}, max={model_pred.max().item():.4f}, mean={model_pred.mean().item():.4f}")
-                    print(f"  Noise stats: min={noise.min().item():.4f}, max={noise.max().item():.4f}, mean={noise.mean().item():.4f}")
-                    print(f"  Latents stats: min={latents.min().item():.4f}, max={latents.max().item():.4f}, mean={latents.mean().item():.4f}")
-                    print("  Stopping training to prevent further issues.")
-                    break
-                
-                # Backward with gradient scaling
+            else:
+                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
+                loss = F.mse_loss(model_pred, noise, reduction="mean")
+            
+            # Check for NaN/Inf (moved outside if/else to avoid duplication)
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"\nERROR: NaN/Inf loss detected at step {global_step}, epoch {epoch + 1}")
+                print(f"  Loss value: {loss.item()}")
+                print(f"  Model pred stats: min={model_pred.min().item():.4f}, max={model_pred.max().item():.4f}, mean={model_pred.mean().item():.4f}")
+                print(f"  Noise stats: min={noise.min().item():.4f}, max={noise.max().item():.4f}, mean={noise.mean().item():.4f}")
+                print(f"  Latents stats: min={latents.min().item():.4f}, max={latents.max().item():.4f}, mean={latents.mean().item():.4f}")
+                print("  Stopping training to prevent further issues.")
+                break
+            
+            # Backward pass
+            if device == "cuda" and scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(unet.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
-                loss = F.mse_loss(model_pred, noise, reduction="mean")
-                
-                # Check for NaN/Inf
-                if torch.isnan(loss) or torch.isinf(loss):
-                    print(f"\nERROR: NaN/Inf loss detected at step {global_step}, epoch {epoch + 1}")
-                    print(f"  Loss value: {loss.item()}")
-                    print(f"  Model pred stats: min={model_pred.min().item():.4f}, max={model_pred.max().item():.4f}, mean={model_pred.mean().item():.4f}")
-                    print(f"  Noise stats: min={noise.min().item():.4f}, max={noise.max().item():.4f}, mean={noise.mean().item():.4f}")
-                    print(f"  Latents stats: min={latents.min().item():.4f}, max={latents.max().item():.4f}, mean={latents.mean().item():.4f}")
-                    print("  Stopping training to prevent further issues.")
-                    break
-                
-                # Backward
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(unet.parameters(), max_norm=1.0)
                 optimizer.step()
