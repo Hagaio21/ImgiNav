@@ -116,14 +116,19 @@ def sample_custom_model(
             )
         
         # Decode latents to images
-        # sample_output is a dict with "latent" key
-        latents = sample_output.get("latent")
-        decoded = model.decoder({"latent": latents})
-        decoded_rgb = decoded.get("rgb")
+        # sample_output is a dict with "latent" and optionally "rgb" key
+        if "rgb" in sample_output:
+            # Already decoded by model.sample()
+            decoded_rgb = sample_output["rgb"]
+        else:
+            # Need to decode manually
+            latents = sample_output.get("latent")
+            decoded = model.decoder({"latent": latents})
+            decoded_rgb = decoded.get("rgb")
+            # Convert from [-1, 1] to [0, 1]
+            if decoded_rgb.min() < 0:
+                decoded_rgb = (decoded_rgb + 1.0) / 2.0
         
-        # Convert to [0, 1] range for PIL
-        if decoded_rgb.min() < 0:
-            decoded_rgb = (decoded_rgb + 1.0) / 2.0
         decoded_rgb = torch.clamp(decoded_rgb, 0.0, 1.0)
         
         # Convert to PIL images

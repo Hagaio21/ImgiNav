@@ -6,7 +6,7 @@
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
 #BSUB -W 24:00
-#BSUB -q gpuv100
+#BSUB -q gpua100
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
