@@ -328,15 +328,14 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         return
     
     num_steps = model.scheduler.num_steps
-    ddim_steps = 100  # Use 100 steps for DDIM sampling
-    print(f"  Generating {sample_batch_size} samples using DDIM ({ddim_steps} steps)...")
+    print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps)...")
     
     with torch.no_grad():
         sample_output = model.sample(
             batch_size=sample_batch_size,
-            num_steps=ddim_steps,
-            method="ddim",
-            eta=0.0,
+            num_steps=num_steps,  # Use full DDPM schedule
+            method="ddpm",
+            eta=1.0,  # eta=1.0 for full DDPM (stochastic)
             device=device_obj,
             verbose=False
         )
@@ -643,7 +642,7 @@ def main():
                     num_samples=memorization_num_generate,
                     batch_size=min(batch_size, 16),  # Smaller batch for generation
                     device=device_obj,
-                    method="ddim"  # Use DDIM for faster generation
+                    method="ddpm"  # Use DDPM for correct sampling
                 )
                 
                 # Run memorization check
@@ -655,7 +654,7 @@ def main():
                     memorization_dir,
                     latent_perturbation_std=0.0,
                     run_perturbation_test=False,
-                    method="ddim",
+                    method="ddpm",
                     device=device_obj
                 )
                 
