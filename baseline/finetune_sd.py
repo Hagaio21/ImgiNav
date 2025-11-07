@@ -106,10 +106,10 @@ def finetune_sd_unet(
     print(f"Loading Stable Diffusion model: {model_id}")
     print(f"Device: {device}")
     
-    # Load pipeline
+    # Load pipeline (use dtype instead of deprecated torch_dtype)
     pipe = StableDiffusionPipeline.from_pretrained(
         model_id,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        dtype=torch.float16 if device == "cuda" else torch.float32,
         safety_checker=None,
         requires_safety_checker=False
     )
@@ -127,6 +127,8 @@ def finetune_sd_unet(
     text_encoder.requires_grad_(False)
     
     # Only train UNet
+    # Convert UNet to float32 for training (gradient scaling requires float32)
+    unet = unet.to(torch.float32)
     unet.requires_grad_(True)
     unet.train()
     
@@ -155,8 +157,8 @@ def finetune_sd_unet(
         eps=1e-8
     )
     
-    # Use gradient scaler for mixed precision training
-    scaler = torch.cuda.amp.GradScaler() if device == "cuda" else None
+    # Use gradient scaler for mixed precision training (updated API)
+    scaler = torch.amp.GradScaler('cuda') if device == "cuda" else None
     
     # Learning rate scheduler
     num_update_steps_per_epoch = len(dataloader)
@@ -185,14 +187,16 @@ def finetune_sd_unet(
             with torch.no_grad():
                 latents = vae.encode(images).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
+                # Convert to float32 for UNet training (UNet is in float32)
+                latents = latents.to(torch.float32)
                 
                 # Check for NaN/Inf in latents
                 if torch.isnan(latents).any() or torch.isinf(latents).any():
                     print(f"\nWARNING: NaN/Inf detected in latents at step {global_step}, skipping batch")
                     continue
             
-            # Sample noise and timesteps
-            noise = torch.randn_like(latents)
+            # Sample noise and timesteps (in float32 to match UNet)
+            noise = torch.randn_like(latents, dtype=torch.float32)
             timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=device_obj)
             
             # Add noise to latents
@@ -209,12 +213,14 @@ def finetune_sd_unet(
                     return_tensors="pt"
                 )
                 text_embeddings = text_encoder(text_inputs.input_ids.to(device_obj))[0]
+                # Convert to float32 for UNet training
+                text_embeddings = text_embeddings.to(torch.float32)
             
             # Predict noise with mixed precision
             if device == "cuda" and scaler is not None:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
-                    loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+                    loss = F.mse_loss(model_pred, noise, reduction="mean")
                 
                 # Check for NaN/Inf
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -234,7 +240,7 @@ def finetune_sd_unet(
                 scaler.update()
             else:
                 model_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
-                loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+                loss = F.mse_loss(model_pred, noise, reduction="mean")
                 
                 # Check for NaN/Inf
                 if torch.isnan(loss) or torch.isinf(loss):
