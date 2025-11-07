@@ -472,7 +472,6 @@ def main():
     else:
         # Build model from config (fresh start)
         print("\nBuilding model from config...")
-        from models.diffusion import DiffusionModel
         diffusion_cfg = config.get("diffusion", {})
         if "type" in diffusion_cfg:
             diffusion_cfg = {k: v for k, v in diffusion_cfg.items() if k != "type"}
