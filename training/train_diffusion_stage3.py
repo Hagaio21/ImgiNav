@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Training script for Stage 2 diffusion fine-tuning with semantic losses.
-Loads Stage 1 checkpoints and fine-tunes with segmentation + perceptual losses.
+Training script for Stage 3 diffusion fine-tuning with adversarial training (discriminator).
+Loads Stage 2 checkpoints and fine-tunes with discriminator loss for improved viability.
 """
 
 import argparse
@@ -23,6 +23,7 @@ from training.utils import (
 )
 from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
+from models.components.discriminator import LatentDiscriminator
 from torchvision.utils import save_image, make_grid
 
 # Import memorization check utilities (optional)
@@ -38,8 +39,8 @@ except ImportError as e:
     print(f"Warning: Could not import memorization check utilities: {e}")
 
 
-def train_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, optimizer, device, epoch, use_amp=False, max_grad_norm=None):
-    """Train for one epoch with semantic losses."""
+def train_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, discriminator, discriminator_weight, optimizer, device, epoch, use_amp=False, max_grad_norm=None):
+    """Train for one epoch with semantic losses and discriminator."""
     model.train()
     total_loss = 0.0
     total_samples = 0
@@ -107,7 +108,6 @@ def train_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, o
                 semantic_loss_val = 0.0
                 semantic_logs = {}
                 if semantic_loss_fn is not None and "rgb" in batch and "segmentation" in batch:
-                    # Prepare decoded outputs and targets for semantic loss
                     decoded_outputs = {
                         "decoded_rgb": decoded.get("rgb"),
                         "decoded_segmentation": decoded.get("segmentation")
@@ -116,15 +116,28 @@ def train_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, o
                         "rgb": batch.get("rgb"),
                         "segmentation": batch.get("segmentation")
                     }
-                    
                     semantic_loss_val, semantic_logs = semantic_loss_fn(decoded_outputs, targets)
                 
+                # Discriminator loss (adversarial)
+                discriminator_loss_val = 0.0
+                discriminator_logs = {}
+                if discriminator is not None:
+                    # Get viability score from discriminator (operates on latents directly)
+                    viability_scores = discriminator(latents)  # [B, 1] in [0, 1]
+                    # Want to maximize score (push toward 1.0 = viable)
+                    discriminator_loss_val = -torch.log(viability_scores.mean() + 1e-8) * discriminator_weight
+                    discriminator_logs = {
+                        "discriminator_loss": discriminator_loss_val.detach(),
+                        "viability_score": viability_scores.mean().detach()
+                    }
+                
                 # Combined loss
-                total_loss_val = noise_loss + semantic_loss_val
+                total_loss_val = noise_loss + semantic_loss_val + discriminator_loss_val
                 logs = {
                     "noise_loss": noise_loss.detach(),
                     "semantic_loss": semantic_loss_val.detach() if semantic_loss_val != 0.0 else torch.tensor(0.0, device=device_obj),
-                    **semantic_logs
+                    **semantic_logs,
+                    **discriminator_logs
                 }
             
             optimizer.zero_grad()
@@ -160,7 +173,6 @@ def train_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, o
             semantic_loss_val = 0.0
             semantic_logs = {}
             if semantic_loss_fn is not None and "rgb" in batch and "segmentation" in batch:
-                # Prepare decoded outputs and targets for semantic loss
                 decoded_outputs = {
                     "decoded_rgb": decoded.get("rgb"),
                     "decoded_segmentation": decoded.get("segmentation")
@@ -169,15 +181,26 @@ def train_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, o
                     "rgb": batch.get("rgb"),
                     "segmentation": batch.get("segmentation")
                 }
-                
                 semantic_loss_val, semantic_logs = semantic_loss_fn(decoded_outputs, targets)
             
+            # Discriminator loss (adversarial)
+            discriminator_loss_val = 0.0
+            discriminator_logs = {}
+            if discriminator is not None:
+                viability_scores = discriminator(latents)
+                discriminator_loss_val = -torch.log(viability_scores.mean() + 1e-8) * discriminator_weight
+                discriminator_logs = {
+                    "discriminator_loss": discriminator_loss_val.detach(),
+                    "viability_score": viability_scores.mean().detach()
+                }
+            
             # Combined loss
-            total_loss_val = noise_loss + semantic_loss_val
+            total_loss_val = noise_loss + semantic_loss_val + discriminator_loss_val
             logs = {
                 "noise_loss": noise_loss.detach(),
                 "semantic_loss": semantic_loss_val.detach() if semantic_loss_val != 0.0 else torch.tensor(0.0, device=device_obj),
-                **semantic_logs
+                **semantic_logs,
+                **discriminator_logs
             }
             
             optimizer.zero_grad()
@@ -214,7 +237,7 @@ def train_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, o
     return avg_loss, avg_logs
 
 
-def eval_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, device, use_amp=False):
+def eval_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, discriminator, discriminator_weight, device, use_amp=False):
     """Evaluate for one epoch."""
     model.eval()
     total_loss = 0.0
@@ -280,11 +303,23 @@ def eval_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, de
                         }
                         semantic_loss_val, semantic_logs = semantic_loss_fn(decoded_outputs, targets)
                     
-                    total_loss_val = noise_loss + semantic_loss_val
+                    # Discriminator loss
+                    discriminator_loss_val = 0.0
+                    discriminator_logs = {}
+                    if discriminator is not None:
+                        viability_scores = discriminator(latents)
+                        discriminator_loss_val = -torch.log(viability_scores.mean() + 1e-8) * discriminator_weight
+                        discriminator_logs = {
+                            "discriminator_loss": discriminator_loss_val.detach(),
+                            "viability_score": viability_scores.mean().detach()
+                        }
+                    
+                    total_loss_val = noise_loss + semantic_loss_val + discriminator_loss_val
                     logs = {
                         "noise_loss": noise_loss.detach(),
                         "semantic_loss": semantic_loss_val.detach() if semantic_loss_val != 0.0 else torch.tensor(0.0, device=device_obj),
-                        **semantic_logs
+                        **semantic_logs,
+                        **discriminator_logs
                     }
             else:
                 outputs = model(latents, t, cond=cond, noise=noise)
@@ -315,11 +350,23 @@ def eval_epoch(model, dataloader, scheduler, noise_loss_fn, semantic_loss_fn, de
                     }
                     semantic_loss_val, semantic_logs = semantic_loss_fn(decoded_outputs, targets)
                 
-                total_loss_val = noise_loss + semantic_loss_val
+                # Discriminator loss
+                discriminator_loss_val = 0.0
+                discriminator_logs = {}
+                if discriminator is not None:
+                    viability_scores = discriminator(latents)
+                    discriminator_loss_val = -torch.log(viability_scores.mean() + 1e-8) * discriminator_weight
+                    discriminator_logs = {
+                        "discriminator_loss": discriminator_loss_val.detach(),
+                        "viability_score": viability_scores.mean().detach()
+                    }
+                
+                total_loss_val = noise_loss + semantic_loss_val + discriminator_loss_val
                 logs = {
                     "noise_loss": noise_loss.detach(),
                     "semantic_loss": semantic_loss_val.detach() if semantic_loss_val != 0.0 else torch.tensor(0.0, device=device_obj),
-                    **semantic_logs
+                    **semantic_logs,
+                    **discriminator_logs
                 }
             
             batch_size = latents.shape[0]
@@ -388,7 +435,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Stage 2 diffusion model with semantic losses")
+    parser = argparse.ArgumentParser(description="Train Stage 3 diffusion model with adversarial training")
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if exists")
     parser.add_argument("--no-resume", action="store_true", help="Force start from scratch")
@@ -452,12 +499,12 @@ def main():
     # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
     
-    # Load Stage 1 checkpoint if specified
-    stage1_checkpoint = config.get("diffusion", {}).get("stage1_checkpoint")
-    if stage1_checkpoint and not should_resume:
-        print(f"\nLoading Stage 1 checkpoint from: {stage1_checkpoint}")
+    # Load Stage 2 checkpoint if specified
+    stage2_checkpoint = config.get("diffusion", {}).get("stage2_checkpoint")
+    if stage2_checkpoint and not should_resume:
+        print(f"\nLoading Stage 2 checkpoint from: {stage2_checkpoint}")
         model, _ = DiffusionModel.load_checkpoint(
-            stage1_checkpoint,
+            stage2_checkpoint,
             map_location=device,
             return_extra=True,
             config=config
@@ -465,13 +512,13 @@ def main():
         model = model.to(device_obj)
         
         # Keep decoder frozen - only UNet will be updated
-        # Semantic losses will guide UNet to generate better latents
+        # Semantic and discriminator losses will guide UNet to generate better latents
         if hasattr(model, 'decoder'):
             print("Keeping decoder frozen - only UNet will be trained...")
             for param in model.decoder.parameters():
                 param.requires_grad = False
         
-        print("Stage 1 checkpoint loaded successfully")
+        print("Stage 2 checkpoint loaded successfully")
     elif should_resume:
         print(f"\nFound latest checkpoint: {latest_checkpoint}")
         print("Resuming training...")
@@ -505,8 +552,8 @@ def main():
         print(f"  Resuming from epoch {start_epoch + 1}")
         print(f"  Best validation loss so far: {best_val_loss:.6f}")
     else:
-        raise ValueError("Stage 2 training requires either a Stage 1 checkpoint or a resume checkpoint. "
-                        "Please specify 'diffusion.stage1_checkpoint' in config or provide a checkpoint to resume from.")
+        raise ValueError("Stage 3 training requires either a Stage 2 checkpoint or a resume checkpoint. "
+                        "Please specify 'diffusion.stage2_checkpoint' in config or provide a checkpoint to resume from.")
     
     # Build data loaders
     batch_size = config["training"].get("batch_size", 32)
@@ -530,6 +577,37 @@ def main():
             num_workers=num_workers,
             pin_memory=device_obj.type == "cuda"
         )
+    
+    # Load discriminator (required for Stage 3)
+    discriminator = None
+    discriminator_weight = 0.0
+    discriminator_path = config.get("discriminator", {}).get("checkpoint")
+    if discriminator_path:
+        print(f"Loading discriminator from {discriminator_path}")
+        discriminator_checkpoint = torch.load(discriminator_path, map_location=device_obj)
+        discriminator_config = discriminator_checkpoint.get("config")
+        if discriminator_config:
+            discriminator = LatentDiscriminator.from_config(discriminator_config)
+        else:
+            # Fallback: infer from latents
+            sample_latent = next(iter(train_loader))["latent"][0:1]
+            latent_channels = sample_latent.shape[1]
+            discriminator = LatentDiscriminator(
+                latent_channels=latent_channels,
+                base_channels=64,
+                num_layers=4
+            )
+        
+        discriminator.load_state_dict(discriminator_checkpoint["state_dict"])
+        discriminator = discriminator.to(device_obj)
+        discriminator.eval()  # Freeze discriminator during training
+        for param in discriminator.parameters():
+            param.requires_grad = False
+        
+        discriminator_weight = config.get("discriminator", {}).get("weight", 0.1)
+        print(f"  Discriminator loaded (weight={discriminator_weight})")
+    else:
+        raise ValueError("Stage 3 training requires a discriminator. Please specify 'discriminator.checkpoint' in config.")
     
     # Build losses
     print("Building losses...")
@@ -558,12 +636,13 @@ def main():
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
     
-    print(f"\nStarting Stage 2 training...")
+    print(f"\nStarting Stage 3 training...")
     print(f"  Epochs: {epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {optimizer.param_groups[0]['lr']}")
     print(f"  Mixed precision: {use_amp}")
     print(f"  Max grad norm: {max_grad_norm}")
+    print(f"  Discriminator weight: {discriminator_weight}")
     
     # Training loop
     for epoch in range(start_epoch, epochs):
@@ -574,7 +653,8 @@ def main():
         # Train
         train_loss, train_logs = train_epoch(
             model, train_loader, scheduler, noise_loss_fn, semantic_loss_fn,
-            optimizer, device_obj, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm
+            discriminator, discriminator_weight, optimizer, device_obj, epoch + 1,
+            use_amp=use_amp, max_grad_norm=max_grad_norm
         )
         
         print(f"Train Loss: {train_loss:.6f}")
@@ -587,7 +667,7 @@ def main():
         if val_loader and (epoch + 1) % eval_interval == 0:
             val_loss, val_logs = eval_epoch(
                 model, val_loader, scheduler, noise_loss_fn, semantic_loss_fn,
-                device_obj, use_amp=use_amp
+                discriminator, discriminator_weight, device_obj, use_amp=use_amp
             )
             print(f"Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():

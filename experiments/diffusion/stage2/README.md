@@ -11,10 +11,17 @@ Stage 2 fine-tunes diffusion models trained in Stage 1 (ablation experiments) to
 - Fast training (no decoding overhead)
 - Result: Model learns to denoise latents
 
-**Stage 2**: Ensure decoded layouts are viable
+**Stage 2**: Ensure decoded layouts are semantically viable
 - Loss: Noise prediction + Semantic losses (segmentation + perceptual)
+- Direct constraints on decoded images
 - Decode every batch → slower but focused
-- Result: Model learns to generate viable layouts
+- Result: Model learns to generate semantically viable layouts
+
+**Stage 3**: Add learned viability constraints (adversarial)
+- Loss: Noise prediction + Semantic losses + Discriminator loss
+- Learned constraints from discriminator (data-driven)
+- Requires pre-trained discriminator
+- Result: Model learns to generate layouts that pass discriminator
 
 ## Configuration
 
@@ -53,7 +60,7 @@ training:
 
 ### Key Differences from Stage 1
 
-1. **Decoder Unfrozen**: `autoencoder.frozen: false` - decoder is trainable
+1. **Decoder Frozen**: `autoencoder.frozen: true` - decoder stays frozen, only UNet is trained
 2. **Lower Learning Rate**: Typically 3-5x lower (e.g., 0.00005 vs 0.00015)
 3. **Smaller Batch Size**: 32 instead of 64 (due to decoding overhead)
 4. **Fewer Epochs**: 100 instead of 500 (fine-tuning)
@@ -127,5 +134,5 @@ experiments/diffusion/stage2/stage2_unet128_d4/
 - Stage 2 training is slower than Stage 1 due to decoding overhead
 - Monitor both noise_loss and semantic_loss components
 - Best checkpoint is saved based on validation loss
-- Decoder is automatically unfrozen during Stage 2 training
+- Decoder stays frozen - only UNet is updated based on semantic losses
 

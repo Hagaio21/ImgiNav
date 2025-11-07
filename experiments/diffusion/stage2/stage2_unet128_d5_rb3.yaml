@@ -11,10 +11,10 @@ experiment:
 diffusion:
   stage1_checkpoint: /work3/s233249/ImgiNav/experiments/diffusion/ablation/capacity_unet128_d5_rb3/diffusion_ablation_capacity_unet128_d5_rb3_checkpoint_best.pt
 
-# Autoencoder config (decoder will be unfrozen)
+# Autoencoder config (decoder stays frozen - only UNet is trained)
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
-  frozen: false  # Unfreeze decoder for Stage 2
+  frozen: true  # Keep decoder frozen - semantic losses guide UNet only
 
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
