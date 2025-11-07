@@ -498,23 +498,33 @@ def main():
     num_workers = config["training"].get("num_workers", 8)
     shuffle = config["training"].get("shuffle", True)
     
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
+    # Use dataset's make_dataloader to support weighted sampling
+    train_loader = train_dataset.make_dataloader(
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        pin_memory=device_obj.type == "cuda"
+        pin_memory=device_obj.type == "cuda",
+        persistent_workers=num_workers > 0,
+        use_weighted_sampling=config["training"].get("use_weighted_sampling", False),
+        group_rare_classes=config["training"].get("group_rare_classes", False),
+        class_grouping_path=config["training"].get("class_grouping_path", None),
+        max_weight=config["training"].get("max_weight", None),
+        exclude_extremely_rare=config["training"].get("exclude_extremely_rare", False),
+        min_samples_threshold=config["training"].get("min_samples_threshold", 50)
     )
+    print(f"Training dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
     val_loader = None
     if val_dataset:
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
+        val_loader = val_dataset.make_dataloader(
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            pin_memory=device_obj.type == "cuda"
+            pin_memory=device_obj.type == "cuda",
+            persistent_workers=num_workers > 0,
+            use_weighted_sampling=False  # No weighted sampling for validation
         )
+        print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)}")
     
     # Load discriminator (if specified for Stage 3)
     discriminator = None
