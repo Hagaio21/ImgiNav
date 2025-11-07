@@ -1,5 +1,5 @@
 # Stage 2: Fine-tuning for diffusion_ablation_capacity_unet32_d3
-# Loads Stage 1 checkpoint and fine-tunes with semantic losses
+# Loads Stage 1 checkpoint and fine-tunes with latent structural loss
 
 experiment:
   name: "diffusion_stage2_unet32_d3"
@@ -13,7 +13,7 @@ diffusion:
 # Autoencoder config (decoder stays frozen - only UNet is trained)
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
-  frozen: true  # Keep decoder frozen - semantic losses guide UNet only
+  frozen: true  # Keep decoder frozen - latent structural loss guides UNet only
 
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
@@ -66,15 +66,10 @@ training:
         key: "pred_noise"
         target: "noise"
         weight: 1.0
-      - type: SemanticLoss
-        segmentation_loss:
-          type: CrossEntropyLoss
-          key: "segmentation"
-          target: "segmentation"
-          weight: 0.1
-        perceptual_loss:
-          type: PerceptualLoss
-          key: "rgb"
-          target: "rgb"
-          weight: 0.05
+      - type: LatentStructuralLoss
+        key: "pred_noise"
+        target: "latent"
+        weight: 0.1
+        gradient_type: "sobel"
+        reduction: "mean"
 

@@ -53,6 +53,9 @@ def compute_loss(
     - SNRWeightedNoiseLoss: 
         preds["pred_noise"], preds["scheduler"], preds["timesteps"]
         targets["noise"]
+    - LatentStructuralLoss:
+        preds["pred_noise"], preds["scheduler"], preds["timesteps"], preds["noisy_latent"]
+        targets["latent"]
     - SemanticLoss:
         preds["decoded_rgb"], preds["decoded_segmentation"]
         targets["rgb"], targets["segmentation"]
@@ -81,10 +84,11 @@ def compute_loss(
     # Prepare preds dict for loss computation
     # All loss components will receive this dict, but only use the keys they need
     preds = {
-        "pred_noise": outputs["pred_noise"],  # For SNRWeightedNoiseLoss
-        "scheduler": model.scheduler,          # For SNRWeightedNoiseLoss
-        "timesteps": t,                        # For SNRWeightedNoiseLoss
-        "latent": latents,                     # For DiscriminatorLoss
+        "pred_noise": outputs["pred_noise"],      # For SNRWeightedNoiseLoss
+        "scheduler": model.scheduler,            # For SNRWeightedNoiseLoss
+        "timesteps": t,                          # For SNRWeightedNoiseLoss
+        "latent": latents,                       # For DiscriminatorLoss
+        "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss
     }
     
     # Add discriminator if available (for DiscriminatorLoss)
@@ -111,7 +115,8 @@ def compute_loss(
     # Prepare targets dict
     # All loss components will receive this dict, but only use the keys they need
     targets = {
-        "noise": noise,  # For SNRWeightedNoiseLoss
+        "noise": noise,      # For SNRWeightedNoiseLoss
+        "latent": latents,   # For LatentStructuralLoss (ground-truth clean latents)
     }
     
     # Add RGB and segmentation if available (for SemanticLoss)
