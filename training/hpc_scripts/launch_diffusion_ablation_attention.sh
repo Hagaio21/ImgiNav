@@ -12,7 +12,7 @@ echo "Focus: UNet with Self-Attention (Stage 1)"
 echo "=========================================="
 echo ""
 
-echo "Submitting attention experiments to A100 queue..."
+echo "Submitting attention experiments to V100 queue..."
 echo ""
 
 # UNet32 with attention (depth 3)
