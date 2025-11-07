@@ -442,7 +442,7 @@ def main():
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     
     # Build loss function
-    loss_fn = build_loss(config.get("training", {}).get("loss", {}))
+    loss_fn = build_loss(config)
     
     # Build learning rate scheduler
     lr_scheduler = build_scheduler(optimizer, config["training"])

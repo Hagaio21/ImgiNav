@@ -59,30 +59,21 @@ def build_dataset(config):
 def build_loss(config):
     """Build loss function from config.
     
-    Supports two formats:
-    1. Single loss: {"type": "MSELoss", ...}
-    2. Multiple losses: {"noise_loss": {...}, "semantic_loss": {...}} -> CompositeLoss
+    The loss config should have a "type" key specifying the loss class.
+    For multiple losses, use CompositeLoss with a "losses" list.
     """
-    from models.losses.base_loss import LOSS_REGISTRY, CompositeLoss
+    from models.losses.base_loss import LOSS_REGISTRY
     
     loss_cfg = config["training"]["loss"]
     
-    # Check if it's a single loss with "type" key
-    if "type" in loss_cfg:
-        loss_fn = LOSS_REGISTRY[loss_cfg["type"]].from_config(loss_cfg)
-        return loss_fn
+    if "type" not in loss_cfg:
+        raise ValueError(f"Loss config missing 'type' key: {loss_cfg}")
     
-    # Otherwise, it's a dictionary of multiple losses -> create CompositeLoss
-    # Convert dict to list of loss configs
-    losses_list = []
-    for loss_name, sub_loss_cfg in loss_cfg.items():
-        if "type" not in sub_loss_cfg:
-            raise ValueError(f"Loss '{loss_name}' missing 'type' key: {sub_loss_cfg}")
-        losses_list.append(sub_loss_cfg)
+    loss_type = loss_cfg["type"]
+    if loss_type not in LOSS_REGISTRY:
+        raise ValueError(f"Unknown loss type: {loss_type}. Available: {list(LOSS_REGISTRY.keys())}")
     
-    # Create CompositeLoss with the list of losses
-    composite_cfg = {"losses": losses_list}
-    loss_fn = CompositeLoss.from_config(composite_cfg)
+    loss_fn = LOSS_REGISTRY[loss_type].from_config(loss_cfg)
     return loss_fn
 
 

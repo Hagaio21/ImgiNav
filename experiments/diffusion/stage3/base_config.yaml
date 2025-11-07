@@ -77,24 +77,29 @@ training:
   
   # Loss configuration
   loss:
-    # Noise prediction loss (primary)
-    noise_loss:
-      type: MSELoss
-      key: "pred_noise"
-      target: "noise"
-      weight: 1.0
-    
-    # Semantic loss (segmentation + perceptual) - same as Stage 2
-    semantic_loss:
-      type: SemanticLoss
-      segmentation_loss:
-        type: CrossEntropyLoss
-        key: "segmentation"
-        target: "segmentation"
-        weight: 0.1  # Segmentation loss weight
-      perceptual_loss:
-        type: PerceptualLoss
-        key: "rgb"
-        target: "rgb"
-        weight: 0.05  # Perceptual loss weight
+    type: CompositeLoss
+    losses:
+      # Noise prediction loss (primary)
+      - type: MSELoss
+        key: "pred_noise"
+        target: "noise"
+        weight: 1.0
+      
+      # Semantic loss (segmentation + perceptual) - same as Stage 2
+      - type: SemanticLoss
+        segmentation_loss:
+          type: CrossEntropyLoss
+          key: "segmentation"
+          target: "segmentation"
+          weight: 0.1  # Segmentation loss weight
+        perceptual_loss:
+          type: PerceptualLoss
+          key: "rgb"
+          target: "rgb"
+          weight: 0.05  # Perceptual loss weight
+      
+      # Discriminator loss (adversarial) - Stage 3 only
+      - type: DiscriminatorLoss
+        key: "latent"
+        weight: 0.1  # Discriminator loss weight (adjust based on training stability)
 
