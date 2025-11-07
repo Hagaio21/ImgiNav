@@ -12,7 +12,7 @@ set -euo pipefail
 
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 CONFIG_FILE="${BASE_DIR}/experiments/diffusion/stage2/stage2_unet128_d5_rb3.yaml"
-PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion_stage2.py"
+PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 mkdir -p "${LOG_DIR}"
@@ -32,5 +32,5 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
 fi
 
 cd "${BASE_DIR}"
-python -m training.train_diffusion_stage2 "${CONFIG_FILE}"
+python -m training.train_diffusion "${CONFIG_FILE}"
 

@@ -89,7 +89,7 @@ discriminator:
 ```
 
 ```bash
-python training/train_diffusion_stage3.py experiments/diffusion/stage3/stage3_unet128_d4.yaml
+python training/train_diffusion.py experiments/diffusion/stage3/stage3_unet128_d4.yaml
 ```
 
 ## Configuration
@@ -144,13 +144,13 @@ training:
 ### Training
 
 ```bash
-python training/train_diffusion_stage3.py experiments/diffusion/stage3/stage3_unet128_d4.yaml
+python training/train_diffusion.py experiments/diffusion/stage3/stage3_unet128_d4.yaml
 ```
 
 ### Resume Training
 
 ```bash
-python training/train_diffusion_stage3.py experiments/diffusion/stage3/stage3_unet128_d4.yaml --resume
+python training/train_diffusion.py experiments/diffusion/stage3/stage3_unet128_d4.yaml --resume
 ```
 
 ## Creating Stage 3 Configs

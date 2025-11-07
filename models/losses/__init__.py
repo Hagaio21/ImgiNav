@@ -10,6 +10,7 @@ from .base_loss import (
     CompositeLoss,
 )
 from .semantic_loss import SemanticLoss
+from .diffusion_losses import SNRWeightedNoiseLoss, DiscriminatorLoss
 
 __all__ = [
     "LOSS_REGISTRY",
@@ -22,5 +23,7 @@ __all__ = [
     "PerceptualLoss",
     "CompositeLoss",
     "SemanticLoss",
+    "SNRWeightedNoiseLoss",
+    "DiscriminatorLoss",
 ]
 

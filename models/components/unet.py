@@ -126,39 +126,6 @@ class Unet(BaseComponent):
 
 # Backward compatibility: Keep DualUNet as an alias for Unet
 # This allows old checkpoints to load without breaking
-# The migration script will convert them to use Unet directly
-class ConditionFusion(BaseComponent):
-    """Deprecated: kept only for backward compatibility with old checkpoints."""
-    def _build(self):
-        mode = self._init_kwargs.get("mode", "none")
-        x_ch = self._init_kwargs.get("x_channels")
-        cond_ch = self._init_kwargs.get("cond_channels", 0)
-
-        self.mode = mode
-        if mode == "concat":
-            self.op = nn.Conv2d(x_ch + cond_ch, x_ch, 1)
-        elif mode == "add":
-            self.op = nn.Identity()
-        elif mode == "film":
-            self.gamma = nn.Conv2d(cond_ch, x_ch, 1)
-            self.beta = nn.Conv2d(cond_ch, x_ch, 1)
-        elif mode in ("none", None):
-            self.op = nn.Identity()
-        else:
-            raise ValueError(f"Unsupported fusion mode: {mode}")
-
-    def forward(self, x, cond):
-        if cond is None or self.mode in ("none", None):
-            return x
-        if self.mode == "concat":
-            return self.op(torch.cat([x, cond], dim=1))
-        elif self.mode == "add":
-            return x + cond
-        elif self.mode == "film":
-            return self.gamma(cond) * x + self.beta(cond)
-        return x
-
-
 class DualUNet(Unet):
     """
     Deprecated: DualUNet is now an alias for Unet.

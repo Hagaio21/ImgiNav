@@ -9,8 +9,7 @@ All files stored in dataset/augmented/images/
 Usage:
     python data_preparation/create_augmentations.py \
         --dataset-manifest datasets/layouts_latents.csv \
-        --output-dir datasets/augmented \
-        --use-mirror-rotation
+        --output-dir datasets/augmented
 """
 
 import argparse
@@ -136,7 +135,6 @@ def generate_all_augmentations(image_tensor):
 def create_augmentations(
     manifest_path,
     output_dir,
-    use_mirror_rotation=True,
     overwrite=False
 ):
     """
@@ -145,7 +143,6 @@ def create_augmentations(
     Args:
         manifest_path: Path to input manifest
         output_dir: Directory to save augmented dataset
-        use_mirror_rotation: If True, generate 7 variants (3 rotations + 1 mirror + 3 rotated mirrors)
         overwrite: Whether to overwrite existing files
     """
     manifest_path = Path(manifest_path)
@@ -213,14 +210,10 @@ def create_augmentations(
     df = df_filtered
     
     # Determine augmentation strategy
-    if use_mirror_rotation:
-        num_augmentations = 7
-        aug_description = "7 variants (3 rotations + mirror + 3 rotated mirrors)"
-        aug_names = ["rot90", "rot180", "rot270", "mirror", "mirror_rot90", "mirror_rot180", "mirror_rot270"]
-    else:
-        num_augmentations = 3
-        aug_description = "3 random variants (deprecated)"
-        aug_names = [f"aug{i+1:02d}" for i in range(num_augmentations)]
+    # Always use mirror-rotation augmentations (7 variants)
+    num_augmentations = 7
+    aug_description = "7 variants (3 rotations + mirror + 3 rotated mirrors)"
+    aug_names = ["rot90", "rot180", "rot270", "mirror", "mirror_rot90", "mirror_rot180", "mirror_rot270"]
     
     print(f"\n" + "="*60)
     print(f"Augmentation Strategy")
@@ -296,63 +289,26 @@ def create_augmentations(
             continue
         
         # Create augmentations
-        if use_mirror_rotation:
-            # Generate all deterministic augmentations
-            augmentation_variants = generate_all_augmentations(img_tensor)
-            augmentation_variants = augmentation_variants[1:]  # Skip original (first one)
-            
-            for aug_tensor, aug_name in zip(augmentation_variants, aug_names):
-                try:
-                    aug_path = images_dir / f"{base_name}_{aug_name}.png"
-                    
-                    # Save augmented image
-                    if not aug_path.exists() or overwrite:
-                        aug_np = aug_tensor.cpu().permute(1, 2, 0).numpy()
-                        aug_np = ((aug_np + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
-                        aug_img = Image.fromarray(aug_np)
-                        aug_img.save(aug_path)
-                    
-                    augmented_images[(idx, aug_name)] = aug_path
-                except Exception as e:
-                    print(f"Error creating augmentation {aug_name} for {copied_path}: {e}")
-                    failed += 1
-                    continue
-        else:
-            # Legacy: random augmentations (deprecated)
-            for aug_idx, aug_name in enumerate(aug_names):
-                try:
-                    # Apply old-style random augmentation
-                    angle = torch.rand(1, device=device).item() * 30 - 15
-                    angle_rad = angle * np.pi / 180.0
-                    cos_a = np.cos(angle_rad)
-                    sin_a = np.sin(angle_rad)
-                    img_tensor_batch = img_tensor.unsqueeze(0)
-                    _, _, h, w = img_tensor_batch.shape
-                    tx = (torch.rand(1, device=device).item() * 2 - 1) * 0.05 * w
-                    ty = (torch.rand(1, device=device).item() * 2 - 1) * 0.05 * h
-                    theta = torch.tensor([
-                        [cos_a, -sin_a, tx],
-                        [sin_a, cos_a, ty]
-                    ], dtype=torch.float32, device=device).unsqueeze(0)
-                    grid = F.affine_grid(theta, img_tensor_batch.size(), align_corners=False)
-                    aug_tensor = F.grid_sample(
-                        img_tensor_batch, grid, mode='bilinear', 
-                        padding_mode='reflection', align_corners=False
-                    ).squeeze(0)
-                    
-                    aug_path = images_dir / f"{base_name}_{aug_name}.png"
-                    
-                    if not aug_path.exists() or overwrite:
-                        aug_np = aug_tensor.cpu().permute(1, 2, 0).numpy()
-                        aug_np = ((aug_np + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
-                        aug_img = Image.fromarray(aug_np)
-                        aug_img.save(aug_path)
-                    
-                    augmented_images[(idx, aug_name)] = aug_path
-                except Exception as e:
-                    print(f"Error creating augmentation {aug_name} for {copied_path}: {e}")
-                    failed += 1
-                    continue
+        # Generate all deterministic augmentations
+        augmentation_variants = generate_all_augmentations(img_tensor)
+        augmentation_variants = augmentation_variants[1:]  # Skip original (first one)
+        
+        for aug_tensor, aug_name in zip(augmentation_variants, aug_names):
+            try:
+                aug_path = images_dir / f"{base_name}_{aug_name}.png"
+                
+                # Save augmented image
+                if not aug_path.exists() or overwrite:
+                    aug_np = aug_tensor.cpu().permute(1, 2, 0).numpy()
+                    aug_np = ((aug_np + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
+                    aug_img = Image.fromarray(aug_np)
+                    aug_img.save(aug_path)
+                
+                augmented_images[(idx, aug_name)] = aug_path
+            except Exception as e:
+                print(f"Error creating augmentation {aug_name} for {copied_path}: {e}")
+                failed += 1
+                continue
     
     print(f"Created {len(augmented_images)} augmented images")
     if failed > 0:
@@ -437,12 +393,6 @@ def main():
         help="Output directory for augmented dataset"
     )
     parser.add_argument(
-        "--use-mirror-rotation",
-        action="store_true",
-        default=True,
-        help="Use mirror + 90-degree rotations (7 variants per sample)"
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing files"
@@ -453,7 +403,6 @@ def main():
     create_augmentations(
         manifest_path=args.dataset_manifest,
         output_dir=args.output_dir,
-        use_mirror_rotation=args.use_mirror_rotation,
         overwrite=args.overwrite
     )
     

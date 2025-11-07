@@ -71,19 +71,19 @@ training:
 ### Training
 
 ```bash
-python training/train_diffusion_stage2.py experiments/diffusion/stage2/stage2_unet128_d4.yaml
+python training/train_diffusion.py experiments/diffusion/stage2/stage2_unet128_d4.yaml
 ```
 
 ### Resume Training
 
 ```bash
-python training/train_diffusion_stage2.py experiments/diffusion/stage2/stage2_unet128_d4.yaml --resume
+python training/train_diffusion.py experiments/diffusion/stage2/stage2_unet128_d4.yaml --resume
 ```
 
 ### Start Fresh (ignore checkpoints)
 
 ```bash
-python training/train_diffusion_stage2.py experiments/diffusion/stage2/stage2_unet128_d4.yaml --no-resume
+python training/train_diffusion.py experiments/diffusion/stage2/stage2_unet128_d4.yaml --no-resume
 ```
 
 ## Creating Stage 2 Configs

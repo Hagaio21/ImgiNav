@@ -13,9 +13,34 @@ class SemanticLoss(LossComponent):
     """
     Semantic loss that combines segmentation and perceptual losses.
     Used in Stage 2 diffusion training to ensure decoded layouts are viable.
+    
+    Config:
+        decoded_rgb_key: Key in preds for decoded RGB (default: "decoded_rgb")
+        decoded_seg_key: Key in preds for decoded segmentation (default: "decoded_segmentation")
+        target_rgb_key: Key in targets for target RGB (default: "rgb")
+        target_seg_key: Key in targets for target segmentation (default: "segmentation")
+        segmentation_loss: Config for segmentation loss (optional)
+            - type: Loss type (e.g., "CrossEntropyLoss")
+            - key: Key in preds for segmentation (default: "segmentation")
+            - target: Key in targets for target segmentation (default: "segmentation")
+            - weight: Loss weight
+        perceptual_loss: Config for perceptual loss (optional)
+            - type: Loss type (e.g., "PerceptualLoss")
+            - key: Key in preds for RGB (default: "rgb")
+            - target: Key in targets for target RGB (default: "rgb")
+            - weight: Loss weight
+    
+    This loss acts as a key mapper: it reads from decoded_* keys in preds and maps
+    them to standard keys for sub-losses, maintaining consistency with the dict interface.
     """
     def _build(self):
         super()._build()
+        
+        # Get key mappings (configurable)
+        self.decoded_rgb_key = self._init_kwargs.get("decoded_rgb_key", "decoded_rgb")
+        self.decoded_seg_key = self._init_kwargs.get("decoded_seg_key", "decoded_segmentation")
+        self.target_rgb_key = self._init_kwargs.get("target_rgb_key", "rgb")
+        self.target_seg_key = self._init_kwargs.get("target_seg_key", "segmentation")
         
         # Build segmentation loss
         seg_cfg = self._init_kwargs.get("segmentation_loss", {})
@@ -72,20 +97,21 @@ class SemanticLoss(LossComponent):
         
         # Segmentation loss
         if self.seg_loss is not None:
-            if "decoded_segmentation" in preds and "segmentation" in targets:
+            if self.decoded_seg_key in preds and self.target_seg_key in targets:
                 # Map decoded_segmentation -> segmentation for the loss
-                seg_preds = {"segmentation": preds["decoded_segmentation"]}
-                seg_targets = {"segmentation": targets["segmentation"]}
+                # This maintains consistency: sub-loss uses standard key names
+                seg_preds = {"segmentation": preds[self.decoded_seg_key]}
+                seg_targets = {"segmentation": targets[self.target_seg_key]}
                 seg_loss_val, seg_logs = self.seg_loss(seg_preds, seg_targets)
                 total_loss += seg_loss_val
                 logs.update({f"seg_{k}": v for k, v in seg_logs.items()})
         
         # Perceptual loss
         if self.perc_loss is not None:
-            if "decoded_rgb" in preds and "rgb" in targets:
+            if self.decoded_rgb_key in preds and self.target_rgb_key in targets:
                 # Normalize RGB to [0, 1] for perceptual loss (VGG expects [0, 1])
-                decoded_rgb = preds["decoded_rgb"]
-                target_rgb = targets["rgb"]
+                decoded_rgb = preds[self.decoded_rgb_key]
+                target_rgb = targets[self.target_rgb_key]
                 
                 # Handle tanh output ([-1, 1]) -> [0, 1]
                 if decoded_rgb.min() < 0:
@@ -94,6 +120,7 @@ class SemanticLoss(LossComponent):
                     target_rgb = (target_rgb + 1.0) / 2.0
                 
                 # Map decoded_rgb -> rgb for the loss
+                # This maintains consistency: sub-loss uses standard key names
                 perc_preds = {"rgb": decoded_rgb}
                 perc_targets = {"rgb": target_rgb}
                 perc_loss_val, perc_logs = self.perc_loss(perc_preds, perc_targets)
