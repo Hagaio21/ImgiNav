@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_capacity_unet128_d5_rb3.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/diffusion_capacity_unet128_d5_rb3.%J.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=32000]"
+#BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
 #BSUB -W 48:00  # 48 hours (deeper model with more resblocks needs more time)
 #BSUB -q gpul40s
