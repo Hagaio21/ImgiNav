@@ -153,13 +153,26 @@ class PerceptualLoss(LossComponent):
             p.requires_grad = False
         self.vgg = vgg
         self.criterion = nn.L1Loss()
+        self._device_set = False
 
     def forward(self, preds, targets):
         if self.key not in preds or self.target_key not in targets:
-            device = next(self.vgg.parameters()).device
+            device = next(self.vgg.parameters()).device if self._device_set else preds.get(self.key, targets.get(self.target_key, torch.zeros(1)))
+            if isinstance(device, torch.Tensor):
+                device = device.device
             return torch.tensor(0.0, device=device), {}
-        f_pred = self.vgg(preds[self.key])
-        f_tgt = self.vgg(targets[self.target_key])
+        
+        # Ensure VGG is on the same device as inputs
+        pred_tensor = preds[self.key]
+        target_tensor = targets[self.target_key]
+        device = pred_tensor.device
+        
+        if not self._device_set or next(self.vgg.parameters()).device != device:
+            self.vgg = self.vgg.to(device)
+            self._device_set = True
+        
+        f_pred = self.vgg(pred_tensor)
+        f_tgt = self.vgg(target_tensor)
         loss = self.criterion(f_pred, f_tgt) * self.weight
         return loss, {f"Perceptual_{self.key}": loss.detach()}
 
