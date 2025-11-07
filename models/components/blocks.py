@@ -98,3 +98,173 @@ class UpBlock(nn.Module):
         for res in self.res_blocks:
             x = res(x, t_emb)
         return x
+
+
+class SelfAttentionBlock(nn.Module):
+    """
+    Self-attention block for UNet.
+    Applies self-attention to capture long-range spatial dependencies.
+    
+    Args:
+        channels: Number of input/output channels
+        num_heads: Number of attention heads (default: channels // 32, min 1)
+        norm_groups: Number of groups for GroupNorm (default: 8)
+    """
+    def __init__(self, channels, num_heads=None, norm_groups=8):
+        super().__init__()
+        self.channels = channels
+        self.norm_groups = _compute_num_groups(channels, norm_groups)
+        
+        # Default to channels // 32 heads, but at least 1
+        if num_heads is None:
+            num_heads = max(1, channels // 32)
+        self.num_heads = num_heads
+        
+        # GroupNorm + SiLU + QKV projection
+        self.norm = nn.GroupNorm(self.norm_groups, channels)
+        self.act = nn.SiLU()
+        
+        # Multi-head attention: Q, K, V projections
+        self.qkv = nn.Conv2d(channels, channels * 3, 1)
+        self.proj = nn.Conv2d(channels, channels, 1)
+        
+    def forward(self, x):
+        """
+        Args:
+            x: Input tensor [B, C, H, W]
+        
+        Returns:
+            Output tensor [B, C, H, W]
+        """
+        B, C, H, W = x.shape
+        
+        # Normalize and activate
+        h = self.act(self.norm(x))
+        
+        # Compute Q, K, V
+        qkv = self.qkv(h)  # [B, 3*C, H, W]
+        q, k, v = qkv.chunk(3, dim=1)  # Each: [B, C, H, W]
+        
+        # Reshape for multi-head attention: [B, C, H, W] -> [B, num_heads, C//num_heads, H*W]
+        head_dim = C // self.num_heads
+        q = q.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
+        k = k.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
+        v = v.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
+        
+        # Transpose for attention computation: [B, num_heads, head_dim, H*W] -> [B, num_heads, H*W, head_dim]
+        q = q.transpose(-2, -1)  # [B, num_heads, H*W, head_dim]
+        k = k.transpose(-2, -1)  # [B, num_heads, H*W, head_dim]
+        v = v.transpose(-2, -1)  # [B, num_heads, H*W, head_dim]
+        
+        # Scaled dot-product attention
+        # Attention scores: [B, num_heads, H*W, H*W]
+        scale = (head_dim ** -0.5)
+        attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+        attn = F.softmax(attn, dim=-1)
+        
+        # Apply attention to values: [B, num_heads, H*W, head_dim]
+        out = torch.matmul(attn, v)
+        
+        # Reshape back: [B, num_heads, H*W, head_dim] -> [B, C, H, W]
+        out = out.transpose(-2, -1).contiguous()  # [B, num_heads, head_dim, H*W]
+        out = out.view(B, C, H, W)
+        
+        # Project and residual connection
+        out = self.proj(out)
+        return x + out  # Residual connection
+
+
+class ResidualBlockWithAttention(nn.Module):
+    """
+    Residual block with optional self-attention.
+    Similar to ResidualBlock but can include attention after the second conv.
+    """
+    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None):
+        super().__init__()
+        norm_groups_in = _compute_num_groups(in_ch, norm_groups)
+        norm_groups_out = _compute_num_groups(out_ch, norm_groups)
+        self.norm1 = nn.GroupNorm(norm_groups_in, in_ch)
+        self.act = nn.SiLU()
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+        
+        # Dropout after first conv
+        self.dropout1 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
+
+        self.time_emb = nn.Linear(time_dim, out_ch)
+
+        self.norm2 = nn.GroupNorm(norm_groups_out, out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
+        
+        # Dropout after second conv
+        self.dropout2 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
+        
+        # Optional self-attention
+        self.use_attention = use_attention
+        if use_attention:
+            self.attention = SelfAttentionBlock(out_ch, num_heads=attention_heads, norm_groups=norm_groups)
+        else:
+            self.attention = None
+
+        self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+
+    def forward(self, x, t_emb):
+        h = self.act(self.norm1(x))
+        h = self.conv1(h)
+        h = self.dropout1(h)
+
+        t = self.time_emb(t_emb).unsqueeze(-1).unsqueeze(-1)
+        h = h + t
+
+        h = self.act(self.norm2(h))
+        h = self.conv2(h)
+        h = self.dropout2(h)
+        
+        # Apply attention if enabled
+        if self.use_attention:
+            h = self.attention(h)
+
+        return h + self.skip(x)
+
+
+class DownBlockWithAttention(nn.Module):
+    """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
+    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, 
+                 use_attention=False, attention_heads=None):
+        super().__init__()
+        self.res_blocks = nn.ModuleList([
+            ResidualBlockWithAttention(
+                in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
+                use_attention=use_attention, attention_heads=attention_heads
+            )
+            for i in range(num_res_blocks)
+        ])
+        self.downsample = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
+
+    def forward(self, x, t_emb):
+        for res in self.res_blocks:
+            x = res(x, t_emb)
+        skip = x
+        x = self.downsample(x)
+        return x, skip
+
+
+class UpBlockWithAttention(nn.Module):
+    """UpBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
+    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0,
+                 use_attention=False, attention_heads=None):
+        super().__init__()
+        self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
+        self.res_blocks = nn.ModuleList([
+            ResidualBlockWithAttention(
+                out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
+                use_attention=use_attention, attention_heads=attention_heads
+            )
+            for i in range(num_res_blocks)
+        ])
+
+    def forward(self, x, skip, t_emb):
+        x = self.upsample(x)
+        x = torch.cat([x, skip], dim=1)
+        for res in self.res_blocks:
+            x = res(x, t_emb)
+        return x

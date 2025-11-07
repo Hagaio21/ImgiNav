@@ -6,7 +6,7 @@ import yaml
 from models.components.base_model import BaseModel
 from models.autoencoder import Autoencoder
 from models.decoder import Decoder
-from models.components.unet import Unet, DualUNet  # DualUNet for backward compatibility
+from models.components.unet import Unet, DualUNet, UnetWithAttention  # DualUNet for backward compatibility
 from models.components.scheduler import SCHEDULER_REGISTRY
 
 
@@ -72,12 +72,16 @@ class DiffusionModel(BaseModel):
 
         # UNet backbone
         # Handle backward compatibility: if config specifies DualUNet, use it (for old checkpoints)
+        # Also support UnetWithAttention for attention-enabled models
         unet_type = unet_cfg.get("type", "").lower()
         if unet_type in ("dualunet", "dual_unet"):
             # Old checkpoint format - use DualUNet (backward compatible alias)
             self.unet = DualUNet.from_config(unet_cfg)
+        elif unet_type in ("unetwithattention", "unet_with_attention"):
+            # Attention-enabled UNet
+            self.unet = UnetWithAttention.from_config(unet_cfg)
         else:
-            # New format - use Unet
+            # New format - use Unet (default)
             self.unet = Unet.from_config(unet_cfg)
         # Freeze UNet if requested (or use special ControlNet freezing)
         if unet_cfg.get("frozen", False):
