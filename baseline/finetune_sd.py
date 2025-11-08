@@ -14,6 +14,8 @@ Usage:
 """
 
 import argparse
+import shutil
+import sys
 import torch
 import torch.nn.functional as F
 from pathlib import Path
@@ -21,7 +23,6 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from tqdm import tqdm
-import sys
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -70,7 +71,6 @@ def finetune_sd_unet(
     batch_size=4,
     learning_rate=1e-5,
     num_workers=4,
-    save_steps=500,
     device="cuda",
     seed=42
 ):
@@ -85,7 +85,6 @@ def finetune_sd_unet(
         batch_size: Batch size
         learning_rate: Learning rate
         num_workers: DataLoader workers
-        save_steps: Save checkpoint every N steps
         device: Device to use
         seed: Random seed
     """
@@ -175,6 +174,8 @@ def finetune_sd_unet(
     # Training loop
     global_step = 0
     progress_bar = tqdm(range(max_train_steps), desc="Training")
+    best_loss = float('inf')
+    best_checkpoint_dir = None
     
     for epoch in range(epochs):
         unet.train()
@@ -257,19 +258,23 @@ def finetune_sd_unet(
             global_step += 1
             progress_bar.update(1)
             progress_bar.set_postfix({"loss": loss.item(), "epoch": epoch + 1})
-            
-            # Save checkpoint
-            if global_step % save_steps == 0:
-                checkpoint_dir = output_dir / f"checkpoint-{global_step}"
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Save UNet
-                unet.save_pretrained(checkpoint_dir / "unet")
-                
-                print(f"\nSaved checkpoint at step {global_step} to {checkpoint_dir}")
         
         avg_loss = epoch_loss / len(dataloader)
         print(f"\nEpoch {epoch + 1}/{epochs} - Average Loss: {avg_loss:.6f}")
+        
+        # Save best checkpoint
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            
+            # Remove old best checkpoint if it exists
+            if best_checkpoint_dir is not None and best_checkpoint_dir.exists():
+                shutil.rmtree(best_checkpoint_dir)
+            
+            # Save new best checkpoint
+            best_checkpoint_dir = output_dir / "checkpoint-best"
+            best_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            unet.save_pretrained(best_checkpoint_dir / "unet")
+            print(f"  ✓ New best checkpoint saved (loss: {best_loss:.6f})")
     
     # Save final model
     print(f"\nSaving final model to {output_dir}")
@@ -301,8 +306,6 @@ def main():
                        help="Learning rate")
     parser.add_argument("--num_workers", type=int, default=4,
                        help="DataLoader workers")
-    parser.add_argument("--save_steps", type=int, default=500,
-                       help="Save checkpoint every N steps")
     parser.add_argument("--device", type=str, default="cuda",
                        help="Device (cuda/cpu)")
     parser.add_argument("--seed", type=int, default=42,
@@ -318,7 +321,6 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         num_workers=args.num_workers,
-        save_steps=args.save_steps,
         device=args.device,
         seed=args.seed
     )

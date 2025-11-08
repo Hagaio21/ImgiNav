@@ -26,7 +26,6 @@ EPOCHS=50
 BATCH_SIZE=4
 LEARNING_RATE=5e-6  # Reduced from 1e-5 for stability (NaN loss prevention)
 NUM_WORKERS=8
-SAVE_STEPS=500
 
 # Model ID
 MODEL_ID="runwayml/stable-diffusion-v1-5"
@@ -96,7 +95,6 @@ python "${SCRIPT_PATH}" \
     --batch_size "${BATCH_SIZE}" \
     --learning_rate "${LEARNING_RATE}" \
     --num_workers "${NUM_WORKERS}" \
-    --save_steps "${SAVE_STEPS}" \
     --device "cuda" \
     --seed 42
 
