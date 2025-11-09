@@ -274,6 +274,12 @@ def finetune_sd_unet(
             best_checkpoint_dir = output_dir / "checkpoint-best"
             best_checkpoint_dir.mkdir(parents=True, exist_ok=True)
             unet.save_pretrained(best_checkpoint_dir / "unet")
+            
+            # Also save pipeline from best checkpoint for easy sampling
+            # Update pipe with current best UNet and save
+            pipe.unet = unet
+            pipe.save_pretrained(best_checkpoint_dir / "pipeline")
+            
             print(f"  ✓ New best checkpoint saved (loss: {best_loss:.6f})")
     
     # Save final model

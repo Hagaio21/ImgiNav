@@ -15,8 +15,8 @@ BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 SCRIPT_PATH="${BASE_DIR}/baseline/sample_finetuned_sd.py"
 LOG_DIR="${BASE_DIR}/baseline/hpc_scripts/logs"
 
-# Fine-tuned model directory
-MODEL_DIR="${BASE_DIR}/outputs/baseline_sd_finetuned/pipeline"
+# Base directory for fine-tuned models
+FINETUNED_BASE_DIR="${BASE_DIR}/outputs/baseline_sd_finetuned"
 
 # Output directory for samples
 OUTPUT_DIR="${BASE_DIR}/outputs/baseline_sd_finetuned_samples"
@@ -27,6 +27,18 @@ NUM_STEPS=50
 GUIDANCE_SCALE=1.0
 SEED=42
 
+# Auto-detect model directory (prefer best checkpoint, fallback to final)
+if [ -d "${FINETUNED_BASE_DIR}/checkpoint-best/pipeline" ]; then
+    MODEL_DIR="${FINETUNED_BASE_DIR}/checkpoint-best/pipeline"
+    MODEL_TYPE="best checkpoint (recommended)"
+elif [ -d "${FINETUNED_BASE_DIR}/pipeline" ]; then
+    MODEL_DIR="${FINETUNED_BASE_DIR}/pipeline"
+    MODEL_TYPE="final model"
+else
+    MODEL_DIR="${FINETUNED_BASE_DIR}/pipeline"
+    MODEL_TYPE="not found"
+fi
+
 mkdir -p "${LOG_DIR}"
 mkdir -p "${OUTPUT_DIR}"
 
@@ -35,6 +47,7 @@ echo "Sampling from Fine-tuned Stable Diffusion"
 echo "========================================="
 echo "Script: ${SCRIPT_PATH}"
 echo "Model directory: ${MODEL_DIR}"
+echo "Model type: ${MODEL_TYPE}"
 echo "Output directory: ${OUTPUT_DIR}"
 echo "Number of samples: ${NUM_SAMPLES}"
 echo "DDIM steps: ${NUM_STEPS}"
@@ -48,6 +61,9 @@ fi
 if [ ! -d "${MODEL_DIR}" ]; then
     echo "ERROR: Model directory not found: ${MODEL_DIR}" >&2
     echo "Fine-tune SD first using: bsub < baseline/hpc_scripts/run_finetune_sd.sh" >&2
+    echo ""
+    echo "Available directories in ${FINETUNED_BASE_DIR}:"
+    ls -la "${FINETUNED_BASE_DIR}" 2>/dev/null || echo "  (directory does not exist)"
     exit 1
 fi
 
