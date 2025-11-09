@@ -186,12 +186,13 @@ class LatentStructuralLoss(LossComponent):
             Gradient magnitude tensor [B, C, H, W] (for Sobel) or [B, C, H, W] (for Laplacian)
         """
         B, C, H, W = latents.shape
+        device = latents.device
         
         if self.gradient_type == "sobel":
             # Apply Sobel filters to each channel
-            # Expand kernels to match number of channels
-            sobel_x = self.sobel_x.expand(C, 1, 3, 3)
-            sobel_y = self.sobel_y.expand(C, 1, 3, 3)
+            # Expand kernels to match number of channels and ensure they're on the same device
+            sobel_x = self.sobel_x.to(device).expand(C, 1, 3, 3)
+            sobel_y = self.sobel_y.to(device).expand(C, 1, 3, 3)
             
             # Compute gradients for each channel
             grad_x = F.conv2d(latents, sobel_x, padding=1, groups=C)
@@ -202,7 +203,7 @@ class LatentStructuralLoss(LossComponent):
         
         else:  # laplacian
             # Apply Laplacian filter to each channel
-            laplacian_kernel = self.laplacian.expand(C, 1, 3, 3)
+            laplacian_kernel = self.laplacian.to(device).expand(C, 1, 3, 3)
             gradients = F.conv2d(latents, laplacian_kernel, padding=1, groups=C)
             # Take absolute value for Laplacian (second derivative can be negative)
             gradients = torch.abs(gradients)
