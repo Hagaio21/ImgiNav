@@ -54,7 +54,7 @@ training:
   batch_size: 32  # Smaller batch due to decoding overhead
   num_workers: 8
   shuffle: true
-  epochs: 100  # Fewer epochs for fine-tuning
+  epochs: 200
   learning_rate: 0.00005  # 3x lower than Stage 1 for fine-tuning
   optimizer: AdamW
   weight_decay: 0.1
@@ -62,13 +62,24 @@ training:
   # Checkpoint settings
   save_interval: 99999  # Disable periodic checkpoints
   eval_interval: 5  # Evaluate every 5 epochs
-  sample_interval: 10  # Generate samples every 10 epochs
+  sample_interval: 5  # Generate samples every 5 epochs
   
   # Mixed precision for efficiency
   use_amp: true
   
   # Gradient clipping for stability
   max_grad_norm: 0.5
+  
+  # Memorization testing
+  memorization_check_interval: 5  # Check every 5 epochs
+  memorization_num_generate: 100
+  memorization_num_training: 1000
+  
+  # Weighted sampling to balance room_id distribution
+  use_weighted_sampling: true
+  group_rare_classes: true
+  class_grouping_path: /work3/s233249/ImgiNav/ImgiNav/analysis/class_distribution_results/class_distribution_stats.json
+  max_weight: 20  # Cap weights to prevent over-sampling extremely rare classes (prevents memorization)
   
   # Loss configuration
   loss:

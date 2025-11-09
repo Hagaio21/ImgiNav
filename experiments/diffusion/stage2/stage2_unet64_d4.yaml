@@ -49,15 +49,26 @@ training:
   batch_size: 40  # Slightly smaller due to decoding overhead
   num_workers: 8
   shuffle: true
-  epochs: 100
+  epochs: 200
   learning_rate: 0.00005
   optimizer: AdamW
   weight_decay: 0.1
   save_interval: 99999
   eval_interval: 5
-  sample_interval: 10
+  sample_interval: 5  # Generate samples every 5 epochs
   use_amp: true
   max_grad_norm: 0.5
+  
+  # Memorization testing
+  memorization_check_interval: 5  # Check every 5 epochs
+  memorization_num_generate: 100
+  memorization_num_training: 1000
+  
+  # Weighted sampling to balance room_id distribution
+  use_weighted_sampling: true
+  group_rare_classes: true
+  class_grouping_path: /work3/s233249/ImgiNav/ImgiNav/analysis/class_distribution_results/class_distribution_stats.json
+  max_weight: 20  # Cap weights to prevent over-sampling extremely rare classes (prevents memorization)
   
   loss:
     type: CompositeLoss
