@@ -27,18 +27,6 @@ NUM_STEPS=50
 GUIDANCE_SCALE=1.0
 SEED=42
 
-# Auto-detect model directory (prefer best checkpoint, fallback to final)
-if [ -d "${FINETUNED_BASE_DIR}/checkpoint-best/pipeline" ]; then
-    MODEL_DIR="${FINETUNED_BASE_DIR}/checkpoint-best/pipeline"
-    MODEL_TYPE="best checkpoint (recommended)"
-elif [ -d "${FINETUNED_BASE_DIR}/pipeline" ]; then
-    MODEL_DIR="${FINETUNED_BASE_DIR}/pipeline"
-    MODEL_TYPE="final model"
-else
-    MODEL_DIR="${FINETUNED_BASE_DIR}/pipeline"
-    MODEL_TYPE="not found"
-fi
-
 mkdir -p "${LOG_DIR}"
 mkdir -p "${OUTPUT_DIR}"
 
@@ -46,11 +34,12 @@ echo "========================================="
 echo "Sampling from Fine-tuned Stable Diffusion"
 echo "========================================="
 echo "Script: ${SCRIPT_PATH}"
-echo "Model directory: ${MODEL_DIR}"
-echo "Model type: ${MODEL_TYPE}"
+echo "Base directory: ${FINETUNED_BASE_DIR}"
 echo "Output directory: ${OUTPUT_DIR}"
 echo "Number of samples: ${NUM_SAMPLES}"
 echo "DDIM steps: ${NUM_STEPS}"
+echo ""
+echo "Note: Script will auto-detect best checkpoint if available"
 echo ""
 
 # Check required files
@@ -58,12 +47,9 @@ if [ ! -f "${SCRIPT_PATH}" ]; then
     echo "ERROR: Script not found: ${SCRIPT_PATH}" >&2
     exit 1
 fi
-if [ ! -d "${MODEL_DIR}" ]; then
-    echo "ERROR: Model directory not found: ${MODEL_DIR}" >&2
+if [ ! -d "${FINETUNED_BASE_DIR}" ]; then
+    echo "ERROR: Base directory not found: ${FINETUNED_BASE_DIR}" >&2
     echo "Fine-tune SD first using: bsub < baseline/hpc_scripts/run_finetune_sd.sh" >&2
-    echo ""
-    echo "Available directories in ${FINETUNED_BASE_DIR}:"
-    ls -la "${FINETUNED_BASE_DIR}" 2>/dev/null || echo "  (directory does not exist)"
     exit 1
 fi
 
@@ -80,10 +66,10 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
 fi
 
 # ----------------------------------------------------------------------
-# Run script
+# Run script (auto-detects best checkpoint)
 cd "${BASE_DIR}"
 python "${SCRIPT_PATH}" \
-    --model_dir "${MODEL_DIR}" \
+    --base_dir "${FINETUNED_BASE_DIR}" \
     --num_samples "${NUM_SAMPLES}" \
     --num_steps "${NUM_STEPS}" \
     --guidance_scale "${GUIDANCE_SCALE}" \
