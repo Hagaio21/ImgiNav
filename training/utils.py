@@ -186,6 +186,98 @@ def get_device(config):
     return device
 
 
+def to_device(device):
+    """Convert device string to device object if needed.
+    
+    Args:
+        device: Device string (e.g., "cuda", "cpu") or torch.device object
+    
+    Returns:
+        torch.device object
+    """
+    return torch.device(device) if isinstance(device, str) else device
+
+
+def move_batch_to_device(batch, device, non_blocking=None):
+    """Move batch to device with optional non_blocking transfer.
+    
+    Args:
+        batch: Dictionary of tensors and other data
+        device: Device to move to (string or torch.device)
+        non_blocking: Whether to use non_blocking transfer. If None, auto-detects based on device type.
+    
+    Returns:
+        Batch with tensors moved to device
+    """
+    device_obj = to_device(device)
+    if non_blocking is None:
+        non_blocking = device_obj.type == "cuda" if hasattr(device_obj, 'type') else False
+    
+    return {
+        k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v
+        for k, v in batch.items()
+    }
+
+
+def split_dataset(dataset, config):
+    """Split dataset into train and validation sets based on config.
+    
+    Args:
+        dataset: Dataset to split
+        config: Training config dict
+    
+    Returns:
+        (train_dataset, val_dataset) tuple. val_dataset may be None if train_split >= 1.0
+    """
+    train_split = config.get("train_split", 0.8)
+    split_seed = config.get("split_seed", 42)
+    
+    if train_split < 1.0:
+        train_dataset, val_dataset = dataset.split(train_split=train_split, random_seed=split_seed)
+    else:
+        train_dataset = dataset
+        val_dataset = None
+    
+    return train_dataset, val_dataset
+
+
+def create_grad_scaler(use_amp, device):
+    """Create gradient scaler for mixed precision training.
+    
+    Args:
+        use_amp: Whether to use mixed precision
+        device: Device (string or torch.device)
+    
+    Returns:
+        GradScaler instance or None
+    """
+    if not use_amp:
+        return None
+    
+    device_obj = to_device(device)
+    if device_obj.type == "cuda":
+        # Use the newer torch.amp.GradScaler API
+        return torch.amp.GradScaler('cuda')
+    return None
+
+
+def save_metrics_csv(training_history, metrics_csv_path, phase_metrics_path=None):
+    """Save training history to CSV file(s).
+    
+    Args:
+        training_history: List of dict records (one per epoch)
+        metrics_csv_path: Path to main metrics CSV
+        phase_metrics_path: Optional path to phase metrics CSV
+    """
+    import pandas as pd
+    
+    df = pd.DataFrame(training_history)
+    df.to_csv(metrics_csv_path, index=False)
+    
+    if phase_metrics_path:
+        df.to_csv(phase_metrics_path, index=False)
+
+
 def build_scheduler(optimizer, config, last_epoch=-1):
     """Build learning rate scheduler from config.
     

@@ -20,6 +20,11 @@ from training.utils import (
     build_loss,
     build_dataset,
     build_scheduler,
+    to_device,
+    move_batch_to_device,
+    split_dataset,
+    create_grad_scaler,
+    save_metrics_csv,
 )
 from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
@@ -145,12 +150,7 @@ def train_epoch(
     total_samples = 0
     log_dict = {}
     
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
-    
-    non_blocking = device_obj.type == "cuda"
+    device_obj = to_device(device)
     
     # Keep decoder frozen - only UNet is trained
     if hasattr(model, 'decoder'):
@@ -159,7 +159,7 @@ def train_epoch(
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch_idx, batch in enumerate(pbar):
-        batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        batch = move_batch_to_device(batch, device_obj)
         
         # Get latents
         latents = batch.get("latent")
@@ -192,16 +192,21 @@ def train_epoch(
             
             optimizer.zero_grad()
             scaler = getattr(train_epoch, '_scaler', None)
-            if scaler is None and use_amp:
-                scaler = torch.amp.GradScaler('cuda')
+            if scaler is None:
+                scaler = create_grad_scaler(use_amp, device_obj)
                 train_epoch._scaler = scaler
             
-            scaler.scale(total_loss_val).backward()
-            if max_grad_norm is not None:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
+            if scaler:
+                scaler.scale(total_loss_val).backward()
+                if max_grad_norm is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                if max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                optimizer.step()
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
@@ -252,16 +257,11 @@ def eval_epoch(
     total_samples = 0
     log_dict = {}
     
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
-    
-    non_blocking = device_obj.type == "cuda"
+    device_obj = to_device(device)
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
-            batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            batch = move_batch_to_device(batch, device_obj)
             
             latents = batch.get("latent")
             if latents is None:
@@ -321,10 +321,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
+    device_obj = to_device(device)
     
     try:
         batch_iter = iter(val_loader)
@@ -405,20 +402,9 @@ def main():
     dataset = build_dataset(config)
     
     # Build validation dataset
-    train_split = config["training"].get("train_split", 0.8)
-    split_seed = config["training"].get("split_seed", 42)
+    train_dataset, val_dataset = split_dataset(dataset, config["training"])
     
-    if train_split < 1.0:
-        train_dataset, val_dataset = dataset.split(train_split=train_split, random_seed=split_seed)
-    else:
-        train_dataset = dataset
-        val_dataset = None
-    
-    # Prepare device object
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
+    device_obj = to_device(device)
     
     # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
@@ -777,8 +763,7 @@ def main():
         training_history.append(history_entry)
         
         # Save metrics to CSV
-        df = pd.DataFrame(training_history)
-        df.to_csv(metrics_csv_path, index=False)
+        save_metrics_csv(training_history, metrics_csv_path)
         
         # Save checkpoint
         checkpoint_dir = output_dir / "checkpoints"

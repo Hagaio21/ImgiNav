@@ -38,41 +38,6 @@ python scripts/diffusion_inference.py \
 - `--batch_size`: Batch size for generation
 - `--seed`: Random seed for reproducibility
 
-### `migrate_dualunet_checkpoints.py`
-Utility for migrating checkpoints from DualUNet to standard UNet format.
-
-**Features:**
-- Convert DualUNet checkpoints to UNet format
-- Preserve model weights
-- Update state dict keys
-- Validation of migrated checkpoints
-
-**Usage:**
-```bash
-python scripts/migrate_dualunet_checkpoints.py \
-    --input_checkpoint /path/to/dualunet.pt \
-    --output_checkpoint /path/to/unet.pt \
-    --config /path/to/config.yaml
-```
-
-**Note:** This script is for backward compatibility when migrating from older model architectures.
-
-### `test_checkpoint_migration.py`
-Test script for validating checkpoint migration.
-
-**Features:**
-- Verify migrated checkpoints
-- Compare model outputs
-- Validate weight preservation
-- Test forward passes
-
-**Usage:**
-```bash
-python scripts/test_checkpoint_migration.py \
-    --original_checkpoint /path/to/original.pt \
-    --migrated_checkpoint /path/to/migrated.pt \
-    --config /path/to/config.yaml
-```
 
 ## Usage Examples
 
@@ -95,28 +60,10 @@ python scripts/diffusion_inference.py \
     --output_dir outputs/batch_samples
 ```
 
-### Migrate Checkpoint
-
-```bash
-python scripts/migrate_dualunet_checkpoints.py \
-    --input_checkpoint checkpoints/old_dualunet.pt \
-    --output_checkpoint checkpoints/new_unet.pt \
-    --config experiments/diffusion/ablation/base_config.yaml
-```
-
-### Test Migration
-
-```bash
-python scripts/test_checkpoint_migration.py \
-    --original_checkpoint checkpoints/old_dualunet.pt \
-    --migrated_checkpoint checkpoints/new_unet.pt \
-    --config experiments/diffusion/ablation/base_config.yaml
-```
 
 ## Notes
 
 - All scripts support both CPU and GPU inference
-- Checkpoint migration preserves model weights but updates architecture
 - Inference scripts can be used for both unconditional and conditional generation
 - Scripts include error handling and validation
 

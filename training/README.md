@@ -108,15 +108,19 @@ The `hpc_scripts/` directory contains shell scripts for running experiments on H
 
 ### Autoencoder Scripts
 - `launch_phase1_1.sh` - Launch Phase 1.1 experiments
-- `launch_phase1_2.sh` - Launch Phase 1.2 experiments
+- `launch_phase1_2_and_1_3.sh` - Launch Phase 1.2 and 1.3 experiments (combined)
 - `run_phase1_X_*.sh` - Individual experiment scripts
 
 ### Diffusion Scripts
 - `launch_diffusion_ablation_all.sh` - Launch all diffusion ablations
+- `launch_diffusion_ablation_selected.sh` - Launch selected diffusion ablations
+- `launch_diffusion_ablation_attention.sh` - Launch attention ablation experiments
 - `run_diffusion_capacity_*.sh` - Individual capacity ablation scripts
+- `launch_stage2_*.sh` - Launch Stage 2 fine-tuning experiments
+- `launch_stage3_*.sh` - Launch Stage 3 experiments
 
 ### Utility Scripts
-- `preembed_latents.sh` - Pre-embed latents for faster diffusion training
+- `preembed_latents_phase1_6.sh` - Pre-embed latents for faster diffusion training (Phase 1.6)
 
 ## Training Workflow
 
@@ -140,7 +144,7 @@ python training/train.py --config experiments/autoencoders/phase1/phase1_1_AE_S1
 
 1. **Pre-embed Latents** (optional but recommended):
    ```bash
-   bash training/hpc_scripts/preembed_latents.sh
+   bash training/hpc_scripts/preembed_latents_phase1_6.sh
    ```
 
 2. **Prepare Config**: Create YAML config in `experiments/diffusion/ablation/`

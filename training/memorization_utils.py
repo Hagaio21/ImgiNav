@@ -22,6 +22,8 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from training.utils import to_device
+
 # Try to import LPIPS for perceptual similarity
 try:
     import lpips
@@ -350,7 +352,7 @@ def sample_from_latent(model, z0, num_steps=None, method="ddpm", device="cuda"):
         Dictionary with "latent" and "rgb" keys
     """
     model.eval()
-    device_obj = torch.device(device) if isinstance(device, str) else device
+    device_obj = to_device(device)
     z0 = z0.to(device_obj)
     
     if num_steps is None:
@@ -446,7 +448,7 @@ def perturbation_test(model, z0_samples, noise_stds=[0.01, 0.02, 0.05, 0.1], dev
     print("Perturbation Test: Assessing Memorization vs Generalization")
     print("="*60)
     
-    device_obj = torch.device(device) if isinstance(device, str) else device
+    device_obj = to_device(device)
     
     # Initialize LPIPS if available
     lpips_model = None
@@ -603,7 +605,7 @@ def check_memorization(model, training_samples, generated_samples, output_dir,
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Clear CUDA cache before starting
-    device_obj = torch.device(device) if isinstance(device, str) else device
+    device_obj = to_device(device)
     if device_obj.type == 'cuda':
         torch.cuda.empty_cache()
     

@@ -24,6 +24,8 @@ import sys
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from common.utils import is_augmented_path
+
 
 def prepare_layout_dataset(
     manifest_path,
@@ -63,14 +65,6 @@ def prepare_layout_dataset(
             print(f"After filtering augmented: {len(df)} samples")
         else:
             # Filter by path pattern
-            def is_augmented_path(path_str):
-                if pd.isna(path_str):
-                    return True
-                path_str = str(path_str).lower()
-                aug_patterns = ["_rot", "_mirror", "_aug", "rot90", "rot180", "rot270", 
-                               "mirror_rot", "augmented"]
-                return any(pattern in path_str for pattern in aug_patterns)
-            
             df["_is_augmented"] = df[layout_column].apply(is_augmented_path)
             df = df[df["_is_augmented"] == False].copy()
             df = df.drop(columns=["_is_augmented"])

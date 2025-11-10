@@ -106,13 +106,19 @@ def extract_tensor_from_batch(batch, device=None, key="layout"):
     return tensor
 
 
-def save_checkpoint(state_dict, path, metadata=None):
-
-    import torch
+def is_augmented_path(path_str):
+    """Check if a path string indicates an augmented image.
     
-    checkpoint = {"state_dict": state_dict}
-    if metadata:
-        checkpoint.update(metadata)
+    Args:
+        path_str: Path string to check
     
-    safe_mkdir(Path(path).parent)
-    torch.save(checkpoint, path)
+    Returns:
+        True if path appears to be augmented, False otherwise
+    """
+    if path_str is None or (isinstance(path_str, float) and str(path_str).lower() == 'nan'):
+        return True  # Treat NaN as augmented to filter out
+    
+    path_str = str(path_str).lower()
+    aug_patterns = ["_rot", "_mirror", "_aug", "rot90", "rot180", "rot270", 
+                   "mirror_rot", "augmented"]
+    return any(pattern in path_str for pattern in aug_patterns)

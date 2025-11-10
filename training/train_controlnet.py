@@ -24,6 +24,11 @@ from training.utils import (
     build_loss,
     build_dataset,
     build_scheduler,
+    to_device,
+    move_batch_to_device,
+    split_dataset,
+    create_grad_scaler,
+    save_metrics_csv,
 )
 from models.diffusion import DiffusionModel
 from models.components.controlnet import ControlNet
@@ -36,18 +41,13 @@ def train_epoch(model, controlnet, dataloader, scheduler, loss_fn, optimizer, de
     total_loss = 0.0
     total_samples = 0
     
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
+    device_obj = to_device(device)
     
-    non_blocking = device_obj.type == "cuda"
-    
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    scaler = create_grad_scaler(use_amp, device_obj)
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch_idx, batch in enumerate(pbar):
-        batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        batch = move_batch_to_device(batch, device_obj)
         
         # Get latents (required for diffusion training)
         latents = batch.get("latent")
@@ -134,17 +134,12 @@ def eval_epoch(model, controlnet, dataloader, scheduler, loss_fn, device, use_am
     total_loss = 0.0
     total_samples = 0
     
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
-    
-    non_blocking = device_obj.type == "cuda"
+    device_obj = to_device(device)
     
     with torch.no_grad():
         pbar = tqdm(dataloader, desc="Eval")
         for batch in pbar:
-            batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            batch = move_batch_to_device(batch, device_obj)
             
             latents = batch.get("latent")
             if latents is None:
@@ -197,16 +192,13 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
+    device_obj = to_device(device)
     
     # Get a batch for sampling
     try:
         batch_iter = iter(val_loader)
         batch = next(batch_iter)
-        batch = {k: v.to(device_obj, non_blocking=False) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        batch = move_batch_to_device(batch, device_obj, non_blocking=False)
         
         # Limit batch size
         batch_size = min(sample_batch_size, batch["latent"].shape[0])
@@ -307,21 +299,10 @@ def main():
     
     # Build dataset
     dataset_config = config["dataset"]
-    train_split = config["training"].get("train_split", 0.8)
-    split_seed = config["training"].get("split_seed", 42)
+    dataset = build_dataset(config)
+    train_dataset, val_dataset = split_dataset(dataset, config["training"])
     
-    dataset = build_dataset(dataset_config)
-    if train_split < 1.0:
-        train_dataset, val_dataset = dataset.split(train_split=train_split, random_seed=split_seed)
-    else:
-        train_dataset = dataset
-        val_dataset = None
-    
-    # Prepare device object
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
+    device_obj = to_device(device)
     
     # Load pretrained diffusion model
     diffusion_config = config.get("diffusion", {})
@@ -387,7 +368,8 @@ def main():
     print(f"ControlNet parameters: {trainable_params:,} trainable / {total_params:,} total")
     
     # Build data loaders
-    if train_split < 1.0:
+    train_split = config["training"].get("train_split", 0.8)
+    if train_split < 1.0 and val_dataset is not None:
         val_loader = val_dataset.make_dataloader(
             batch_size=config["training"].get("batch_size", 16),
             shuffle=False,
@@ -525,8 +507,7 @@ def main():
             }, latest_checkpoint)
             
             # Save metrics to CSV
-            df = pd.DataFrame(training_history)
-            df.to_csv(metrics_csv_path, index=False)
+            save_metrics_csv(training_history, metrics_csv_path)
         
         # Print epoch summary
         print(f"\nEpoch {epoch} Summary:")

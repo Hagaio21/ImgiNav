@@ -19,6 +19,7 @@ from models.diffusion import DiffusionModel
 from models.autoencoder import Autoencoder
 from models.datasets.datasets import ManifestDataset
 from torch.utils.data import DataLoader
+from common.utils import is_augmented_path
 
 
 def select_real_images(manifest_path, num_samples=5000, seed=42):
@@ -62,14 +63,6 @@ def select_real_images(manifest_path, num_samples=5000, seed=42):
         # Augmented images might have patterns like "_rot", "_mirror", "_aug", etc.
         if layout_col in df.columns:
             # Check for common augmentation patterns in filename
-            def is_augmented_path(path_str):
-                if pd.isna(path_str):
-                    return True
-                path_str = str(path_str).lower()
-                aug_patterns = ["_rot", "_mirror", "_aug", "rot90", "rot180", "rot270", 
-                               "mirror_rot", "augmented"]
-                return any(pattern in path_str for pattern in aug_patterns)
-            
             df["_is_augmented"] = df[layout_col].apply(is_augmented_path)
             df_real = df[df["_is_augmented"] == False].copy()
             df_real = df_real.drop(columns=["_is_augmented"])

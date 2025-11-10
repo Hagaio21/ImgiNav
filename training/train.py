@@ -38,6 +38,10 @@ from training.utils import (
     build_loss,
     build_optimizer,
     get_device,
+    to_device,
+    move_batch_to_device,
+    create_grad_scaler,
+    save_metrics_csv,
 )
 
 
@@ -48,19 +52,12 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
     total_samples = 0
     log_dict = {}
     
-    # Convert device string to device object if needed
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
-    
-    # Use non_blocking transfer for faster GPU transfers when pin_memory is enabled
-    non_blocking = device_obj.type == "cuda"
+    device_obj = to_device(device)
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch in pbar:
         # Move batch to device (non_blocking if using CUDA with pin_memory)
-        batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        batch = move_batch_to_device(batch, device_obj)
         
         # Forward pass with mixed precision
         if use_amp and device_obj.type == "cuda":
@@ -70,15 +67,18 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
             
             # Backward pass with gradient scaling (scaler created once before loop)
             optimizer.zero_grad()
-            # Create scaler if needed (should be passed in, but handle here for now)
             scaler = getattr(train_epoch, '_scaler', None)
-            if scaler is None and use_amp:
-                scaler = torch.cuda.amp.GradScaler()
+            if scaler is None:
+                scaler = create_grad_scaler(use_amp, device_obj)
                 train_epoch._scaler = scaler
             
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            if scaler:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
         else:
             # Forward pass
             outputs = model(batch["rgb"])
@@ -117,19 +117,12 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
     total_samples = 0
     log_dict = {}
     
-    # Convert device string to device object if needed
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
-    
-    # Use non_blocking transfer for faster GPU transfers when pin_memory is enabled
-    non_blocking = device_obj.type == "cuda"
+    device_obj = to_device(device)
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Eval", leave=False):
             # Move batch to device (non_blocking if using CUDA with pin_memory)
-            batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            batch = move_batch_to_device(batch, device_obj)
             
             # Forward pass with mixed precision
             if use_amp and device_obj.type == "cuda":
@@ -164,17 +157,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     
-    # Convert device string to device object if needed
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
+    device_obj = to_device(device)
     
     # Get one batch for visualization
-    non_blocking = device_obj.type == "cuda"
     batch_iter = iter(val_loader)
     batch = next(batch_iter)
-    batch = {k: v.to(device_obj, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    batch = move_batch_to_device(batch, device_obj)
     
     # Limit batch size for visualization and compute grid size
     if isinstance(batch.get("rgb"), torch.Tensor):
@@ -306,11 +294,7 @@ def main():
     # CSV file path for metrics (defined early so we can load from it if needed)
     metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
     
-    # Convert device string to device object
-    if isinstance(device, str):
-        device_obj = torch.device(device)
-    else:
-        device_obj = device
+    device_obj = to_device(device)
     
     should_resume = latest_checkpoint.exists()
     if should_resume:
@@ -449,7 +433,7 @@ def main():
     if use_amp and device_obj.type == "cuda":
         print("Using mixed precision training (FP16)")
         # Create scaler once for the training function
-        train_epoch._scaler = torch.amp.GradScaler('cuda')
+        train_epoch._scaler = create_grad_scaler(use_amp, device_obj)
     elif not use_amp:
         print("Mixed precision training disabled (use_amp: false)")
     
@@ -790,12 +774,10 @@ def main():
         training_history.append(epoch_log)
         
         # Save metrics CSV (overwrite with all epochs so far)
-        df = pd.DataFrame(training_history)
-        df.to_csv(metrics_csv_path, index=False)
+        save_metrics_csv(training_history, metrics_csv_path, phase_metrics_path)
         
-        # Also save to phase folder if phase is specified (for analysis)
-        if phase_metrics_path:
-            df.to_csv(phase_metrics_path, index=False)
+        # Create DataFrame for plotting
+        df = pd.DataFrame(training_history)
         
         # Plot normalizer convergence if available (overwrites same file each time)
         if norm_stats:
