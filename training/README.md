@@ -9,7 +9,6 @@ The training module provides:
 - Training scripts for diffusion models (`train_diffusion.py`)
 - Training scripts for ControlNet (`train_controlnet.py`)
 - Training utilities and helpers
-- Memorization detection utilities
 
 ## Files
 
@@ -43,7 +42,6 @@ Training script for diffusion models.
 - Pre-embedded latent support (faster training)
 - Noise prediction training
 - Multiple scheduler support
-- Memorization detection
 - Weighted sampling for class balancing
 - Gradient clipping for stability
 - Mixed precision training (AMP)
@@ -56,7 +54,6 @@ python training/train_diffusion.py --config experiments/diffusion/ablation/capac
 **Key Functionality:**
 - Loads frozen autoencoder decoder
 - Trains UNet on pre-embedded latents
-- Checks for memorization during training
 - Generates samples for evaluation
 - Saves only best and latest checkpoints
 
@@ -154,7 +151,7 @@ python training/train.py --config experiments/autoencoders/phase1/phase1_1_AE_S1
    python training/train_diffusion.py --config experiments/diffusion/ablation/capacity_unet128_d4.yaml
    ```
 
-4. **Monitor**: Check logs, memorization reports, and sample generations
+4. **Monitor**: Check logs and sample generations
 
 ## Output Structure
 
@@ -177,8 +174,6 @@ experiments/diffusion/ablation/capacity_unet128_d4/
 │   └── diffusion_ablation_capacity_unet128_d4_checkpoint_latest.pt
 ├── samples/
 │   └── epoch_*.png
-├── memorization_reports/
-│   └── epoch_*.json
 └── diffusion_ablation_capacity_unet128_d4_metrics.csv
 ```
 
@@ -204,9 +199,8 @@ experiments/diffusion/ablation/capacity_unet128_d4/
 1. **Reproducibility**: Always set seed=42
 2. **Early Stopping**: Use for autoencoder training to prevent overfitting
 3. **Checkpoint Saving**: Save best and latest (not all epochs for diffusion)
-4. **Memorization Checks**: Regular checks during diffusion training
-5. **Weighted Sampling**: Use for imbalanced datasets
-6. **Gradient Clipping**: Essential for large diffusion models
+4. **Weighted Sampling**: Use for imbalanced datasets
+5. **Gradient Clipping**: Essential for large diffusion models
 
 ## Troubleshooting
 

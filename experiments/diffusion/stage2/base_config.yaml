@@ -71,17 +71,6 @@ training:
   # Gradient clipping for stability
   max_grad_norm: 0.5
   
-  # Memorization testing - dual mode (light + heavy)
-  # Light memorization: frequent checks with fewer samples
-  memorization_light_interval: 5  # Light check every 5 epochs
-  memorization_light_num_generate: 50  # Generate 50 samples for light check
-  memorization_light_num_training: 1000  # Compare against 1000 training samples
-  
-  # Heavy memorization: thorough checks with full dataset
-  memorization_check_interval: 20  # Heavy check every 20 epochs
-  memorization_num_generate: 100  # Generate 100 samples to check
-  memorization_num_training: 999999  # Check against entire dataset (very large number loads all)
-  
   # Weighted sampling to balance distribution
   use_weighted_sampling: true
   column: class_combination  # Column to use for weighting (e.g., "class_combination", "content_category", "room_id")

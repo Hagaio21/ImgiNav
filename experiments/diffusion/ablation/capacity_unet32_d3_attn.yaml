@@ -47,9 +47,6 @@ training:
   save_interval: 99999
   eval_interval: 5
   sample_interval: 10
-  memorization_check_interval: 5  # Check every 5 epochs
-  memorization_num_generate: 100
-  memorization_num_training: 1000
   use_amp: true
   
   # Weighted sampling to balance distribution

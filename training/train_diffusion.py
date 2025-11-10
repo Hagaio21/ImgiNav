@@ -31,18 +31,6 @@ from models.losses.base_loss import LOSS_REGISTRY
 from models.components.discriminator import LatentDiscriminator
 from torchvision.utils import save_image
 
-# Import memorization check utilities (optional)
-try:
-    from training.memorization_utils import (
-        load_training_samples,
-        generate_samples,
-        check_memorization
-    )
-    MEMORIZATION_CHECK_AVAILABLE = True
-except ImportError as e:
-    MEMORIZATION_CHECK_AVAILABLE = False
-    print(f"Warning: Could not import memorization check utilities: {e}")
-
 
 def compute_loss(
     model, batch, latents, t, noise, cond, loss_fn, 
@@ -594,26 +582,12 @@ def main():
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
     
-    # Memorization testing settings (support for both light and heavy)
-    memorization_check_interval = config["training"].get("memorization_check_interval", None)
-    memorization_num_generate = config["training"].get("memorization_num_generate", 100)
-    memorization_num_training = config["training"].get("memorization_num_training", 1000)
-    
-    # Light memorization testing (more frequent, fewer samples)
-    memorization_light_interval = config["training"].get("memorization_light_interval", None)
-    memorization_light_num_generate = config["training"].get("memorization_light_num_generate", 50)
-    memorization_light_num_training = config["training"].get("memorization_light_num_training", 1000)
-    
     print(f"\nStarting training...")
     print(f"  Epochs: {epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {optimizer.param_groups[0]['lr']}")
     print(f"  Mixed precision: {use_amp}")
     print(f"  Max grad norm: {max_grad_norm}")
-    if memorization_light_interval:
-        print(f"  Light memorization check: every {memorization_light_interval} epochs ({memorization_light_num_generate} samples vs {memorization_light_num_training} training)")
-    if memorization_check_interval:
-        print(f"  Heavy memorization check: every {memorization_check_interval} epochs ({memorization_num_generate} samples vs {memorization_num_training} training)")
     
     # Training loop
     for epoch in range(start_epoch, epochs):
@@ -646,106 +620,6 @@ def main():
         # Save samples
         if val_loader and (epoch + 1) % sample_interval == 0:
             save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name)
-        
-        # Memorization checks (light and/or heavy)
-        should_run_light = MEMORIZATION_CHECK_AVAILABLE and memorization_light_interval and (epoch + 1) % memorization_light_interval == 0
-        should_run_heavy = MEMORIZATION_CHECK_AVAILABLE and memorization_check_interval and (epoch + 1) % memorization_check_interval == 0
-        
-        # Run light memorization check (more frequent, fewer samples)
-        if should_run_light and not should_run_heavy:  # Don't run both on the same epoch
-            print(f"\n{'='*60}")
-            print(f"Running LIGHT memorization check (epoch {epoch + 1})...")
-            print(f"{'='*60}")
-            try:
-                # Load training samples
-                training_samples = load_training_samples(
-                    train_dataset,
-                    num_samples=memorization_light_num_training,
-                    device=device_obj,
-                    load_rgb=False  # Only load latents for memory efficiency
-                )
-                
-                # Generate samples
-                generated_samples = generate_samples(
-                    model,
-                    num_samples=memorization_light_num_generate,
-                    batch_size=min(batch_size, 16),  # Smaller batch for generation
-                    device=device_obj,
-                    method="ddpm"  # Use DDPM for correct sampling
-                )
-                
-                # Run memorization check
-                memorization_dir = output_dir / "memorization_checks" / f"light_epoch_{epoch + 1:03d}"
-                results = check_memorization(
-                    model,
-                    training_samples,
-                    generated_samples,
-                    memorization_dir,
-                    latent_perturbation_std=0.0,
-                    run_perturbation_test=False,
-                    method="ddpm",
-                    device=device_obj
-                )
-                
-                print(f"  Light memorization check complete. Results saved to: {memorization_dir}")
-                if 'latent_l2_distances' in results:
-                    mean_l2 = results['latent_l2_distances'].mean().item()
-                    print(f"  Mean L2 distance to nearest training sample: {mean_l2:.4f}")
-            except Exception as e:
-                print(f"  Warning: Light memorization check failed: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        # Run heavy memorization check (less frequent, more samples, full dataset)
-        if should_run_heavy:
-            print(f"\n{'='*60}")
-            print(f"Running HEAVY memorization check (epoch {epoch + 1})...")
-            print(f"{'='*60}")
-            try:
-                # Clear CUDA cache before heavy check to free up memory
-                if device_obj.type == "cuda":
-                    torch.cuda.empty_cache()
-                
-                # Load training samples (use full dataset if num_training is very large)
-                training_samples = load_training_samples(
-                    train_dataset,
-                    num_samples=memorization_num_training if memorization_num_training < 999999 else None,
-                    device=device_obj,
-                    load_rgb=False  # Only load latents for memory efficiency
-                )
-                
-                # Generate samples
-                generated_samples = generate_samples(
-                    model,
-                    num_samples=memorization_num_generate,
-                    batch_size=min(batch_size, 16),  # Smaller batch for generation
-                    device=device_obj,
-                    method="ddpm"  # Use DDPM for correct sampling
-                )
-                
-                # Run memorization check with smaller batch sizes for memory efficiency
-                memorization_dir = output_dir / "memorization_checks" / f"heavy_epoch_{epoch + 1:03d}"
-                results = check_memorization(
-                    model,
-                    training_samples,
-                    generated_samples,
-                    memorization_dir,
-                    latent_perturbation_std=0.0,
-                    run_perturbation_test=False,
-                    method="ddpm",
-                    device=device_obj,
-                    gen_batch_size=16,  # Smaller batch for generated samples
-                    train_batch_size=500  # Smaller batch for training samples
-                )
-                
-                print(f"  Heavy memorization check complete. Results saved to: {memorization_dir}")
-                if 'latent_l2_distances' in results:
-                    mean_l2 = results['latent_l2_distances'].mean().item()
-                    print(f"  Mean L2 distance to nearest training sample: {mean_l2:.4f}")
-            except Exception as e:
-                print(f"  Warning: Heavy memorization check failed: {e}")
-                import traceback
-                traceback.print_exc()
         
         # Save checkpoint
         is_best = val_loss < best_val_loss

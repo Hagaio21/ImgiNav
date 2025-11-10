@@ -54,9 +54,6 @@ training:
   save_interval: 99999  # Very large number to disable periodic checkpoints
   eval_interval: 5  # Evaluate every 5 epochs
   sample_interval: 10  # Generate samples every 10 epochs
-  memorization_check_interval: 5  # Check memorization every 5 epochs
-  memorization_num_generate: 100  # Number of samples to generate for check
-  memorization_num_training: 1000  # Number of training samples to compare against
   
   # Mixed precision for efficiency
   use_amp: true
