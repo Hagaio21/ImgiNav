@@ -80,6 +80,13 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
         filter_str = "".join(c if c.isalnum() or c in "_-" else "_" for c in filter_str)[:50]
         filter_suffix = f"_{filter_str}"
     
+    # First, check if stats file exists directly in experiment directory (user-provided)
+    stats_path_experiment = output_dir / f"{column_name}_distribution_stats.json"
+    if stats_path_experiment.exists():
+        print(f"Using existing weight stats from experiment directory: {stats_path_experiment}")
+        return stats_path_experiment
+    
+    # Then check in the subdirectory (auto-generated location)
     stats_path = column_output_dir / f"{column_name}_distribution_stats{filter_suffix}.json"
     
     # Check if stats already exist

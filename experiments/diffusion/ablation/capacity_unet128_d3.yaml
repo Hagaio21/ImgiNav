@@ -53,7 +53,7 @@ training:
   min_samples_threshold: 5  # Minimum samples for a class to be included (lower for combinations)
   max_weight: 20  # Cap weights to prevent over-sampling extremely rare classes (prevents memorization)
   use_grouped_weights: false  # Use grouped weights from stats file
-  group_rare_classes: false  # Group rare classes into single category
+  group_rare_classes: true  # Group rare classes into single category (prevents all rare classes from hitting max_weight cap)
   
   # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
   max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
