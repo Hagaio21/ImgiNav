@@ -332,10 +332,10 @@ def analyze_column_distribution(
         "IsRare": is_rare
     })
     
-    # Create color palette: red for rare, blue for common
-    colors = ['#d62728' if rare else '#2ca02c' for rare in is_rare]
-    
-    sns.barplot(data=df_all, y="Class", x="Count", ax=ax, palette=colors)
+    # Use seaborn barplot with hue for rare/common distinction
+    sns.barplot(data=df_all, y="Class", x="Count", ax=ax, 
+                hue="IsRare", palette={True: '#d62728', False: '#2ca02c'}, 
+                dodge=False, legend=False)
     ax.axvline(x=threshold_count, color='orange', linestyle='--', linewidth=2, 
                label=f'Rare threshold ({threshold_count:.0f})', zorder=10)
     ax.set_xlabel("Sample Count", fontsize=12)
@@ -348,7 +348,7 @@ def analyze_column_distribution(
     plt.close()
     
     # Plot 3: Pie chart
-    plt.figure(figsize=(14, 10))
+    fig, ax = plt.subplots(figsize=(14, 10))
     
     # Group small classes into "Others"
     min_percentage_for_main = 2.0
@@ -373,18 +373,14 @@ def analyze_column_distribution(
         other_total = sum(s["count"] for s in other_classes)
         pie_labels = [s["class_id"] for s in main_classes] + [f"Others ({len(other_classes)} classes)"]
         pie_counts = [s["count"] for s in main_classes] + [other_total]
-        pie_colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in main_classes] + ['lightgray']
     else:
         pie_labels = [s["class_id"] for s in main_classes]
         pie_counts = [s["count"] for s in main_classes]
-        pie_colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in main_classes]
     
-    sns.set_style("whitegrid")
+    # Use seaborn color palette
     colors = sns.color_palette("husl", len(pie_labels)) if len(pie_labels) <= 10 else sns.color_palette("Set3", len(pie_labels))
-    if len(main_classes) <= max_main_classes:
-        colors = pie_colors
     
-    wedges, texts, autotexts = plt.pie(
+    wedges, texts, autotexts = ax.pie(
         pie_counts,
         labels=None,
         autopct='%1.1f%%',
@@ -398,31 +394,34 @@ def analyze_column_distribution(
         percentage = (count / total_samples) * 100
         legend_labels.append(f"{label}: {count:,} ({percentage:.1f}%)")
     
-    plt.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1, 0, 0.5, 1), 
-               fontsize=9, frameon=True, fancybox=True, shadow=True)
+    ax.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1, 0, 0.5, 1), 
+              fontsize=9, frameon=True, fancybox=True, shadow=True, title="Classes", title_fontsize=10)
     
-    plt.title(f"{column_name} Distribution\n(Total: {total_samples:,} samples, {len(class_stats)} classes)", 
-              fontsize=14, fontweight='bold', pad=20)
+    ax.set_title(f"{column_name} Distribution\n(Total: {total_samples:,} samples, {len(class_stats)} classes)", 
+                 fontsize=14, fontweight='bold', pad=20)
     plt.tight_layout()
     plt.savefig(output_dir / f"{column_name}_distribution_pie.png", dpi=200, bbox_inches='tight')
     plt.close()
     
     # Plot 4: Weight visualization
-    plt.figure(figsize=(14, max(8, len(sorted_weights) * 0.3)))
+    fig, ax = plt.subplots(figsize=(14, max(8, len(sorted_weights) * 0.3)))
     top_weights = sorted_weights[:30]  # Top 30 by weight
     weight_class_names = [w[0] for w in top_weights]
     weight_values = [w[1] for w in top_weights]
     
-    plt.barh(range(len(weight_class_names)), weight_values)
-    plt.yticks(range(len(weight_class_names)), weight_class_names)
-    plt.xlabel("Weight")
-    plt.title(f"Class Weights ({weighting_method} method)")
+    df_weights = pd.DataFrame({"Class": weight_class_names, "Weight": weight_values})
+    sns.barplot(data=df_weights, y="Class", x="Weight", ax=ax, palette="rocket")
+    
     if max_weight:
-        plt.axvline(x=max_weight, color='red', linestyle='--', label=f'Max weight cap ({max_weight})')
-        plt.legend()
-    plt.gca().invert_yaxis()
+        ax.axvline(x=max_weight, color='red', linestyle='--', linewidth=2, 
+                   label=f'Max weight cap ({max_weight})', zorder=10)
+        ax.legend(loc='lower right', fontsize=10)
+    
+    ax.set_xlabel("Weight", fontsize=12)
+    ax.set_ylabel("")
+    ax.set_title(f"Class Weights ({weighting_method} method)", fontsize=14, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(output_dir / f"{column_name}_weights.png", dpi=200)
+    plt.savefig(output_dir / f"{column_name}_weights.png", dpi=200, bbox_inches='tight')
     plt.close()
     
     print(f"\nResults saved to {output_dir}")
