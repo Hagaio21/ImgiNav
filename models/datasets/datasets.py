@@ -291,7 +291,54 @@ class ManifestDataset(BaseComponent, Dataset):
         
         # Load or compute class grouping
         class_grouping = None
-        if group_rare_classes or (weights_stats_path and use_grouped_weights):
+        
+        # If group_rare_classes is True, ALWAYS recompute grouping (ignore stats file grouping)
+        # This ensures we use the latest percentile-band grouping strategy
+        if group_rare_classes:
+            # Force recompute grouping with percentile bands
+            unique_classes, counts = np.unique(class_ids, return_counts=True)
+            num_classes = len(unique_classes)
+            
+            # Group classes into percentile bands (e.g., 0-10%, 10-20%, 20-30%, etc.)
+            # This creates multiple groups instead of just one "rare" group
+            percentile_bands = [
+                (0, 10, "rare_0_10"),
+                (10, 20, "rare_10_20"),
+                (20, 30, "rare_20_30"),
+                (30, 40, "rare_30_40"),
+                (40, 50, "rare_40_50"),
+                # Top 50% remain as individual classes
+            ]
+            
+            # Compute percentile thresholds
+            percentiles = [np.percentile(counts, p) for p in [0, 10, 20, 30, 40, 50, 100]]
+            
+            class_grouping = {}
+            band_counts = {band_name: 0 for _, _, band_name in percentile_bands}
+            individual_count = 0
+            
+            for class_id in unique_classes:
+                count = counts[unique_classes == class_id][0]
+                assigned = False
+                
+                # Check each percentile band
+                for i, (p_low, p_high, band_name) in enumerate(percentile_bands):
+                    if percentiles[i] <= count < percentiles[i + 1]:
+                        class_grouping[class_id] = band_name
+                        band_counts[band_name] += 1
+                        assigned = True
+                        break
+                
+                # If not in any band (top 50%), keep as individual
+                if not assigned:
+                    class_grouping[class_id] = class_id
+                    individual_count += 1
+            
+            # Print grouping statistics
+            band_summary = ", ".join([f"{name}: {cnt}" for name, cnt in band_counts.items() if cnt > 0])
+            print(f"Auto-computed percentile-band grouping: {band_summary}, individual: {individual_count}/{num_classes}")
+        elif weights_stats_path and use_grouped_weights:
+            # Only load from stats file if NOT using group_rare_classes
             if weights_stats_path and Path(weights_stats_path).exists():
                 import json
                 with open(weights_stats_path, 'r') as f:
@@ -307,8 +354,8 @@ class ManifestDataset(BaseComponent, Dataset):
                     if class_grouping:
                         print(f"Loaded class grouping from {class_grouping_path}")
             
-            # Auto-compute grouping if not loaded and group_rare_classes is True
-            if not class_grouping and group_rare_classes:
+            # Auto-compute grouping if not loaded (fallback)
+            if not class_grouping:
                 unique_classes, counts = np.unique(class_ids, return_counts=True)
                 num_classes = len(unique_classes)
                 
@@ -388,19 +435,10 @@ class ManifestDataset(BaseComponent, Dataset):
         unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
         counts_dict = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
         
-        # Debug: print grouping statistics
-        if class_grouping:
-            # Count percentile bands and individual classes
-            band_groups = [gid for gid in unique_groups if gid.startswith("rare_")]
-            num_bands = len(band_groups)
-            num_individual = len(unique_groups) - num_bands
-            print(f"Grouping result: {num_individual} individual classes + {num_bands} percentile bands = {len(unique_groups)} total groups")
-        
-        # If grouping is enabled, we need to recompute weights on grouped classes
+        # If grouping is enabled, ALWAYS recompute weights on grouped classes (never load from file)
         # (even if stats file exists, because individual weights don't match grouped structure)
         if class_grouping and group_rare_classes:
-            # Grouping is active - recompute weights on grouped counts
-            print("Recomputing weights on grouped classes (grouping enabled)...")
+            # Grouping is active - recompute weights on grouped counts (never load from file)
             weight_map = compute_weights_from_counts(
                 counts_dict,
                 method=weighting_method,
