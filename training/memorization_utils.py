@@ -1,14 +1,4 @@
-"""
-Utility functions for memorization testing in diffusion models.
 
-This module provides functions for:
-- Loading training samples
-- Generating samples from models
-- Computing distance metrics (L2, cosine similarity)
-- Computing diversity metrics
-- Perturbation testing (testing memorization vs generalization)
-- Visualization utilities
-"""
 
 from pathlib import Path
 import torch
@@ -33,15 +23,7 @@ except ImportError:
 
 
 def load_training_samples(dataset, num_samples=None, device="cuda", batch_size=1000, load_rgb=False):
-    """Load a subset of training samples for comparison.
-    
-    Args:
-        dataset: Dataset to load from
-        num_samples: Number of samples to load. If None, loads entire dataset.
-        device: Device to load samples to
-        batch_size: Process in batches to manage memory
-        load_rgb: If True, load RGB images. If False, only load latents (memory efficient).
-    """
+
     if num_samples is None:
         num_samples = len(dataset)
         print(f"Loading entire dataset: {num_samples} training samples...")
@@ -161,14 +143,7 @@ def generate_samples(model, num_samples, batch_size=16, device="cuda", method="d
 
 
 def compute_latent_distances(generated, training, gen_batch_size=32, train_batch_size=1000):
-    """Compute distances in latent space with memory-efficient chunked processing.
-    
-    Args:
-        generated: Generated latents tensor [N_gen, C, H, W]
-        training: Training latents tensor [N_train, C, H, W]
-        gen_batch_size: Batch size for generated samples (smaller = less memory)
-        train_batch_size: Batch size for training samples (smaller = less memory)
-    """
+
     device = generated.device
     
     # Flatten latents
