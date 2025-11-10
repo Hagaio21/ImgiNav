@@ -317,8 +317,21 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     except StopIteration:
         return
     
+    # Use epoch-based seed for sampling to show diversity across epochs
+    # This allows us to see different samples each epoch while keeping training deterministic
+    # Save current RNG state to restore after sampling
+    cpu_rng_state = torch.get_rng_state()
+    cuda_rng_states = None
+    if torch.cuda.is_available():
+        cuda_rng_states = torch.cuda.get_rng_state_all()
+    
+    sampling_seed = 42 + epoch  # Different seed per epoch
+    torch.manual_seed(sampling_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(sampling_seed)
+    
     num_steps = model.scheduler.num_steps
-    print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps)...")
+    print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps) with seed {sampling_seed}...")
     
     with torch.no_grad():
         sample_output = model.sample(
@@ -329,6 +342,11 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             device=device_obj,
             verbose=False
         )
+    
+    # Restore original RNG state to maintain training determinism
+    torch.set_rng_state(cpu_rng_state)
+    if torch.cuda.is_available() and cuda_rng_states is not None:
+        torch.cuda.set_rng_state_all(cuda_rng_states)
     
     if "rgb" in sample_output:
         samples = sample_output["rgb"]
