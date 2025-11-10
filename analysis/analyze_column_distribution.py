@@ -124,7 +124,7 @@ def analyze_column_distribution(
     
     # Load manifest
     print(f"Loading manifest from {manifest_path}...")
-    df = pd.read_csv(manifest_path)
+    df = pd.read_csv(manifest_path, low_memory=False)
     print(f"Loaded {len(df)} samples")
     
     # Check if column exists
@@ -312,7 +312,7 @@ def analyze_column_distribution(
     counts = [s["count"] for s in top_classes]
     
     df_top20 = pd.DataFrame({"Class": class_names, "Count": counts})
-    sns.barplot(data=df_top20, y="Class", x="Count", ax=ax, palette="viridis")
+    sns.barplot(data=df_top20, y="Class", x="Count", ax=ax, hue="Class", palette="viridis", legend=False)
     ax.set_xlabel("Sample Count", fontsize=12)
     ax.set_ylabel("")
     ax.set_title(f"Top 20 {column_name} Distribution (Total: {total_samples:,} samples)", fontsize=14, fontweight='bold')
@@ -410,7 +410,7 @@ def analyze_column_distribution(
     weight_values = [w[1] for w in top_weights]
     
     df_weights = pd.DataFrame({"Class": weight_class_names, "Weight": weight_values})
-    sns.barplot(data=df_weights, y="Class", x="Weight", ax=ax, palette="rocket")
+    sns.barplot(data=df_weights, y="Class", x="Weight", ax=ax, hue="Class", palette="rocket", legend=False)
     
     if max_weight:
         ax.axvline(x=max_weight, color='red', linestyle='--', linewidth=2, 

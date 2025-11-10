@@ -95,7 +95,7 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
         return stats_path
     
     # Load manifest and apply filters if provided
-    df = pd.read_csv(manifest_path)
+    df = pd.read_csv(manifest_path, low_memory=False)
     original_size = len(df)
     
     if filters:

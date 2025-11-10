@@ -27,7 +27,7 @@ class ManifestDataset(BaseComponent, Dataset):
             if not manifest.exists():
                 raise FileNotFoundError(f"Manifest not found: {manifest}")
 
-            self.df = pd.read_csv(manifest)
+            self.df = pd.read_csv(manifest, low_memory=False)
             self.manifest_dir = manifest.parent  # Store manifest directory for relative path resolution
         self.transform = self._init_kwargs.get("transform", None)
         self.return_path = self._init_kwargs.get("return_path", False)
@@ -244,6 +244,7 @@ class ManifestDataset(BaseComponent, Dataset):
             # Convert to string and check, or use boolean comparison
             is_empty_values = self.df["is_empty"]
             # Check if value is False (boolean), "false" (string), 0 (int), or "False" (string)
+            # Keep rows where is_empty is False
             mask = (
                 (is_empty_values == False) |  # Boolean False
                 (is_empty_values == 0) |  # Integer 0
@@ -279,6 +280,15 @@ class ManifestDataset(BaseComponent, Dataset):
         # Get class IDs from the column (treat all columns the same way)
         class_ids = self.df[weight_column].astype(str).values
         
+        # Additional safety: filter out any rows where the weight column value itself is "empty"
+        # (in case "empty" appears as a class name in the weight column, even if is_empty=False)
+        empty_class_mask = np.array([str(cid).lower() != "empty" for cid in class_ids])
+        if not empty_class_mask.all():
+            removed_count = (~empty_class_mask).sum()
+            self.df = self.df[empty_class_mask].reset_index(drop=True)
+            class_ids = class_ids[empty_class_mask]
+            print(f"Filtered out {removed_count} rows where {weight_column}='empty' from weight computation")
+        
         # Load or compute class grouping
         class_grouping = None
         if group_rare_classes or (weights_stats_path and use_grouped_weights):
@@ -300,15 +310,46 @@ class ManifestDataset(BaseComponent, Dataset):
             # Auto-compute grouping if not loaded and group_rare_classes is True
             if not class_grouping and group_rare_classes:
                 unique_classes, counts = np.unique(class_ids, return_counts=True)
-                threshold_count = np.percentile(counts, 10)
+                num_classes = len(unique_classes)
+                
+                # Group classes into percentile bands (e.g., 0-10%, 10-20%, 20-30%, etc.)
+                # This creates multiple groups instead of just one "rare" group
+                percentile_bands = [
+                    (0, 10, "rare_0_10"),
+                    (10, 20, "rare_10_20"),
+                    (20, 30, "rare_20_30"),
+                    (30, 40, "rare_30_40"),
+                    (40, 50, "rare_40_50"),
+                    # Top 50% remain as individual classes
+                ]
+                
+                # Compute percentile thresholds
+                percentiles = [np.percentile(counts, p) for p in [0, 10, 20, 30, 40, 50, 100]]
+                
                 class_grouping = {}
+                band_counts = {band_name: 0 for _, _, band_name in percentile_bands}
+                individual_count = 0
+                
                 for class_id in unique_classes:
                     count = counts[unique_classes == class_id][0]
-                    if count < threshold_count:
-                        class_grouping[class_id] = "rare"
-                    else:
+                    assigned = False
+                    
+                    # Check each percentile band
+                    for i, (p_low, p_high, band_name) in enumerate(percentile_bands):
+                        if percentiles[i] <= count < percentiles[i + 1]:
+                            class_grouping[class_id] = band_name
+                            band_counts[band_name] += 1
+                            assigned = True
+                            break
+                    
+                    # If not in any band (top 50%), keep as individual
+                    if not assigned:
                         class_grouping[class_id] = class_id
-                print(f"Auto-computed class grouping (threshold: {threshold_count:.0f} samples)")
+                        individual_count += 1
+                
+                # Print grouping statistics
+                band_summary = ", ".join([f"{name}: {cnt}" for name, cnt in band_counts.items() if cnt > 0])
+                print(f"Auto-computed percentile-band grouping: {band_summary}, individual: {individual_count}/{num_classes}")
         
         # Apply grouping if enabled
         if class_grouping:
@@ -347,6 +388,14 @@ class ManifestDataset(BaseComponent, Dataset):
         unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
         counts_dict = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
         
+        # Debug: print grouping statistics
+        if class_grouping:
+            # Count percentile bands and individual classes
+            band_groups = [gid for gid in unique_groups if gid.startswith("rare_")]
+            num_bands = len(band_groups)
+            num_individual = len(unique_groups) - num_bands
+            print(f"Grouping result: {num_individual} individual classes + {num_bands} percentile bands = {len(unique_groups)} total groups")
+        
         # If grouping is enabled, we need to recompute weights on grouped classes
         # (even if stats file exists, because individual weights don't match grouped structure)
         if class_grouping and group_rare_classes:
@@ -362,6 +411,9 @@ class ManifestDataset(BaseComponent, Dataset):
             # No grouping or grouping from stats - try to load from stats file
             try:
                 weight_map = load_weights_from_stats(weights_stats_path, use_grouped=use_grouped_weights)
+                # Remove "empty" if it exists in loaded weights
+                if "empty" in weight_map:
+                    del weight_map["empty"]
                 print(f"Loaded {len(weight_map)} weights from {weights_stats_path}")
                 # Ensure all groups have weights (fill missing with default)
                 for gid in unique_groups:
@@ -390,6 +442,11 @@ class ManifestDataset(BaseComponent, Dataset):
             weight_map = {gid: min(w, max_weight) for gid, w in weight_map.items()}
             if any(w == max_weight for w in weight_map.values()):
                 print(f"Capped weights at {max_weight} to prevent over-sampling")
+        
+        # Remove "empty" from weight_map if it somehow got in there
+        if "empty" in weight_map:
+            del weight_map["empty"]
+            print("Removed 'empty' from weight_map")
         
         # Create weight tensor
         weights = np.array([weight_map.get(gid, 1.0) for gid in grouped_class_ids], dtype=np.float32)
