@@ -238,15 +238,41 @@ def analyze_column_distribution(
     print("4. Rare Class Grouping")
     print("="*60)
     
-    rare_class_ids = [stat["class_id"] for stat in rare_classes]
+    # Create percentile-band grouping (same as training code)
+    # Group classes into percentile bands: 0-10%, 10-20%, 20-30%, 30-40%, 40-50%
+    # Top 50% remain as individual classes
+    counts_array = np.array([stat["count"] for stat in class_stats])
+    percentiles = [np.percentile(counts_array, p) for p in [0, 10, 20, 30, 40, 50, 100]]
     
-    # Create grouping: rare classes -> "rare", others -> themselves
+    percentile_bands = [
+        (0, 10, "rare_0_10"),
+        (10, 20, "rare_10_20"),
+        (20, 30, "rare_20_30"),
+        (30, 40, "rare_30_40"),
+        (40, 50, "rare_40_50"),
+    ]
+    
     class_grouping = {}
+    band_counts_detail = {band_name: [] for _, _, band_name in percentile_bands}
+    individual_classes = []
+    
     for stat in class_stats:
-        if stat["class_id"] in rare_class_ids:
-            class_grouping[stat["class_id"]] = "rare"
-        else:
-            class_grouping[stat["class_id"]] = stat["class_id"]
+        class_id = stat["class_id"]
+        count = stat["count"]
+        assigned = False
+        
+        # Check each percentile band
+        for i, (p_low, p_high, band_name) in enumerate(percentile_bands):
+            if percentiles[i] <= count < percentiles[i + 1]:
+                class_grouping[class_id] = band_name
+                band_counts_detail[band_name].append(class_id)
+                assigned = True
+                break
+        
+        # If not in any band (top 50%), keep as individual
+        if not assigned:
+            class_grouping[class_id] = class_id
+            individual_classes.append(class_id)
     
     # Compute grouped counts
     grouped_counts = defaultdict(int)
@@ -262,11 +288,17 @@ def analyze_column_distribution(
         min_weight=min_weight
     )
     
-    print(f"  Grouped classes into {len(grouped_counts)} categories:")
-    for grouped_id, count in sorted(grouped_counts.items(), key=lambda x: -x[1]):
+    print(f"  Grouped classes into {len(grouped_counts)} categories (percentile bands):")
+    # Sort: bands first, then individual classes
+    sorted_grouped = sorted(grouped_counts.items(), key=lambda x: (
+        0 if x[0].startswith("rare_") else 1,  # Bands first
+        -x[1]  # Then by count (descending)
+    ))
+    for grouped_id, count in sorted_grouped:
         weight = grouped_weights[grouped_id]
-        if grouped_id == "rare":
-            print(f"    {grouped_id:30s}: {count:6d} samples, weight={weight:.3f} (includes {len(rare_classes)} rare classes)")
+        if grouped_id.startswith("rare_"):
+            num_classes = len(band_counts_detail[grouped_id])
+            print(f"    {grouped_id:30s}: {count:6d} samples, weight={weight:.3f} (includes {num_classes} classes)")
         else:
             print(f"    {grouped_id:30s}: {count:6d} samples, weight={weight:.3f}")
     
@@ -324,6 +356,8 @@ def analyze_column_distribution(
     fig, ax = plt.subplots(figsize=(14, max(8, len(class_stats) * 0.3)))
     all_class_names = [s["class_id"] for s in class_stats]
     all_counts = [s["count"] for s in class_stats]
+    # Mark classes that are in percentile bands (rare classes)
+    rare_class_ids = [stat["class_id"] for stat in rare_classes]
     is_rare = [stat["class_id"] in rare_class_ids for stat in class_stats]
     
     df_all = pd.DataFrame({
@@ -403,9 +437,10 @@ def analyze_column_distribution(
     plt.savefig(output_dir / f"{column_name}_distribution_pie.png", dpi=200, bbox_inches='tight')
     plt.close()
     
-    # Plot 4: Weight visualization
-    fig, ax = plt.subplots(figsize=(14, max(8, len(sorted_weights) * 0.3)))
-    top_weights = sorted_weights[:30]  # Top 30 by weight
+    # Plot 4: Weight visualization (use grouped weights with percentile bands, not individual)
+    fig, ax = plt.subplots(figsize=(14, max(8, len(grouped_weights) * 0.3)))
+    sorted_grouped_weights = sorted(grouped_weights.items(), key=lambda x: -x[1])
+    top_weights = sorted_grouped_weights[:30]  # Top 30 by weight
     weight_class_names = [w[0] for w in top_weights]
     weight_values = [w[1] for w in top_weights]
     
