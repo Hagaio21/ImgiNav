@@ -18,6 +18,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# Set seaborn style
+sns.set_style("whitegrid")
+sns.set_palette("husl")
+plt.rcParams['figure.dpi'] = 200
+plt.rcParams['savefig.dpi'] = 200
 from pathlib import Path
 import json
 import argparse
@@ -300,36 +306,45 @@ def analyze_column_distribution(
     print("="*60)
     
     # Plot 1: Top 20 classes
-    plt.figure(figsize=(14, 8))
+    fig, ax = plt.subplots(figsize=(14, 8))
     top_classes = class_stats[:20]
     class_names = [s["class_id"] for s in top_classes]
     counts = [s["count"] for s in top_classes]
     
-    plt.barh(range(len(class_names)), counts)
-    plt.yticks(range(len(class_names)), class_names)
-    plt.xlabel("Sample Count")
-    plt.title(f"Top 20 {column_name} Distribution (Total: {total_samples:,} samples)")
-    plt.gca().invert_yaxis()
+    df_top20 = pd.DataFrame({"Class": class_names, "Count": counts})
+    sns.barplot(data=df_top20, y="Class", x="Count", ax=ax, palette="viridis")
+    ax.set_xlabel("Sample Count", fontsize=12)
+    ax.set_ylabel("")
+    ax.set_title(f"Top 20 {column_name} Distribution (Total: {total_samples:,} samples)", fontsize=14, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(output_dir / f"{column_name}_distribution_top20.png", dpi=200)
+    plt.savefig(output_dir / f"{column_name}_distribution_top20.png", dpi=200, bbox_inches='tight')
     plt.close()
     
     # Plot 2: All classes
-    plt.figure(figsize=(14, max(8, len(class_stats) * 0.3)))
+    fig, ax = plt.subplots(figsize=(14, max(8, len(class_stats) * 0.3)))
     all_class_names = [s["class_id"] for s in class_stats]
     all_counts = [s["count"] for s in class_stats]
+    is_rare = [stat["class_id"] in rare_class_ids for stat in class_stats]
     
-    colors = ['red' if stat["class_id"] in rare_class_ids else 'steelblue' for stat in class_stats]
+    df_all = pd.DataFrame({
+        "Class": all_class_names,
+        "Count": all_counts,
+        "IsRare": is_rare
+    })
     
-    plt.barh(range(len(all_class_names)), all_counts, color=colors)
-    plt.yticks(range(len(all_class_names)), all_class_names)
-    plt.xlabel("Sample Count")
-    plt.title(f"All {column_name} Distribution (Red = Rare, Blue = Common)")
-    plt.axvline(x=threshold_count, color='orange', linestyle='--', label=f'Rare threshold ({threshold_count:.0f})')
-    plt.legend()
-    plt.gca().invert_yaxis()
+    # Create color palette: red for rare, blue for common
+    colors = ['#d62728' if rare else '#2ca02c' for rare in is_rare]
+    
+    sns.barplot(data=df_all, y="Class", x="Count", ax=ax, palette=colors)
+    ax.axvline(x=threshold_count, color='orange', linestyle='--', linewidth=2, 
+               label=f'Rare threshold ({threshold_count:.0f})', zorder=10)
+    ax.set_xlabel("Sample Count", fontsize=12)
+    ax.set_ylabel("")
+    ax.set_title(f"All {column_name} Distribution (Red = Rare, Green = Common)", 
+                 fontsize=14, fontweight='bold')
+    ax.legend(loc='lower right', fontsize=10)
     plt.tight_layout()
-    plt.savefig(output_dir / f"{column_name}_distribution_all.png", dpi=200)
+    plt.savefig(output_dir / f"{column_name}_distribution_all.png", dpi=200, bbox_inches='tight')
     plt.close()
     
     # Plot 3: Pie chart

@@ -18,13 +18,13 @@ LOG_DIR="${BASE_DIR}/data_preparation/hpc_scripts/logs"
 # Configuration - UPDATE THESE PATHS
 MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
 OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_with_content_category.csv"
+TAXONOMY="${BASE_DIR}/config/taxonomy.json"
 ANALYSIS_OUTPUT_DIR="/work3/s233249/ImgiNav/analysis/content_category_distribution"
 
 # Parameters
 LAYOUT_COLUMN="layout_path"
 WORKERS=16
-MIN_PIXEL_THRESHOLD=0
-EXCLUDE_BACKGROUND=true
+MIN_PIXEL_THRESHOLD=50
 
 mkdir -p "${LOG_DIR}"
 
@@ -43,6 +43,11 @@ if [ ! -f "${MANIFEST}" ]; then
     exit 1
 fi
 
+if [ ! -f "${TAXONOMY}" ]; then
+    echo "ERROR: Taxonomy not found: ${TAXONOMY}" >&2
+    exit 1
+fi
+
 
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     source "$HOME/miniconda3/etc/profile.d/conda.sh"
@@ -56,24 +61,18 @@ echo "Adding content_category to Manifest"
 echo "========================================="
 echo "Input manifest: ${MANIFEST}"
 echo "Output manifest: ${OUTPUT_MANIFEST}"
+echo "Taxonomy: ${TAXONOMY}"
 echo "Workers: ${WORKERS}"
-echo "Exclude background: ${EXCLUDE_BACKGROUND}"
 echo "Min pixel threshold: ${MIN_PIXEL_THRESHOLD}"
 echo ""
-
-if [ "${EXCLUDE_BACKGROUND}" = "true" ]; then
-    EXCLUDE_FLAG=""
-else
-    EXCLUDE_FLAG="--include_background"
-fi
 
 python "${SCRIPT_PATH}" \
     --manifest "${MANIFEST}" \
     --output "${OUTPUT_MANIFEST}" \
+    --taxonomy "${TAXONOMY}" \
     --layout_column "${LAYOUT_COLUMN}" \
     --workers "${WORKERS}" \
-    --min_pixel_threshold "${MIN_PIXEL_THRESHOLD}" \
-    ${EXCLUDE_FLAG}
+    --min_pixel_threshold "${MIN_PIXEL_THRESHOLD}"
 
 echo ""
 echo "========================================="

@@ -166,3 +166,85 @@ def count_distinct_colors(layout_path: Path, exclude_background: bool = True,
     except Exception as e:
         return 0
 
+
+def get_object_class_combination(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str],
+                                min_pixel_threshold: int = 50) -> str:
+    """
+    Get a string representation of the combination of object classes present.
+    
+    Returns a sorted, comma-separated string of category names.
+    This can be used to identify common vs rare layout combinations.
+    
+    Args:
+        layout_path: Path to layout image
+        color_to_category: Dict mapping RGB tuples to category names
+        min_pixel_threshold: Minimum number of pixels for a color to be counted
+    
+    Returns:
+        Sorted comma-separated string of category names (e.g., "Bed,Chair,Table")
+        or "empty" if no objects found
+    """
+    try:
+        categories_present = analyze_layout_colors(layout_path, color_to_category, min_pixel_threshold)
+        if not categories_present:
+            return "empty"
+        
+        # Sort for consistency (same combination always produces same string)
+        sorted_categories = sorted(categories_present)
+        return ",".join(sorted_categories)
+    except Exception as e:
+        return "unknown"
+
+
+def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str],
+                                 min_pixel_threshold: int = 50) -> int:
+    """
+    Count distinct object classes in a layout image by counting unique categories.
+    
+    Only counts colors that map to actual object categories in the taxonomy,
+    not all RGB colors (which could include gradients, artifacts, etc.).
+    
+    Args:
+        layout_path: Path to layout image
+        color_to_category: Dict mapping RGB tuples to category names
+        min_pixel_threshold: Minimum number of pixels for a color to be counted
+    
+    Returns:
+        Number of distinct object classes (categories)
+    """
+    try:
+        img = Image.open(layout_path).convert("RGB")
+        # Get color counts
+        color_counts = img.getcolors(maxcolors=1_000_000)
+        if color_counts is None:
+            return 0
+        
+        distinct_categories = set()
+        white_vals = {(240, 240, 240), (255, 255, 255), (200, 200, 200), (211, 211, 211)}
+        
+        for count, rgb in color_counts:
+            # Skip background/structural colors
+            if rgb in white_vals:
+                continue
+            
+            # Check if color represents a significant object
+            if count < min_pixel_threshold:
+                continue
+            
+            rgb_tuple = tuple(rgb) if isinstance(rgb, (list, tuple)) else rgb
+            category = color_to_category.get(rgb_tuple)
+            if category:
+                distinct_categories.add(category)
+        
+        num_classes = len(distinct_categories)
+        # Sanity check: if we somehow get an unreasonably high number, something is wrong
+        if num_classes > 1000:
+            # This shouldn't happen - log a warning
+            import warnings
+            warnings.warn(f"Unusually high class count ({num_classes}) for {layout_path}. "
+                        f"Taxonomy has {len(color_to_category)} color mappings.")
+        
+        return num_classes
+    except Exception as e:
+        return 0
+
