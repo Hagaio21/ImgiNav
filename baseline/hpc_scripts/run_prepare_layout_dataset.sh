@@ -21,7 +21,7 @@ INPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/sd_finetuning_images"
 
 # Number of samples to extract
-NUM_SAMPLES=5000
+NUM_SAMPLES=10000
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "${OUTPUT_DIR}"
