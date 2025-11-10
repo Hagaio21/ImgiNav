@@ -158,43 +158,90 @@ def generate_samples(model, num_samples, batch_size=16, device="cuda", method="d
     return result
 
 
-def compute_latent_distances(generated, training):
-    """Compute distances in latent space."""
+def compute_latent_distances(generated, training, gen_batch_size=32, train_batch_size=1000):
+    """Compute distances in latent space with memory-efficient chunked processing.
+    
+    Args:
+        generated: Generated latents tensor [N_gen, C, H, W]
+        training: Training latents tensor [N_train, C, H, W]
+        gen_batch_size: Batch size for generated samples (smaller = less memory)
+        train_batch_size: Batch size for training samples (smaller = less memory)
+    """
+    device = generated.device
+    
     # Flatten latents
     gen_flat = generated.view(generated.size(0), -1)
     train_flat = training.view(training.size(0), -1)
     
-    # L2 distance
-    min_distances = []
-    nn_indices = []
-    
-    batch_size = 64
-    for i in range(0, len(gen_flat), batch_size):
-        gen_batch = gen_flat[i:i+batch_size]
-        distances = torch.cdist(gen_batch, train_flat, p=2)
-        min_dist, nn_idx = distances.min(dim=1)
-        min_distances.append(min_dist.cpu())
-        nn_indices.append(nn_idx.cpu())
-    
-    l2_distances = torch.cat(min_distances).numpy()
-    nn_indices_l2 = torch.cat(nn_indices).numpy()
-    
-    # Cosine similarity
+    # Normalize for cosine similarity (do this once)
     gen_norm = F.normalize(gen_flat, p=2, dim=1)
     train_norm = F.normalize(train_flat, p=2, dim=1)
     
-    max_similarities = []
-    nn_indices_cosine = []
+    # Initialize result arrays
+    num_generated = len(gen_flat)
+    min_l2_distances = torch.full((num_generated,), float('inf'), device=device)
+    min_l2_indices = torch.zeros(num_generated, dtype=torch.long, device=device)
+    max_cosine_similarities = torch.full((num_generated,), float('-inf'), device=device)
+    max_cosine_indices = torch.zeros(num_generated, dtype=torch.long, device=device)
     
-    for i in range(0, len(gen_norm), batch_size):
-        gen_batch = gen_norm[i:i+batch_size]
-        similarities = gen_batch @ train_norm.T
-        max_sim, nn_idx = similarities.max(dim=1)
-        max_similarities.append(max_sim.cpu())
-        nn_indices_cosine.append(nn_idx.cpu())
+    # Process generated samples in batches
+    for gen_start in range(0, num_generated, gen_batch_size):
+        gen_end = min(gen_start + gen_batch_size, num_generated)
+        gen_batch = gen_flat[gen_start:gen_end]
+        gen_norm_batch = gen_norm[gen_start:gen_end]
+        
+        # Process training samples in chunks to avoid large matrices
+        for train_start in range(0, len(train_flat), train_batch_size):
+            train_end = min(train_start + train_batch_size, len(train_flat))
+            train_batch = train_flat[train_start:train_end]
+            train_norm_batch = train_norm[train_start:train_end]
+            
+            # Compute L2 distances for this chunk
+            distances = torch.cdist(gen_batch, train_batch, p=2)  # [gen_batch, train_batch]
+            chunk_min_dist, chunk_min_idx = distances.min(dim=1)  # [gen_batch]
+            chunk_min_idx = chunk_min_idx + train_start  # Adjust indices to global
+            
+            # Update global minimums (use proper indexing to avoid view issues)
+            gen_slice = slice(gen_start, gen_end)
+            update_mask = chunk_min_dist < min_l2_distances[gen_slice]
+            if update_mask.any():
+                min_l2_distances[gen_slice] = torch.where(
+                    update_mask, chunk_min_dist, min_l2_distances[gen_slice]
+                )
+                min_l2_indices[gen_slice] = torch.where(
+                    update_mask, chunk_min_idx, min_l2_indices[gen_slice]
+                )
+            
+            # Compute cosine similarities for this chunk
+            similarities = gen_norm_batch @ train_norm_batch.T  # [gen_batch, train_batch]
+            chunk_max_sim, chunk_max_idx = similarities.max(dim=1)  # [gen_batch]
+            chunk_max_idx = chunk_max_idx + train_start  # Adjust indices to global
+            
+            # Update global maximums (use proper indexing to avoid view issues)
+            update_mask = chunk_max_sim > max_cosine_similarities[gen_slice]
+            if update_mask.any():
+                max_cosine_similarities[gen_slice] = torch.where(
+                    update_mask, chunk_max_sim, max_cosine_similarities[gen_slice]
+                )
+                max_cosine_indices[gen_slice] = torch.where(
+                    update_mask, chunk_max_idx, max_cosine_indices[gen_slice]
+                )
+            
+            # Clear intermediate tensors
+            del distances, similarities, chunk_min_dist, chunk_min_idx, chunk_max_sim, chunk_max_idx
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+        
+        # Clear batch tensors
+        del gen_batch, gen_norm_batch
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
     
-    cosine_similarities = torch.cat(max_similarities).numpy()
-    nn_indices_cosine = torch.cat(nn_indices_cosine).numpy()
+    # Move to CPU and convert to numpy
+    l2_distances = min_l2_distances.cpu().numpy()
+    nn_indices_l2 = min_l2_indices.cpu().numpy()
+    cosine_similarities = max_cosine_similarities.cpu().numpy()
+    nn_indices_cosine = max_cosine_indices.cpu().numpy()
     
     return {
         'l2_distances': l2_distances,
@@ -204,20 +251,73 @@ def compute_latent_distances(generated, training):
     }
 
 
-def compute_diversity_metrics_latent(latents):
-    """Compute diversity metrics on latents (flattened internally)."""
+def compute_diversity_metrics_latent(latents, max_samples=5000):
+    """Compute diversity metrics on latents with memory-efficient processing.
+    
+    Args:
+        latents: Latent tensors [N, C, H, W] or [N, D]
+        max_samples: Maximum number of samples to use for pairwise computation.
+                     If N > max_samples, randomly sample max_samples for computation.
+    """
+    device = latents.device
+    
     # Flatten spatial dimensions if needed
     if latents.dim() > 2:
         flat = latents.view(latents.size(0), -1)
     else:
         flat = latents
     
-    # Pairwise distances
-    pairwise_dist = torch.cdist(flat, flat, p=2)
+    # If too many samples, randomly sample a subset for pairwise computation
+    num_samples = len(flat)
+    if num_samples > max_samples:
+        indices = torch.randperm(num_samples, device=device)[:max_samples]
+        flat = flat[indices]
+        num_samples = max_samples
     
-    # Remove diagonal
-    mask = ~torch.eye(len(pairwise_dist), dtype=bool, device=pairwise_dist.device)
-    pairwise_dist = pairwise_dist[mask]
+    # Compute pairwise distances in chunks (only upper triangle to avoid duplicates)
+    batch_size = 100  # Process 100 samples at a time
+    all_distances = []
+    
+    for i in range(0, num_samples, batch_size):
+        end_i = min(i + batch_size, num_samples)
+        batch_i = flat[i:end_i]
+        
+        # Only compare against samples j >= i (upper triangle)
+        for j in range(i, num_samples, batch_size):
+            end_j = min(j + batch_size, num_samples)
+            batch_j = flat[j:end_j]
+            
+            # Compute distances
+            distances = torch.cdist(batch_i, batch_j, p=2)  # [batch_i, batch_j]
+            
+            # Remove diagonal if comparing same batch
+            if i == j:
+                # Upper triangle only (exclude diagonal)
+                mask = torch.triu(torch.ones(len(batch_i), len(batch_j), dtype=bool, device=device), diagonal=1)
+                distances = distances[mask]
+            else:
+                # Keep all distances (i < j, so this is upper triangle)
+                distances = distances.flatten()
+            
+            all_distances.append(distances.cpu())
+            
+            # Clear intermediate tensors
+            del distances
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+        
+        # Clear batch
+        del batch_i
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+    
+    # Concatenate all distances
+    if all_distances:
+        pairwise_dist = torch.cat(all_distances)
+        del all_distances
+    else:
+        # Fallback if no distances computed
+        pairwise_dist = torch.tensor([0.0])
     
     mean_pairwise_dist = pairwise_dist.mean().item()
     std_pairwise_dist = pairwise_dist.std().item()
@@ -475,7 +575,8 @@ def plot_perturbation_results(perturbation_results, output_dir):
 
 def check_memorization(model, training_samples, generated_samples, output_dir, 
                       latent_perturbation_std=0.0, run_perturbation_test=False, 
-                      num_perturbation_samples=20, method="ddpm", device="cuda"):
+                      num_perturbation_samples=20, method="ddpm", device="cuda",
+                      gen_batch_size=32, train_batch_size=1000):
     """
     Core memorization check function that computes metrics and saves results.
     
@@ -492,12 +593,19 @@ def check_memorization(model, training_samples, generated_samples, output_dir,
         num_perturbation_samples: Number of latents to test in perturbation test
         method: Sampling method ("ddpm" or "ddim")
         device: Device to use
+        gen_batch_size: Batch size for generated samples in distance computation (smaller = less memory)
+        train_batch_size: Batch size for training samples in distance computation (smaller = less memory)
     
     Returns:
         Dictionary with summary statistics
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Clear CUDA cache before starting
+    device_obj = torch.device(device) if isinstance(device, str) else device
+    if device_obj.type == 'cuda':
+        torch.cuda.empty_cache()
     
     results = {}
     
@@ -513,7 +621,9 @@ def check_memorization(model, training_samples, generated_samples, output_dir,
             training_latents = training_latents + perturbation
         
         latent_results = compute_latent_distances(
-            generated_samples['latents'], training_latents
+            generated_samples['latents'], training_latents,
+            gen_batch_size=gen_batch_size,
+            train_batch_size=train_batch_size
         )
         results['latent_l2_distances'] = latent_results['l2_distances']
         results['latent_nn_indices_l2'] = latent_results['nn_indices_l2']

@@ -691,6 +691,10 @@ def main():
             print(f"Running HEAVY memorization check (epoch {epoch + 1})...")
             print(f"{'='*60}")
             try:
+                # Clear CUDA cache before heavy check to free up memory
+                if device_obj.type == "cuda":
+                    torch.cuda.empty_cache()
+                
                 # Load training samples (use full dataset if num_training is very large)
                 training_samples = load_training_samples(
                     train_dataset,
@@ -708,7 +712,7 @@ def main():
                     method="ddpm"  # Use DDPM for correct sampling
                 )
                 
-                # Run memorization check
+                # Run memorization check with smaller batch sizes for memory efficiency
                 memorization_dir = output_dir / "memorization_checks" / f"heavy_epoch_{epoch + 1:03d}"
                 results = check_memorization(
                     model,
@@ -718,7 +722,9 @@ def main():
                     latent_perturbation_std=0.0,
                     run_perturbation_test=False,
                     method="ddpm",
-                    device=device_obj
+                    device=device_obj,
+                    gen_batch_size=16,  # Smaller batch for generated samples
+                    train_batch_size=500  # Smaller batch for training samples
                 )
                 
                 print(f"  Heavy memorization check complete. Results saved to: {memorization_dir}")
