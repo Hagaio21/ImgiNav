@@ -15,36 +15,47 @@ from PIL import Image
 from common.taxonomy import Taxonomy
 
 
-def build_color_to_category_mapping(taxonomy: Taxonomy) -> Dict[Tuple[int, int, int], str]:
+def build_color_to_category_mapping(taxonomy: Taxonomy, super_categories_only: bool = True) -> Dict[Tuple[int, int, int], str]:
     """
     Build a mapping from RGB colors to object category names.
     
     Args:
         taxonomy: Taxonomy instance
+        super_categories_only: If True, only map super-categories; if False, map both categories and super-categories
     
     Returns:
-        Dict mapping RGB tuples to category names
+        Dict mapping RGB tuples to category/super-category names
     """
     color_to_category = {}
     id2color = taxonomy.data.get("id2color", {})
-    id2category = taxonomy.data.get("id2category", {})
     id2super = taxonomy.data.get("id2super", {})
     
-    # Map category IDs to colors
-    for cat_id_str, cat_name in id2category.items():
-        color = id2color.get(cat_id_str)
-        if color:
-            rgb_tuple = tuple(color) if isinstance(color, list) else tuple(color)
-            color_to_category[rgb_tuple] = cat_name
-    
-    # Also map super-category IDs to colors (for broader categories)
-    for super_id_str, super_name in id2super.items():
-        color = id2color.get(super_id_str)
-        if color:
-            rgb_tuple = tuple(color) if isinstance(color, list) else tuple(color)
-            # Only add if not already present (category takes priority)
-            if rgb_tuple not in color_to_category:
+    if super_categories_only:
+        # Only map super-category IDs to colors
+        for super_id_str, super_name in id2super.items():
+            color = id2color.get(super_id_str)
+            if color:
+                rgb_tuple = tuple(color) if isinstance(color, list) else tuple(color)
                 color_to_category[rgb_tuple] = super_name
+    else:
+        # Map both categories and super-categories (original behavior)
+        id2category = taxonomy.data.get("id2category", {})
+        
+        # Map category IDs to colors
+        for cat_id_str, cat_name in id2category.items():
+            color = id2color.get(cat_id_str)
+            if color:
+                rgb_tuple = tuple(color) if isinstance(color, list) else tuple(color)
+                color_to_category[rgb_tuple] = cat_name
+        
+        # Also map super-category IDs to colors (for broader categories)
+        for super_id_str, super_name in id2super.items():
+            color = id2color.get(super_id_str)
+            if color:
+                rgb_tuple = tuple(color) if isinstance(color, list) else tuple(color)
+                # Only add if not already present (category takes priority)
+                if rgb_tuple not in color_to_category:
+                    color_to_category[rgb_tuple] = super_name
     
     return color_to_category
 
@@ -188,19 +199,19 @@ def get_object_class_combination(layout_path: Path, color_to_category: Dict[Tupl
         return "unknown"
 
 
-def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str]) -> int:
+def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str] = None) -> int:
     """
-    Count distinct object classes in a layout image by counting unique categories.
+    Count distinct colors in a layout image (excluding background colors).
     
-    Only counts colors that map to actual object categories in the taxonomy,
-    not all RGB colors (which could include gradients, artifacts, etc.).
+    This counts all distinct RGB colors present, not just those mapped to categories.
+    Used for content_category column.
     
     Args:
         layout_path: Path to layout image
-        color_to_category: Dict mapping RGB tuples to category names
+        color_to_category: Not used, kept for compatibility
     
     Returns:
-        Number of distinct object classes (categories)
+        Number of distinct colors (excluding white/background)
     """
     try:
         img = Image.open(layout_path).convert("RGB")
@@ -209,7 +220,7 @@ def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tup
         if color_counts is None:
             return 0
         
-        distinct_categories = set()
+        distinct_colors = set()
         white_vals = {(240, 240, 240), (255, 255, 255), (200, 200, 200), (211, 211, 211)}
         
         for count, rgb in color_counts:
@@ -218,19 +229,9 @@ def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tup
                 continue
 
             rgb_tuple = tuple(rgb) if isinstance(rgb, (list, tuple)) else rgb
-            category = color_to_category.get(rgb_tuple)
-            if category:
-                distinct_categories.add(category)
+            distinct_colors.add(rgb_tuple)
 
-        num_classes = len(distinct_categories)
-        # Sanity check: if we somehow get an unreasonably high number, something is wrong
-        if num_classes > 1000:
-            # This shouldn't happen - log a warning
-            import warnings
-            warnings.warn(f"Unusually high class count ({num_classes}) for {layout_path}. "
-                         f"Taxonomy has {len(color_to_category)} color mappings.")
-
-        return num_classes
+        return len(distinct_colors)
     except Exception as e:
         return 0
 

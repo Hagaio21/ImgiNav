@@ -51,8 +51,9 @@ def analyze_single_layout(args_tuple):
     idx, layout_path_str, taxonomy_path, manifest_dir = args_tuple
     
     # Load taxonomy and color mapping (rebuild in each worker to avoid pickling issues)
+    # Only use super-categories
     taxonomy = Taxonomy(taxonomy_path)
-    color_to_category = build_color_to_category_mapping(taxonomy)
+    color_to_category = build_color_to_category_mapping(taxonomy, super_categories_only=True)
     
     layout_path = Path(layout_path_str)
     
@@ -67,13 +68,10 @@ def analyze_single_layout(args_tuple):
         if not layout_path.exists():
             return idx, {"content_category": 0, "class_combination": "unknown"}
     
-    # Count distinct object classes (categories) in layout
-    num_classes = count_distinct_object_classes(
-        layout_path,
-        color_to_category=color_to_category
-    )
+    # Count distinct colors (for content_category) - just count all distinct colors
+    num_classes = count_distinct_object_classes(layout_path)
     
-    # Get the combination string
+    # Get the combination string (for class_combination) - use super-categories only
     class_combination = get_object_class_combination(
         layout_path,
         color_to_category=color_to_category
