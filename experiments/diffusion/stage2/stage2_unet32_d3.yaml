@@ -46,7 +46,7 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 64  # Can use larger batch for smaller model
+  batch_size: 128  # Larger batch for smallest model (base_channels: 32)batch update
   num_workers: 8
   shuffle: true
   epochs: 200

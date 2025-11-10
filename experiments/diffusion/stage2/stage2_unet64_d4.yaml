@@ -45,8 +45,8 @@ scheduler:
 training:
   seed: 42
   train_split: 0.8
-  split_seed: 64
-  batch_size: 40  # Slightly smaller due to decoding overhead
+  split_seed: 42
+  batch_size: 64
   num_workers: 8
   shuffle: true
   epochs: 200

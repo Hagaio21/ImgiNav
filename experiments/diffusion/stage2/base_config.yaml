@@ -52,7 +52,7 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 32  # Smaller batch due to decoding overhead
+  batch_size: 64
   num_workers: 8
   shuffle: true
   epochs: 200
