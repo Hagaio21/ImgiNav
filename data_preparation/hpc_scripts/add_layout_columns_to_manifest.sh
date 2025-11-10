@@ -12,11 +12,13 @@ export MKL_INTERFACE_LAYER=LP64
 
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 SCRIPT_PATH="${BASE_DIR}/data_preparation/add_layout_columns_to_manifest.py"
+ANALYSIS_SCRIPT_PATH="${BASE_DIR}/analysis/analyze_column_distribution.py"
 LOG_DIR="${BASE_DIR}/data_preparation/hpc_scripts/logs"
 
 # Configuration - UPDATE THESE PATHS
-MANIFEST="/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
-OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/augmented/manifest_with_layout_columns.csv"
+MANIFEST="/work3/s233249/ImgiNav/datasets/layouts.csv"
+OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_with_content_category.csv"
+ANALYSIS_OUTPUT_DIR="/work3/s233249/ImgiNav/analysis/content_category_distribution"
 
 # Parameters
 LAYOUT_COLUMN="layout_path"
@@ -28,6 +30,11 @@ mkdir -p "${LOG_DIR}"
 
 if [ ! -f "${SCRIPT_PATH}" ]; then
     echo "ERROR: Script not found: ${SCRIPT_PATH}" >&2
+    exit 1
+fi
+
+if [ ! -f "${ANALYSIS_SCRIPT_PATH}" ]; then
+    echo "ERROR: Analysis script not found: ${ANALYSIS_SCRIPT_PATH}" >&2
     exit 1
 fi
 
@@ -73,5 +80,31 @@ echo "========================================="
 echo "Layout columns addition completed"
 echo "========================================="
 echo "Output manifest: ${OUTPUT_MANIFEST}"
+echo ""
+
+# Step 2: Analyze the content_category distribution
+echo "========================================="
+echo "Analyzing content_category distribution"
+echo "========================================="
+echo "Manifest: ${OUTPUT_MANIFEST}"
+echo "Output directory: ${ANALYSIS_OUTPUT_DIR}"
+echo ""
+
+mkdir -p "${ANALYSIS_OUTPUT_DIR}"
+
+python "${ANALYSIS_SCRIPT_PATH}" \
+    --manifest "${OUTPUT_MANIFEST}" \
+    --column "content_category" \
+    --output_dir "${ANALYSIS_OUTPUT_DIR}" \
+    --rare_threshold_percentile 10.0 \
+    --min_samples_threshold 50 \
+    --weighting_method "inverse_frequency" \
+    --max_weight 10.0
+
+echo ""
+echo "========================================="
+echo "Analysis completed"
+echo "========================================="
+echo "Analysis results saved to: ${ANALYSIS_OUTPUT_DIR}"
 echo ""
 
