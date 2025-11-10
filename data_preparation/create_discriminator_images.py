@@ -35,16 +35,34 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from models.diffusion import DiffusionModel
 from training.utils import load_config, set_deterministic
 from torchvision.utils import save_image
+from common.taxonomy import Taxonomy
+from common.weighting import (
+    compute_weights_from_counts,
+    load_weights_from_stats,
+    apply_weights_to_dataframe,
+    weighted_sample
+)
+from data_preparation.utils.layout_analysis import (
+    build_color_to_category_mapping,
+    analyze_layout_colors,
+    categorize_room_by_contents
+)
 
 
-def select_real_images(manifest_path, num_samples=5000, seed=42):
+def select_real_images(manifest_path, num_samples=5000, seed=42, taxonomy_path=None, 
+                       use_color_based_sampling=True, weights_stats_path=None, use_grouped_weights=False):
     """
     Select real (non-empty, non-augmented) images from manifest.
+    Uses color-based categorization and weighted sampling if enabled.
     
     Args:
         manifest_path: Path to manifest CSV
         num_samples: Number of real images to select
         seed: Random seed for selection
+        taxonomy_path: Path to taxonomy JSON file (default: config/taxonomy.json)
+        use_color_based_sampling: If True, use color-based weighted sampling
+        weights_stats_path: Optional path to weights stats JSON (from analyze_column_distribution.py)
+        use_grouped_weights: If True, use grouped weights from stats file
     
     Returns:
         DataFrame with selected real images
@@ -85,13 +103,96 @@ def select_real_images(manifest_path, num_samples=5000, seed=42):
         print(f"Warning: Only {len(df)} real images available, using all of them")
         num_samples = len(df)
     
-    # Randomly select num_samples
-    if len(df) > num_samples:
-        np.random.seed(seed)
-        indices = np.random.choice(len(df), size=num_samples, replace=False)
-        df = df.iloc[indices].reset_index(drop=True)
+    # Color-based weighted sampling
+    if use_color_based_sampling and len(df) > num_samples:
+        layout_col = "layout_path" if "layout_path" in df.columns else "path"
+        
+        # Check if content_category already exists in CSV
+        if "content_category" in df.columns:
+            print("\nUsing existing content_category from manifest CSV...")
+            # Fill any missing values
+            df["content_category"] = df["content_category"].fillna("unknown")
+        elif layout_col in df.columns:
+            print("\nAnalyzing layout colors for content-based categorization...")
+            
+            # Load taxonomy
+            if taxonomy_path is None:
+                taxonomy_path = Path(__file__).parent.parent / "config" / "taxonomy.json"
+            taxonomy = Taxonomy(taxonomy_path)
+            color_to_category = build_color_to_category_mapping(taxonomy)
+            
+            # Analyze each layout and categorize
+            room_categories = []
+            for idx, row in tqdm(df.iterrows(), total=len(df), desc="Analyzing layouts"):
+                layout_path = Path(row[layout_col])
+                if not layout_path.exists():
+                    room_categories.append("unknown")
+                    continue
+                
+                categories_present = analyze_layout_colors(layout_path, taxonomy, color_to_category)
+                room_category = categorize_room_by_contents(categories_present)
+                room_categories.append(room_category)
+            
+            df["content_category"] = room_categories
+        else:
+            print("Warning: layout_path column not found, falling back to random sampling")
+            use_color_based_sampling = False
+        
+        # Compute category frequencies and weights (if we have content_category)
+        if use_color_based_sampling and "content_category" in df.columns:
+            category_counts = df["content_category"].value_counts()
+            print(f"\nRoom content category distribution:")
+            for cat, count in category_counts.head(20).items():
+                print(f"  {cat}: {count} ({100*count/len(df):.1f}%)")
+            
+            # Load weights from stats file if provided, otherwise compute on-the-fly
+            if weights_stats_path and Path(weights_stats_path).exists():
+                print(f"\nLoading weights from stats file: {weights_stats_path}")
+                category_weights = load_weights_from_stats(weights_stats_path, use_grouped=use_grouped_weights)
+                print(f"Loaded {len(category_weights)} weights")
+            else:
+                # Compute weights using generic weighting system
+                counts_dict = category_counts.to_dict()
+                category_weights = compute_weights_from_counts(
+                    counts_dict,
+                    method="inverse_frequency",
+                    max_weight=None,
+                    min_weight=1.0
+                )
+            
+            # Apply weights to dataframe
+            df = apply_weights_to_dataframe(
+                df,
+                column_name="content_category",
+                weights=category_weights,
+                stats_path=weights_stats_path if weights_stats_path and Path(weights_stats_path).exists() else None,
+                use_grouped=use_grouped_weights,
+                default_weight=1.0
+            )
+            
+            # Weighted sampling
+            df = weighted_sample(
+                df,
+                n=num_samples,
+                weight_column="sample_weight",
+                random_state=seed,
+                replace=False
+            )
+            
+            print(f"\nSelected {len(df)} real images using color-based weighted sampling")
+            print(f"Final category distribution:")
+            final_counts = df["content_category"].value_counts()
+            for cat, count in final_counts.head(10).items():
+                print(f"  {cat}: {count} ({100*count/len(df):.1f}%)")
     
-    print(f"Selected {len(df)} real images")
+    # Fallback to random sampling if color-based sampling was not used
+    if not use_color_based_sampling:
+        if len(df) > num_samples:
+            np.random.seed(seed)
+            indices = np.random.choice(len(df), size=num_samples, replace=False)
+            df = df.iloc[indices].reset_index(drop=True)
+        print(f"Selected {len(df)} real images (random sampling)")
+    
     return df
 
 
@@ -300,6 +401,16 @@ def main():
                        help="Random seed (default: 42)")
     parser.add_argument("--layout_column", type=str, default="layout_path",
                        help="Column name for layout paths in manifest (default: layout_path)")
+    parser.add_argument("--taxonomy_path", type=Path, default=None,
+                       help="Path to taxonomy JSON file (default: config/taxonomy.json)")
+    parser.add_argument("--use_color_sampling", action="store_true", default=True,
+                       help="Use color-based weighted sampling (default: True)")
+    parser.add_argument("--no_color_sampling", dest="use_color_sampling", action="store_false",
+                       help="Disable color-based weighted sampling")
+    parser.add_argument("--weights_stats", type=Path, default=None,
+                       help="Path to weights stats JSON (from analyze_column_distribution.py)")
+    parser.add_argument("--use_grouped_weights", action="store_true",
+                       help="Use grouped weights from stats file (if available)")
     
     args = parser.parse_args()
     
@@ -315,7 +426,11 @@ def main():
     df_real = select_real_images(
         args.manifest, 
         num_samples=args.num_real, 
-        seed=args.seed
+        seed=args.seed,
+        taxonomy_path=args.taxonomy_path,
+        use_color_based_sampling=args.use_color_sampling,
+        weights_stats_path=args.weights_stats,
+        use_grouped_weights=args.use_grouped_weights
     )
     
     # Step 2: Copy real images

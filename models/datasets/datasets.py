@@ -4,6 +4,16 @@ from PIL import Image
 import pandas as pd
 from pathlib import Path
 import numpy as np
+import sys
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from common.weighting import (
+    compute_weights_from_counts,
+    load_weights_from_stats,
+    apply_weights_to_dataframe
+)
 from ..components.base_component import BaseComponent
 
 class ManifestDataset(BaseComponent, Dataset):
@@ -220,65 +230,54 @@ class ManifestDataset(BaseComponent, Dataset):
         
         return train_dataset, val_dataset
     
-    def _compute_room_id_weights(self, group_rare_classes=False, class_grouping_path=None, 
-                                 max_weight=None, exclude_extremely_rare=False, min_samples_threshold=50):
-        """
-        Compute inverse frequency weights for room_id balancing.
-        
-        Args:
-            group_rare_classes: If True, group rare classes into a single "rare" category
-            class_grouping_path: Path to JSON file with class grouping (from analyze_class_distribution.py)
-                                If None and group_rare_classes=True, will compute grouping automatically
-            max_weight: Maximum weight to cap (prevents over-sampling extremely rare classes)
-                       If None, no capping is applied
-            exclude_extremely_rare: If True, exclude classes below min_samples_threshold from training
-            min_samples_threshold: Minimum samples required for a class to be included in training
-        
-        Returns:
-            torch.Tensor of weights, or None if room_id column not found
-        """
-        if "room_id" not in self.df.columns:
+    def _compute_column_weights(self, weight_column=None, weights_stats_path=None, 
+                                use_grouped_weights=False, weighting_method="inverse_frequency",
+                                group_rare_classes=False, class_grouping_path=None, 
+                                max_weight=None, exclude_extremely_rare=False, 
+                                min_samples_threshold=50):
+
+        # Determine which column to use
+        if weight_column is None:
+            # Try content_category first, then room_id
+            if "content_category" in self.df.columns:
+                weight_column = "content_category"
+            elif "room_id" in self.df.columns:
+                weight_column = "room_id"
+            else:
+                return None
+        elif weight_column not in self.df.columns:
             return None
         
-        # Convert to string to handle mixed types (int/str)
-        room_ids = self.df["room_id"].astype(str).values
-        
-        # Determine sample_type column
-        if "sample_type" in self.df.columns:
-            sample_type_col = "sample_type"
-        elif "type" in self.df.columns:
-            sample_type_col = "type"
-        else:
-            sample_type_col = None
-        
-        # Create class_id: scene vs room_id
-        def get_class_id(row):
-            if sample_type_col and row[sample_type_col] == "scene":
-                return "scene"
-            elif row["room_id"] in ["0000", "0"] or pd.isna(row["room_id"]):
-                return "scene"
-            else:
-                return str(row["room_id"])
-        
-        class_ids = self.df.apply(get_class_id, axis=1).values
+        # Get class IDs from the column (treat all columns the same way)
+        class_ids = self.df[weight_column].astype(str).values
         
         # Load or compute class grouping
         class_grouping = None
-        if group_rare_classes:
-            if class_grouping_path and Path(class_grouping_path).exists():
+        if group_rare_classes or (weights_stats_path and use_grouped_weights):
+            if weights_stats_path and Path(weights_stats_path).exists():
+                import json
+                with open(weights_stats_path, 'r') as f:
+                    grouping_data = json.load(f)
+                    class_grouping = grouping_data.get("class_grouping", {})
+                    if class_grouping:
+                        print(f"Loaded class grouping from {weights_stats_path}")
+            elif class_grouping_path and Path(class_grouping_path).exists():
                 import json
                 with open(class_grouping_path, 'r') as f:
                     grouping_data = json.load(f)
                     class_grouping = grouping_data.get("class_grouping", {})
-                    print(f"Loaded class grouping from {class_grouping_path}")
-            else:
-                # Auto-compute grouping: group classes below 10th percentile
+                    if class_grouping:
+                        print(f"Loaded class grouping from {class_grouping_path}")
+            
+            # Auto-compute grouping if not loaded and group_rare_classes is True
+            if not class_grouping and group_rare_classes:
                 unique_classes, counts = np.unique(class_ids, return_counts=True)
                 threshold_count = np.percentile(counts, 10)
                 class_grouping = {}
                 for class_id in unique_classes:
                     count = counts[unique_classes == class_id][0]
-                    if count < threshold_count and class_id != "scene":
+                    # Don't group "scene" or special classes
+                    if count < threshold_count and class_id not in ["scene", "0000", "0"]:
                         class_grouping[class_id] = "rare"
                     else:
                         class_grouping[class_id] = class_id
@@ -292,9 +291,14 @@ class ManifestDataset(BaseComponent, Dataset):
         
         # Exclude extremely rare classes if requested
         if exclude_extremely_rare:
-            # Load extremely rare class list from grouping file if available
             extremely_rare_class_ids = set()
-            if class_grouping_path and Path(class_grouping_path).exists():
+            if weights_stats_path and Path(weights_stats_path).exists():
+                import json
+                with open(weights_stats_path, 'r') as f:
+                    grouping_data = json.load(f)
+                    extremely_rare = grouping_data.get("extremely_rare_classes", [])
+                    extremely_rare_class_ids = {c["class_id"] for c in extremely_rare}
+            elif class_grouping_path and Path(class_grouping_path).exists():
                 import json
                 with open(class_grouping_path, 'r') as f:
                     grouping_data = json.load(f)
@@ -312,23 +316,52 @@ class ManifestDataset(BaseComponent, Dataset):
                     grouped_class_ids = grouped_class_ids[mask] if class_grouping else class_ids
                     print(f"Excluded {len(extremely_rare_class_ids)} extremely rare classes from training")
         
-        # Compute weights for grouped classes
+        # Compute weights
         unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
-        max_count = group_counts.max()
-        weight_map = {gid: max_count / count for gid, count in zip(unique_groups, group_counts)}
+        counts_dict = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
         
-        # Cap weights if requested (prevents over-sampling extremely rare classes)
+        # Load weights from stats file if provided
+        if weights_stats_path and Path(weights_stats_path).exists():
+            try:
+                weight_map = load_weights_from_stats(weights_stats_path, use_grouped=use_grouped_weights)
+                print(f"Loaded {len(weight_map)} weights from {weights_stats_path}")
+                # Ensure all groups have weights (fill missing with default)
+                for gid in unique_groups:
+                    if gid not in weight_map:
+                        weight_map[gid] = 1.0
+            except Exception as e:
+                print(f"Warning: Failed to load weights from stats file: {e}")
+                print("Computing weights on-the-fly...")
+                weight_map = compute_weights_from_counts(
+                    counts_dict,
+                    method=weighting_method,
+                    max_weight=max_weight,
+                    min_weight=1.0
+                )
+        else:
+            # Compute weights on-the-fly
+            weight_map = compute_weights_from_counts(
+                counts_dict,
+                method=weighting_method,
+                max_weight=max_weight,
+                min_weight=1.0
+            )
+        
+        # Cap weights if requested (additional capping beyond what's in stats)
         if max_weight is not None:
             weight_map = {gid: min(w, max_weight) for gid, w in weight_map.items()}
             if any(w == max_weight for w in weight_map.values()):
                 print(f"Capped weights at {max_weight} to prevent over-sampling")
         
-        weights = np.array([weight_map[gid] for gid in grouped_class_ids], dtype=np.float32)
+        # Create weight tensor
+        weights = np.array([weight_map.get(gid, 1.0) for gid in grouped_class_ids], dtype=np.float32)
         
         return torch.from_numpy(weights), class_grouping, weight_map
     
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, 
-                       use_weighted_sampling=False, group_rare_classes=False, class_grouping_path=None,
+                       use_weighted_sampling=False, weight_column=None, weights_stats_path=None,
+                       use_grouped_weights=False, weighting_method="inverse_frequency",
+                       group_rare_classes=False, class_grouping_path=None,
                        max_weight=None, exclude_extremely_rare=False, min_samples_threshold=50):
         """
         Create a DataLoader for this dataset.
@@ -340,62 +373,75 @@ class ManifestDataset(BaseComponent, Dataset):
             pin_memory: Pin memory for faster GPU transfer
             persistent_workers: Keep workers alive between epochs
             use_weighted_sampling: Use weighted random sampling based on class distribution
+            weight_column: Column name to use for weighting (e.g., "content_category", "room_id")
+                          If None, will try "content_category" then "room_id"
+            weights_stats_path: Path to weights stats JSON (from analyze_column_distribution.py)
+            use_grouped_weights: If True, use grouped weights from stats file
+            weighting_method: Weighting method if computing on-the-fly ("inverse_frequency", "sqrt", "log", "balanced")
             group_rare_classes: If True, group rare classes into a single category for weighting
-            class_grouping_path: Path to JSON file with class grouping (from analyze_class_distribution.py)
+            class_grouping_path: Path to JSON file with class grouping (legacy, use weights_stats_path instead)
             max_weight: Maximum weight to cap (prevents over-sampling extremely rare classes)
             exclude_extremely_rare: If True, exclude classes below min_samples_threshold from training
             min_samples_threshold: Minimum samples required for a class to be included
         """
         if use_weighted_sampling:
-            result = self._compute_room_id_weights(group_rare_classes=group_rare_classes, 
-                                                   class_grouping_path=class_grouping_path,
-                                                   max_weight=max_weight,
-                                                   exclude_extremely_rare=exclude_extremely_rare,
-                                                   min_samples_threshold=min_samples_threshold)
+            result = self._compute_column_weights(
+                weight_column=weight_column,
+                weights_stats_path=weights_stats_path,
+                use_grouped_weights=use_grouped_weights,
+                weighting_method=weighting_method,
+                group_rare_classes=group_rare_classes,
+                class_grouping_path=class_grouping_path,
+                max_weight=max_weight,
+                exclude_extremely_rare=exclude_extremely_rare,
+                min_samples_threshold=min_samples_threshold
+            )
             if result is None:
-                print("Warning: room_id column not found, falling back to regular sampling")
+                print(f"Warning: Weight column not found, falling back to regular sampling")
                 use_weighted_sampling = False
             else:
                 weights, class_grouping, weight_map = result
                 
                 # Print weight information using the capped weight_map
-                if class_grouping:
-                    # Show grouped class weights from the capped weight_map
-                    # Compute grouped class IDs and counts once
-                    grouped_class_ids = []
-                    for _, row in self.df.iterrows():
-                        if "sample_type" in row and row["sample_type"] == "scene":
-                            cid = "scene"
-                        elif str(row["room_id"]) in ["0000", "0"] or pd.isna(row["room_id"]):
-                            cid = "scene"
-                        else:
-                            cid = str(row["room_id"])
-                        grouped_id = class_grouping.get(cid, cid)
-                        grouped_class_ids.append(grouped_id)
-                    unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
-                    count_map = {gid: count for gid, count in zip(unique_groups, group_counts)}
-                    
-                    print(f"Class sampling weights (with rare class grouping):")
-                    for gid in sorted(weight_map.keys()):
-                        weight = weight_map[gid]
-                        count = count_map.get(gid, 0)
+                # Get the actual column used for weighting
+                actual_column = weight_column
+                if actual_column is None:
+                    if "content_category" in self.df.columns:
+                        actual_column = "content_category"
+                    elif "room_id" in self.df.columns:
+                        actual_column = "room_id"
+                
+                if actual_column:
+                    # Get current class IDs (after grouping if applied)
+                    if class_grouping:
+                        # Show grouped class weights
+                        class_ids = self.df[actual_column].astype(str).values
+                        grouped_class_ids = [class_grouping.get(cid, cid) for cid in class_ids]
                         
-                        if gid == "rare":
-                            rare_classes = [k for k, v in class_grouping.items() if v == "rare"]
-                            print(f"  {gid:20s}: weight={weight:.2f}, count={count:6d} (includes {len(rare_classes)} rare classes)")
-                        else:
-                            print(f"  {gid:20s}: weight={weight:.2f}, count={count:6d}")
-                else:
-                    # Show individual class weights from the capped weight_map
-                    room_ids = self.df["room_id"].astype(str).values
-                    unique_rooms, counts = np.unique(room_ids, return_counts=True)
-                    count_map = {rid: count for rid, count in zip(unique_rooms, counts)}
-                    
-                    print(f"Class sampling weights:")
-                    for rid in sorted(weight_map.keys()):
-                        weight = weight_map[rid]
-                        count = count_map.get(rid, 0)
-                        print(f"  {rid:20s}: weight={weight:.2f}, count={count:6d}")
+                        unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
+                        count_map = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
+                        
+                        print(f"Class sampling weights (column: {actual_column}, with rare class grouping):")
+                        for gid in sorted(weight_map.keys()):
+                            weight = weight_map[gid]
+                            count = count_map.get(gid, 0)
+                            
+                            if gid == "rare":
+                                rare_classes = [k for k, v in class_grouping.items() if v == "rare"]
+                                print(f"  {gid:30s}: weight={weight:.2f}, count={count:6d} (includes {len(rare_classes)} rare classes)")
+                            else:
+                                print(f"  {gid:30s}: weight={weight:.2f}, count={count:6d}")
+                    else:
+                        # Show individual class weights
+                        class_ids = self.df[actual_column].astype(str).values
+                        unique_classes, counts = np.unique(class_ids, return_counts=True)
+                        count_map = {cid: int(count) for cid, count in zip(unique_classes, counts)}
+                        
+                        print(f"Class sampling weights (column: {actual_column}):")
+                        for cid in sorted(weight_map.keys()):
+                            weight = weight_map[cid]
+                            count = count_map.get(cid, 0)
+                            print(f"  {cid:30s}: weight={weight:.2f}, count={count:6d}")
         
         if use_weighted_sampling:
             sampler = WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)

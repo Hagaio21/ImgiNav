@@ -5,12 +5,23 @@ import csv
 import os
 import multiprocessing
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 from tqdm import tqdm
 import pandas as pd
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import re
+import sys
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from common.taxonomy import Taxonomy
+from data_preparation.utils.layout_analysis import (
+    build_color_to_category_mapping,
+    analyze_layout_colors,
+    categorize_room_by_contents
+)
 
 
 def collect_all(data_root: Path, output_csv: Path):
@@ -209,7 +220,9 @@ def collect_graphs(root_dir: Path, output_path: Path):
     print(f"\nManifest: {output_path}")
 
 
-def analyze_layout(img_path: Path, white_vals: set, gray_vals: set) -> dict:
+def analyze_layout(img_path: Path, white_vals: set, gray_vals: set, 
+                   taxonomy: Optional[Taxonomy] = None, 
+                   color_to_category: Optional[Dict[Tuple[int, int, int], str]] = None) -> dict:
     stem = img_path.stem
     parts = stem.split("_")
     scene_id = parts[0]
@@ -226,21 +239,56 @@ def analyze_layout(img_path: Path, white_vals: set, gray_vals: set) -> dict:
 
     is_empty = colors.issubset(white_vals | gray_vals) and len(colors) <= 2
 
-    return {
+    result = {
         "scene_id": scene_id,
         "type": layout_type,
         "room_id": room_id,
         "layout_path": str(img_path.resolve()),
         "is_empty": str(is_empty).lower(),
     }
+    
+    # Add content categorization if taxonomy is provided
+    if taxonomy is not None and color_to_category is not None:
+        categories_present = analyze_layout_colors(img_path, color_to_category)
+        content_category = categorize_room_by_contents(categories_present)
+        result["content_category"] = content_category
+    
+    return result
 
 
-def collect_layouts(root: Path, output_path: Path, workers: int = None):
+def collect_layouts(root: Path, output_path: Path, workers: int = None, 
+                     taxonomy_path: Optional[Path] = None, analyze_content: bool = True):
+    """
+    Collect layout images and create manifest CSV.
+    
+    Args:
+        root: Root directory to scan for layouts
+        output_path: Output CSV path
+        workers: Number of parallel workers
+        taxonomy_path: Path to taxonomy.json (required if analyze_content=True)
+        analyze_content: If True, analyze layout colors and categorize by content
+    """
     if workers is None:
         workers = multiprocessing.cpu_count()
 
     white_vals = {(240, 240, 240), (255, 255, 255)}
     gray_vals = {(200, 200, 200), (211, 211, 211)}
+    
+    # Load taxonomy if content analysis is requested
+    taxonomy = None
+    color_to_category = None
+    if analyze_content:
+        if taxonomy_path is None:
+            # Try default path
+            taxonomy_path = Path(__file__).parent.parent / "config" / "taxonomy.json"
+        if taxonomy_path and taxonomy_path.exists():
+            print(f"[INFO] Loading taxonomy from {taxonomy_path}", flush=True)
+            taxonomy = Taxonomy(taxonomy_path)
+            color_to_category = build_color_to_category_mapping(taxonomy)
+            print(f"[INFO] Built color-to-category mapping with {len(color_to_category)} entries", flush=True)
+        else:
+            print(f"[WARNING] Taxonomy file not found at {taxonomy_path}, skipping content analysis", flush=True)
+            analyze_content = False
 
     print("[INFO] Scanning for scene layouts...", flush=True)
     scene_files = list(root.rglob("*/layouts/*_scene_layout.png"))
@@ -254,11 +302,20 @@ def collect_layouts(root: Path, output_path: Path, workers: int = None):
     total = len(img_files)
     print(f"[INFO] Total files to process: {total}", flush=True)
     print(f"[INFO] Using {workers} workers", flush=True)
+    if analyze_content:
+        print(f"[INFO] Content categorization: ENABLED", flush=True)
+    else:
+        print(f"[INFO] Content categorization: DISABLED", flush=True)
 
     rows = []
     completed = 0
+    
+    # Create a wrapper function for multiprocessing
+    def analyze_wrapper(img_path):
+        return analyze_layout(img_path, white_vals, gray_vals, taxonomy, color_to_category)
+    
     with ProcessPoolExecutor(max_workers=workers) as ex:
-        future_to_file = {ex.submit(analyze_layout, p, white_vals, gray_vals): p for p in img_files}
+        future_to_file = {ex.submit(analyze_wrapper, p): p for p in img_files}
         for future in as_completed(future_to_file):
             row = future.result()
             rows.append(row)
@@ -268,9 +325,21 @@ def collect_layouts(root: Path, output_path: Path, workers: int = None):
 
     from common.file_io import create_manifest
     fieldnames = ["scene_id", "type", "room_id", "layout_path", "is_empty"]
+    if analyze_content and taxonomy is not None:
+        fieldnames.append("content_category")
     create_manifest(rows, output_path, fieldnames)
 
     print(f"[INFO] Wrote {len(rows)} rows to {output_path}", flush=True)
+    
+    if analyze_content and taxonomy is not None:
+        # Print content category distribution
+        content_cats = [r.get("content_category", "unknown") for r in rows if "content_category" in r]
+        if content_cats:
+            from collections import Counter
+            cat_counts = Counter(content_cats)
+            print(f"[INFO] Content category distribution (top 10):", flush=True)
+            for cat, count in cat_counts.most_common(10):
+                print(f"  {cat}: {count} ({100*count/len(content_cats):.1f}%)", flush=True)
 
 def load_empty_map(layouts_csv: Path) -> Dict[Tuple[str, str], int]:
     empty_map = {}
@@ -436,6 +505,10 @@ def main():
     parser.add_argument("--layouts", help="Path to layouts.csv (for dataset or povs mode)")
     parser.add_argument("--workers", type=int, default=multiprocessing.cpu_count(),
                        help="Number of parallel workers (for 'layouts' type)")
+    parser.add_argument("--taxonomy", type=Path, default=None,
+                       help="Path to taxonomy.json file (for content categorization in layouts)")
+    parser.add_argument("--no_content_analysis", action="store_true",
+                       help="Disable content categorization (faster but no content_category column)")
 
     args = parser.parse_args()
 
@@ -463,8 +536,16 @@ def main():
         elif args.type == "layouts":
             if not args.root or not args.output:
                 parser.error("--type layouts requires --root and --output")
+            taxonomy_path = args.taxonomy
+            if taxonomy_path is None:
+                # Try default path
+                default_taxonomy = Path(__file__).parent.parent / "config" / "taxonomy.json"
+                if default_taxonomy.exists():
+                    taxonomy_path = default_taxonomy
             print(f"[STEP] Scanning layouts with {args.workers} workers...")
-            collect_layouts(Path(args.root), Path(args.output), args.workers)
+            collect_layouts(Path(args.root), Path(args.output), args.workers, 
+                          taxonomy_path=taxonomy_path, 
+                          analyze_content=not args.no_content_analysis)
 
         elif args.type == "dataset":
             if not args.root or not args.out or not args.layouts:
