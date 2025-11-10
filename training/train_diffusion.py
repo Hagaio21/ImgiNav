@@ -502,6 +502,28 @@ def main():
     batch_size = config["training"].get("batch_size", 32)
     num_workers = config["training"].get("num_workers", 8)
     shuffle = config["training"].get("shuffle", True)
+    use_weighted_sampling = config["training"].get("use_weighted_sampling", False)
+    
+    # Auto-generate weight stats if needed
+    weights_stats_path = None
+    if use_weighted_sampling:
+        weight_column = config["training"].get("column", None)
+        if weight_column:
+            # Get manifest path from dataset config
+            manifest_path = Path(config["dataset"]["manifest"])
+            
+            # Ensure weight stats exist (will generate if needed)
+            from training.utils import ensure_weight_stats_exist
+            weights_stats_path = ensure_weight_stats_exist(
+                manifest_path=manifest_path,
+                column_name=weight_column,
+                output_dir=output_dir,
+                rare_threshold_percentile=config["training"].get("rare_threshold_percentile", 10.0),
+                min_samples_threshold=config["training"].get("min_samples_threshold", 50),
+                weighting_method=config["training"].get("weighting_method", "inverse_frequency"),
+                max_weight=config["training"].get("max_weight", None),
+                min_weight=config["training"].get("min_weight", 1.0)
+            )
     
     # Use dataset's make_dataloader to support weighted sampling
     train_loader = train_dataset.make_dataloader(
@@ -510,7 +532,10 @@ def main():
         num_workers=num_workers,
         pin_memory=device_obj.type == "cuda",
         persistent_workers=num_workers > 0,
-        use_weighted_sampling=config["training"].get("use_weighted_sampling", False),
+        use_weighted_sampling=use_weighted_sampling,
+        weight_column=config["training"].get("column", None),
+        weights_stats_path=weights_stats_path,
+        use_grouped_weights=config["training"].get("use_grouped_weights", False),
         group_rare_classes=config["training"].get("group_rare_classes", False),
         class_grouping_path=config["training"].get("class_grouping_path", None),
         max_weight=config["training"].get("max_weight", None),

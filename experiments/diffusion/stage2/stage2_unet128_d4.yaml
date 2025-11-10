@@ -69,11 +69,15 @@ training:
   memorization_num_generate: 100  # Generate 100 samples to check
   memorization_num_training: 999999  # Check against entire dataset (very large number loads all)
   
-  # Weighted sampling to balance room_id distribution
+  # Weighted sampling to balance distribution
   use_weighted_sampling: true
-  group_rare_classes: true
-  class_grouping_path: /work3/s233249/ImgiNav/ImgiNav/analysis/class_distribution_results/class_distribution_stats.json
+  column: class_combination  # Column to use for weighting (e.g., "class_combination", "content_category", "room_id")
+  weighting_method: inverse_frequency  # Weighting method: "inverse_frequency", "sqrt", "log", "balanced"
+  rare_threshold_percentile: 10.0  # Percentile below which classes are considered rare
+  min_samples_threshold: 5  # Minimum samples for a class to be included (lower for combinations)
   max_weight: 20  # Cap weights to prevent over-sampling extremely rare classes (prevents memorization)
+  use_grouped_weights: false  # Use grouped weights from stats file
+  group_rare_classes: false  # Group rare classes into single category
   
   loss:
     type: CompositeLoss

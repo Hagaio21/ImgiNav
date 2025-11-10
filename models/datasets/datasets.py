@@ -234,16 +234,27 @@ class ManifestDataset(BaseComponent, Dataset):
                                 use_grouped_weights=False, weighting_method="inverse_frequency",
                                 group_rare_classes=False, class_grouping_path=None, 
                                 max_weight=None, exclude_extremely_rare=False, 
-                                min_samples_threshold=50):
+                                min_samples_threshold=50, preferred_columns=None):
 
         # Determine which column to use
         if weight_column is None:
-            # Try content_category first, then room_id
-            if "content_category" in self.df.columns:
-                weight_column = "content_category"
-            elif "room_id" in self.df.columns:
-                weight_column = "room_id"
-            else:
+            # Try preferred columns if provided
+            if preferred_columns:
+                for col in preferred_columns:
+                    if col in self.df.columns:
+                        weight_column = col
+                        break
+            
+            # If still no column, try to auto-detect any suitable column
+            if weight_column is None:
+                # Exclude path columns and other non-categorical columns
+                exclude_cols = {"path", "layout_path", "image_path", "scene_id", "type", "is_empty"}
+                for col in self.df.columns:
+                    if col not in exclude_cols and self.df[col].notna().sum() > 0:
+                        weight_column = col
+                        break
+            
+            if weight_column is None:
                 return None
         elif weight_column not in self.df.columns:
             return None
@@ -362,28 +373,9 @@ class ManifestDataset(BaseComponent, Dataset):
                        use_weighted_sampling=False, weight_column=None, weights_stats_path=None,
                        use_grouped_weights=False, weighting_method="inverse_frequency",
                        group_rare_classes=False, class_grouping_path=None,
-                       max_weight=None, exclude_extremely_rare=False, min_samples_threshold=50):
-        """
-        Create a DataLoader for this dataset.
-        
-        Args:
-            batch_size: Batch size
-            shuffle: Whether to shuffle (ignored if use_weighted_sampling=True)
-            num_workers: Number of worker processes
-            pin_memory: Pin memory for faster GPU transfer
-            persistent_workers: Keep workers alive between epochs
-            use_weighted_sampling: Use weighted random sampling based on class distribution
-            weight_column: Column name to use for weighting (e.g., "content_category", "room_id")
-                          If None, will try "content_category" then "room_id"
-            weights_stats_path: Path to weights stats JSON (from analyze_column_distribution.py)
-            use_grouped_weights: If True, use grouped weights from stats file
-            weighting_method: Weighting method if computing on-the-fly ("inverse_frequency", "sqrt", "log", "balanced")
-            group_rare_classes: If True, group rare classes into a single category for weighting
-            class_grouping_path: Path to JSON file with class grouping (legacy, use weights_stats_path instead)
-            max_weight: Maximum weight to cap (prevents over-sampling extremely rare classes)
-            exclude_extremely_rare: If True, exclude classes below min_samples_threshold from training
-            min_samples_threshold: Minimum samples required for a class to be included
-        """
+                       max_weight=None, exclude_extremely_rare=False, min_samples_threshold=50,
+                       preferred_weight_columns=None):
+
         if use_weighted_sampling:
             result = self._compute_column_weights(
                 weight_column=weight_column,
@@ -394,7 +386,8 @@ class ManifestDataset(BaseComponent, Dataset):
                 class_grouping_path=class_grouping_path,
                 max_weight=max_weight,
                 exclude_extremely_rare=exclude_extremely_rare,
-                min_samples_threshold=min_samples_threshold
+                min_samples_threshold=min_samples_threshold,
+                preferred_columns=preferred_weight_columns
             )
             if result is None:
                 print(f"Warning: Weight column not found, falling back to regular sampling")
@@ -403,13 +396,22 @@ class ManifestDataset(BaseComponent, Dataset):
                 weights, class_grouping, weight_map = result
                 
                 # Print weight information using the capped weight_map
-                # Get the actual column used for weighting
+                # Get the actual column used for weighting (recompute to get the actual selected column)
                 actual_column = weight_column
                 if actual_column is None:
-                    if "content_category" in self.df.columns:
-                        actual_column = "content_category"
-                    elif "room_id" in self.df.columns:
-                        actual_column = "room_id"
+                    # Recompute which column was actually selected (same logic as _compute_column_weights)
+                    if preferred_weight_columns:
+                        for col in preferred_weight_columns:
+                            if col in self.df.columns:
+                                actual_column = col
+                                break
+                    if actual_column is None:
+                        # Find any suitable column
+                        exclude_cols = {"path", "layout_path", "image_path", "scene_id", "type", "is_empty"}
+                        for col in self.df.columns:
+                            if col not in exclude_cols and self.df[col].notna().sum() > 0:
+                                actual_column = col
+                                break
                 
                 if actual_column:
                     # Get current class IDs (after grouping if applied)

@@ -9,6 +9,12 @@ Script to add content_category and class_combination columns to manifest CSV.
 Only counts colors that map to actual object categories in the taxonomy.
 
 Usage:
+    # Update manifest in-place (recommended)
+    python data_preparation/add_layout_columns_to_manifest.py \
+        --manifest datasets/augmented/manifest.csv \
+        --taxonomy config/taxonomy.json
+    
+    # Or save to a new file
     python data_preparation/add_layout_columns_to_manifest.py \
         --manifest datasets/augmented/manifest.csv \
         --output datasets/augmented/manifest_with_category.csv \
@@ -80,8 +86,8 @@ def analyze_single_layout(args_tuple):
 
 def add_content_category_to_manifest(
     manifest_path: Path,
-    output_path: Path,
     taxonomy_path: Path,
+    output_path: Path = None,
     layout_column: str = "layout_path",
     workers: int = None,
     min_pixel_threshold: int = 50,
@@ -97,17 +103,22 @@ def add_content_category_to_manifest(
     Only counts colors that map to actual object categories in the taxonomy.
     
     Args:
-        manifest_path: Path to input manifest CSV
-        output_path: Path to output manifest CSV
+        manifest_path: Path to input manifest CSV (will be updated in-place if output_path is None)
         taxonomy_path: Path to taxonomy.json
+        output_path: Path to output manifest CSV (optional, if None updates manifest_path in-place)
         layout_column: Name of column containing layout paths
         workers: Number of parallel workers (default: CPU count)
         min_pixel_threshold: Minimum pixels for a color to be counted (default: 50)
         overwrite: If True, overwrite existing columns
     """
     manifest_path = Path(manifest_path)
-    output_path = Path(output_path)
     taxonomy_path = Path(taxonomy_path)
+    
+    # If no output path specified, update in-place
+    if output_path is None:
+        output_path = manifest_path
+    else:
+        output_path = Path(output_path)
     
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
@@ -247,9 +258,9 @@ def main():
         description="Add content_category and class_combination columns to manifest CSV"
     )
     parser.add_argument("--manifest", type=Path, required=True,
-                       help="Path to input manifest CSV")
-    parser.add_argument("--output", type=Path, required=True,
-                       help="Path to output manifest CSV")
+                       help="Path to input manifest CSV (will be updated in-place if --output not specified)")
+    parser.add_argument("--output", type=Path, default=None,
+                       help="Path to output manifest CSV (optional, if not specified updates manifest in-place)")
     parser.add_argument("--taxonomy", type=Path, required=True,
                        help="Path to taxonomy.json")
     parser.add_argument("--layout_column", type=str, default="layout_path",
@@ -267,7 +278,10 @@ def main():
     print("Adding content_category to Manifest")
     print("="*60)
     print(f"Input manifest: {args.manifest}")
-    print(f"Output manifest: {args.output}")
+    if args.output:
+        print(f"Output manifest: {args.output}")
+    else:
+        print(f"Output: Updating manifest in-place")
     print(f"Taxonomy: {args.taxonomy}")
     print(f"Layout column: {args.layout_column}")
     print(f"Min pixel threshold: {args.min_pixel_threshold}")
@@ -275,8 +289,8 @@ def main():
     
     add_content_category_to_manifest(
         manifest_path=args.manifest,
-        output_path=args.output,
         taxonomy_path=args.taxonomy,
+        output_path=args.output,
         layout_column=args.layout_column,
         workers=args.workers,
         min_pixel_threshold=args.min_pixel_threshold,

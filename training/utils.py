@@ -40,6 +40,68 @@ def load_config(config_path: Path):
     return config
 
 
+def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir: Path,
+                              rare_threshold_percentile: float = 10.0,
+                              min_samples_threshold: int = 50,
+                              weighting_method: str = "inverse_frequency",
+                              max_weight: float = None,
+                              min_weight: float = 1.0):
+    """
+    Ensure weight stats JSON exists for a column. If not, generate it automatically.
+    
+    Args:
+        manifest_path: Path to manifest CSV
+        column_name: Column name to analyze
+        output_dir: Directory to save stats (will create subdirectory for column)
+        rare_threshold_percentile: Percentile for rare class detection
+        min_samples_threshold: Minimum samples threshold
+        weighting_method: Weighting method
+        max_weight: Max weight cap
+        min_weight: Min weight
+    
+    Returns:
+        Path to stats JSON file
+    """
+    from analysis.analyze_column_distribution import analyze_column_distribution
+    
+    output_dir = Path(output_dir)
+    column_output_dir = output_dir / "weight_stats" / column_name
+    stats_path = column_output_dir / f"{column_name}_distribution_stats.json"
+    
+    # Check if stats already exist
+    if stats_path.exists():
+        print(f"Using existing weight stats: {stats_path}")
+        return stats_path
+    
+    # Generate stats automatically
+    print(f"\n{'='*60}")
+    print(f"Generating weight stats for column: {column_name}")
+    print(f"{'='*60}")
+    print(f"Manifest: {manifest_path}")
+    print(f"Output: {column_output_dir}")
+    print(f"Weighting method: {weighting_method}")
+    if max_weight:
+        print(f"Max weight cap: {max_weight}")
+    print()
+    
+    try:
+        analyze_column_distribution(
+            manifest_path=manifest_path,
+            column_name=column_name,
+            output_dir=column_output_dir,
+            rare_threshold_percentile=rare_threshold_percentile,
+            min_samples_threshold=min_samples_threshold,
+            weighting_method=weighting_method,
+            max_weight=max_weight,
+            min_weight=min_weight
+        )
+        print(f"\nWeight stats generated: {stats_path}")
+        return stats_path
+    except Exception as e:
+        print(f"Error generating weight stats: {e}")
+        raise
+
+
 def build_model(config):
     """Build autoencoder from config."""
     ae_cfg = config["autoencoder"]

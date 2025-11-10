@@ -395,13 +395,41 @@ def main():
         else:
             train_dataset = dataset
     
+    # Auto-generate weight stats if needed
+    weights_stats_path = None
+    use_weighted_sampling = config["training"].get("use_weighted_sampling", False)
+    if use_weighted_sampling:
+        weight_column = config["training"].get("column", None)
+        if weight_column:
+            # Get manifest path from dataset config
+            manifest_path = Path(config["dataset"]["manifest"])
+            
+            # Ensure weight stats exist (will generate if needed)
+            from training.utils import ensure_weight_stats_exist
+            weights_stats_path = ensure_weight_stats_exist(
+                manifest_path=manifest_path,
+                column_name=weight_column,
+                output_dir=output_dir,
+                rare_threshold_percentile=config["training"].get("rare_threshold_percentile", 10.0),
+                min_samples_threshold=config["training"].get("min_samples_threshold", 50),
+                weighting_method=config["training"].get("weighting_method", "inverse_frequency"),
+                max_weight=config["training"].get("max_weight", None),
+                min_weight=config["training"].get("min_weight", 1.0)
+            )
+    
     train_loader = train_dataset.make_dataloader(
         batch_size=config["training"]["batch_size"],
         shuffle=config["training"].get("shuffle", True),
         num_workers=config["training"].get("num_workers", 4),
-        use_weighted_sampling=config["training"].get("use_weighted_sampling", False),
+        use_weighted_sampling=use_weighted_sampling,
+        weight_column=config["training"].get("column", None),
+        weights_stats_path=weights_stats_path,
+        use_grouped_weights=config["training"].get("use_grouped_weights", False),
         group_rare_classes=config["training"].get("group_rare_classes", False),
-        class_grouping_path=config["training"].get("class_grouping_path", None)
+        class_grouping_path=config["training"].get("class_grouping_path", None),
+        max_weight=config["training"].get("max_weight", None),
+        exclude_extremely_rare=config["training"].get("exclude_extremely_rare", False),
+        min_samples_threshold=config["training"].get("min_samples_threshold", 50)
     )
     print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
