@@ -538,21 +538,33 @@ class ManifestDataset(BaseComponent, Dataset):
                 if actual_column:
                     # Get current class IDs (after grouping if applied)
                     if class_grouping:
-                        # Show grouped class weights
+                        # Show grouped class weights (percentile bands)
                         class_ids = self.df[actual_column].astype(str).values
                         grouped_class_ids = [class_grouping.get(cid, cid) for cid in class_ids]
                         
                         unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
                         count_map = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
                         
-                        print(f"Class sampling weights (column: {actual_column}, with rare class grouping):")
-                        for gid in sorted(weight_map.keys()):
+                        # Count classes in each band
+                        band_info = {}
+                        for band_name in ["rare_0_10", "rare_10_20", "rare_20_30", "rare_30_40", "rare_40_50"]:
+                            classes_in_band = [k for k, v in class_grouping.items() if v == band_name]
+                            if classes_in_band:
+                                band_info[band_name] = len(classes_in_band)
+                        
+                        print(f"Class sampling weights (column: {actual_column}, with percentile-band grouping):")
+                        # Sort: bands first, then individual classes
+                        sorted_keys = sorted(weight_map.keys(), key=lambda x: (
+                            0 if x.startswith("rare_") else 1,  # Bands first
+                            x
+                        ))
+                        for gid in sorted_keys:
                             weight = weight_map[gid]
                             count = count_map.get(gid, 0)
                             
-                            if gid == "rare":
-                                rare_classes = [k for k, v in class_grouping.items() if v == "rare"]
-                                print(f"  {gid:30s}: weight={weight:.2f}, count={count:6d} (includes {len(rare_classes)} rare classes)")
+                            if gid.startswith("rare_"):
+                                num_classes = band_info.get(gid, 0)
+                                print(f"  {gid:30s}: weight={weight:.2f}, count={count:6d} (includes {num_classes} classes)")
                             else:
                                 print(f"  {gid:30s}: weight={weight:.2f}, count={count:6d}")
                     else:
