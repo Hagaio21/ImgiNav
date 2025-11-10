@@ -45,7 +45,8 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
                               min_samples_threshold: int = 50,
                               weighting_method: str = "inverse_frequency",
                               max_weight: float = None,
-                              min_weight: float = 1.0):
+                              min_weight: float = 1.0,
+                              filters: dict = None):
     """
     Ensure weight stats JSON exists for a column. If not, generate it automatically.
     
@@ -58,26 +59,78 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
         weighting_method: Weighting method
         max_weight: Max weight cap
         min_weight: Min weight
+        filters: Optional filters dict (same format as dataset filters) to apply before computing weights.
+                 This ensures weights are computed on the same filtered dataset that will be used for training.
     
     Returns:
         Path to stats JSON file
     """
     from analysis.analyze_column_distribution import analyze_column_distribution
+    import pandas as pd
     
     output_dir = Path(output_dir)
     column_output_dir = output_dir / "weight_stats" / column_name
-    stats_path = column_output_dir / f"{column_name}_distribution_stats.json"
+    
+    # Create a filter signature for the stats filename to ensure different filters get different stats
+    filter_suffix = ""
+    if filters:
+        # Create a simple hash/signature from filters
+        filter_str = "_".join([f"{k}_{v}" for k, v in sorted(filters.items())])
+        # Sanitize for filename (remove special chars, limit length)
+        filter_str = "".join(c if c.isalnum() or c in "_-" else "_" for c in filter_str)[:50]
+        filter_suffix = f"_{filter_str}"
+    
+    stats_path = column_output_dir / f"{column_name}_distribution_stats{filter_suffix}.json"
     
     # Check if stats already exist
     if stats_path.exists():
         print(f"Using existing weight stats: {stats_path}")
         return stats_path
     
+    # Load manifest and apply filters if provided
+    df = pd.read_csv(manifest_path)
+    original_size = len(df)
+    
+    if filters:
+        print(f"Applying filters before computing weights (original size: {len(df)})...")
+        # Apply same filtering logic as ManifestDataset._apply_filters
+        for key, value in filters.items():
+            if "__lt" in key:
+                col = key.replace("__lt", "")
+                df = df[df[col] < value]
+            elif "__gt" in key:
+                col = key.replace("__gt", "")
+                df = df[df[col] > value]
+            elif "__le" in key:
+                col = key.replace("__le", "")
+                df = df[df[col] <= value]
+            elif "__ge" in key:
+                col = key.replace("__ge", "")
+                df = df[df[col] >= value]
+            elif "__ne" in key:
+                col = key.replace("__ne", "")
+                df = df[df[col] != value]
+            else:
+                if isinstance(value, (list, tuple, set)):
+                    df = df[df[key].isin(value)]
+                else:
+                    df = df[df[key] == value]
+        df = df.reset_index(drop=True)
+        print(f"After filtering: {len(df)} samples (removed {original_size - len(df)})")
+    
+    # Save filtered manifest temporarily for analysis
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as tmp_file:
+        temp_manifest = Path(tmp_file.name)
+        df.to_csv(temp_manifest, index=False)
+    
     # Generate stats automatically
     print(f"\n{'='*60}")
     print(f"Generating weight stats for column: {column_name}")
     print(f"{'='*60}")
     print(f"Manifest: {manifest_path}")
+    if filters:
+        print(f"Using filtered manifest: {len(df)} samples (filters: {filters})")
     print(f"Output: {column_output_dir}")
     print(f"Weighting method: {weighting_method}")
     if max_weight:
@@ -86,7 +139,7 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
     
     try:
         analyze_column_distribution(
-            manifest_path=manifest_path,
+            manifest_path=temp_manifest,  # Use filtered manifest
             column_name=column_name,
             output_dir=column_output_dir,
             rare_threshold_percentile=rare_threshold_percentile,
@@ -95,11 +148,19 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
             max_weight=max_weight,
             min_weight=min_weight
         )
+        # Rename the generated stats file to include filter suffix
+        generated_stats = column_output_dir / f"{column_name}_distribution_stats.json"
+        if generated_stats.exists() and filter_suffix:
+            generated_stats.rename(stats_path)
         print(f"\nWeight stats generated: {stats_path}")
         return stats_path
     except Exception as e:
         print(f"Error generating weight stats: {e}")
         raise
+    finally:
+        # Clean up temporary manifest
+        if temp_manifest.exists():
+            temp_manifest.unlink()
 
 
 def build_model(config):

@@ -504,6 +504,10 @@ def main():
             # Get manifest path from dataset config
             manifest_path = Path(config["dataset"]["manifest"])
             
+            # Get filters from dataset config to apply before computing weights
+            # This ensures weights are computed on the same filtered dataset used for training
+            dataset_filters = config["dataset"].get("filters", None)
+            
             # Ensure weight stats exist (will generate if needed)
             from training.utils import ensure_weight_stats_exist
             weights_stats_path = ensure_weight_stats_exist(
@@ -514,7 +518,8 @@ def main():
                 min_samples_threshold=config["training"].get("min_samples_threshold", 50),
                 weighting_method=config["training"].get("weighting_method", "inverse_frequency"),
                 max_weight=config["training"].get("max_weight", None),
-                min_weight=config["training"].get("min_weight", 1.0)
+                min_weight=config["training"].get("min_weight", 1.0),
+                filters=dataset_filters  # Apply same filters as dataset
             )
     
     # Use dataset's make_dataloader to support weighted sampling
