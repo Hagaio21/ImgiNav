@@ -8,8 +8,7 @@ dataset:
   outputs:
     latent: latent_path  # Use pre-embedded latents for faster training
   filters:
-    is_empty:
-    - false
+    is_empty: [false]
   return_path: false
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt

@@ -236,6 +236,23 @@ class ManifestDataset(BaseComponent, Dataset):
                                 max_weight=None, exclude_extremely_rare=False, 
                                 min_samples_threshold=50, preferred_columns=None):
 
+        # Filter out empty rooms using is_empty column BEFORE computing weights
+        # (even though dataset should already be filtered, be safe)
+        if "is_empty" in self.df.columns:
+            original_size = len(self.df)
+            # Handle different representations of False (boolean False, string "false", int 0)
+            # Convert to string and check, or use boolean comparison
+            is_empty_values = self.df["is_empty"]
+            # Check if value is False (boolean), "false" (string), 0 (int), or "False" (string)
+            mask = (
+                (is_empty_values == False) |  # Boolean False
+                (is_empty_values == 0) |  # Integer 0
+                (is_empty_values.astype(str).str.lower().isin(['false', '0', 'no']))  # String representations
+            )
+            self.df = self.df[mask].reset_index(drop=True)
+            if len(self.df) < original_size:
+                print(f"Filtered out {original_size - len(self.df)} empty rooms from weight computation (using is_empty column)")
+        
         # Determine which column to use
         if weight_column is None:
             # Try preferred columns if provided
@@ -287,8 +304,7 @@ class ManifestDataset(BaseComponent, Dataset):
                 class_grouping = {}
                 for class_id in unique_classes:
                     count = counts[unique_classes == class_id][0]
-                    # Don't group "scene" or special classes
-                    if count < threshold_count and class_id not in ["scene", "0000", "0"]:
+                    if count < threshold_count:
                         class_grouping[class_id] = "rare"
                     else:
                         class_grouping[class_id] = class_id
@@ -331,8 +347,19 @@ class ManifestDataset(BaseComponent, Dataset):
         unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
         counts_dict = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
         
-        # Load weights from stats file if provided
-        if weights_stats_path and Path(weights_stats_path).exists():
+        # If grouping is enabled, we need to recompute weights on grouped classes
+        # (even if stats file exists, because individual weights don't match grouped structure)
+        if class_grouping and group_rare_classes:
+            # Grouping is active - recompute weights on grouped counts
+            print("Recomputing weights on grouped classes (grouping enabled)...")
+            weight_map = compute_weights_from_counts(
+                counts_dict,
+                method=weighting_method,
+                max_weight=max_weight,
+                min_weight=1.0
+            )
+        elif weights_stats_path and Path(weights_stats_path).exists():
+            # No grouping or grouping from stats - try to load from stats file
             try:
                 weight_map = load_weights_from_stats(weights_stats_path, use_grouped=use_grouped_weights)
                 print(f"Loaded {len(weight_map)} weights from {weights_stats_path}")
