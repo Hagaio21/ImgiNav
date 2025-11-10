@@ -138,6 +138,18 @@ def analyze_column_distribution(
     if invalid_count > 0:
         print(f"Warning: {invalid_count} rows have missing values in '{column_name}', will be excluded from analysis")
     
+    # Filter out "empty" classes (case-insensitive, handles string, bool, int)
+    original_size = len(valid_df)
+    if "is_empty" in valid_df.columns:
+        # Filter using is_empty column - handle bool, string, int
+        is_empty_mask = valid_df["is_empty"].astype(str).str.lower().isin(["true", "1", "yes"])
+        valid_df = valid_df[~is_empty_mask].copy()
+    # Also filter out rows where the column value itself is "empty" (case-insensitive)
+    valid_df = valid_df[valid_df[column_name].astype(str).str.strip().str.lower() != "empty"].copy()
+    empty_count = original_size - len(valid_df)
+    if empty_count > 0:
+        print(f"Filtered out {empty_count} rows where {column_name}='empty' or is_empty=True")
+    
     if len(valid_df) == 0:
         raise ValueError(f"No valid values found in column '{column_name}'")
     
@@ -153,6 +165,9 @@ def analyze_column_distribution(
     
     class_stats = []
     for class_id, count in value_counts.items():
+        # Skip "empty" class if it somehow got through
+        if str(class_id).strip().lower() == "empty":
+            continue
         percentage = (count / total_samples) * 100
         class_stats.append({
             "class_id": str(class_id),
@@ -205,8 +220,12 @@ def analyze_column_distribution(
     print(f"3. Weighting Strategy ({weighting_method})")
     print("="*60)
     
-    # Create counts dict
-    counts_dict = {stat["class_id"]: stat["count"] for stat in class_stats}
+    # Create counts dict (exclude "empty" if present)
+    counts_dict = {}
+    for stat in class_stats:
+        class_id = str(stat["class_id"]).strip()
+        if class_id.lower() != "empty":
+            counts_dict[class_id] = stat["count"]
     
     # Compute weights
     weights = compute_weights_from_counts(
@@ -259,6 +278,11 @@ def analyze_column_distribution(
     for stat in class_stats:
         class_id = stat["class_id"]
         count = stat["count"]
+        
+        # Skip "empty" class - should have been filtered out already, but double-check
+        if str(class_id).lower() == "empty":
+            continue
+        
         assigned = False
         
         # Check each percentile band
@@ -280,6 +304,11 @@ def analyze_column_distribution(
         count = counts_dict[class_id]
         grouped_counts[grouped_id] += count
     
+    # Remove "empty" from grouped_counts if it somehow got in there
+    if "empty" in grouped_counts:
+        del grouped_counts["empty"]
+        print("Removed 'empty' from grouped_counts")
+    
     # Compute grouped weights
     grouped_weights = compute_weights_from_counts(
         dict(grouped_counts),
@@ -287,6 +316,11 @@ def analyze_column_distribution(
         max_weight=max_weight,
         min_weight=min_weight
     )
+    
+    # Remove "empty" from grouped_weights if it somehow got in there
+    if "empty" in grouped_weights:
+        del grouped_weights["empty"]
+        print("Removed 'empty' from grouped_weights")
     
     print(f"  Grouped classes into {len(grouped_counts)} categories (percentile bands):")
     # Sort: bands first, then individual classes
@@ -437,12 +471,23 @@ def analyze_column_distribution(
     plt.savefig(output_dir / f"{column_name}_distribution_pie.png", dpi=200, bbox_inches='tight')
     plt.close()
     
-    # Plot 4: Weight visualization (use grouped weights with percentile bands, not individual)
-    fig, ax = plt.subplots(figsize=(14, max(8, len(grouped_weights) * 0.3)))
-    sorted_grouped_weights = sorted(grouped_weights.items(), key=lambda x: -x[1])
-    top_weights = sorted_grouped_weights[:30]  # Top 30 by weight
-    weight_class_names = [w[0] for w in top_weights]
-    weight_values = [w[1] for w in top_weights]
+    # Plot 4: Weight visualization (ONLY show percentile bands, not individual classes)
+    # Filter to only show bands (items starting with "rare_") and exclude "empty"
+    plot_weights = {k: v for k, v in grouped_weights.items() 
+                    if str(k).startswith("rare_") and str(k).lower() != "empty"}
+    
+    if not plot_weights:
+        print("Warning: No percentile bands found to plot. Falling back to all grouped weights.")
+        plot_weights = {k: v for k, v in grouped_weights.items() if str(k).lower() != "empty"}
+    
+    fig, ax = plt.subplots(figsize=(14, max(8, len(plot_weights) * 0.3)))
+    # Sort bands by their numeric order (rare_0_10, rare_10_20, etc.)
+    sorted_grouped_weights = sorted(plot_weights.items(), key=lambda x: (
+        int(x[0].split("_")[1]) if len(x[0].split("_")) >= 2 else 999,  # Sort by first number in band name
+        -x[1]  # Then by weight (descending)
+    ))
+    weight_class_names = [w[0] for w in sorted_grouped_weights]
+    weight_values = [w[1] for w in sorted_grouped_weights]
     
     df_weights = pd.DataFrame({"Class": weight_class_names, "Weight": weight_values})
     sns.barplot(data=df_weights, y="Class", x="Weight", ax=ax, hue="Class", palette="rocket", legend=False)
@@ -454,7 +499,7 @@ def analyze_column_distribution(
     
     ax.set_xlabel("Weight", fontsize=12)
     ax.set_ylabel("")
-    ax.set_title(f"Class Weights ({weighting_method} method)", fontsize=14, fontweight='bold')
+    ax.set_title(f"Percentile Band Weights ({weighting_method} method)", fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig(output_dir / f"{column_name}_weights.png", dpi=200, bbox_inches='tight')
     plt.close()
