@@ -49,15 +49,13 @@ def build_color_to_category_mapping(taxonomy: Taxonomy) -> Dict[Tuple[int, int, 
     return color_to_category
 
 
-def analyze_layout_colors(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str], 
-                          min_pixel_threshold: int = 50) -> Set[str]:
+def analyze_layout_colors(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str]) -> Set[str]:
     """
     Analyze layout image to identify which object categories are present.
     
     Args:
         layout_path: Path to layout image
         color_to_category: Dict mapping RGB tuples to category names
-        min_pixel_threshold: Minimum number of pixels for a color to be considered present
     
     Returns:
         Set of category names present in the layout
@@ -75,10 +73,6 @@ def analyze_layout_colors(layout_path: Path, color_to_category: Dict[Tuple[int, 
         for count, rgb in color_counts:
             # Skip background/structural colors
             if rgb in white_vals:
-                continue
-            
-            # Check if color represents a significant object
-            if count < min_pixel_threshold:
                 continue
             
             rgb_tuple = tuple(rgb) if isinstance(rgb, (list, tuple)) else rgb
@@ -167,8 +161,7 @@ def count_distinct_colors(layout_path: Path, exclude_background: bool = True,
         return 0
 
 
-def get_object_class_combination(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str],
-                                min_pixel_threshold: int = 50) -> str:
+def get_object_class_combination(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str]) -> str:
     """
     Get a string representation of the combination of object classes present.
     
@@ -178,14 +171,13 @@ def get_object_class_combination(layout_path: Path, color_to_category: Dict[Tupl
     Args:
         layout_path: Path to layout image
         color_to_category: Dict mapping RGB tuples to category names
-        min_pixel_threshold: Minimum number of pixels for a color to be counted
     
     Returns:
         Sorted comma-separated string of category names (e.g., "Bed,Chair,Table")
         or "empty" if no objects found
     """
     try:
-        categories_present = analyze_layout_colors(layout_path, color_to_category, min_pixel_threshold)
+        categories_present = analyze_layout_colors(layout_path, color_to_category)
         if not categories_present:
             return "empty"
         
@@ -196,8 +188,7 @@ def get_object_class_combination(layout_path: Path, color_to_category: Dict[Tupl
         return "unknown"
 
 
-def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str],
-                                 min_pixel_threshold: int = 50) -> int:
+def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str]) -> int:
     """
     Count distinct object classes in a layout image by counting unique categories.
     
@@ -207,7 +198,6 @@ def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tup
     Args:
         layout_path: Path to layout image
         color_to_category: Dict mapping RGB tuples to category names
-        min_pixel_threshold: Minimum number of pixels for a color to be counted
     
     Returns:
         Number of distinct object classes (categories)
@@ -226,24 +216,20 @@ def count_distinct_object_classes(layout_path: Path, color_to_category: Dict[Tup
             # Skip background/structural colors
             if rgb in white_vals:
                 continue
-            
-            # Check if color represents a significant object
-            if count < min_pixel_threshold:
-                continue
-            
+
             rgb_tuple = tuple(rgb) if isinstance(rgb, (list, tuple)) else rgb
             category = color_to_category.get(rgb_tuple)
             if category:
                 distinct_categories.add(category)
-        
+
         num_classes = len(distinct_categories)
         # Sanity check: if we somehow get an unreasonably high number, something is wrong
         if num_classes > 1000:
             # This shouldn't happen - log a warning
             import warnings
             warnings.warn(f"Unusually high class count ({num_classes}) for {layout_path}. "
-                        f"Taxonomy has {len(color_to_category)} color mappings.")
-        
+                         f"Taxonomy has {len(color_to_category)} color mappings.")
+
         return num_classes
     except Exception as e:
         return 0

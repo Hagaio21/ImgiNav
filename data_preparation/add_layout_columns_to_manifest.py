@@ -43,12 +43,12 @@ def analyze_single_layout(args_tuple):
     Analyze a single layout image. Wrapper for multiprocessing.
     
     Args:
-        args_tuple: (index, layout_path_str, taxonomy_path, manifest_dir, min_pixel_threshold)
+        args_tuple: (index, layout_path_str, taxonomy_path, manifest_dir)
     
     Returns:
         (index, dict) with 'content_category' (num_classes int) and 'class_combination' (string)
     """
-    idx, layout_path_str, taxonomy_path, manifest_dir, min_pixel_threshold = args_tuple
+    idx, layout_path_str, taxonomy_path, manifest_dir = args_tuple
     
     # Load taxonomy and color mapping (rebuild in each worker to avoid pickling issues)
     taxonomy = Taxonomy(taxonomy_path)
@@ -70,15 +70,13 @@ def analyze_single_layout(args_tuple):
     # Count distinct object classes (categories) in layout
     num_classes = count_distinct_object_classes(
         layout_path,
-        color_to_category=color_to_category,
-        min_pixel_threshold=min_pixel_threshold
+        color_to_category=color_to_category
     )
     
     # Get the combination string
     class_combination = get_object_class_combination(
         layout_path,
-        color_to_category=color_to_category,
-        min_pixel_threshold=min_pixel_threshold
+        color_to_category=color_to_category
     )
     
     return idx, {"content_category": num_classes, "class_combination": class_combination}
@@ -90,7 +88,6 @@ def add_content_category_to_manifest(
     output_path: Path = None,
     layout_column: str = "layout_path",
     workers: int = None,
-    min_pixel_threshold: int = 50,
     overwrite: bool = False
 ):
     """
@@ -108,7 +105,6 @@ def add_content_category_to_manifest(
         output_path: Path to output manifest CSV (optional, if None updates manifest_path in-place)
         layout_column: Name of column containing layout paths
         workers: Number of parallel workers (default: CPU count)
-        min_pixel_threshold: Minimum pixels for a color to be counted (default: 50)
         overwrite: If True, overwrite existing columns
     """
     manifest_path = Path(manifest_path)
@@ -160,7 +156,7 @@ def add_content_category_to_manifest(
     
     print(f"Analyzing layouts with {workers} workers...")
     print(f"  - Taxonomy: {taxonomy_path}")
-    print(f"  - min_pixel_threshold={min_pixel_threshold}")
+    print(f"  - Counting all colors that map to categories (no pixel threshold)")
     
     # Filter out rows with missing layout paths
     valid_mask = df[layout_column].notna()
@@ -173,7 +169,7 @@ def add_content_category_to_manifest(
     # Prepare arguments for parallel processing
     idx_mapping = {i: orig_idx for i, orig_idx in enumerate(valid_df.index)}
     args_list = [
-        (i, row[layout_column], taxonomy_path, manifest_dir, min_pixel_threshold)
+        (i, row[layout_column], taxonomy_path, manifest_dir)
         for i, (_, row) in enumerate(valid_df.iterrows())
     ]
     
@@ -267,8 +263,6 @@ def main():
                        help="Column name for layout paths (default: layout_path)")
     parser.add_argument("--workers", type=int, default=None,
                        help="Number of parallel workers (default: CPU count)")
-    parser.add_argument("--min_pixel_threshold", type=int, default=50,
-                       help="Minimum pixels for a color to be counted (default: 50)")
     parser.add_argument("--overwrite", action="store_true",
                        help="Overwrite existing column if present")
     
@@ -284,7 +278,6 @@ def main():
         print(f"Output: Updating manifest in-place")
     print(f"Taxonomy: {args.taxonomy}")
     print(f"Layout column: {args.layout_column}")
-    print(f"Min pixel threshold: {args.min_pixel_threshold}")
     print("="*60)
     
     add_content_category_to_manifest(
@@ -293,7 +286,6 @@ def main():
         output_path=args.output,
         layout_column=args.layout_column,
         workers=args.workers,
-        min_pixel_threshold=args.min_pixel_threshold,
         overwrite=args.overwrite
     )
     

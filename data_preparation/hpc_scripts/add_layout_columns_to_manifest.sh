@@ -29,7 +29,6 @@ MANIFESTS=(
 # Parameters
 LAYOUT_COLUMN="layout_path"
 WORKERS=16
-MIN_PIXEL_THRESHOLD=50
 
 mkdir -p "${LOG_DIR}"
 
@@ -79,7 +78,6 @@ for MANIFEST in "${MANIFESTS[@]}"; do
     echo "Manifest: ${MANIFEST}"
     echo "Taxonomy: ${TAXONOMY}"
     echo "Workers: ${WORKERS}"
-    echo "Min pixel threshold: ${MIN_PIXEL_THRESHOLD}"
     echo "Updating manifest in-place..."
     echo ""
 
@@ -88,7 +86,6 @@ for MANIFEST in "${MANIFESTS[@]}"; do
         --taxonomy "${TAXONOMY}" \
         --layout_column "${LAYOUT_COLUMN}" \
         --workers "${WORKERS}" \
-        --min_pixel_threshold "${MIN_PIXEL_THRESHOLD}" \
         --overwrite
 
     echo ""
