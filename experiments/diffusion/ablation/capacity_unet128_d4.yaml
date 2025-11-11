@@ -44,15 +44,8 @@ training:
   sample_interval: 10
   use_amp: true
   
-  # Weighted sampling to balance distribution
-  use_weighted_sampling: true
-  column: class_combination  # Column to use for weighting (e.g., "class_combination", "content_category", "room_id")
-  weighting_method: inverse_frequency  # Weighting method: "inverse_frequency", "sqrt", "log", "balanced"
-  rare_threshold_percentile: 10.0  # Percentile below which classes are considered rare
-  min_samples_threshold: 5  # Minimum samples for a class to be included (lower for combinations)
-  max_weight: 20  # Cap weights to prevent over-sampling extremely rare classes (prevents memorization)
-  use_grouped_weights: false  # Use grouped weights from stats file
-  group_rare_classes: true  # Group rare classes into single category (prevents all rare classes from hitting max_weight cap)
+  # Weighted sampling disabled
+  use_weighted_sampling: false
   
   # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
   max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
