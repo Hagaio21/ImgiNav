@@ -1,0 +1,75 @@
+# Base template for ControlNet ablation experiments
+# ControlNet trains an adapter on top of a frozen pretrained diffusion UNet
+# This config will be customized for each ablation experiment
+
+experiment:
+  name: "controlnet_ablation_base"  # Will be replaced per experiment
+  phase: "controlnet_ablation"
+  save_path: "experiments/controlnet/ablation"
+
+# Required: Pretrained diffusion checkpoint (UNet will be frozen)
+# PLACEHOLDER: Update with actual checkpoint path after diffusion training
+diffusion:
+  checkpoint: PLACEHOLDER_PATH_TO_DIFFUSION_CHECKPOINT  # Update with actual checkpoint path after diffusion training
+
+# Autoencoder (for decoder during sampling)
+autoencoder:
+  checkpoint: "/work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt"
+  frozen: true  # Keep decoder frozen - only UNet adapter is trained
+
+# Dataset: ControlNet requires layout latents + conditioning embeddings
+dataset:
+  manifest: "/work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv"  # Will be created by create_controlnet_manifest.py
+  outputs:
+    latent: "layout_embedding"      # Column with layout latent paths (.pt files)
+    text_emb: "graph_embedding"      # Column with graph embedding paths (.pt files)
+    pov_emb: "pov_embedding"        # Column with POV embedding paths (.pt files)
+  filters:
+    is_empty: [false]
+  return_path: false
+
+# ControlNet adapter config
+# The adapter converts conditioning inputs (text_emb, pov_emb) to control features
+controlnet:
+  adapter:
+    type: "SimpleAdapter"  # Options: "SimpleAdapter", "MLPAdapter", "DeepAdapter"
+    text_dim: 384  # Graph embedding dimension (all-MiniLM-L6-v2 outputs 384)
+    pov_dim: 512   # POV embedding dimension (ResNet18 outputs 512)
+    base_channels: 128  # Will match UNet base_channels from diffusion checkpoint
+    depth: 4             # Will match UNet depth from diffusion checkpoint
+    pov_is_spatial: false  # Set to true if POV embeddings are spatial [B, C, H, W]
+  fusion:
+    type: "add"  # Options: "add", "concat", "cross_attn"
+
+# Training config
+# ControlNet training is typically faster than full diffusion training
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 32  # Smaller than diffusion (32 vs 64) due to conditioning overhead
+  num_workers: 4
+  shuffle: true
+  epochs: 100  # Fewer epochs than diffusion (adapter is smaller)
+  learning_rate: 0.0001  # Similar to diffusion fine-tuning
+  optimizer: AdamW
+  weight_decay: 0.01  # Lighter regularization than diffusion
+  
+  # Checkpoint settings
+  save_interval: 10  # Save every 10 epochs
+  eval_interval: 5   # Evaluate every 5 epochs
+  sample_interval: 10  # Generate samples every 10 epochs
+  
+  # Mixed precision for efficiency
+  use_amp: true
+  
+  # Gradient clipping for stability
+  max_grad_norm: 1.0
+  
+  # Loss: SNR-weighted MSE on noise prediction (same as diffusion)
+  loss:
+    type: MSELoss
+    key: "pred_noise"
+    target: "noise"
+    weight: 1.0
+

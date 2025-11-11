@@ -32,7 +32,7 @@ from training.utils import (
 )
 from models.diffusion import DiffusionModel
 from models.components.controlnet import ControlNet
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 
 
 def train_epoch(model, controlnet, dataloader, scheduler, loss_fn, optimizer, device, epoch, use_amp=False, max_grad_norm=None):
@@ -186,7 +186,7 @@ def eval_epoch(model, controlnet, dataloader, scheduler, loss_fn, device, use_am
 
 
 def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None):
-    """Generate and save sample images using ControlNet."""
+    """Generate and save sample images using ControlNet, with target vs generated comparison."""
     model.eval()
     controlnet.eval()
     samples_dir = output_dir / "samples"
@@ -206,14 +206,41 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
         
         text_emb = batch.get("text_emb")
         pov_emb = batch.get("pov_emb")
+        target_latents = batch.get("latent")  # Target latents from dataset
         
         if text_emb is None or pov_emb is None:
             print("  Warning: Cannot generate samples without text_emb and pov_emb")
             return
         
+        if target_latents is None:
+            print("  Warning: Cannot decode target latents - missing 'latent' in batch")
+            return
+        
+        # Decode target latents to RGB (for comparison)
+        print(f"  Decoding {batch_size} target layouts...")
+        with torch.no_grad():
+            target_decoded = model.decoder({"latent": target_latents})
+            if "rgb" in target_decoded:
+                target_rgb = (target_decoded["rgb"] + 1.0) / 2.0
+                target_rgb = torch.clamp(target_rgb, 0.0, 1.0)
+            else:
+                print("  Warning: Decoder did not produce RGB output for targets")
+                target_rgb = None
+        
         # Generate samples using DDIM (faster for testing)
         num_steps = 20  # Fewer steps for faster sampling
         print(f"  Generating {batch_size} samples using ControlNet with DDIM ({num_steps} steps)...")
+        
+        # Use epoch-based seed for sampling to show diversity across epochs
+        cpu_rng_state = torch.get_rng_state()
+        cuda_rng_states = None
+        if torch.cuda.is_available():
+            cuda_rng_states = torch.cuda.get_rng_state_all()
+        
+        sampling_seed = 42 + epoch  # Different seed per epoch
+        torch.manual_seed(sampling_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(sampling_seed)
         
         with torch.no_grad():
             # Use model's sample method but we need to replace UNet with ControlNet
@@ -246,20 +273,42 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
                 
                 latents = alpha_bar_prev.sqrt() * pred_x0 + (1 - alpha_bar_prev).sqrt() * pred_noise
             
-            # Decode to RGB
+            # Decode generated latents to RGB
             decoded = model.decoder({"latent": latents})
             if "rgb" in decoded:
-                samples = (decoded["rgb"] + 1.0) / 2.0
-                samples = torch.clamp(samples, 0.0, 1.0)
+                generated_rgb = (decoded["rgb"] + 1.0) / 2.0
+                generated_rgb = torch.clamp(generated_rgb, 0.0, 1.0)
             else:
                 print("  Warning: Decoder did not produce RGB output")
                 return
         
-        # Save samples
+        # Restore original RNG state to maintain training determinism
+        torch.set_rng_state(cpu_rng_state)
+        if torch.cuda.is_available() and cuda_rng_states is not None:
+            torch.cuda.set_rng_state_all(cuda_rng_states)
+        
+        # Create side-by-side comparison: target (left) | generated (right)
         grid_n = int(math.sqrt(batch_size))
-        grid_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_samples.png" if exp_name else f"epoch_{epoch:03d}_samples.png")
-        save_image(samples, grid_path, nrow=grid_n, normalize=False)
-        print(f"  Saved samples to {samples_dir}")
+        if grid_n * grid_n < batch_size:
+            grid_n += 1
+        
+        # Create target grid (n×n)
+        if target_rgb is not None:
+            target_grid = make_grid(target_rgb, nrow=grid_n, padding=2, normalize=False)
+            # Create generated grid (n×n)
+            generated_grid = make_grid(generated_rgb, nrow=grid_n, padding=2, normalize=False)
+            # Concatenate horizontally (side by side)
+            combined_grid = torch.cat([target_grid, generated_grid], dim=2)  # Concatenate along width
+            
+            # Save combined comparison: n×n target | n×n generated (side by side)
+            comparison_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_comparison.png" if exp_name else f"epoch_{epoch:03d}_comparison.png")
+            save_image(combined_grid, comparison_path, normalize=False)
+            print(f"  Saved target vs generated comparison to {comparison_path}")
+        
+        # Also save generated samples only (for quick viewing)
+        samples_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_samples.png" if exp_name else f"epoch_{epoch:03d}_samples.png")
+        save_image(generated_rgb, samples_path, nrow=grid_n, normalize=False)
+        print(f"  Saved generated samples to {samples_path}")
     
     except StopIteration:
         return

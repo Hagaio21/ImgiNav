@@ -1,0 +1,56 @@
+experiment:
+  name: controlnet_ablation_capacity_unet48_d3
+  phase: controlnet_ablation
+  save_path: experiments/controlnet/ablation/capacity_unet48_d3
+
+# PLACEHOLDER: Update with actual checkpoint path after diffusion training completes
+diffusion:
+  checkpoint: PLACEHOLDER_PATH_TO_DIFFUSION_CHECKPOINT  # Update: /work3/s233249/ImgiNav/experiments/diffusion/ablation/capacity_unet48_d3/diffusion_ablation_capacity_unet48_d3_checkpoint_best.pt
+
+autoencoder:
+  checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
+  frozen: true
+
+dataset:
+  manifest: /work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv
+  outputs:
+    latent: layout_embedding
+    text_emb: graph_embedding
+    pov_emb: pov_embedding
+  filters:
+    is_empty: [false]
+  return_path: false
+
+controlnet:
+  adapter:
+    type: SimpleAdapter
+    text_dim: 384
+    pov_dim: 512
+    base_channels: 48  # Matches UNet base_channels
+    depth: 3            # Matches UNet depth
+    pov_is_spatial: false
+  fusion:
+    type: add
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  epochs: 100
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  save_interval: 10
+  eval_interval: 5
+  sample_interval: 10
+  use_amp: true
+  max_grad_norm: 1.0
+  loss:
+    type: MSELoss
+    key: pred_noise
+    target: noise
+    weight: 1.0
+
