@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import yaml
+from pathlib import Path
 
 
 class BaseComponent(nn.Module):
@@ -51,11 +52,21 @@ class BaseComponent(nn.Module):
     # -----------------------
     # Checkpoint handling
     # -----------------------
-    def save_checkpoint(self, path, include_config=True):
-        """Save model checkpoint. Override in subclasses for extended checkpointing."""
+    def save_checkpoint(self, path, include_config=True, **extra_state):
+        """
+        Save model checkpoint. Override in subclasses for extended checkpointing.
+        
+        Args:
+            path: Path to save checkpoint
+            include_config: Whether to include model config
+            **extra_state: Additional state to save (e.g., optimizer, step, epoch, etc.)
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"state_dict": self.state_dict()}
         if include_config:
             payload["config"] = self.to_config()
+        payload.update(extra_state)
         torch.save(payload, path)
 
     @classmethod

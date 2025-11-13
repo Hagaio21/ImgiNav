@@ -561,13 +561,15 @@ def train_discriminator_iteration_steps(
                 losses_checkpoint_dir = Path("models/losses/checkpoints")
                 losses_checkpoint_dir.mkdir(parents=True, exist_ok=True)
                 
+                # Save best checkpoint
                 discriminator.save_checkpoint(
                     losses_checkpoint_dir / "discriminator_best.pt",
                     step=step,
                     val_loss=avg_val_loss,
                     val_acc=val_acc
                 )
-                # Also save to iteration directory
+                
+                # Also save to iteration directory for resume
                 discriminator.save_checkpoint(
                     iteration_dir / "discriminator_checkpoint_latest.pt",
                     step=step,
