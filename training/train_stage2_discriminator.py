@@ -5,12 +5,16 @@ Stage 2: Discriminator Training Pipeline
 This script orchestrates the full discriminator training pipeline:
 1. Load a diffusion model checkpoint
 2. Generate N samples (latents) from the model
-3. Get N real samples from dataset and encode them to latents
+3. Get N real samples from dataset (must be pre-embedded latents)
 4. Train a discriminator on these latents
 5. Train the diffusion model with discriminator loss
 6. Optionally iterate this process (adversarial training)
 
 This replaces the old Stage 2 which wasn't working well.
+
+Note: No on-the-fly encoding/decoding is performed. The dataset must provide
+pre-embedded latents via 'latent_path' in the manifest. Decoding only occurs
+during sampling (generating new samples for visualization).
 """
 
 import argparse
@@ -130,15 +134,16 @@ def get_real_latents(
     seed=42
 ):
     """
-    Get real latents by encoding real images from dataset.
+    Get real latents from dataset. Uses pre-embedded latents if available, otherwise encodes RGB images.
+    This is a one-time operation at the beginning of each iteration (not during training steps).
     
     Args:
-        manifest_path: Path to manifest CSV
-        autoencoder_checkpoint: Path to autoencoder checkpoint
+        manifest_path: Path to manifest CSV (preferred: contains 'latent_path' column)
+        autoencoder_checkpoint: Path to autoencoder checkpoint (needed if encoding RGB)
         num_samples: Number of real samples to get
-        batch_size: Batch size for encoding
+        batch_size: Batch size for encoding (if needed)
         device: Device to use
-        seed: Random seed
+        seed: Random seed (different seed per iteration = different subset)
     
     Returns:
         Tensor of real latents [N, C, H, W]
@@ -176,7 +181,7 @@ def get_real_latents(
         print(f"Warning: Only {len(df_real)} real images available, using all of them")
         num_samples = len(df_real)
     
-    # Randomly select num_samples
+    # Randomly select num_samples (different subset each iteration due to seed)
     if len(df_real) > num_samples:
         np.random.seed(seed)
         indices = np.random.choice(len(df_real), size=num_samples, replace=False)
@@ -184,6 +189,44 @@ def get_real_latents(
     
     print(f"Selected {len(df_real)} real images")
     
+    # Check if pre-embedded latents are available (preferred, faster)
+    has_latent_path = "latent_path" in df_real.columns
+    if has_latent_path:
+        # Check if all selected samples have valid latent paths
+        df_real = df_real.dropna(subset=["latent_path"])
+        if len(df_real) < num_samples:
+            print(f"Warning: Only {len(df_real)} samples have valid latent_path, using all of them")
+            num_samples = len(df_real)
+    
+    if has_latent_path and len(df_real) > 0:
+        # Load pre-embedded latents directly (preferred, faster)
+        print(f"Loading {len(df_real)} pre-embedded latents from manifest...")
+        all_latents = []
+        manifest_dir = manifest_path.parent
+        
+        for idx, row in tqdm(df_real.iterrows(), total=len(df_real), desc="Loading latents"):
+            latent_path = Path(row["latent_path"])
+            if not latent_path.is_absolute():
+                latent_path = manifest_dir / latent_path
+            
+            if not latent_path.exists():
+                print(f"Warning: Latent file not found: {latent_path}, will encode from RGB instead")
+                has_latent_path = False
+                break
+            
+            latent = torch.load(latent_path, map_location="cpu")
+            # Handle different tensor shapes (ensure it's [C, H, W])
+            if latent.dim() == 4:
+                latent = latent.squeeze(0)  # Remove batch dimension if present
+            all_latents.append(latent)
+        
+        if has_latent_path:  # All latents loaded successfully
+            real_latents = torch.stack(all_latents, dim=0)[:num_samples]
+            print(f"Loaded {len(real_latents)} pre-embedded latents: {real_latents.shape}")
+            return real_latents
+    
+    # Fallback: encode RGB images at the beginning of iteration (one-time operation, not during training)
+    print(f"Pre-embedded latents not available, encoding RGB images at iteration start...")
     # Load autoencoder
     print(f"Loading autoencoder from {autoencoder_checkpoint}")
     autoencoder = Autoencoder.load_checkpoint(autoencoder_checkpoint, map_location=device)
@@ -210,7 +253,7 @@ def get_real_latents(
     )
     
     all_latents = []
-    print(f"Encoding {len(df_real)} real images...")
+    print(f"Encoding {len(df_real)} real images (one-time operation at iteration start)...")
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Encoding real images"):
             rgb = batch["rgb"].to(device_obj)
@@ -594,17 +637,16 @@ def train_discriminator_iteration_steps(
                 steps_without_improvement += 1
                 print(f"  No improvement for {steps_without_improvement}/{early_stopping_patience} evaluations")
             
-            # Save checkpoint periodically (every 5 evaluations) for resume
-            if step % (eval_interval * 5) == 0:
-                discriminator.save_checkpoint(
-                    iteration_dir / "discriminator_checkpoint_latest.pt",
-                    step=step,
-                    val_loss=avg_val_loss,
-                    val_acc=val_acc,
-                    optimizer_state_dict=optimizer.state_dict(),
-                    history=history,
-                    best_val_loss=best_val_loss
-                )
+            # Save latest checkpoint after evaluation (for resume capability)
+            discriminator.save_checkpoint(
+                iteration_dir / "discriminator_checkpoint_latest.pt",
+                step=step,
+                val_loss=avg_val_loss,
+                val_acc=val_acc,
+                optimizer_state_dict=optimizer.state_dict(),
+                history=history,
+                best_val_loss=best_val_loss
+            )
             
             # Early stopping check
             if steps_without_improvement >= early_stopping_patience:
@@ -811,20 +853,13 @@ def train_diffusion_with_discriminator_steps(
         
         batch = move_batch_to_device(batch, device_obj)
         
-        # Get latents
+        # Get latents (must be pre-embedded, no on-the-fly encoding)
         latents = batch.get("latent")
         if latents is None:
-            if "rgb" in batch and model._has_encoder:
-                with torch.no_grad():
-                    encoder_out = model.encoder(batch["rgb"])
-                    if "latent" in encoder_out:
-                        latents = encoder_out["latent"]
-                    elif "mu" in encoder_out:
-                        latents = encoder_out["mu"]
-                    else:
-                        raise ValueError(f"Encoder output must contain 'latent' or 'mu'")
-            else:
-                raise ValueError("Dataset must provide 'latent' key")
+            raise ValueError(
+                "Dataset must provide pre-embedded 'latent' key. "
+                "No on-the-fly encoding is allowed. Please ensure your dataset manifest includes 'latent_path'."
+            )
         
         # Sample random timesteps
         num_steps_scheduler = model.scheduler.num_steps
@@ -876,13 +911,14 @@ def train_diffusion_with_discriminator_steps(
         step += 1
         pbar.update(1)
         
-        # Evaluate periodically
-        if step % eval_interval_steps == 0 or step == max_steps:
+        # Evaluate periodically (skip if eval_interval is too small relative to max_steps to avoid overhead)
+        should_eval = (step % eval_interval_steps == 0 or step == max_steps) and (eval_interval_steps > 1 or step == max_steps or step == start_step + 1)
+        if should_eval:
             # Get average train metrics over recent steps
             train_loss = total_loss_val.detach().item()
             train_logs = {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in logs.items()}
             
-            # Validate
+            # Validate (limit validation batches for very frequent evaluations)
             val_loss = float("inf")
             val_logs = {}
             if val_loader:
@@ -891,17 +927,22 @@ def train_diffusion_with_discriminator_steps(
                 val_logs_sum = {}
                 val_count = 0
                 
+                # Limit validation batches if evaluating very frequently (e.g., every step)
+                max_val_batches = None
+                if eval_interval_steps == 1 and step < max_steps:
+                    max_val_batches = 5  # Only use 5 batches for frequent evaluations
+                
                 with torch.no_grad():
-                    for val_batch in val_loader:
+                    for val_batch_idx, val_batch in enumerate(val_loader):
+                        if max_val_batches is not None and val_batch_idx >= max_val_batches:
+                            break
                         val_batch = move_batch_to_device(val_batch, device_obj)
                         val_latents = val_batch.get("latent")
                         if val_latents is None:
-                            if "rgb" in val_batch and model._has_encoder:
-                                encoder_out = model.encoder(val_batch["rgb"])
-                                if "latent" in encoder_out:
-                                    val_latents = encoder_out["latent"]
-                                elif "mu" in encoder_out:
-                                    val_latents = encoder_out["mu"]
+                            raise ValueError(
+                                "Validation dataset must provide pre-embedded 'latent' key. "
+                                "No on-the-fly encoding is allowed. Please ensure your dataset manifest includes 'latent_path'."
+                            )
                         
                         val_t = torch.randint(0, num_steps_scheduler, (val_latents.shape[0],), device=device_obj)
                         val_noise = model.scheduler.randn_like(val_latents)
@@ -938,7 +979,10 @@ def train_diffusion_with_discriminator_steps(
                     print(f"  val_{k}: {v:.6f}")
             
             # Save samples periodically with discriminator evaluation
-            if step % sample_interval_steps == 0 and step > start_step:
+            # Skip sampling if interval is too small (very expensive operation)
+            should_sample = (step % sample_interval_steps == 0 and step > start_step) and \
+                           (sample_interval_steps > 1 or step == max_steps)
+            if should_sample:
                 sample_metrics = save_samples_with_discriminator(
                     model, discriminator, output_dir, step,
                     sample_batch_size=64, exp_name=f"{exp_name}_iter_{iteration}",
@@ -950,47 +994,72 @@ def train_diffusion_with_discriminator_steps(
             else:
                 current_sample_metrics = {}
         
-        # Record history with all metrics
-        history_entry = {
-            "step": step,
-            "iteration": iteration,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "learning_rate": optimizer.param_groups[0]['lr'],
-            "evals_without_improvement": evals_without_improvement,
-            **{f"train_{k}": v for k, v in train_logs.items()},
-            **{f"val_{k}": v for k, v in val_logs.items()},
-            **current_sample_metrics  # Add sample metrics if available
-        }
-        training_history.append(history_entry)
-        
-        # Save metrics to CSV and plot
-        save_metrics_csv(training_history, metrics_csv_path)
-        if len(training_history) > 0:
-            df = pd.DataFrame(training_history)
-            plot_diffusion_metrics(df, output_dir, iteration, exp_name=exp_name)
-        
-        # Check for improvement
-        improvement = best_val_loss - val_loss
-        if improvement > early_stopping_min_delta:
-            best_val_loss = val_loss
-            best_step = step
-            evals_without_improvement = 0
+        # Record history with all metrics (only if we evaluated)
+        if should_eval:
+            history_entry = {
+                "step": step,
+                "iteration": iteration,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "learning_rate": optimizer.param_groups[0]['lr'],
+                "evals_without_improvement": evals_without_improvement,
+                **{f"train_{k}": v for k, v in train_logs.items()},
+                **{f"val_{k}": v for k, v in val_logs.items()},
+                **current_sample_metrics  # Add sample metrics if available
+            }
+            training_history.append(history_entry)
             
-            best_checkpoint_path = checkpoint_dir / f"{exp_name}_iter_{iteration}_checkpoint_best.pt"
+            # Save metrics to CSV and plot
+            save_metrics_csv(training_history, metrics_csv_path)
+            if len(training_history) > 0:
+                df = pd.DataFrame(training_history)
+                plot_diffusion_metrics(df, output_dir, iteration, exp_name=exp_name)
+            
+            # Check for improvement (only when we evaluated)
+            improvement = best_val_loss - val_loss
+            if improvement > early_stopping_min_delta:
+                best_val_loss = val_loss
+                best_step = step
+                evals_without_improvement = 0
+                
+                best_checkpoint_path = checkpoint_dir / f"{exp_name}_iter_{iteration}_checkpoint_best.pt"
+                model.save_checkpoint(
+                    best_checkpoint_path,
+                    step=step,
+                    best_val_loss=best_val_loss,
+                    training_history=training_history,
+                    iteration=iteration
+                )
+                print(f"  ✓ Improved! Saved best checkpoint (val_loss={best_val_loss:.6f})")
+            else:
+                evals_without_improvement += 1
+                print(f"  No improvement for {evals_without_improvement}/{early_stopping_patience} evaluations")
+            
+            # Save latest checkpoint after evaluation (for resume capability)
+            latest_checkpoint_path = checkpoint_dir / f"{exp_name}_iter_{iteration}_checkpoint_latest.pt"
             model.save_checkpoint(
-                best_checkpoint_path,
+                latest_checkpoint_path,
                 step=step,
                 best_val_loss=best_val_loss,
                 training_history=training_history,
-                iteration=iteration
+                iteration=iteration,
+                optimizer_state_dict=optimizer.state_dict()
             )
-            print(f"  ✓ Improved! Saved best checkpoint (val_loss={best_val_loss:.6f})")
-        else:
-            evals_without_improvement += 1
-            print(f"  No improvement for {evals_without_improvement}/{early_stopping_patience} evaluations")
-        
-        # Save latest checkpoint
+            
+            # Early stopping check
+            if evals_without_improvement >= early_stopping_patience:
+                print(f"\n{'='*60}")
+                print(f"Early stopping triggered!")
+                print(f"  No improvement for {evals_without_improvement} evaluations")
+                print(f"  Best validation loss: {best_val_loss:.6f} at step {best_step}")
+                print(f"  Current step: {step}")
+                print(f"{'='*60}")
+                break
+    
+    pbar.close()
+    
+    # Save final checkpoint if training completed without final evaluation
+    if step == max_steps and (step % eval_interval_steps != 0):
         latest_checkpoint_path = checkpoint_dir / f"{exp_name}_iter_{iteration}_checkpoint_latest.pt"
         model.save_checkpoint(
             latest_checkpoint_path,
@@ -1000,18 +1069,6 @@ def train_diffusion_with_discriminator_steps(
             iteration=iteration,
             optimizer_state_dict=optimizer.state_dict()
         )
-        
-        # Early stopping check
-        if evals_without_improvement >= early_stopping_patience:
-            print(f"\n{'='*60}")
-            print(f"Early stopping triggered!")
-            print(f"  No improvement for {evals_without_improvement} evaluations")
-            print(f"  Best validation loss: {best_val_loss:.6f} at step {best_step}")
-            print(f"  Current step: {step}")
-            print(f"{'='*60}")
-            break
-    
-    pbar.close()
     
     return model, best_val_loss
 
