@@ -446,6 +446,11 @@ def train_discriminator_iteration_steps(
     # Check for resume
     discriminator_checkpoint_path = iteration_dir / "discriminator_checkpoint_latest.pt"
     start_step = 0
+    avg_val_loss = float("inf")
+    val_acc = 0.0
+    best_val_loss = float("inf")
+    history = []
+    
     if discriminator_checkpoint_path.exists():
         print(f"  Found existing discriminator checkpoint, loading to resume...")
         checkpoint_data = torch.load(discriminator_checkpoint_path, map_location=device_obj)
@@ -458,21 +463,19 @@ def train_discriminator_iteration_steps(
                 history = checkpoint_data["history"]
             if "best_val_loss" in checkpoint_data:
                 best_val_loss = checkpoint_data["best_val_loss"]
+            if "val_loss" in checkpoint_data:
+                avg_val_loss = checkpoint_data["val_loss"]
+            if "val_acc" in checkpoint_data:
+                val_acc = checkpoint_data["val_acc"]
             print(f"  Resumed from step {start_step}")
+            if avg_val_loss != float("inf"):
+                print(f"  Last val_loss: {avg_val_loss:.4f}, val_acc: {val_acc:.4f}")
     
     # Training loop
-    if "best_val_loss" not in locals():
-        best_val_loss = float("inf")
-    if "history" not in locals():
-        history = []
     step = start_step
     num_train_batches = (len(train_latents) + batch_size - 1) // batch_size
     steps_without_improvement = 0
     best_step = start_step
-    
-    # Initialize validation metrics (will be set during first evaluation)
-    avg_val_loss = float("inf")
-    val_acc = 0.0
     
     # Create infinite iterator over training data
     train_indices = torch.randperm(len(train_latents), device=device_obj)
