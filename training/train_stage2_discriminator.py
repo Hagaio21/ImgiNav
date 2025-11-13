@@ -195,7 +195,7 @@ def get_real_latents(
         seed: Random seed (different seed per iteration = different subset)
     
     Returns:
-        Tensor of real latents [N, C, H, W]
+        Tensor of real latents [N, C, H, W] (clean latents representing viable layouts)
     """
     device_obj = torch.device(device)
     manifest_path = Path(manifest_path)
@@ -1496,7 +1496,7 @@ def main():
             batch_size=args.generation_batch_size,
             device=device,
             seed=training_seed + iteration,
-            use_single_step=True  # Use single-step predictions to match training distribution
+            use_single_step=False  # Use full sampling to get actual generated layouts (good or bad)
         )
         
         # Step 2: Get real latents from dataset
