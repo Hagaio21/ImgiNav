@@ -136,9 +136,10 @@ class DiscriminatorLoss(LossComponent):
         if discriminator.training:
             discriminator.eval()
         
-        with torch.no_grad():
-            # Temporarily disable gradients for discriminator evaluation
-            viability_scores = discriminator(pred_latents)  # [B, 1] in [0, 1]
+        # Note: We need gradients for viability_scores to compute loss gradients
+        # The discriminator is frozen (requires_grad=False), so no gradients flow through it
+        # but the output still needs to be part of the computation graph for loss backprop
+        viability_scores = discriminator(pred_latents)  # [B, 1] in [0, 1]
         
         # Debug: Log discriminator scores with timestep info
         timesteps = preds.get("timesteps")
