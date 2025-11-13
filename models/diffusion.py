@@ -168,8 +168,7 @@ class DiffusionModel(BaseModel):
         # predict noise using live UNet (EMA UNet only used at sampling time)
         pred_noise = self.unet(noisy_latents, t, cond)
         
-        # Compute predicted clean latents (denoised) from noisy latents and predicted noise
-        # This is what the model is actually generating/predicting
+
         device_obj = noisy_latents.device
         alpha_bars = self.scheduler.alpha_bars.to(device_obj)
         alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
