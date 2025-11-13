@@ -140,14 +140,28 @@ class DiscriminatorLoss(LossComponent):
             # Temporarily disable gradients for discriminator evaluation
             viability_scores = discriminator(pred_latents)  # [B, 1] in [0, 1]
         
-        # Debug: Log discriminator scores (only once)
-        if not hasattr(self, '_logged_discriminator_stats'):
+        # Debug: Log discriminator scores with timestep info
+        timesteps = preds.get("timesteps")
+        if timesteps is not None and not hasattr(self, '_logged_discriminator_stats'):
+            score_mean = viability_scores.mean().item()
+            score_min = viability_scores.min().item()
+            score_max = viability_scores.max().item()
+            score_std = viability_scores.std().item()
+            t_mean = timesteps.float().mean().item()
+            t_min = timesteps.min().item()
+            t_max = timesteps.max().item()
+            print(f"DiscriminatorLoss DEBUG - Scores: mean={score_mean:.6f}, min={score_min:.6f}, max={score_max:.6f}, std={score_std:.6f}")
+            print(f"DiscriminatorLoss DEBUG - Timesteps: mean={t_mean:.1f}, range=[{t_min}, {t_max}]")
+            print(f"DiscriminatorLoss DEBUG - pred_latents shape: {pred_latents.shape}, range: [{pred_latents.min().item():.3f}, {pred_latents.max().item():.3f}]")
+            self._logged_discriminator_stats = True
+        elif not hasattr(self, '_logged_discriminator_stats'):
             score_mean = viability_scores.mean().item()
             score_min = viability_scores.min().item()
             score_max = viability_scores.max().item()
             score_std = viability_scores.std().item()
             print(f"DiscriminatorLoss DEBUG - Scores: mean={score_mean:.6f}, min={score_min:.6f}, max={score_max:.6f}, std={score_std:.6f}")
             print(f"DiscriminatorLoss DEBUG - pred_latents shape: {pred_latents.shape}, range: [{pred_latents.min().item():.3f}, {pred_latents.max().item():.3f}]")
+            print(f"DiscriminatorLoss DEBUG - WARNING: No timesteps in preds!")
             self._logged_discriminator_stats = True
         
         # Adversarial loss: inverse of discriminator score

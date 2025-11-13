@@ -853,7 +853,23 @@ def train_diffusion_with_discriminator_steps(
     for param in discriminator.parameters():
         param.requires_grad = False
     
+    # Diagnostic: Test discriminator on a sample of real latents to verify it's working
     print(f"  Discriminator loaded")
+    print(f"  Testing discriminator on sample latents...")
+    with torch.no_grad():
+        sample_latent = next(iter(train_loader))["latent"][:4].to(device_obj)  # Get 4 real latents
+        test_scores = discriminator(sample_latent)
+        print(f"  Discriminator scores on REAL latents (should be ~1.0): mean={test_scores.mean().item():.4f}, range=[{test_scores.min().item():.4f}, {test_scores.max().item():.4f}]")
+        
+        # Test on random noise (should score low)
+        fake_test = torch.randn_like(sample_latent)
+        fake_scores = discriminator(fake_test)
+        print(f"  Discriminator scores on RANDOM NOISE (should be ~0.0): mean={fake_scores.mean().item():.4f}, range=[{fake_scores.min().item():.4f}, {fake_scores.max().item():.4f}]")
+        
+        if test_scores.mean().item() < 0.5 or fake_scores.mean().item() > 0.5:
+            print(f"  WARNING: Discriminator may not be working correctly!")
+            print(f"    Real latents should score high (~1.0), got {test_scores.mean().item():.4f}")
+            print(f"    Random noise should score low (~0.0), got {fake_scores.mean().item():.4f}")
     
     # Build loss function (should include discriminator loss)
     loss_fn = build_loss(config)
