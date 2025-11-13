@@ -77,9 +77,16 @@ def compute_loss(
     
     # Prepare preds dict for loss computation
     # All loss components will receive this dict, but only use the keys they need
+    pred_latent = outputs.get("pred_latent")
+    
+    # Debug: Log once if pred_latent is missing
+    if pred_latent is None and not hasattr(compute_loss, '_warned_pred_latent'):
+        print(f"WARNING: compute_loss - pred_latent is None. Model outputs keys: {list(outputs.keys())}")
+        compute_loss._warned_pred_latent = True
+    
     preds = {
         "pred_noise": outputs["pred_noise"],      # For SNRWeightedNoiseLoss
-        "pred_latent": outputs.get("pred_latent"),  # For DiscriminatorLoss (predicted/denoised latents)
+        "pred_latent": pred_latent,  # For DiscriminatorLoss (predicted/denoised latents)
         "scheduler": model.scheduler,            # For SNRWeightedNoiseLoss, LatentStructuralLoss
         "timesteps": t,                          # For SNRWeightedNoiseLoss, LatentStructuralLoss
         "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss
@@ -88,6 +95,11 @@ def compute_loss(
     # Add discriminator if available (for DiscriminatorLoss)
     if discriminator is not None:
         preds["discriminator"] = discriminator
+    else:
+        # Debug: Log once if discriminator is None
+        if not hasattr(compute_loss, '_warned_discriminator'):
+            print(f"WARNING: compute_loss - discriminator is None. DiscriminatorLoss will return 0.")
+            compute_loss._warned_discriminator = True
     
     # Decode latents if semantic losses are needed
     # Check if any loss component needs decoded outputs

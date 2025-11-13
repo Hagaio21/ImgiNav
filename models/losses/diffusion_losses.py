@@ -96,6 +96,8 @@ class DiscriminatorLoss(LossComponent):
         # Set defaults if not specified
         if self.key is None:
             self.key = "pred_latent"
+        # Debug: Log the key being used
+        print(f"DiscriminatorLoss initialized with key='{self.key}', weight={self.weight}")
         # Discriminator loss doesn't use targets
     
     def forward(self, preds, targets):
@@ -129,7 +131,24 @@ class DiscriminatorLoss(LossComponent):
         # Get viability scores from discriminator on PREDICTED/GENERATED latents (fake layouts)
         # The discriminator was trained to distinguish: real (score=1.0) vs fake (score=0.0)
         # We want the generated latents to be classified as viable (score → 1.0)
-        viability_scores = discriminator(pred_latents)  # [B, 1] in [0, 1]
+        
+        # Ensure discriminator is in eval mode (should already be, but double-check)
+        if discriminator.training:
+            discriminator.eval()
+        
+        with torch.no_grad():
+            # Temporarily disable gradients for discriminator evaluation
+            viability_scores = discriminator(pred_latents)  # [B, 1] in [0, 1]
+        
+        # Debug: Log discriminator scores (only once)
+        if not hasattr(self, '_logged_discriminator_stats'):
+            score_mean = viability_scores.mean().item()
+            score_min = viability_scores.min().item()
+            score_max = viability_scores.max().item()
+            score_std = viability_scores.std().item()
+            print(f"DiscriminatorLoss DEBUG - Scores: mean={score_mean:.6f}, min={score_min:.6f}, max={score_max:.6f}, std={score_std:.6f}")
+            print(f"DiscriminatorLoss DEBUG - pred_latents shape: {pred_latents.shape}, range: [{pred_latents.min().item():.3f}, {pred_latents.max().item():.3f}]")
+            self._logged_discriminator_stats = True
         
         # Adversarial loss: inverse of discriminator score
         # High when fake (score→0), low when real (score→1)
