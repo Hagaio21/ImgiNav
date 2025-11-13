@@ -213,8 +213,8 @@ def get_real_latents(
         for batch in tqdm(dataloader, desc="Encoding real images"):
             rgb = batch["rgb"].to(device_obj)
             
-            # Encode
-            encoder_out = autoencoder.encoder({"rgb": rgb})
+            # Encode - encoder expects tensor directly, not dict
+            encoder_out = autoencoder.encoder(rgb)
             if "latent" in encoder_out:
                 latents = encoder_out["latent"]
             elif "mu" in encoder_out:
