@@ -54,7 +54,7 @@ from training.train_diffusion import (
     save_samples,
     compute_loss,
 )
-from training.plotting_utils import plot_discriminator_metrics, plot_diffusion_metrics
+from training.plotting_utils import plot_discriminator_metrics, plot_diffusion_metrics, plot_overall_iteration_metrics
 from torchvision.utils import save_image
 import math
 
@@ -94,7 +94,9 @@ def generate_fake_latents(
     print(f"Generating {num_samples} fake latents...")
     with torch.no_grad():
         for batch_idx in tqdm(range(num_batches), desc="Generating fake latents"):
-            current_batch_size = min(batch_size, num_samples - len(all_latents) * batch_size)
+            # Calculate remaining samples needed
+            samples_generated = sum(l.shape[0] for l in all_latents)
+            current_batch_size = min(batch_size, num_samples - samples_generated)
             
             # Generate samples
             sample_output = model.sample(
@@ -535,9 +537,10 @@ def train_discriminator_iteration_steps(
                     val_correct += (val_predictions == val_batch_labels).sum().item()
                     val_total += len(val_batch_labels)
             
-            avg_val_loss = val_loss / num_val_batches
-            val_acc = val_correct / val_total
-            scheduler.step(avg_val_loss)
+            avg_val_loss = val_loss / num_val_batches if num_val_batches > 0 else float("inf")
+            val_acc = val_correct / val_total if val_total > 0 else 0.0
+            if num_val_batches > 0:
+                scheduler.step(avg_val_loss)
             
             print(f"\nStep {step}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, "
                   f"Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.4f}")
@@ -1417,6 +1420,9 @@ def main():
         # Save resume state after iteration completes
         save_resume_state(iteration, iteration_val_loss, "completed")
         
+        # Create/update overall plot across all iterations
+        plot_overall_iteration_metrics(output_dir, exp_name=exp_name)
+        
         # Check for improvement across iterations (for convergence-based training)
         if args.num_iterations is None:
             # Initialize on first iteration
@@ -1457,6 +1463,9 @@ def main():
     
     # Final resume state update
     save_resume_state(iteration - 1, best_iteration_val_loss if args.num_iterations is None else iteration_val_loss, "finished")
+    
+    # Create final overall plot
+    plot_overall_iteration_metrics(output_dir, exp_name=exp_name)
     
     print(f"\n{'='*80}")
     print("Stage 2 Discriminator Training Complete!")
