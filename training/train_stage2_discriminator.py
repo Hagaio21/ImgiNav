@@ -78,7 +78,7 @@ def generate_fake_latents(
         model: Diffusion model (loaded and on device)
         num_samples: Number of samples to generate
         batch_size: Batch size for generation
-        num_steps: Number of DDIM steps
+        num_steps: Number of DDPM steps (uses full scheduler steps if None)
         device: Device to use
         seed: Random seed (optional)
     
@@ -95,19 +95,23 @@ def generate_fake_latents(
     all_latents = []
     num_batches = (num_samples + batch_size - 1) // batch_size
     
-    print(f"Generating {num_samples} fake latents...")
+    # Use full scheduler steps for DDPM (better quality)
+    if num_steps is None:
+        num_steps = model.scheduler.num_steps
+    
+    print(f"Generating {num_samples} fake latents using DDPM ({num_steps} steps)...")
     with torch.no_grad():
         for batch_idx in tqdm(range(num_batches), desc="Generating fake latents"):
             # Calculate remaining samples needed
             samples_generated = sum(l.shape[0] for l in all_latents)
             current_batch_size = min(batch_size, num_samples - samples_generated)
             
-            # Generate samples
+            # Generate samples using DDPM (stochastic, better quality and diversity)
             sample_output = model.sample(
                 batch_size=current_batch_size,
                 num_steps=num_steps,
-                method="ddim",
-                eta=0.0,
+                method="ddpm",
+                eta=1.0,
                 device=device_obj,
                 verbose=False
             )
@@ -1170,7 +1174,7 @@ def main():
         "--generation_steps",
         type=int,
         default=100,
-        help="Number of DDIM steps for generation (default: 100)"
+        help="Number of DDPM steps for generation (default: 100, uses full scheduler steps if None). Note: DDPM is used for better quality and diversity."
     )
     parser.add_argument(
         "--device",
