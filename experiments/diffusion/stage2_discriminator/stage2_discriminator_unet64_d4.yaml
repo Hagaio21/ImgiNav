@@ -1,31 +1,37 @@
-# Stage 2: Fine-tuning for diffusion_ablation_capacity_unet64_d4
-# Loads Stage 1 checkpoint and fine-tunes with latent structural loss
+# Stage 2 Discriminator Training for unet64_d4 (45.39M parameters)
 
 experiment:
-  name: "diffusion_stage2_unet64_d4"
-  phase: "diffusion_stage2"
-  save_path: "/work3/s233249/ImgiNav/experiments/diffusion/stage2/stage2_unet64_d4"
+  name: "diffusion_stage2_discriminator_unet64_d4"
+  phase: "diffusion_stage2_discriminator"
+  save_path: "/work3/s233249/ImgiNav/experiments/diffusion/stage2_discriminator/unet64_d4"
 
-# Load Stage 1 checkpoint
+# Stage 1 checkpoint to load
 diffusion:
   stage1_checkpoint: /work3/s233249/ImgiNav/experiments/diffusion/ablation/capacity_unet64_d4/diffusion_ablation_capacity_unet64_d4_checkpoint_best.pt
 
-# Autoencoder config (decoder stays frozen - only UNet is trained)
+# Autoencoder config
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
-  frozen: true  # Keep decoder frozen - latent structural loss guides UNet only
+  frozen: true
 
+# Discriminator config
+discriminator:
+  config:
+    latent_channels: 16
+    base_channels: 64
+    num_layers: 4
+    use_batch_norm: true
+
+# Dataset
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
   outputs:
     latent: "latent_path"
-    rgb: "layout_path"
-    segmentation: "layout_path"
   filters:
     is_empty: [false]
-    # Use entire dataset including augmented samples
   return_path: false
 
+# UNet config (inherited from Stage 1, but can override)
 unet:
   in_channels: 16
   out_channels: 16
@@ -38,6 +44,7 @@ unet:
   norm_groups: 8
   dropout: 0.2
 
+# Scheduler
 scheduler:
   type: "CosineScheduler"
   num_steps: 500
@@ -46,20 +53,18 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 64
+  batch_size: 32
   num_workers: 8
   shuffle: true
-  epochs: 200
+  epochs: 50
   learning_rate: 0.00005
   optimizer: AdamW
   weight_decay: 0.1
   save_interval: 99999
   eval_interval: 5
-  sample_interval: 5  # Generate samples every 5 epochs
+  sample_interval: 10
   use_amp: true
   max_grad_norm: 0.5
-  
-  # Weighted sampling disabled
   use_weighted_sampling: false
   
   loss:
@@ -69,10 +74,8 @@ training:
         key: "pred_noise"
         target: "noise"
         weight: 1.0
-      - type: LatentStructuralLoss
-        key: "pred_noise"
-        target: "latent"
+      - type: DiscriminatorLoss
+        key: "latent"
         weight: 0.1
-        gradient_type: "sobel"
-        reduction: "mean"
+        target: null
 
