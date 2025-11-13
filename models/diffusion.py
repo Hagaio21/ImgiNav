@@ -167,10 +167,21 @@ class DiffusionModel(BaseModel):
 
         # predict noise using live UNet (EMA UNet only used at sampling time)
         pred_noise = self.unet(noisy_latents, t, cond)
+        
+        # Compute predicted clean latents (denoised) from noisy latents and predicted noise
+        # This is what the model is actually generating/predicting
+        device_obj = noisy_latents.device
+        alpha_bars = self.scheduler.alpha_bars.to(device_obj)
+        alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+        
+        # Predict x0 from noisy latents: x0 = (x_t - sqrt(1 - alpha_bar) * epsilon) / sqrt(alpha_bar)
+        pred_latent = (noisy_latents - (1 - alpha_bar).sqrt() * pred_noise) / alpha_bar.sqrt().clamp(min=1e-8)
+        pred_latent = torch.clamp(pred_latent, -10.0, 10.0)
 
         # Do NOT decode during training - decoder should only see clean latents at sampling time
         return {
-            "latent": latents,
+            "latent": latents,  # Ground-truth clean latents (for reference/targets)
+            "pred_latent": pred_latent,  # Predicted/denoised latents (what model generates)
             "noisy_latent": noisy_latents,
             "pred_noise": pred_noise,
             "noise": noise_used,  # Return the noise used (for loss computation)

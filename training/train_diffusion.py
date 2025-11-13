@@ -53,8 +53,8 @@ def compute_loss(
         preds["decoded_rgb"], preds["decoded_segmentation"]
         targets["rgb"], targets["segmentation"]
     - DiscriminatorLoss:
-        preds["latent"], preds["discriminator"]
-        (no targets needed)
+        preds["pred_latent"], preds["discriminator"]
+        (no targets needed - evaluates on predicted/denoised latents from model)
     
     Args:
         model: Diffusion model
@@ -78,9 +78,9 @@ def compute_loss(
     # All loss components will receive this dict, but only use the keys they need
     preds = {
         "pred_noise": outputs["pred_noise"],      # For SNRWeightedNoiseLoss
-        "scheduler": model.scheduler,            # For SNRWeightedNoiseLoss
-        "timesteps": t,                          # For SNRWeightedNoiseLoss
-        "latent": latents,                       # For DiscriminatorLoss
+        "pred_latent": outputs.get("pred_latent"),  # For DiscriminatorLoss (predicted/denoised latents)
+        "scheduler": model.scheduler,            # For SNRWeightedNoiseLoss, LatentStructuralLoss
+        "timesteps": t,                          # For SNRWeightedNoiseLoss, LatentStructuralLoss
         "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss
     }
     
