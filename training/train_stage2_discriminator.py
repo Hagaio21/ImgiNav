@@ -470,6 +470,10 @@ def train_discriminator_iteration_steps(
     steps_without_improvement = 0
     best_step = start_step
     
+    # Initialize validation metrics (will be set during first evaluation)
+    avg_val_loss = float("inf")
+    val_acc = 0.0
+    
     # Create infinite iterator over training data
     train_indices = torch.randperm(len(train_latents), device=device_obj)
     
@@ -611,6 +615,35 @@ def train_discriminator_iteration_steps(
                 train_indices = torch.randperm(len(train_latents), device=device_obj)
     
     pbar.close()
+    
+    # If we never evaluated, do a final evaluation now
+    if avg_val_loss == float("inf"):
+        print(f"\nFinal evaluation at step {step}...")
+        discriminator.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            num_val_batches = (len(val_latents) + batch_size - 1) // batch_size
+            for val_batch_idx in range(num_val_batches):
+                val_start = val_batch_idx * batch_size
+                val_end = min(val_start + batch_size, len(val_latents))
+                
+                val_batch_latents = val_latents[val_start:val_end]
+                val_batch_labels = val_labels[val_start:val_end]
+                
+                val_scores = discriminator(val_batch_latents)
+                val_loss_batch = criterion(val_scores, val_batch_labels)
+                
+                val_loss += val_loss_batch.item()
+                val_predictions = (val_scores > 0.5).float()
+                val_correct += (val_predictions == val_batch_labels).sum().item()
+                val_total += len(val_batch_labels)
+        
+        avg_val_loss = val_loss / num_val_batches if num_val_batches > 0 else float("inf")
+        val_acc = val_correct / val_total if val_total > 0 else 0.0
+        print(f"  Final Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.4f}")
     
     # Save final checkpoint
     losses_checkpoint_dir = Path("models/losses/checkpoints")
