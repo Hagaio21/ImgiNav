@@ -81,7 +81,7 @@ training:
         target: "noise"
         weight: 1.0
       - type: DiscriminatorLoss
-        key: "latent"
-        weight: 0.1
+        key: "pred_latent"
+        weight: 0.3
         target: null
 

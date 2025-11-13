@@ -99,7 +99,7 @@ training:
       # Discriminator adversarial loss
       # The discriminator will be loaded dynamically during training
       - type: DiscriminatorLoss
-        key: "latent"  # Key in preds dict for latents
-        weight: 0.1  # Start with 0.1, adjust as needed
+        key: "pred_latent"  # Key in preds dict for predicted latents
+        weight: 0.3  # Increased from 0.1 for stronger adversarial signal
         target: null  # Discriminator loss doesn't need targets
 
