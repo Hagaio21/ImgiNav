@@ -972,9 +972,6 @@ def train_diffusion_with_discriminator_steps(
     # Build optimizer
     optimizer = build_optimizer(model, config)
     
-    # Build scheduler (steps-based: pass max_steps)
-    scheduler = build_scheduler(optimizer, config, last_epoch=-1, max_steps=max_steps)
-    
     # Training loop
     best_val_loss = float("inf")
     training_history = []
@@ -999,6 +996,12 @@ def train_diffusion_with_discriminator_steps(
             if "best_val_loss" in checkpoint_data:
                 best_val_loss = checkpoint_data["best_val_loss"]
             print(f"  Resumed from step {start_step}")
+    
+    # Build scheduler (steps-based: pass max_steps)
+    # For step-based schedulers, last_epoch should be start_step-1 (0-indexed, last completed step)
+    # If start_step > 0, we're resuming, so initialize scheduler at the correct step
+    last_epoch = start_step - 1 if start_step > 0 else -1
+    scheduler = build_scheduler(optimizer, config, last_epoch=last_epoch, max_steps=max_steps)
     
     print(f"\n{'='*60}")
     print(f"Training Diffusion Model with Discriminator - Iteration {iteration} (Steps-based)")
@@ -1082,7 +1085,8 @@ def train_diffusion_with_discriminator_steps(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
         
-        # Step scheduler
+        # Step scheduler AFTER optimizer.step() (required by PyTorch)
+        # The scheduler is initialized with the correct step when resuming, so we can always step it
         if scheduler:
             scheduler.step()
         

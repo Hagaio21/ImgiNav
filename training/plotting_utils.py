@@ -79,7 +79,12 @@ def plot_discriminator_metrics(history_df, output_dir, iteration, exp_name="disc
         # Add learning rate to a subplot if we have space, or create additional figure
         pass  # Will be handled in a separate plot if needed
     
-    plt.tight_layout()
+    # Use tight_layout with error handling (some axes may not be compatible)
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass  # bbox_inches='tight' in savefig will handle layout
+    
     # Overwrite same file each time (no iteration in filename for latest)
     plot_path = output_dir / f"{exp_name}_iter_{iteration}_discriminator_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
@@ -287,7 +292,12 @@ def plot_diffusion_metrics(history_df, output_dir, iteration, exp_name="diffusio
         ax.grid(True, alpha=0.3)
         ax.set_yscale('log')
     
-    plt.tight_layout()
+    # Use tight_layout with error handling (some axes may not be compatible)
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass  # bbox_inches='tight' in savefig will handle layout
+    
     # Overwrite same file each time (same filename per iteration)
     plot_path = output_dir / f"{exp_name}_iter_{iteration}_diffusion_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
@@ -474,7 +484,12 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.grid(True, alpha=0.3)
         ax.set_yscale('log')
     
-    plt.tight_layout()
+    # Use tight_layout with error handling (some axes may not be compatible)
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass  # bbox_inches='tight' in savefig will handle layout
+    
     plot_path = output_dir / f"{exp_name}_diffusion_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -619,7 +634,12 @@ def plot_overall_iteration_metrics(output_dir, exp_name="diffusion"):
         ax.axis('off')
         ax.text(0.5, 0.5, 'No sample metrics available', ha='center', va='center', transform=ax.transAxes)
     
-    plt.tight_layout()
+    # Use tight_layout with error handling (some axes may not be compatible)
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass  # bbox_inches='tight' in savefig will handle layout
+    
     plot_path = output_dir / f"{exp_name}_overall_iteration_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -765,7 +785,12 @@ def plot_iterative_refinement_metrics(output_dir, exp_name="diffusion"):
            verticalalignment='center', family='monospace',
            bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
     
-    plt.tight_layout()
+    # Use tight_layout with error handling (some axes may not be compatible)
+    try:
+        plt.tight_layout()
+    except Exception:
+        pass  # bbox_inches='tight' in savefig will handle layout
+    
     plot_path = output_dir / f"{exp_name}_iterative_refinement_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
