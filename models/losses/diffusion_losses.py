@@ -101,6 +101,10 @@ class DiscriminatorLoss(LossComponent):
     def forward(self, preds, targets):
         discriminator = preds.get("discriminator")
         if discriminator is None:
+            # Debug: log why discriminator is missing
+            if not hasattr(self, '_warned_no_discriminator'):
+                print(f"WARNING: DiscriminatorLoss - discriminator not found in preds. Available keys: {list(preds.keys())}")
+                self._warned_no_discriminator = True
             device = preds.get("pred_latent", torch.zeros(1))
             if isinstance(device, torch.Tensor):
                 device = device.device
@@ -111,7 +115,10 @@ class DiscriminatorLoss(LossComponent):
         # Get predicted latents (fake/generated layouts)
         pred_latents = preds.get(self.key)
         if pred_latents is None:
-            # Fallback: if pred_latent not available, return zero loss
+            # Debug: log why pred_latent is missing
+            if not hasattr(self, '_warned_no_pred_latent'):
+                print(f"WARNING: DiscriminatorLoss - pred_latent (key='{self.key}') not found in preds. Available keys: {list(preds.keys())}")
+                self._warned_no_pred_latent = True
             device = preds.get("pred_noise", torch.zeros(1))
             if isinstance(device, torch.Tensor):
                 device = device.device
