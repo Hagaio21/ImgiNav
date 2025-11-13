@@ -982,6 +982,41 @@ def train_diffusion_with_discriminator_steps(
                 for k, v in val_logs.items():
                     print(f"  val_{k}: {v:.6f}")
             
+            # Evaluate discriminator on real vs generated samples for diagnostics
+            if should_eval:
+                discriminator.eval()
+                with torch.no_grad():
+                    # Get a batch of real latents from validation set
+                    if val_loader:
+                        real_batch = next(iter(val_loader))
+                        real_batch = move_batch_to_device(real_batch, device_obj)
+                        real_latents_eval = real_batch.get("latent")
+                        if real_latents_eval is not None:
+                            real_scores = discriminator(real_latents_eval)
+                            real_mean_score = real_scores.mean().item()
+                            print(f"  Discriminator on REAL samples: mean_score={real_mean_score:.4f}")
+                    
+                    # Generate a small batch to check discriminator scores
+                    model.eval()
+                    sample_batch = min(32, sample_batch_size)
+                    sample_output = model.sample(
+                        batch_size=sample_batch,
+                        num_steps=model.scheduler.num_steps,
+                        method="ddpm",
+                        eta=1.0,
+                        device=device_obj,
+                        verbose=False
+                    )
+                    if "latent" in sample_output:
+                        fake_latents_eval = sample_output["latent"]
+                        fake_scores = discriminator(fake_latents_eval)
+                        fake_mean_score = fake_scores.mean().item()
+                        fake_min_score = fake_scores.min().item()
+                        fake_max_score = fake_scores.max().item()
+                        print(f"  Discriminator on GENERATED samples: mean_score={fake_mean_score:.4f}, min={fake_min_score:.4f}, max={fake_max_score:.4f}")
+                        print(f"  Score gap (real - fake): {real_mean_score - fake_mean_score:.4f}" if val_loader and real_latents_eval is not None else "")
+                    model.train()
+            
             # Save samples periodically with discriminator evaluation
             # Skip sampling if interval is too small (very expensive operation)
             should_sample = (step % sample_interval_steps == 0 and step > start_step) and \
