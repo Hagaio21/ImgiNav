@@ -26,6 +26,7 @@ from training.utils import (
     create_grad_scaler,
     save_metrics_csv,
 )
+from training.plotting_utils import plot_diffusion_metrics_epochs
 from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
 from models.components.discriminator import LatentDiscriminator
@@ -661,6 +662,14 @@ def main():
         
         # Save metrics to CSV
         save_metrics_csv(training_history, metrics_csv_path)
+        
+        # Plot metrics with loss breakdown
+        if len(training_history) > 0:
+            try:
+                df = pd.DataFrame(training_history)
+                plot_diffusion_metrics_epochs(df, output_dir, exp_name=exp_name)
+            except Exception as e:
+                print(f"  Warning: Could not plot metrics: {e}")
         
         # Save checkpoint
         checkpoint_dir = output_dir / "checkpoints"

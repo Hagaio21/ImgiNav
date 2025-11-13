@@ -611,6 +611,9 @@ def train_discriminator_iteration_steps(
             val_loss = 0.0
             val_correct = 0
             val_total = 0
+            val_tp = 0
+            val_fp = 0
+            val_fn = 0
             
             with torch.no_grad():
                 num_val_batches = (len(val_latents) + batch_size - 1) // batch_size
@@ -628,6 +631,11 @@ def train_discriminator_iteration_steps(
                     val_predictions = (val_scores > 0.5).float()
                     val_correct += (val_predictions == val_batch_labels).sum().item()
                     val_total += len(val_batch_labels)
+                    
+                    # Compute confusion matrix for F1 score
+                    val_tp += ((val_predictions == 1) & (val_batch_labels == 1)).sum().item()
+                    val_fp += ((val_predictions == 1) & (val_batch_labels == 0)).sum().item()
+                    val_fn += ((val_predictions == 0) & (val_batch_labels == 1)).sum().item()
             
             avg_val_loss = val_loss / num_val_batches if num_val_batches > 0 else float("inf")
             val_acc = val_correct / val_total if val_total > 0 else 0.0
@@ -637,9 +645,22 @@ def train_discriminator_iteration_steps(
             print(f"\nStep {step}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, "
                   f"Val Loss={avg_val_loss:.4f}, Val Acc={val_acc:.4f}")
             
-            # Calculate additional metrics
-            train_f1 = 2 * (train_acc * (1 - train_loss)) / (train_acc + (1 - train_loss) + 1e-8)
-            val_f1 = 2 * (val_acc * (1 - avg_val_loss)) / (val_acc + (1 - avg_val_loss) + 1e-8)
+            # Calculate F1 score properly using precision and recall
+            # For binary classification: F1 = 2 * (precision * recall) / (precision + recall)
+            # Where precision = TP / (TP + FP), recall = TP / (TP + FN)
+            
+            # Train F1
+            train_tp = ((predictions == 1) & (batch_labels == 1)).sum().item()
+            train_fp = ((predictions == 1) & (batch_labels == 0)).sum().item()
+            train_fn = ((predictions == 0) & (batch_labels == 1)).sum().item()
+            train_precision = train_tp / (train_tp + train_fp + 1e-8)
+            train_recall = train_tp / (train_tp + train_fn + 1e-8)
+            train_f1 = 2 * (train_precision * train_recall) / (train_precision + train_recall + 1e-8)
+            
+            # Validation F1
+            val_precision = val_tp / (val_tp + val_fp + 1e-8)
+            val_recall = val_tp / (val_tp + val_fn + 1e-8)
+            val_f1 = 2 * (val_precision * val_recall) / (val_precision + val_recall + 1e-8)
             
             history.append({
                 "step": step,
@@ -1564,6 +1585,10 @@ def main():
         # Create/update overall plot across all iterations
         plot_overall_iteration_metrics(output_dir, exp_name=exp_name)
         
+        # Create/update iterative refinement metrics
+        from training.plotting_utils import plot_iterative_refinement_metrics
+        plot_iterative_refinement_metrics(output_dir, exp_name=exp_name)
+        
         # Check for improvement across iterations (for convergence-based training)
         if args.num_iterations is None:
             # Initialize on first iteration
@@ -1607,6 +1632,10 @@ def main():
     
     # Create final overall plot
     plot_overall_iteration_metrics(output_dir, exp_name=exp_name)
+    
+    # Create final iterative refinement metrics
+    from training.plotting_utils import plot_iterative_refinement_metrics
+    plot_iterative_refinement_metrics(output_dir, exp_name=exp_name)
     
     print(f"\n{'='*80}")
     print("Stage 2 Discriminator Training Complete!")
