@@ -328,17 +328,17 @@ def save_samples_with_discriminator(
         all_path = samples_dir / (f"{exp_name}_step_{step:06d}_all_samples.png" if exp_name else f"step_{step:06d}_all_samples.png")
         save_image(samples, all_path, nrow=all_grid_n, normalize=False)
         
-        # Save metrics
+        # Save metrics (convert all to Python native types for JSON serialization)
         metrics = {
-            "step": step,
-            "mean_discriminator_score": discriminator_scores.mean().item(),
-            "std_discriminator_score": discriminator_scores.std().item(),
-            "min_discriminator_score": discriminator_scores.min().item(),
-            "max_discriminator_score": discriminator_scores.max().item(),
-            "median_discriminator_score": discriminator_scores.median().item(),
-            "best_mean_score": best_scores.mean(),
-            "worst_mean_score": worst_scores.mean(),
-            "num_samples": sample_batch_size
+            "step": int(step),
+            "mean_discriminator_score": float(discriminator_scores.mean().item()),
+            "std_discriminator_score": float(discriminator_scores.std().item()),
+            "min_discriminator_score": float(discriminator_scores.min().item()),
+            "max_discriminator_score": float(discriminator_scores.max().item()),
+            "median_discriminator_score": float(discriminator_scores.median().item()),
+            "best_mean_score": float(best_scores.mean()),
+            "worst_mean_score": float(worst_scores.mean()),
+            "num_samples": int(sample_batch_size)
         }
         
         # Save metrics to JSON
