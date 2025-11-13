@@ -5,7 +5,7 @@
 #BSUB -n 8
 #BSUB -R "rusage[mem=12000]"
 #BSUB -gpu "num=1"
-#BSUB -W 72:00  # 72 hours (adversarial training takes longer)
+#BSUB -W 24:00  # 24 hours (adversarial training takes longer)
 #BSUB -q gpuv100
 
 set -euo pipefail
