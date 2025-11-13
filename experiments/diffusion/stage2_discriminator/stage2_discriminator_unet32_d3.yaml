@@ -72,6 +72,10 @@ training:
   max_grad_norm: 0.5
   use_weighted_sampling: false
   
+  # Learning rate scheduler (steps-based)
+  scheduler:
+    type: "cosine"  # Cosine annealing over max_steps
+  
   loss:
     type: CompositeLoss
     losses:

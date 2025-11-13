@@ -85,6 +85,10 @@ training:
   # Weighted sampling disabled
   use_weighted_sampling: false
   
+  # Learning rate scheduler (steps-based)
+  scheduler:
+    type: "cosine"  # Cosine annealing over max_steps
+  
   # Loss configuration
   # Must include DiscriminatorLoss for adversarial training
   loss:

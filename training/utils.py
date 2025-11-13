@@ -346,13 +346,14 @@ def save_metrics_csv(training_history, metrics_csv_path, phase_metrics_path=None
         df.to_csv(phase_metrics_path, index=False)
 
 
-def build_scheduler(optimizer, config, last_epoch=-1):
+def build_scheduler(optimizer, config, last_epoch=-1, max_steps=None):
     """Build learning rate scheduler from config.
     
     Args:
         optimizer: Optimizer to attach scheduler to
         config: Training config dict
         last_epoch: Last epoch number (for resuming training). Default -1 means start from beginning.
+        max_steps: Optional max steps for steps-based training. If provided, overrides epoch-based calculation.
     """
     training_cfg = config.get("training", {})
     
@@ -360,7 +361,11 @@ def build_scheduler(optimizer, config, last_epoch=-1):
     if scheduler_type is None:
         return None
     
-    epochs_target = config.get("experiment", {}).get("epochs_target", training_cfg.get("epochs", 100))
+    # Determine T_max: use max_steps if provided (steps-based), otherwise use epochs (epoch-based)
+    if max_steps is not None:
+        T_max = max_steps
+    else:
+        T_max = config.get("experiment", {}).get("epochs_target", training_cfg.get("epochs", 100))
     
     # When resuming (last_epoch >= 0), ensure optimizer param_groups have initial_lr
     # This is required by PyTorch schedulers when resuming
@@ -371,13 +376,13 @@ def build_scheduler(optimizer, config, last_epoch=-1):
                 param_group["initial_lr"] = param_group.get("lr", 0.001)
     
     if scheduler_type.lower() == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_target, last_epoch=last_epoch)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, last_epoch=last_epoch)
     elif scheduler_type.lower() == "linear":
         start_factor = training_cfg.get("scheduler", {}).get("start_factor", 1.0)
         end_factor = training_cfg.get("scheduler", {}).get("end_factor", 0.0)
-        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=start_factor, end_factor=end_factor, total_iters=epochs_target, last_epoch=last_epoch)
+        scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=start_factor, end_factor=end_factor, total_iters=T_max, last_epoch=last_epoch)
     elif scheduler_type.lower() == "step":
-        step_size = training_cfg.get("scheduler", {}).get("step_size", epochs_target // 3)
+        step_size = training_cfg.get("scheduler", {}).get("step_size", T_max // 3)
         gamma = training_cfg.get("scheduler", {}).get("gamma", 0.1)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma, last_epoch=last_epoch)
     else:

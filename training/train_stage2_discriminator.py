@@ -864,8 +864,8 @@ def train_diffusion_with_discriminator_steps(
     # Build optimizer
     optimizer = build_optimizer(model, config)
     
-    # Build scheduler
-    scheduler = build_scheduler(optimizer, config, last_epoch=-1)
+    # Build scheduler (steps-based: pass max_steps)
+    scheduler = build_scheduler(optimizer, config, last_epoch=-1, max_steps=max_steps)
     
     # Training loop
     best_val_loss = float("inf")
