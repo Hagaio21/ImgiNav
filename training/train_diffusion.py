@@ -138,7 +138,7 @@ def compute_loss(
 
 def train_epoch(
     model, dataloader, scheduler, loss_fn, discriminator, 
-    optimizer, device, epoch, use_amp=False, max_grad_norm=None
+    optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False
 ):
     """Train for one epoch using CompositeLoss."""
     model.train()
@@ -147,6 +147,8 @@ def train_epoch(
     log_dict = {}
     
     device_obj = to_device(device)
+    # Store non-uniform sampling flag for use in timestep sampling
+    train_epoch._use_non_uniform_sampling = use_non_uniform_sampling
     
     # Keep decoder frozen - only UNet is trained
     if hasattr(model, 'decoder'):
@@ -174,7 +176,18 @@ def train_epoch(
         
         # Sample random timesteps
         num_steps = model.scheduler.num_steps
-        t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
+        # Support non-uniform timestep sampling (favors high-noise timesteps for better generalization)
+        # This helps with low-diversity datasets by focusing on harder denoising tasks
+        use_non_uniform_sampling = getattr(train_epoch, '_use_non_uniform_sampling', False)
+        if use_non_uniform_sampling:
+            # Higher probability for early timesteps (high noise)
+            # Exponential decay: early timesteps have higher probability
+            probs = torch.exp(-torch.linspace(0, 2, num_steps, device=device_obj))
+            probs = probs / probs.sum()
+            t = torch.multinomial(probs, latents.shape[0], replacement=True)
+        else:
+            # Uniform sampling (default)
+            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
         noise = model.scheduler.randn_like(latents)
         cond = batch.get("cond", None)
         
@@ -612,6 +625,12 @@ def main():
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
+    use_non_uniform_sampling = config["training"].get("use_non_uniform_sampling", True)  # Default True for improved training
+    early_stopping_patience = config["training"].get("early_stopping_patience", None)
+    early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
+    
+    # Early stopping state
+    epochs_without_improvement = 0
     
     print(f"\nStarting training...")
     print(f"  Epochs: {epochs}")
@@ -619,6 +638,9 @@ def main():
     print(f"  Learning rate: {optimizer.param_groups[0]['lr']}")
     print(f"  Mixed precision: {use_amp}")
     print(f"  Max grad norm: {max_grad_norm}")
+    print(f"  Non-uniform timestep sampling: {use_non_uniform_sampling}")
+    if early_stopping_patience is not None:
+        print(f"  Early stopping: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
     
     # Training loop
     for epoch in range(start_epoch, epochs):
@@ -629,7 +651,8 @@ def main():
         # Train
         train_loss, train_logs = train_epoch(
             model, train_loader, scheduler, loss_fn, discriminator,
-            optimizer, device_obj, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm
+            optimizer, device_obj, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm,
+            use_non_uniform_sampling=use_non_uniform_sampling
         )
         
         print(f"Train Loss: {train_loss:.6f}")
@@ -647,6 +670,18 @@ def main():
             print(f"Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():
                 print(f"  {k}: {v:.6f}")
+            
+            # Early stopping logic
+            if early_stopping_patience is not None:
+                improvement = best_val_loss - val_loss
+                if improvement > early_stopping_min_delta:
+                    epochs_without_improvement = 0
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                    print(f"  Improvement: {improvement:.6f} (new best: {best_val_loss:.6f})")
+                else:
+                    epochs_without_improvement += 1
+                    print(f"  No improvement for {epochs_without_improvement}/{early_stopping_patience} epochs")
         
         # Save samples
         if val_loader and (epoch + 1) % sample_interval == 0:
@@ -699,6 +734,15 @@ def main():
                 training_history=training_history
             )
             print(f"  Saved best checkpoint (val_loss={best_val_loss:.6f})")
+        
+        # Early stopping check
+        if early_stopping_patience is not None and epochs_without_improvement >= early_stopping_patience:
+            print(f"\n{'='*60}")
+            print(f"Early stopping triggered after {epoch + 1} epochs")
+            print(f"No improvement for {epochs_without_improvement} epochs")
+            print(f"Best validation loss: {best_val_loss:.6f}")
+            print(f"{'='*60}")
+            break
     
     print(f"\n{'='*60}")
     print("Training completed!")
