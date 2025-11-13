@@ -6,7 +6,7 @@
 #BSUB -R "rusage[mem=2000]"  # 2GB per CPU = 16GB total (actual usage ~3GB)
 #BSUB -gpu "num=1"
 #BSUB -W 24:00  # 24 hours (adversarial training takes longer)
-#BSUB -q gpuv100
+#BSUB -q gpua40  # A40 GPU - only 4 pending jobs vs 288 on gpuv100 (better for full runs)
 
 set -euo pipefail
 
