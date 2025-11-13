@@ -93,9 +93,9 @@ class DiscriminatorLoss(LossComponent):
     
     def _build(self):
         super()._build()
-        # Set defaults if not specified
+        # Set defaults if not specified - prefer "generated_latent" (from random noise) over "pred_latent" (denoised from real)
         if self.key is None:
-            self.key = "pred_latent"
+            self.key = "generated_latent"  # Default to generated latents (matches discriminator training distribution)
         # Debug: Log the key being used
         print(f"DiscriminatorLoss initialized with key='{self.key}', weight={self.weight}")
         # Discriminator loss doesn't use targets
@@ -114,19 +114,26 @@ class DiscriminatorLoss(LossComponent):
                 device = torch.device("cpu")
             return torch.tensor(0.0, device=device), {}
         
-        # Get predicted latents (fake/generated layouts)
-        pred_latents = preds.get(self.key)
-        if pred_latents is None:
-            # Debug: log why pred_latent is missing
-            if not hasattr(self, '_warned_no_pred_latent'):
-                print(f"WARNING: DiscriminatorLoss - pred_latent (key='{self.key}') not found in preds. Available keys: {list(preds.keys())}")
-                self._warned_no_pred_latent = True
-            device = preds.get("pred_noise", torch.zeros(1))
-            if isinstance(device, torch.Tensor):
-                device = device.device
-            else:
-                device = torch.device("cpu")
-            return torch.tensor(0.0, device=device), {}
+        # Get generated latents (fake/generated layouts from random noise, not denoised from real)
+        # Try generated_latent first (preferred), fall back to pred_latent if not available
+        generated_latents = preds.get("generated_latent")
+        if generated_latents is None:
+            # Fallback to pred_latent (less ideal, but better than nothing)
+            generated_latents = preds.get("pred_latent")
+            if generated_latents is None:
+                # Debug: log why latents are missing
+                if not hasattr(self, '_warned_no_latent'):
+                    print(f"WARNING: DiscriminatorLoss - generated_latent or pred_latent (key='{self.key}') not found in preds. Available keys: {list(preds.keys())}")
+                    self._warned_no_latent = True
+                device = preds.get("pred_noise", torch.zeros(1))
+                if isinstance(device, torch.Tensor):
+                    device = device.device
+                else:
+                    device = torch.device("cpu")
+                return torch.tensor(0.0, device=device), {}
+            elif not hasattr(self, '_warned_using_pred_latent'):
+                print(f"WARNING: DiscriminatorLoss - Using pred_latent (denoised from real) instead of generated_latent (from random noise). This may give less meaningful gradients.")
+                self._warned_using_pred_latent = True
         
         # Get viability scores from discriminator on PREDICTED/GENERATED latents (fake layouts)
         # The discriminator was trained to distinguish: real (score=1.0) vs fake (score=0.0)
@@ -139,7 +146,7 @@ class DiscriminatorLoss(LossComponent):
         # Note: We need gradients for viability_scores to compute loss gradients
         # The discriminator is frozen (requires_grad=False), so no gradients flow through it
         # but the output still needs to be part of the computation graph for loss backprop
-        viability_scores = discriminator(pred_latents)  # [B, 1] in [0, 1]
+        viability_scores = discriminator(generated_latents)  # [B, 1] in [0, 1]
         
         # Debug: Log discriminator scores with timestep info
         timesteps = preds.get("timesteps")
@@ -153,7 +160,7 @@ class DiscriminatorLoss(LossComponent):
             t_max = timesteps.max().item()
             print(f"DiscriminatorLoss DEBUG - Scores: mean={score_mean:.6f}, min={score_min:.6f}, max={score_max:.6f}, std={score_std:.6f}")
             print(f"DiscriminatorLoss DEBUG - Timesteps: mean={t_mean:.1f}, range=[{t_min}, {t_max}]")
-            print(f"DiscriminatorLoss DEBUG - pred_latents shape: {pred_latents.shape}, range: [{pred_latents.min().item():.3f}, {pred_latents.max().item():.3f}]")
+            print(f"DiscriminatorLoss DEBUG - generated_latents shape: {generated_latents.shape}, range: [{generated_latents.min().item():.3f}, {generated_latents.max().item():.3f}]")
             self._logged_discriminator_stats = True
         elif not hasattr(self, '_logged_discriminator_stats'):
             score_mean = viability_scores.mean().item()
@@ -161,7 +168,7 @@ class DiscriminatorLoss(LossComponent):
             score_max = viability_scores.max().item()
             score_std = viability_scores.std().item()
             print(f"DiscriminatorLoss DEBUG - Scores: mean={score_mean:.6f}, min={score_min:.6f}, max={score_max:.6f}, std={score_std:.6f}")
-            print(f"DiscriminatorLoss DEBUG - pred_latents shape: {pred_latents.shape}, range: [{pred_latents.min().item():.3f}, {pred_latents.max().item():.3f}]")
+            print(f"DiscriminatorLoss DEBUG - generated_latents shape: {generated_latents.shape}, range: [{generated_latents.min().item():.3f}, {generated_latents.max().item():.3f}]")
             print(f"DiscriminatorLoss DEBUG - WARNING: No timesteps in preds!")
             self._logged_discriminator_stats = True
         

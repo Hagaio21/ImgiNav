@@ -56,11 +56,92 @@ from training.train_diffusion import (
     train_epoch,
     eval_epoch,
     save_samples,
-    compute_loss,
+    compute_loss as compute_loss_base,
 )
 from training.plotting_utils import plot_discriminator_metrics, plot_diffusion_metrics, plot_overall_iteration_metrics
 from torchvision.utils import save_image
 import math
+
+
+def compute_loss(
+    model, batch, latents, t, noise, cond, loss_fn, 
+    discriminator=None, use_amp=False, device_obj=None
+):
+    """
+    Compute loss with generated latents for discriminator evaluation.
+    Generates fake latents from random noise (single-step prediction) for discriminator,
+    matching what the discriminator saw during training.
+    """
+    # Forward pass through model (standard diffusion training)
+    outputs = model(latents, t, cond=cond, noise=noise)
+    
+    pred_latent = outputs.get("pred_latent")
+    
+    preds = {
+        "pred_noise": outputs["pred_noise"],
+        "pred_latent": pred_latent,
+        "scheduler": model.scheduler,
+        "timesteps": t,
+        "noisy_latent": outputs.get("noisy_latent"),
+    }
+    
+    # Generate fake latents from random noise for discriminator evaluation
+    if discriminator is not None:
+        preds["discriminator"] = discriminator
+        
+        # Generate fake latents from random noise (single-step prediction)
+        # This matches what discriminator saw during training (generated from random noise, not denoised from real)
+        batch_size = latents.shape[0]
+        latent_shape = latents.shape[1:]  # [C, H, W]
+        num_steps = model.scheduler.num_steps
+        
+        # Generate from random noise (not real latents) - this is "fake" like discriminator training
+        dummy = torch.zeros((batch_size, *latent_shape), device=device_obj)
+        random_noise = model.scheduler.randn_like(dummy)
+        
+        # Sample random timesteps
+        t_fake = torch.randint(0, num_steps, (batch_size,), device=device_obj)
+        
+        # Add noise to get noisy latents (from random noise, not real latents)
+        noise_fake = model.scheduler.randn_like(random_noise)
+        result_fake = model.scheduler.add_noise(random_noise, noise_fake, t_fake, return_scaled_noise=True)
+        noisy_latents_fake, _ = result_fake
+        
+        # Predict noise using UNet (needs gradients for discriminator loss backprop)
+        pred_noise_fake = model.unet(noisy_latents_fake, t_fake, cond=cond)
+        
+        # Compute predicted clean latents (single-step prediction from random noise)
+        alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+        alpha_bar_fake = alpha_bars[t_fake].view(-1, 1, 1, 1)
+        
+        # Predict x0 from noisy latents: x0 = (x_t - sqrt(1 - alpha_bar) * epsilon) / sqrt(alpha_bar)
+        generated_latents = (noisy_latents_fake - (1 - alpha_bar_fake).sqrt() * pred_noise_fake) / alpha_bar_fake.sqrt().clamp(min=1e-8)
+        generated_latents = torch.clamp(generated_latents, -10.0, 10.0)
+        
+        # Add generated latents to preds for DiscriminatorLoss
+        # These are "fake" latents generated from random noise (matches discriminator training)
+        preds["generated_latent"] = generated_latents
+    
+    # Prepare targets dict
+    targets = {
+        "noise": noise,
+        "latent": latents,
+    }
+    
+    # Add RGB and segmentation if available (for SemanticLoss)
+    if "rgb" in batch:
+        targets["rgb"] = batch["rgb"]
+    if "segmentation" in batch:
+        targets["segmentation"] = batch["segmentation"]
+    
+    # Compute loss using CompositeLoss
+    if use_amp and device_obj.type == "cuda":
+        with torch.amp.autocast('cuda'):
+            total_loss, logs = loss_fn(preds, targets)
+    else:
+        total_loss, logs = loss_fn(preds, targets)
+    
+    return total_loss, logs
 
 
 def generate_fake_latents(
@@ -832,7 +913,18 @@ def train_diffusion_with_discriminator_steps(
     
     # Load discriminator
     print(f"\nLoading discriminator from {discriminator_checkpoint}")
+    if not Path(discriminator_checkpoint).exists():
+        raise FileNotFoundError(f"Discriminator checkpoint not found: {discriminator_checkpoint}")
+    
     discriminator_checkpoint_data = torch.load(discriminator_checkpoint, map_location=device_obj)
+    
+    # Debug: Check checkpoint contents
+    print(f"  Checkpoint keys: {list(discriminator_checkpoint_data.keys())}")
+    if "step" in discriminator_checkpoint_data:
+        print(f"  Checkpoint step: {discriminator_checkpoint_data['step']}")
+    if "val_acc" in discriminator_checkpoint_data:
+        print(f"  Checkpoint val_acc: {discriminator_checkpoint_data['val_acc']:.4f}")
+    
     discriminator_config = discriminator_checkpoint_data.get("config")
     
     if discriminator_config:

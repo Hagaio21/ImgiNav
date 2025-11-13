@@ -95,11 +95,6 @@ def compute_loss(
     # Add discriminator if available (for DiscriminatorLoss)
     if discriminator is not None:
         preds["discriminator"] = discriminator
-    else:
-        # Debug: Log once if discriminator is None
-        if not hasattr(compute_loss, '_warned_discriminator'):
-            print(f"WARNING: compute_loss - discriminator is None. DiscriminatorLoss will return 0.")
-            compute_loss._warned_discriminator = True
     
     # Decode latents if semantic losses are needed
     # Check if any loss component needs decoded outputs
