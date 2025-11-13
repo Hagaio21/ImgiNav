@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/stage2_discriminator_test.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/stage2_discriminator_test.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=8000]"
+#BSUB -R "rusage[mem=2000]"  # 2GB per CPU = 8GB total (actual usage ~3GB)
 #BSUB -gpu "num=1"
 #BSUB -W 2:00  # 2 hours for quick test
 #BSUB -q gpuv100

@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/stage2_discriminator_unet64_d4.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/stage2_discriminator_unet64_d4.%J.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=16000]"
+#BSUB -R "rusage[mem=2000]"  # 2GB per CPU = 16GB total (actual usage ~3GB)
 #BSUB -gpu "num=1"
 #BSUB -W 24:00  # 24 hours (adversarial training takes longer - 3 iterations × ~24h each)
 #BSUB -q gpuv100

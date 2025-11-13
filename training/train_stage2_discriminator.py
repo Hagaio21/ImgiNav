@@ -67,23 +67,23 @@ def generate_fake_latents(
     model,
     num_samples,
     batch_size=32,
-    num_steps=100,
     device="cuda",
     seed=None
 ):
     """
-    Generate fake latents from diffusion model.
+    Generate fake latents from diffusion model using DDPM.
     
     Args:
         model: Diffusion model (loaded and on device)
         num_samples: Number of samples to generate
         batch_size: Batch size for generation
-        num_steps: Number of DDPM steps (uses full scheduler steps if None)
         device: Device to use
         seed: Random seed (optional)
     
     Returns:
         Tensor of fake latents [N, C, H, W]
+    
+    Note: Uses model.scheduler.num_steps for DDPM (inherent to the diffusion model).
     """
     device_obj = torch.device(device)
     if seed is not None:
@@ -95,11 +95,10 @@ def generate_fake_latents(
     all_latents = []
     num_batches = (num_samples + batch_size - 1) // batch_size
     
-    # Use full scheduler steps for DDPM (better quality)
-    if num_steps is None:
-        num_steps = model.scheduler.num_steps
+    # Use scheduler's num_steps (inherent to the diffusion model)
+    num_steps = model.scheduler.num_steps
     
-    print(f"Generating {num_samples} fake latents using DDPM ({num_steps} steps)...")
+    print(f"Generating {num_samples} fake latents using DDPM ({num_steps} steps from scheduler)...")
     with torch.no_grad():
         for batch_idx in tqdm(range(num_batches), desc="Generating fake latents"):
             # Calculate remaining samples needed
@@ -107,6 +106,7 @@ def generate_fake_latents(
             current_batch_size = min(batch_size, num_samples - samples_generated)
             
             # Generate samples using DDPM (stochastic, better quality and diversity)
+            # Uses model.scheduler.num_steps automatically
             sample_output = model.sample(
                 batch_size=current_batch_size,
                 num_steps=num_steps,
@@ -998,7 +998,7 @@ def train_diffusion_with_discriminator_steps(
                     
                     # Generate a small batch to check discriminator scores
                     model.eval()
-                    sample_batch = min(32, sample_batch_size)
+                    sample_batch = 32  # Fixed small batch for diagnostic purposes
                     sample_output = model.sample(
                         batch_size=sample_batch,
                         num_steps=model.scheduler.num_steps,
@@ -1208,8 +1208,8 @@ def main():
     parser.add_argument(
         "--generation_steps",
         type=int,
-        default=100,
-        help="Number of DDPM steps for generation (default: 100, uses full scheduler steps if None). Note: DDPM is used for better quality and diversity."
+        default=None,
+        help="DEPRECATED: Number of steps is now determined by model.scheduler.num_steps (inherent to diffusion model). This argument is ignored."
     )
     parser.add_argument(
         "--device",
@@ -1449,7 +1449,6 @@ def main():
             model,
             num_samples=args.num_samples,
             batch_size=args.generation_batch_size,
-            num_steps=args.generation_steps,
             device=device,
             seed=training_seed + iteration
         )
