@@ -24,12 +24,15 @@ discriminator:
     use_batch_norm: true
 
 # Dataset
+# Note: Using augmented manifest but filtering for real (non-augmented) images only
+# The manifest contains both original and augmented images, but we only use real ones
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
   outputs:
-    latent: "latent_path"
+    latent: "latent_path"  # Pre-embedded latents (required, no on-the-fly encoding)
   filters:
     is_empty: [false]
+    is_augmented: [false]  # Only use real (non-augmented) images
   return_path: false
 
 # UNet config (inherited from Stage 1, but can override)
@@ -57,7 +60,9 @@ training:
   batch_size: 32  # Small batch for testing
   num_workers: 4  # Reduced for testing
   shuffle: true
-  epochs: 50
+  # Note: Training is steps-based, not epoch-based
+  # Use --diffusion_max_steps to control training duration
+  # epochs field is not used (kept for compatibility)
   learning_rate: 0.00005
   optimizer: AdamW
   weight_decay: 0.1
