@@ -1,0 +1,82 @@
+# Stage 2 Discriminator Training - TEST CONFIG
+# Minimal config for quick testing (2 batches)
+
+experiment:
+  name: "diffusion_stage2_discriminator_test"
+  phase: "diffusion_stage2_discriminator"
+  save_path: "/work3/s233249/ImgiNav/experiments/diffusion/stage2_discriminator/test"
+
+# Stage 1 checkpoint to load
+diffusion:
+  stage1_checkpoint: /work3/s233249/ImgiNav/experiments/diffusion/ablation/capacity_unet32_d3/diffusion_ablation_capacity_unet32_d3_checkpoint_best.pt
+
+# Autoencoder config
+autoencoder:
+  checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
+  frozen: true
+
+# Discriminator config
+discriminator:
+  config:
+    latent_channels: 16
+    base_channels: 64
+    num_layers: 4
+    use_batch_norm: true
+
+# Dataset
+dataset:
+  manifest: "/work3/s233249/ImgiNav/datasets/augmented/manifest.csv"
+  outputs:
+    latent: "latent_path"
+  filters:
+    is_empty: [false]
+  return_path: false
+
+# UNet config (inherited from Stage 1, but can override)
+unet:
+  in_channels: 16
+  out_channels: 16
+  base_channels: 32
+  depth: 3
+  num_res_blocks: 2
+  time_dim: 128
+  cond_channels: 0
+  fusion_mode: "none"
+  norm_groups: 8
+  dropout: 0.2
+
+# Scheduler
+scheduler:
+  type: "CosineScheduler"
+  num_steps: 500
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 32  # Small batch for testing
+  num_workers: 4  # Reduced for testing
+  shuffle: true
+  epochs: 50
+  learning_rate: 0.00005
+  optimizer: AdamW
+  weight_decay: 0.1
+  save_interval: 99999
+  eval_interval: 5
+  sample_interval: 10
+  use_amp: true
+  max_grad_norm: 0.5
+  use_weighted_sampling: false
+  
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: MSELoss
+        key: "pred_noise"
+        target: "noise"
+        weight: 1.0
+      - type: DiscriminatorLoss
+        key: "latent"
+        weight: 0.1
+        target: null
+
