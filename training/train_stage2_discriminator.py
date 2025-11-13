@@ -1296,17 +1296,23 @@ def main():
         
         # Check for improvement across iterations (for convergence-based training)
         if args.num_iterations is None:
-            improvement = best_iteration_val_loss - iteration_val_loss
-            if improvement > args.iteration_convergence_min_delta:
+            # Initialize on first iteration
+            if iteration == args.start_iteration:
                 best_iteration_val_loss = iteration_val_loss
                 iterations_without_improvement = 0
-                print(f"\n✓ Iteration {iteration + 1} improved! (val_loss: {iteration_val_loss:.6f})")
+                print(f"\n✓ Iteration {iteration + 1} (baseline): val_loss={iteration_val_loss:.6f}")
             else:
-                iterations_without_improvement += 1
-                print(f"\n  Iteration {iteration + 1}: No improvement ({iterations_without_improvement}/{args.iteration_convergence_patience})")
-                print(f"    Current val_loss: {iteration_val_loss:.6f}")
-                print(f"    Best val_loss: {best_iteration_val_loss:.6f}")
-                print(f"    Improvement needed: {args.iteration_convergence_min_delta:.6f}")
+                improvement = best_iteration_val_loss - iteration_val_loss
+                if improvement > args.iteration_convergence_min_delta:
+                    best_iteration_val_loss = iteration_val_loss
+                    iterations_without_improvement = 0
+                    print(f"\n✓ Iteration {iteration + 1} improved! (val_loss: {iteration_val_loss:.6f})")
+                else:
+                    iterations_without_improvement += 1
+                    print(f"\n  Iteration {iteration + 1}: No improvement ({iterations_without_improvement}/{args.iteration_convergence_patience})")
+                    print(f"    Current val_loss: {iteration_val_loss:.6f}")
+                    print(f"    Best val_loss: {best_iteration_val_loss:.6f}")
+                    print(f"    Improvement needed: {args.iteration_convergence_min_delta:.6f}")
             
             # Check convergence
             if iterations_without_improvement >= args.iteration_convergence_patience:
@@ -1320,7 +1326,10 @@ def main():
         
         iteration += 1
         
-        print(f"\nIteration {iteration + 1} complete! Best val loss: {best_val_loss:.6f}")
+        if args.num_iterations is not None:
+            print(f"\nIteration {iteration} complete! Best val loss: {iteration_val_loss:.6f}")
+        else:
+            print(f"\nIteration {iteration} complete! Best val loss: {best_iteration_val_loss:.6f}")
     
     print(f"\n{'='*80}")
     print("Stage 2 Discriminator Training Complete!")
