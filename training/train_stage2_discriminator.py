@@ -22,6 +22,8 @@ import numpy as np
 import yaml
 import sys
 import os
+import json
+from datetime import datetime
 
 from training.utils import (
     load_config,
@@ -1118,20 +1120,78 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}")
     
+    # Resume state file path
+    resume_state_path = output_dir / "resume_state.json"
+    
+    # Load resume state if it exists
+    resume_state = None
+    if resume_state_path.exists():
+        try:
+            with open(resume_state_path, 'r') as f:
+                resume_state = json.load(f)
+            print(f"\n{'='*60}")
+            print(f"Found resume state file: {resume_state_path}")
+            print(f"  Last completed iteration: {resume_state.get('last_completed_iteration', -1)}")
+            print(f"  Best validation loss: {resume_state.get('best_val_loss', 'N/A')}")
+            print(f"  Last update: {resume_state.get('last_update', 'N/A')}")
+            print(f"{'='*60}")
+            
+            # Auto-resume from last completed iteration + 1
+            if args.start_iteration == 0:  # Only auto-resume if user didn't specify
+                auto_resume_iter = resume_state.get('last_completed_iteration', -1) + 1
+                if auto_resume_iter > 0:
+                    print(f"Auto-resuming from iteration {auto_resume_iter}")
+                    args.start_iteration = auto_resume_iter
+                    best_iteration_val_loss = resume_state.get('best_val_loss', float("inf"))
+                    if best_iteration_val_loss != float("inf"):
+                        print(f"  Best validation loss so far: {best_iteration_val_loss:.6f}")
+        except Exception as e:
+            print(f"Warning: Could not load resume state: {e}")
+            print("Starting from scratch...")
+            resume_state = None
+    
     # Load diffusion model checkpoint
     stage1_checkpoint = config.get("diffusion", {}).get("stage1_checkpoint")
     if not stage1_checkpoint:
         raise ValueError("Config must specify 'diffusion.stage1_checkpoint'")
     
-    print(f"\nLoading diffusion model from {stage1_checkpoint}")
-    model, _ = DiffusionModel.load_checkpoint(
-        stage1_checkpoint,
-        map_location=device,
-        return_extra=True,
-        config=config
-    )
-    model = model.to(device_obj)
-    print("Diffusion model loaded successfully")
+    # Check if we should load from a previous iteration checkpoint
+    if resume_state and args.start_iteration > 0:
+        # Try to load from last iteration's checkpoint
+        checkpoint_dir = output_dir / "checkpoints"
+        last_iter = args.start_iteration - 1
+        checkpoint_path = checkpoint_dir / f"{exp_name}_iter_{last_iter}_checkpoint_latest.pt"
+        if checkpoint_path.exists():
+            print(f"\nLoading diffusion model from previous iteration checkpoint: {checkpoint_path}")
+            model, _ = DiffusionModel.load_checkpoint(
+                checkpoint_path,
+                map_location=device,
+                return_extra=True,
+                config=config
+            )
+            model = model.to(device_obj)
+            print("Diffusion model loaded from previous iteration checkpoint")
+        else:
+            # Fall back to stage1 checkpoint
+            print(f"\nPrevious iteration checkpoint not found, loading from Stage 1: {stage1_checkpoint}")
+            model, _ = DiffusionModel.load_checkpoint(
+                stage1_checkpoint,
+                map_location=device,
+                return_extra=True,
+                config=config
+            )
+            model = model.to(device_obj)
+            print("Diffusion model loaded from Stage 1 checkpoint")
+    else:
+        print(f"\nLoading diffusion model from {stage1_checkpoint}")
+        model, _ = DiffusionModel.load_checkpoint(
+            stage1_checkpoint,
+            map_location=device,
+            return_extra=True,
+            config=config
+        )
+        model = model.to(device_obj)
+        print("Diffusion model loaded successfully")
     
     # Keep decoder frozen
     if hasattr(model, 'decoder'):
@@ -1207,10 +1267,31 @@ def main():
     sample_interval = config["training"].get("sample_interval", 10)
     
     # Convergence tracking for outer loop
-    best_iteration_val_loss = float("inf")
+    if resume_state and 'best_val_loss' in resume_state and resume_state.get('best_val_loss') is not None:
+        best_iteration_val_loss = resume_state.get('best_val_loss', float("inf"))
+    else:
+        best_iteration_val_loss = float("inf")
     iterations_without_improvement = 0
     max_iterations = args.max_iterations if args.num_iterations is None else args.num_iterations
     iteration_history = []
+    
+    # Helper function to save resume state
+    def save_resume_state(iteration, val_loss, status="in_progress"):
+        """Save current training state to resume_state.json"""
+        state = {
+            "last_completed_iteration": iteration if status == "completed" else iteration - 1,
+            "current_iteration": iteration,
+            "status": status,  # "in_progress", "completed", "converged", "finished"
+            "best_val_loss": float(best_iteration_val_loss) if best_iteration_val_loss != float("inf") else None,
+            "last_update": datetime.now().isoformat(),
+            "num_iterations": args.num_iterations,
+            "max_iterations": max_iterations
+        }
+        try:
+            with open(resume_state_path, 'w') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save resume state: {e}")
     
     # Iterative adversarial training
     iteration = args.start_iteration
@@ -1251,6 +1332,7 @@ def main():
         # Step 3: Train discriminator (steps-based with early stopping)
         step_label = f"[Step 3]" if args.num_iterations is None else f"[Step 3/{args.num_iterations}]"
         print(f"\n{step_label} Training discriminator...")
+        save_resume_state(iteration, best_iteration_val_loss if best_iteration_val_loss != float("inf") else 0.0, "in_progress")
         discriminator_checkpoint = train_discriminator_iteration_steps(
             real_latents=real_latents,
             fake_latents=fake_latents,
@@ -1294,6 +1376,9 @@ def main():
             "val_loss": iteration_val_loss
         })
         
+        # Save resume state after iteration completes
+        save_resume_state(iteration, iteration_val_loss, "completed")
+        
         # Check for improvement across iterations (for convergence-based training)
         if args.num_iterations is None:
             # Initialize on first iteration
@@ -1322,6 +1407,7 @@ def main():
                 print(f"  Best validation loss: {best_iteration_val_loss:.6f} at iteration {iteration - iterations_without_improvement + 1}")
                 print(f"  Total iterations: {iteration + 1}")
                 print(f"{'='*80}")
+                save_resume_state(iteration, iteration_val_loss, "converged")
                 break
         
         iteration += 1
@@ -1331,10 +1417,14 @@ def main():
         else:
             print(f"\nIteration {iteration} complete! Best val loss: {best_iteration_val_loss:.6f}")
     
+    # Final resume state update
+    save_resume_state(iteration - 1, best_iteration_val_loss if args.num_iterations is None else iteration_val_loss, "finished")
+    
     print(f"\n{'='*80}")
     print("Stage 2 Discriminator Training Complete!")
     print(f"{'='*80}")
     print(f"Results saved to: {output_dir}")
+    print(f"Resume state saved to: {resume_state_path}")
 
 
 if __name__ == "__main__":

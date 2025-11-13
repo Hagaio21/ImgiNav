@@ -40,12 +40,16 @@ cd "${BASE_DIR}"
 python -m training.train_stage2_discriminator "${CONFIG_FILE}" \
     --num_iterations 3 \
     --num_samples 5000 \
+    --discriminator_batch_size 512 \
     --discriminator_max_steps 50000 \
     --diffusion_max_steps 100000 \
     --discriminator_eval_interval 500 \
     --diffusion_eval_interval 1000 \
     --diffusion_sample_interval 5000 \
-    --early_stopping_patience 10
+    --early_stopping_patience 10 \
+    --early_stopping_min_delta 0.0001 \
+    --generation_batch_size 32 \
+    --generation_steps 100
 
 EXIT_CODE=$?
 

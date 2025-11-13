@@ -37,19 +37,22 @@ echo "Config: ${CONFIG_FILE}"
 echo "Working directory: ${BASE_DIR}"
 echo "Start: $(date)"
 echo "Adversarial Training Configuration:"
-echo "  - Iterations: 3 (default)"
-echo "  - Samples per iteration: 5000 (default)"
+echo "  - Iterations: 3 (fixed)"
+echo "  - Samples per iteration: 5000"
+echo "  - Discriminator batch size: 512 (for faster convergence)"
 echo "  - Discriminator max steps: 50000 (trains until convergence)"
 echo "  - Diffusion max steps: 100000 (trains until convergence)"
 echo "  - Early stopping patience: 10 evaluations"
-echo "  - Generation batch size: 32 (default)"
-echo "  - Generation steps: 100 DDIM (default)"
+echo "  - Early stopping min delta: 0.0001"
+echo "  - Generation batch size: 32"
+echo "  - Generation steps: 100 DDIM"
 echo "=========================================="
 
 cd "${BASE_DIR}"
 python -m training.train_stage2_discriminator "${CONFIG_FILE}" \
     --num_iterations 3 \
     --num_samples 5000 \
+    --discriminator_batch_size 512 \
     --discriminator_max_steps 50000 \
     --diffusion_max_steps 100000 \
     --discriminator_eval_interval 500 \
