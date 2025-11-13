@@ -68,10 +68,11 @@ def generate_fake_latents(
     num_samples,
     batch_size=32,
     device="cuda",
-    seed=None
+    seed=None,
+    use_single_step=True
 ):
     """
-    Generate fake latents from diffusion model using DDPM.
+    Generate fake latents from diffusion model.
     
     Args:
         model: Diffusion model (loaded and on device)
@@ -79,11 +80,11 @@ def generate_fake_latents(
         batch_size: Batch size for generation
         device: Device to use
         seed: Random seed (optional)
+        use_single_step: If True, use single-step predictions (matches training distribution).
+                        If False, use full DDPM sampling (cleaner but distribution mismatch).
     
     Returns:
         Tensor of fake latents [N, C, H, W]
-    
-    Note: Uses model.scheduler.num_steps for DDPM (inherent to the diffusion model).
     """
     device_obj = torch.device(device)
     if seed is not None:
@@ -95,34 +96,78 @@ def generate_fake_latents(
     all_latents = []
     num_batches = (num_samples + batch_size - 1) // batch_size
     
-    # Use scheduler's num_steps (inherent to the diffusion model)
-    num_steps = model.scheduler.num_steps
-    
-    print(f"Generating {num_samples} fake latents using DDPM ({num_steps} steps from scheduler)...")
-    with torch.no_grad():
-        for batch_idx in tqdm(range(num_batches), desc="Generating fake latents"):
-            # Calculate remaining samples needed
-            samples_generated = sum(l.shape[0] for l in all_latents)
-            current_batch_size = min(batch_size, num_samples - samples_generated)
-            
-            # Generate samples using DDPM (stochastic, better quality and diversity)
-            # Uses model.scheduler.num_steps automatically
-            sample_output = model.sample(
-                batch_size=current_batch_size,
-                num_steps=num_steps,
-                method="ddpm",
-                eta=1.0,
-                device=device_obj,
-                verbose=False
-            )
-            
-            # Get latents
-            if "latent" in sample_output:
-                latents = sample_output["latent"]
-            else:
-                raise ValueError("Model should return latents, not images")
-            
-            all_latents.append(latents.cpu())
+    if use_single_step:
+        # Use single-step predictions to match what discriminator sees during training
+        print(f"Generating {num_samples} fake latents using single-step predictions (matches training distribution)...")
+        
+        # Infer latent shape from decoder config
+        latent_ch = model.decoder._init_kwargs.get('latent_channels', 4)
+        up_steps = model.decoder._init_kwargs.get('upsampling_steps', 4)
+        spatial_res = 512 // (2 ** up_steps)
+        latent_shape = (latent_ch, spatial_res, spatial_res)
+        
+        num_steps = model.scheduler.num_steps
+        
+        with torch.no_grad():
+            for batch_idx in tqdm(range(num_batches), desc="Generating fake latents"):
+                # Calculate remaining samples needed
+                samples_generated = sum(l.shape[0] for l in all_latents)
+                current_batch_size = min(batch_size, num_samples - samples_generated)
+                
+                # Start with clean latents (random noise that will be denoised)
+                # In practice, we'll add noise and then predict, matching training
+                dummy = torch.zeros((current_batch_size, *latent_shape), device=device_obj)
+                clean_latents = model.scheduler.randn_like(dummy)
+                
+                # Sample random timesteps (same as during training)
+                t = torch.randint(0, num_steps, (current_batch_size,), device=device_obj)
+                
+                # Add noise to get noisy latents
+                noise = model.scheduler.randn_like(clean_latents)
+                result = model.scheduler.add_noise(clean_latents, noise, t, return_scaled_noise=True)
+                noisy_latents, _ = result
+                
+                # Predict noise using model
+                pred_noise = model.unet(noisy_latents, t, cond=None)
+                
+                # Compute predicted clean latents (single-step prediction)
+                # This matches what happens during diffusion training
+                alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+                alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+                
+                # Predict x0 from noisy latents: x0 = (x_t - sqrt(1 - alpha_bar) * epsilon) / sqrt(alpha_bar)
+                pred_latents = (noisy_latents - (1 - alpha_bar).sqrt() * pred_noise) / alpha_bar.sqrt().clamp(min=1e-8)
+                pred_latents = torch.clamp(pred_latents, -10.0, 10.0)
+                
+                all_latents.append(pred_latents.cpu())
+    else:
+        # Use full DDPM sampling (original approach)
+        num_steps = model.scheduler.num_steps
+        
+        print(f"Generating {num_samples} fake latents using DDPM ({num_steps} steps from scheduler)...")
+        with torch.no_grad():
+            for batch_idx in tqdm(range(num_batches), desc="Generating fake latents"):
+                # Calculate remaining samples needed
+                samples_generated = sum(l.shape[0] for l in all_latents)
+                current_batch_size = min(batch_size, num_samples - samples_generated)
+                
+                # Generate samples using DDPM (stochastic, better quality and diversity)
+                sample_output = model.sample(
+                    batch_size=current_batch_size,
+                    num_steps=num_steps,
+                    method="ddpm",
+                    eta=1.0,
+                    device=device_obj,
+                    verbose=False
+                )
+                
+                # Get latents
+                if "latent" in sample_output:
+                    latents = sample_output["latent"]
+                else:
+                    raise ValueError("Model should return latents, not images")
+                
+                all_latents.append(latents.cpu())
     
     fake_latents = torch.cat(all_latents, dim=0)[:num_samples]
     print(f"Generated {len(fake_latents)} fake latents: {fake_latents.shape}")
@@ -1450,7 +1495,8 @@ def main():
             num_samples=args.num_samples,
             batch_size=args.generation_batch_size,
             device=device,
-            seed=training_seed + iteration
+            seed=training_seed + iteration,
+            use_single_step=True  # Use single-step predictions to match training distribution
         )
         
         # Step 2: Get real latents from dataset
