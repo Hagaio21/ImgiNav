@@ -75,12 +75,15 @@ class LatentStandardizationLoss(LossComponent):
     Penalizes mean deviation from 0 and std deviation from 1.
     
     Uses a stronger penalty to ensure latents converge to N(0,1) distribution.
+    Can use per-channel statistics to handle channel imbalances.
     """
     def _build(self):
         super()._build()
         # Optional: use L1 penalty for mean (more aggressive) or L2 (smoother)
         self.mean_penalty_type = self._init_kwargs.get("mean_penalty_type", "l2")  # "l1" or "l2"
         self.std_penalty_type = self._init_kwargs.get("std_penalty_type", "l2")  # "l1" or "l2"
+        # Per-channel standardization (critical for handling channel imbalances)
+        self.per_channel = self._init_kwargs.get("per_channel", True)  # Default to per-channel for better results
     
     def forward(self, preds, targets=None):
         # Extract latent from encoder output
@@ -89,24 +92,50 @@ class LatentStandardizationLoss(LossComponent):
             device = next(iter(preds.values())).device if preds else torch.device("cpu")
             return torch.tensor(0.0, device=device), {}
         
-        # Flatten latents to compute global mean and std
-        latent_flat = latent.reshape(latent.shape[0], -1)
-        
-        # Compute mean and std
-        latent_mean = latent_flat.mean()
-        latent_std = latent_flat.std()
-        
-        # Penalize mean ≠ 0
-        if self.mean_penalty_type == "l1":
-            mean_loss = torch.abs(latent_mean)  # L1 penalty (more aggressive)
-        else:  # l2
-            mean_loss = latent_mean.pow(2)  # L2 penalty on mean
-        
-        # Penalize std ≠ 1
-        if self.std_penalty_type == "l1":
-            std_loss = torch.abs(latent_std - 1.0)  # L1 penalty (more aggressive)
-        else:  # l2
-            std_loss = (latent_std - 1.0).pow(2)  # L2 penalty on std deviation from 1
+        if self.per_channel and latent.ndim == 4:  # [B, C, H, W]
+            # Per-channel statistics (critical for handling channel imbalances)
+            # Compute mean and std per channel across batch and spatial dimensions
+            latent_mean_per_ch = latent.mean(dim=(0, 2, 3))  # [C]
+            latent_std_per_ch = latent.std(dim=(0, 2, 3))  # [C]
+            
+            # Penalize mean ≠ 0 per channel
+            if self.mean_penalty_type == "l1":
+                mean_loss = torch.abs(latent_mean_per_ch).mean()  # L1 penalty (more aggressive)
+            else:  # l2
+                mean_loss = latent_mean_per_ch.pow(2).mean()  # L2 penalty on mean
+            
+            # Penalize std ≠ 1 per channel
+            if self.std_penalty_type == "l1":
+                std_loss = torch.abs(latent_std_per_ch - 1.0).mean()  # L1 penalty (more aggressive)
+            else:  # l2
+                std_loss = (latent_std_per_ch - 1.0).pow(2).mean()  # L2 penalty on std deviation from 1
+            
+            # Also track global stats for monitoring
+            latent_flat = latent.reshape(latent.shape[0], -1)
+            global_mean = latent_flat.mean()
+            global_std = latent_flat.std()
+        else:
+            # Global statistics (original behavior)
+            latent_flat = latent.reshape(latent.shape[0], -1)
+            
+            # Compute mean and std
+            latent_mean = latent_flat.mean()
+            latent_std = latent_flat.std()
+            
+            # Penalize mean ≠ 0
+            if self.mean_penalty_type == "l1":
+                mean_loss = torch.abs(latent_mean)  # L1 penalty (more aggressive)
+            else:  # l2
+                mean_loss = latent_mean.pow(2)  # L2 penalty on mean
+            
+            # Penalize std ≠ 1
+            if self.std_penalty_type == "l1":
+                std_loss = torch.abs(latent_std - 1.0)  # L1 penalty (more aggressive)
+            else:  # l2
+                std_loss = (latent_std - 1.0).pow(2)  # L2 penalty on std deviation from 1
+            
+            global_mean = latent_mean
+            global_std = latent_std
         
         # Combined loss
         loss = (mean_loss + std_loss) * self.weight
@@ -114,8 +143,8 @@ class LatentStandardizationLoss(LossComponent):
         return loss, {
             f"LatentStd_Mean": mean_loss.detach(),
             f"LatentStd_Std": std_loss.detach(),
-            f"LatentStd_MeanVal": latent_mean.detach(),
-            f"LatentStd_StdVal": latent_std.detach(),
+            f"LatentStd_MeanVal": global_mean.detach(),
+            f"LatentStd_StdVal": global_std.detach(),
         }
 
 

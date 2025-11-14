@@ -1,12 +1,12 @@
-# Phase 2.1: Diffusion with High-Resolution Latents and Bottleneck-Only Attention
+# Phase 2.1: Diffusion with High-Resolution Latents and Bottleneck-Only Attention (UNet32)
 # Uses Phase 2.1 autoencoder (64×64×4 latents)
-# Lightweight UNet with attention only in bottleneck for global context
+# Small UNet (base_channels: 32) with attention only in bottleneck for global context
 # 500 noise steps with linear scheduler for stable training
 
 experiment:
-  name: phase2_1_diffusion_64x64_bottleneck_attn
+  name: phase2_1_diffusion_64x64_bottleneck_attn_unet32
   phase: phase2_1_diffusion
-  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn
+  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet32
   epochs_target: 500  # Match training epochs for proper LR decay
 
 dataset:
@@ -29,7 +29,7 @@ unet:
   type: UnetWithAttention  # Use attention-enabled UNet
   in_channels: 4  # Matches new 64×64×4 latent space
   out_channels: 4  # Matches new 64×64×4 latent space
-  base_channels: 32  # Lightweight model
+  base_channels: 32  # Small model
   depth: 3  # Reduced depth
   num_res_blocks: 2
   time_dim: 128

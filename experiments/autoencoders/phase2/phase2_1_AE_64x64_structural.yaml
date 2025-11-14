@@ -2,7 +2,7 @@
 # Higher latent resolution (64×64×4) with stronger structural constraints
 # Architecture: 64×64×4 = 16,384 dims (same total as Phase 1.6, but higher spatial resolution)
 # Encoder: Deterministic AE with structural loss, perceptual guidance, and latent standardization
-# Loss: MSE=1.0, Seg=0.2, Perceptual=0.1, LatentStructural=0.15, LatentStd=0.1
+# Loss: MSE=1.0, Seg=0.2, Perceptual=0.1, LatentStructural=0.15, LatentStd=0.5 (per-channel)
 
 experiment:
   name: "phase2_1_AE_64x64_structural"
