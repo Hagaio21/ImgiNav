@@ -31,112 +31,34 @@ echo ""
 echo "Log directory: ${LOG_DIR}"
 echo ""
 
-# Submit all 5 jobs
-JOB_IDS=()
-
+# Submit all 5 jobs one by one
 echo "Submitting UNet32 (d3, improved)..."
-OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet32_d3_improved.sh" 2>&1)
-EXIT_CODE=$?
-if [[ $EXIT_CODE -eq 0 ]]; then
-    # Extract job ID from bsub output (format: "Job <12345> is submitted...")
-    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
-    if [[ -n "$JOBID" ]]; then
-        JOB_IDS+=("$JOBID")
-        echo "  ✓ Job submitted: $JOBID"
-    else
-        echo "  ⚠ Job submitted but couldn't extract job ID"
-        echo "  Output: $OUTPUT"
-    fi
-else
-    echo "  ✗ Failed to submit"
-    echo "$OUTPUT"
-    exit 1
-fi
+bsub < "${SCRIPT_DIR}/run_adversarial_unet32_d3_improved.sh"
+sleep 2
 
 echo ""
 echo "Submitting UNet48 (d3, improved)..."
-OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d3_improved.sh" 2>&1)
-EXIT_CODE=$?
-if [[ $EXIT_CODE -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
-    if [[ -n "$JOBID" ]]; then
-        JOB_IDS+=("$JOBID")
-        echo "  ✓ Job submitted: $JOBID"
-    else
-        echo "  ⚠ Job submitted but couldn't extract job ID"
-        echo "  Output: $OUTPUT"
-    fi
-else
-    echo "  ✗ Failed to submit"
-    echo "$OUTPUT"
-    exit 1
-fi
+bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d3_improved.sh"
+sleep 2
 
 echo ""
 echo "Submitting UNet48 (d4, improved)..."
-OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d4_improved.sh" 2>&1)
-EXIT_CODE=$?
-if [[ $EXIT_CODE -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
-    if [[ -n "$JOBID" ]]; then
-        JOB_IDS+=("$JOBID")
-        echo "  ✓ Job submitted: $JOBID"
-    else
-        echo "  ⚠ Job submitted but couldn't extract job ID"
-        echo "  Output: $OUTPUT"
-    fi
-else
-    echo "  ✗ Failed to submit"
-    echo "$OUTPUT"
-    exit 1
-fi
+bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d4_improved.sh"
+sleep 2
 
 echo ""
 echo "Submitting UNet64 (d3, improved)..."
-OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d3_improved.sh" 2>&1)
-EXIT_CODE=$?
-if [[ $EXIT_CODE -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
-    if [[ -n "$JOBID" ]]; then
-        JOB_IDS+=("$JOBID")
-        echo "  ✓ Job submitted: $JOBID"
-    else
-        echo "  ⚠ Job submitted but couldn't extract job ID"
-        echo "  Output: $OUTPUT"
-    fi
-else
-    echo "  ✗ Failed to submit"
-    echo "$OUTPUT"
-    exit 1
-fi
+bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d3_improved.sh"
+sleep 2
 
 echo ""
 echo "Submitting UNet64 (d4, improved)..."
-OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d4_improved.sh" 2>&1)
-EXIT_CODE=$?
-if [[ $EXIT_CODE -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
-    if [[ -n "$JOBID" ]]; then
-        JOB_IDS+=("$JOBID")
-        echo "  ✓ Job submitted: $JOBID"
-    else
-        echo "  ⚠ Job submitted but couldn't extract job ID"
-        echo "  Output: $OUTPUT"
-    fi
-else
-    echo "  ✗ Failed to submit"
-    echo "$OUTPUT"
-    exit 1
-fi
+bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d4_improved.sh"
 
 echo ""
 echo "=========================================="
-echo "All jobs submitted successfully!"
+echo "All 5 jobs submitted!"
 echo "=========================================="
-echo "Job IDs:"
-for i in "${!JOB_IDS[@]}"; do
-    echo "  [$((i+1))] ${JOB_IDS[$i]}"
-done
 echo ""
 echo "Monitor with:"
 echo "  bjobs -u $USER"
