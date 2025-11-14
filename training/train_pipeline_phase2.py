@@ -18,6 +18,7 @@ import sys
 import os
 import yaml
 import argparse
+import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 
@@ -41,6 +42,18 @@ def update_diffusion_config_manifest(diffusion_config_path, manifest_path):
         diffusion_config_path: Path to diffusion config YAML
         manifest_path: Path to manifest with embedded latents
     """
+    print(f"\n{'='*60}")
+    print("Updating diffusion config with embedded manifest")
+    print(f"{'='*60}")
+    
+    # Verify manifest exists
+    manifest_abs = Path(manifest_path).resolve()
+    if not manifest_abs.exists():
+        raise FileNotFoundError(
+            f"Embedded manifest not found: {manifest_abs}\n"
+            f"Embedding step may have failed."
+        )
+    
     # Load diffusion config
     with open(diffusion_config_path, 'r') as f:
         config = yaml.safe_load(f)
@@ -49,7 +62,8 @@ def update_diffusion_config_manifest(diffusion_config_path, manifest_path):
     if 'dataset' not in config:
         config['dataset'] = {}
     
-    config['dataset']['manifest'] = str(Path(manifest_path).resolve())
+    old_manifest = config['dataset'].get('manifest', 'not set')
+    config['dataset']['manifest'] = str(manifest_abs)
     config['dataset']['outputs'] = {
         'latent': 'latent_path'  # Use pre-embedded latents
     }
@@ -58,7 +72,11 @@ def update_diffusion_config_manifest(diffusion_config_path, manifest_path):
     with open(diffusion_config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     
-    print(f"Updated diffusion config to use embedded manifest: {manifest_path}")
+    print(f"Updated manifest path:")
+    print(f"  Old: {old_manifest}")
+    print(f"  New: {manifest_abs}")
+    print(f"Config saved to: {diffusion_config_path}")
+    print(f"{'='*60}\n")
 
 
 def update_diffusion_config_with_ae_checkpoint(diffusion_config_path, ae_checkpoint_path):
@@ -428,8 +446,90 @@ def main():
         # Check if embedding already exists
         if output_manifest.exists():
             print(f"Embedded manifest already exists: {output_manifest}")
-            print("Skipping embedding step.")
-            embedded_manifest = output_manifest
+            # Verify it has the correct number of channels by checking a sample
+            try:
+                import pandas as pd
+                df = pd.read_csv(output_manifest)
+                if 'latent_path' in df.columns and len(df) > 0:
+                    # Check first valid latent path
+                    first_latent_path = df[df['latent_path'].notna()]['latent_path'].iloc[0] if len(df[df['latent_path'].notna()]) > 0 else None
+                    if first_latent_path and Path(first_latent_path).exists():
+                        sample_latent = torch.load(first_latent_path, map_location='cpu')
+                        if isinstance(sample_latent, torch.Tensor):
+                            # Latents are saved as [C, H, W] tensors
+                            if sample_latent.ndim == 3:
+                                num_channels = sample_latent.shape[0]  # [C, H, W]
+                            elif sample_latent.ndim == 4:
+                                num_channels = sample_latent.shape[1]  # [B, C, H, W] - batch saved
+                            else:
+                                num_channels = sample_latent.shape[0] if sample_latent.ndim >= 2 else 1
+                            expected_channels = 4  # From new autoencoder
+                            if num_channels != expected_channels:
+                                print(f"WARNING: Existing embedded latents have {num_channels} channels, expected {expected_channels}")
+                                print(f"Re-embedding with new autoencoder...")
+                                # Remove old manifest and re-embed
+                                output_manifest.unlink()
+                                success = embed_dataset(
+                                    ae_checkpoint_path,
+                                    args.ae_config,
+                                    str(input_manifest),
+                                    str(output_manifest),
+                                    batch_size=32,
+                                    num_workers=8
+                                )
+                                embedded_manifest = output_manifest if success else None
+                            else:
+                                print(f"Verified: Embedded latents have correct {num_channels} channels")
+                                embedded_manifest = output_manifest
+                        else:
+                            print("WARNING: Could not verify latent channels. Re-embedding...")
+                            output_manifest.unlink()
+                            success = embed_dataset(
+                                ae_checkpoint_path,
+                                args.ae_config,
+                                str(input_manifest),
+                                str(output_manifest),
+                                batch_size=32,
+                                num_workers=8
+                            )
+                            embedded_manifest = output_manifest if success else None
+                    else:
+                        print("WARNING: No valid latent paths in existing manifest. Re-embedding...")
+                        output_manifest.unlink()
+                        success = embed_dataset(
+                            ae_checkpoint_path,
+                            args.ae_config,
+                            str(input_manifest),
+                            str(output_manifest),
+                            batch_size=32,
+                            num_workers=8
+                        )
+                        embedded_manifest = output_manifest if success else None
+                else:
+                    print("WARNING: Existing manifest missing latent_path column. Re-embedding...")
+                    output_manifest.unlink()
+                    success = embed_dataset(
+                        ae_checkpoint_path,
+                        args.ae_config,
+                        str(input_manifest),
+                        str(output_manifest),
+                        batch_size=32,
+                        num_workers=8
+                    )
+                    embedded_manifest = output_manifest if success else None
+            except Exception as e:
+                print(f"WARNING: Could not verify existing manifest: {e}")
+                print("Re-embedding to ensure correctness...")
+                output_manifest.unlink()
+                success = embed_dataset(
+                    ae_checkpoint_path,
+                    args.ae_config,
+                    str(input_manifest),
+                    str(output_manifest),
+                    batch_size=32,
+                    num_workers=8
+                )
+                embedded_manifest = output_manifest if success else None
         else:
             # Run embedding
             success = embed_dataset(
@@ -446,14 +546,60 @@ def main():
                 print("WARNING: Embedding failed. Diffusion will encode on-the-fly.")
                 embedded_manifest = None
     
-    # Step 3: Update diffusion config with autoencoder checkpoint and embedded manifest
+    # Step 3: Update diffusion config with autoencoder checkpoint
     update_diffusion_config_with_ae_checkpoint(args.diffusion_config, ae_checkpoint_path)
     
-    # Update manifest path if embedding succeeded
+    # Step 4: Update manifest path if embedding succeeded
     if embedded_manifest is not None:
         update_diffusion_config_manifest(args.diffusion_config, str(embedded_manifest))
+        
+        # Verify the config was updated correctly
+        final_config = load_config(args.diffusion_config)
+        final_manifest = final_config.get("dataset", {}).get("manifest", "")
+        final_outputs = final_config.get("dataset", {}).get("outputs", {})
+        
+        print(f"\n{'='*60}")
+        print("Final Config Verification")
+        print(f"{'='*60}")
+        print(f"Manifest path: {final_manifest}")
+        print(f"Outputs: {final_outputs}")
+        
+        # Verify manifest exists and has correct latents
+        if Path(final_manifest).exists():
+            try:
+                df_check = pd.read_csv(final_manifest)
+                if 'latent_path' in df_check.columns and len(df_check) > 0:
+                    first_latent = df_check[df_check['latent_path'].notna()]['latent_path'].iloc[0] if len(df_check[df_check['latent_path'].notna()]) > 0 else None
+                    if first_latent and Path(first_latent).exists():
+                        sample = torch.load(first_latent, map_location='cpu')
+                        if isinstance(sample, torch.Tensor):
+                            if sample.ndim == 3:
+                                ch = sample.shape[0]
+                            elif sample.ndim == 4:
+                                ch = sample.shape[1]
+                            else:
+                                ch = sample.shape[0] if sample.ndim >= 2 else 1
+                            print(f"Sample latent channels: {ch} (expected: 4)")
+                            if ch != 4:
+                                print(f"ERROR: Latents have {ch} channels, expected 4!")
+                                sys.exit(1)
+            except Exception as e:
+                print(f"WARNING: Could not verify latent channels: {e}")
+        print(f"{'='*60}\n")
+    else:
+        # If embedding failed or was skipped, we need to ensure the model has encoder
+        # But actually, if embedding failed, we should fail the pipeline
+        print(f"\n{'='*60}")
+        print("ERROR: Dataset embedding is required but failed or was skipped")
+        print(f"{'='*60}")
+        print("The diffusion model expects 4-channel latents but the dataset")
+        print("does not have pre-embedded latents. Please ensure:")
+        print("1. Input manifest exists and is accessible")
+        print("2. Embedding step completes successfully")
+        print(f"{'='*60}\n")
+        sys.exit(1)
     
-    # Step 4: Train diffusion model
+    # Step 5: Train diffusion model
     success = train_diffusion(args.diffusion_config)
     
     if success:
