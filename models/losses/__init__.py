@@ -11,6 +11,14 @@ from .base_loss import (
 )
 from .semantic_loss import SemanticLoss
 from .diffusion_losses import SNRWeightedNoiseLoss, DiscriminatorLoss, LatentStructuralLoss
+from .adversarial_loss import DiscriminatorLossWithReconnection
+from .advanced_losses import (
+    FrequencyDomainLoss,
+    CharbonnierLoss,
+    FeatureMatchingLoss,
+    ConsistencyLoss,
+    StyleLoss,
+)
 
 __all__ = [
     "LOSS_REGISTRY",
@@ -25,6 +33,12 @@ __all__ = [
     "SemanticLoss",
     "SNRWeightedNoiseLoss",
     "DiscriminatorLoss",
+    "DiscriminatorLossWithReconnection",
     "LatentStructuralLoss",
+    "FrequencyDomainLoss",
+    "CharbonnierLoss",
+    "FeatureMatchingLoss",
+    "ConsistencyLoss",
+    "StyleLoss",
 ]
 

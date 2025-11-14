@@ -1,0 +1,89 @@
+experiment:
+  name: adversarial_unet48_d4_improved
+  phase: adversarial_training
+  save_path: /work3/s233249/ImgiNav/experiments/diffusion/adversarial/adversarial_unet48_d4_improved
+
+dataset:
+  manifest: /work3/s233249/ImgiNav/datasets/augmented/manifest.csv
+  outputs:
+    latent: latent_path
+  filters:
+    is_empty: [false]
+  return_path: false
+
+diffusion:
+  checkpoint: /work3/s233249/ImgiNav/experiments/diffusion/ablation/capacity_unet48_d4_improved/checkpoints/diffusion_ablation_capacity_unet48_d4_improved_checkpoint_best.pt
+  unet:
+    in_channels: 16
+    out_channels: 16
+    base_channels: 48
+    depth: 4
+    num_res_blocks: 1
+    time_dim: 128
+    cond_channels: 0
+    fusion_mode: none
+    norm_groups: 8
+    dropout: 0.35
+  scheduler:
+    type: CosineScheduler
+    num_steps: 300
+  decoder:
+    checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
+    frozen: true
+
+adversarial:
+  num_iterations: 3
+  # real_latents_path: /path/to/real_latents_all.pt  # Optional: if not provided, will be extracted from dataset
+  # Note: Number of real latents will automatically match num_samples in fake_sampling
+  
+  fake_sampling:
+    num_samples: 10000  # Number of fake latents to generate per iteration (same number of real latents will be extracted)
+    num_steps: 50
+    method: "ddim"
+    batch_size: 32
+  discriminator:
+    epochs: 50
+    batch_size: 64
+    learning_rate: 0.0002
+    config:
+      latent_channels: 16
+      base_channels: 64
+      num_layers: 4
+      use_batch_norm: false
+      dropout: 0.3
+  diffusion_finetune:
+    epochs: 10
+    batch_size: 80
+    learning_rate: 0.00005
+    optimizer: AdamW
+    weight_decay: 0.2
+    use_amp: true
+    max_grad_norm: 0.5
+    use_non_uniform_sampling: true
+    eval_interval: 3
+    sample_interval: 10
+    scheduler:
+      type: cosine
+    loss:
+      type: CompositeLoss
+      losses:
+        - type: SNRWeightedNoiseLoss
+          key: pred_noise
+          target: noise
+          weight: 1.0
+        - type: LatentStructuralLoss
+          key: pred_noise
+          target: latent
+          gradient_type: sobel
+          weight: 0.3
+        - type: DiscriminatorLossWithReconnection
+          weight: 0.1
+          key: x0_pred
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  num_workers: 8
+  device: cuda
+
