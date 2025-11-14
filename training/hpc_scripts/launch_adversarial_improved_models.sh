@@ -31,29 +31,64 @@ echo ""
 echo "Log directory: ${LOG_DIR}"
 echo ""
 
+# Verify script files exist
+SCRIPTS=(
+    "run_adversarial_unet32_d3_improved.sh"
+    "run_adversarial_unet48_d3_improved.sh"
+    "run_adversarial_unet48_d4_improved.sh"
+    "run_adversarial_unet64_d3_improved.sh"
+    "run_adversarial_unet64_d4_improved.sh"
+)
+
+for script in "${SCRIPTS[@]}"; do
+    if [[ ! -f "${SCRIPT_DIR}/${script}" ]]; then
+        echo "ERROR: Script not found: ${SCRIPT_DIR}/${script}" >&2
+        exit 1
+    fi
+    if [[ ! -r "${SCRIPT_DIR}/${script}" ]]; then
+        echo "ERROR: Script not readable: ${SCRIPT_DIR}/${script}" >&2
+        exit 1
+    fi
+done
+
 # Submit all 5 jobs one by one
 echo "Submitting UNet32 (d3, improved)..."
-bsub < "${SCRIPT_DIR}/run_adversarial_unet32_d3_improved.sh"
+if ! bsub < "${SCRIPT_DIR}/run_adversarial_unet32_d3_improved.sh"; then
+    echo "  ✗ Failed to submit UNet32 (d3)"
+    exit 1
+fi
 sleep 2
 
 echo ""
 echo "Submitting UNet48 (d3, improved)..."
-bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d3_improved.sh"
+if ! bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d3_improved.sh"; then
+    echo "  ✗ Failed to submit UNet48 (d3)"
+    exit 1
+fi
 sleep 2
 
 echo ""
 echo "Submitting UNet48 (d4, improved)..."
-bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d4_improved.sh"
+if ! bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d4_improved.sh"; then
+    echo "  ✗ Failed to submit UNet48 (d4)"
+    exit 1
+fi
 sleep 2
 
 echo ""
 echo "Submitting UNet64 (d3, improved)..."
-bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d3_improved.sh"
+if ! bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d3_improved.sh"; then
+    echo "  ✗ Failed to submit UNet64 (d3)"
+    exit 1
+fi
 sleep 2
 
 echo ""
 echo "Submitting UNet64 (d4, improved)..."
-bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d4_improved.sh"
+if ! bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d4_improved.sh"; then
+    echo "  ✗ Failed to submit UNet64 (d4)"
+    exit 1
+fi
 
 echo ""
 echo "=========================================="
