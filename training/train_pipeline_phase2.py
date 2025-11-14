@@ -418,9 +418,9 @@ def main():
     else:
         exp_save_path = Path(exp_save_path)
     
-    # Create manifest directory in experiment path
-    manifest_dir = exp_save_path / "manifests"
-    manifest_dir.mkdir(parents=True, exist_ok=True)
+    # Create embeddings directory in experiment path
+    embeddings_dir = exp_save_path / "embeddings"
+    embeddings_dir.mkdir(parents=True, exist_ok=True)
     
     # Input manifest (original dataset)
     input_manifest = Path("/work3/s233249/ImgiNav/datasets/layouts.csv")
@@ -428,8 +428,8 @@ def main():
         # Try alternative path
         input_manifest = Path("/work3/s233249/ImgiNav/datasets/augmented/manifest_images.csv")
     
-    # Output manifest (with embedded latents, saved in experiment directory)
-    output_manifest = manifest_dir / "manifest_with_latents.csv"
+    # Output manifest (with embedded latents, saved in experiment embeddings folder)
+    output_manifest = embeddings_dir / "manifest_with_latents.csv"
     
     print(f"\n{'='*60}")
     print("Embedding dataset with trained autoencoder")
@@ -443,95 +443,18 @@ def main():
         print("Skipping embedding step. Diffusion will encode on-the-fly.")
         embedded_manifest = None
     else:
-        # Check if embedding already exists
+        # Check if embeddings already exist in experiment directory
         if output_manifest.exists():
-            print(f"Embedded manifest already exists: {output_manifest}")
-            # Verify it has the correct number of channels by checking a sample
-            try:
-                import pandas as pd
-                df = pd.read_csv(output_manifest)
-                if 'latent_path' in df.columns and len(df) > 0:
-                    # Check first valid latent path
-                    first_latent_path = df[df['latent_path'].notna()]['latent_path'].iloc[0] if len(df[df['latent_path'].notna()]) > 0 else None
-                    if first_latent_path and Path(first_latent_path).exists():
-                        sample_latent = torch.load(first_latent_path, map_location='cpu')
-                        if isinstance(sample_latent, torch.Tensor):
-                            # Latents are saved as [C, H, W] tensors
-                            if sample_latent.ndim == 3:
-                                num_channels = sample_latent.shape[0]  # [C, H, W]
-                            elif sample_latent.ndim == 4:
-                                num_channels = sample_latent.shape[1]  # [B, C, H, W] - batch saved
-                            else:
-                                num_channels = sample_latent.shape[0] if sample_latent.ndim >= 2 else 1
-                            expected_channels = 4  # From new autoencoder
-                            if num_channels != expected_channels:
-                                print(f"WARNING: Existing embedded latents have {num_channels} channels, expected {expected_channels}")
-                                print(f"Re-embedding with new autoencoder...")
-                                # Remove old manifest and re-embed
-                                output_manifest.unlink()
-                                success = embed_dataset(
-                                    ae_checkpoint_path,
-                                    args.ae_config,
-                                    str(input_manifest),
-                                    str(output_manifest),
-                                    batch_size=32,
-                                    num_workers=8
-                                )
-                                embedded_manifest = output_manifest if success else None
-                            else:
-                                print(f"Verified: Embedded latents have correct {num_channels} channels")
-                                embedded_manifest = output_manifest
-                        else:
-                            print("WARNING: Could not verify latent channels. Re-embedding...")
-                            output_manifest.unlink()
-                            success = embed_dataset(
-                                ae_checkpoint_path,
-                                args.ae_config,
-                                str(input_manifest),
-                                str(output_manifest),
-                                batch_size=32,
-                                num_workers=8
-                            )
-                            embedded_manifest = output_manifest if success else None
-                    else:
-                        print("WARNING: No valid latent paths in existing manifest. Re-embedding...")
-                        output_manifest.unlink()
-                        success = embed_dataset(
-                            ae_checkpoint_path,
-                            args.ae_config,
-                            str(input_manifest),
-                            str(output_manifest),
-                            batch_size=32,
-                            num_workers=8
-                        )
-                        embedded_manifest = output_manifest if success else None
-                else:
-                    print("WARNING: Existing manifest missing latent_path column. Re-embedding...")
-                    output_manifest.unlink()
-                    success = embed_dataset(
-                        ae_checkpoint_path,
-                        args.ae_config,
-                        str(input_manifest),
-                        str(output_manifest),
-                        batch_size=32,
-                        num_workers=8
-                    )
-                    embedded_manifest = output_manifest if success else None
-            except Exception as e:
-                print(f"WARNING: Could not verify existing manifest: {e}")
-                print("Re-embedding to ensure correctness...")
-                output_manifest.unlink()
-                success = embed_dataset(
-                    ae_checkpoint_path,
-                    args.ae_config,
-                    str(input_manifest),
-                    str(output_manifest),
-                    batch_size=32,
-                    num_workers=8
-                )
-                embedded_manifest = output_manifest if success else None
+            print(f"\n{'='*60}")
+            print("Embedded manifest already exists in experiment directory")
+            print(f"{'='*60}")
+            print(f"Found: {output_manifest}")
+            print("Skipping embedding step.")
+            print(f"{'='*60}\n")
+            embedded_manifest = output_manifest
         else:
-            # Run embedding
+            # Embed the dataset in the experiment folder
+            print(f"Embedding dataset with new autoencoder...")
             success = embed_dataset(
                 ae_checkpoint_path,
                 args.ae_config,
@@ -563,28 +486,6 @@ def main():
         print(f"{'='*60}")
         print(f"Manifest path: {final_manifest}")
         print(f"Outputs: {final_outputs}")
-        
-        # Verify manifest exists and has correct latents
-        if Path(final_manifest).exists():
-            try:
-                df_check = pd.read_csv(final_manifest)
-                if 'latent_path' in df_check.columns and len(df_check) > 0:
-                    first_latent = df_check[df_check['latent_path'].notna()]['latent_path'].iloc[0] if len(df_check[df_check['latent_path'].notna()]) > 0 else None
-                    if first_latent and Path(first_latent).exists():
-                        sample = torch.load(first_latent, map_location='cpu')
-                        if isinstance(sample, torch.Tensor):
-                            if sample.ndim == 3:
-                                ch = sample.shape[0]
-                            elif sample.ndim == 4:
-                                ch = sample.shape[1]
-                            else:
-                                ch = sample.shape[0] if sample.ndim >= 2 else 1
-                            print(f"Sample latent channels: {ch} (expected: 4)")
-                            if ch != 4:
-                                print(f"ERROR: Latents have {ch} channels, expected 4!")
-                                sys.exit(1)
-            except Exception as e:
-                print(f"WARNING: Could not verify latent channels: {e}")
         print(f"{'='*60}\n")
     else:
         # If embedding failed or was skipped, we need to ensure the model has encoder
