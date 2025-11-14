@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 import numpy as np
+import warnings
 
 
 def plot_discriminator_metrics(history_df, output_dir, iteration, exp_name="discriminator"):
@@ -80,10 +81,13 @@ def plot_discriminator_metrics(history_df, output_dir, iteration, exp_name="disc
         pass  # Will be handled in a separate plot if needed
     
     # Use tight_layout with error handling (some axes may not be compatible)
-    try:
-        plt.tight_layout()
-    except Exception:
-        pass  # bbox_inches='tight' in savefig will handle layout
+    # Suppress warnings for axes that don't support tight_layout
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass  # bbox_inches='tight' in savefig will handle layout
     
     # Overwrite same file each time (no iteration in filename for latest)
     plot_path = output_dir / f"{exp_name}_iter_{iteration}_discriminator_metrics.png"
@@ -293,10 +297,13 @@ def plot_diffusion_metrics(history_df, output_dir, iteration, exp_name="diffusio
         ax.set_yscale('log')
     
     # Use tight_layout with error handling (some axes may not be compatible)
-    try:
-        plt.tight_layout()
-    except Exception:
-        pass  # bbox_inches='tight' in savefig will handle layout
+    # Suppress warnings for axes that don't support tight_layout
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass  # bbox_inches='tight' in savefig will handle layout
     
     # Overwrite same file each time (same filename per iteration)
     plot_path = output_dir / f"{exp_name}_iter_{iteration}_diffusion_metrics.png"
@@ -485,10 +492,13 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.set_yscale('log')
     
     # Use tight_layout with error handling (some axes may not be compatible)
-    try:
-        plt.tight_layout()
-    except Exception:
-        pass  # bbox_inches='tight' in savefig will handle layout
+    # Suppress warnings for axes that don't support tight_layout
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass  # bbox_inches='tight' in savefig will handle layout
     
     plot_path = output_dir / f"{exp_name}_diffusion_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
@@ -635,10 +645,13 @@ def plot_overall_iteration_metrics(output_dir, exp_name="diffusion"):
         ax.text(0.5, 0.5, 'No sample metrics available', ha='center', va='center', transform=ax.transAxes)
     
     # Use tight_layout with error handling (some axes may not be compatible)
-    try:
-        plt.tight_layout()
-    except Exception:
-        pass  # bbox_inches='tight' in savefig will handle layout
+    # Suppress warnings for axes that don't support tight_layout
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass  # bbox_inches='tight' in savefig will handle layout
     
     plot_path = output_dir / f"{exp_name}_overall_iteration_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
@@ -786,10 +799,13 @@ def plot_iterative_refinement_metrics(output_dir, exp_name="diffusion"):
            bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
     
     # Use tight_layout with error handling (some axes may not be compatible)
-    try:
-        plt.tight_layout()
-    except Exception:
-        pass  # bbox_inches='tight' in savefig will handle layout
+    # Suppress warnings for axes that don't support tight_layout
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass  # bbox_inches='tight' in savefig will handle layout
     
     plot_path = output_dir / f"{exp_name}_iterative_refinement_metrics.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
