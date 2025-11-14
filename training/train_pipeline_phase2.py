@@ -15,6 +15,7 @@ Usage:
 
 import torch
 import sys
+import os
 import yaml
 import argparse
 from pathlib import Path
@@ -130,9 +131,11 @@ def train_autoencoder(ae_config_path):
     try:
         # Get absolute paths
         base_dir = Path(__file__).parent.parent
-        train_script = base_dir / "training" / "train.py"
         ae_config_abs = Path(ae_config_path).resolve()
         
+        # Run as module to ensure imports work correctly
+        # train.py adds parent to sys.path, so direct script execution works
+        train_script = base_dir / "training" / "train.py"
         result = subprocess.run(
             [sys.executable, str(train_script), str(ae_config_abs)],
             check=True,
@@ -187,11 +190,12 @@ def train_diffusion(diffusion_config_path):
     try:
         # Get absolute paths
         base_dir = Path(__file__).parent.parent
-        train_script = base_dir / "training" / "train_diffusion.py"
         diffusion_config_abs = Path(diffusion_config_path).resolve()
         
+        # Run as module since train_diffusion.py doesn't add parent to sys.path
+        # Using -m flag ensures Python can find the training module
         result = subprocess.run(
-            [sys.executable, str(train_script), str(diffusion_config_abs)],
+            [sys.executable, "-m", "training.train_diffusion", str(diffusion_config_abs)],
             check=True,
             cwd=base_dir
         )
@@ -258,6 +262,10 @@ def main():
         sys.exit(1)
     
     # Step 1: Train autoencoder (or use existing checkpoint)
+    # First, check if autoencoder checkpoint already exists
+    ae_config = load_config(args.ae_config)
+    existing_checkpoint = find_ae_checkpoint(ae_config)
+    
     if args.skip_ae:
         if args.ae_checkpoint is None:
             print("ERROR: --ae-checkpoint required when using --skip-ae")
@@ -267,7 +275,16 @@ def main():
             sys.exit(1)
         ae_checkpoint_path = args.ae_checkpoint
         print(f"\nSkipping autoencoder training, using checkpoint: {ae_checkpoint_path}")
+    elif existing_checkpoint is not None:
+        # Autoencoder checkpoint already exists - skip training
+        ae_checkpoint_path = existing_checkpoint
+        print(f"\n{'='*60}")
+        print("Autoencoder checkpoint already exists - skipping training")
+        print(f"{'='*60}")
+        print(f"Found checkpoint: {ae_checkpoint_path}")
+        print(f"{'='*60}\n")
     else:
+        # No checkpoint found - train autoencoder
         ae_checkpoint_path = train_autoencoder(args.ae_config)
         if ae_checkpoint_path is None:
             print("ERROR: Autoencoder training failed or checkpoint not found")
