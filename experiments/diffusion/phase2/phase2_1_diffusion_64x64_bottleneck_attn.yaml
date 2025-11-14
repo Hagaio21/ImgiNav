@@ -10,12 +10,13 @@ experiment:
   epochs_target: 500  # Match training epochs for proper LR decay
 
 dataset:
-  manifest: /work3/s233249/ImgiNav/datasets/augmented/manifest.csv  # Augmented dataset manifest with original + augmented images and latents
+  # Manifest path will be automatically updated by train_pipeline_phase2.py
+  # after embedding completes (will point to manifest_with_latents.csv in experiment directory)
+  manifest: /work3/s233249/ImgiNav/datasets/layouts.csv  # Will be updated to embedded manifest
   outputs:
-    latent: latent_path  # Use pre-embedded latents for faster training
+    latent: latent_path  # Use pre-embedded latents (will be set after embedding)
   filters:
     is_empty: [false]
-    is_augmented: true  # Only use real (non-augmented) samples
   return_path: false
 
 autoencoder:

@@ -33,6 +33,34 @@ from training.train import main as train_ae_main
 from training.train_diffusion import main as train_diffusion_main
 
 
+def update_diffusion_config_manifest(diffusion_config_path, manifest_path):
+    """
+    Update diffusion config to use the embedded manifest.
+    
+    Args:
+        diffusion_config_path: Path to diffusion config YAML
+        manifest_path: Path to manifest with embedded latents
+    """
+    # Load diffusion config
+    with open(diffusion_config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Update dataset manifest and outputs
+    if 'dataset' not in config:
+        config['dataset'] = {}
+    
+    config['dataset']['manifest'] = str(Path(manifest_path).resolve())
+    config['dataset']['outputs'] = {
+        'latent': 'latent_path'  # Use pre-embedded latents
+    }
+    
+    # Save updated config
+    with open(diffusion_config_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    
+    print(f"Updated diffusion config to use embedded manifest: {manifest_path}")
+
+
 def update_diffusion_config_with_ae_checkpoint(diffusion_config_path, ae_checkpoint_path):
     """
     Update diffusion config to point to the trained autoencoder checkpoint.
@@ -168,6 +196,77 @@ def train_autoencoder(ae_config_path):
         return None
 
 
+def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, output_manifest_path, batch_size=32, num_workers=8):
+    """
+    Embed dataset using the trained autoencoder.
+    
+    Args:
+        ae_checkpoint_path: Path to autoencoder checkpoint
+        ae_config_path: Path to autoencoder config
+        input_manifest_path: Path to input manifest (with images)
+        output_manifest_path: Path to output manifest (with latent_path column)
+        batch_size: Batch size for encoding
+        num_workers: Number of workers for data loading
+        
+    Returns:
+        True if embedding succeeded, False otherwise
+    """
+    print(f"\n{'='*60}")
+    print("PHASE 1.5: Embedding Dataset")
+    print(f"{'='*60}")
+    print(f"Autoencoder checkpoint: {ae_checkpoint_path}")
+    print(f"Input manifest: {input_manifest_path}")
+    print(f"Output manifest: {output_manifest_path}")
+    print(f"{'='*60}\n")
+    
+    import subprocess
+    
+    try:
+        # Get absolute paths
+        base_dir = Path(__file__).parent.parent
+        embed_script = base_dir / "data_preparation" / "create_embeddings.py"
+        ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
+        ae_config_abs = Path(ae_config_path).resolve()
+        input_manifest_abs = Path(input_manifest_path).resolve()
+        output_manifest_abs = Path(output_manifest_path).resolve()
+        
+        # Ensure output directory exists
+        output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Run embedding script
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(embed_script),
+                "--type", "layout",
+                "--manifest", str(input_manifest_abs),
+                "--output-manifest", str(output_manifest_abs),
+                "--autoencoder-config", str(ae_config_abs),
+                "--autoencoder-checkpoint", str(ae_checkpoint_abs),
+                "--batch-size", str(batch_size),
+                "--num-workers", str(num_workers),
+                "--device", "cuda"
+            ],
+            check=True,
+            cwd=base_dir
+        )
+        print(f"\n{'='*60}")
+        print("Dataset embedding completed successfully!")
+        print(f"{'='*60}\n")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"\n{'='*60}")
+        print(f"ERROR: Dataset embedding failed with exit code {e.returncode}")
+        print(f"{'='*60}\n")
+        return False
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"ERROR: Dataset embedding failed: {e}")
+        print(f"{'='*60}\n")
+        return False
+
+
 def train_diffusion(diffusion_config_path):
     """
     Train diffusion model using the training script.
@@ -290,10 +389,71 @@ def main():
             print("ERROR: Autoencoder training failed or checkpoint not found")
             sys.exit(1)
     
-    # Step 2: Update diffusion config with autoencoder checkpoint
+    # Step 2: Embed dataset using the trained autoencoder
+    # Determine paths for embedding
+    diffusion_config = load_config(args.diffusion_config)
+    exp_name = diffusion_config.get("experiment", {}).get("name", "unnamed")
+    exp_save_path = diffusion_config.get("experiment", {}).get("save_path")
+    
+    if exp_save_path is None:
+        exp_save_path = Path("outputs") / exp_name
+    else:
+        exp_save_path = Path(exp_save_path)
+    
+    # Create manifest directory in experiment path
+    manifest_dir = exp_save_path / "manifests"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Input manifest (original dataset)
+    input_manifest = Path("/work3/s233249/ImgiNav/datasets/layouts.csv")
+    if not input_manifest.exists():
+        # Try alternative path
+        input_manifest = Path("/work3/s233249/ImgiNav/datasets/augmented/manifest_images.csv")
+    
+    # Output manifest (with embedded latents, saved in experiment directory)
+    output_manifest = manifest_dir / "manifest_with_latents.csv"
+    
+    print(f"\n{'='*60}")
+    print("Embedding dataset with trained autoencoder")
+    print(f"{'='*60}")
+    print(f"Input manifest: {input_manifest}")
+    print(f"Output manifest: {output_manifest}")
+    print(f"{'='*60}\n")
+    
+    if not input_manifest.exists():
+        print(f"WARNING: Input manifest not found: {input_manifest}")
+        print("Skipping embedding step. Diffusion will encode on-the-fly.")
+        embedded_manifest = None
+    else:
+        # Check if embedding already exists
+        if output_manifest.exists():
+            print(f"Embedded manifest already exists: {output_manifest}")
+            print("Skipping embedding step.")
+            embedded_manifest = output_manifest
+        else:
+            # Run embedding
+            success = embed_dataset(
+                ae_checkpoint_path,
+                args.ae_config,
+                str(input_manifest),
+                str(output_manifest),
+                batch_size=32,
+                num_workers=8
+            )
+            if success:
+                embedded_manifest = output_manifest
+            else:
+                print("WARNING: Embedding failed. Diffusion will encode on-the-fly.")
+                embedded_manifest = None
+    
+    # Step 3: Update diffusion config with autoencoder checkpoint and embedded manifest
     update_diffusion_config_with_ae_checkpoint(args.diffusion_config, ae_checkpoint_path)
     
-    # Step 3: Train diffusion model
+    # Update manifest path if embedding succeeded
+    if embedded_manifest is not None:
+        update_diffusion_config_manifest(args.diffusion_config, str(embedded_manifest))
+    
+    # Step 4: Train diffusion model
     success = train_diffusion(args.diffusion_config)
     
     if success:
