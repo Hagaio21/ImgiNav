@@ -317,8 +317,11 @@ class DiffusionModel(BaseModel):
             decoded_out = self.decoder({"latent": latents})
             if "rgb" in decoded_out:
                 rgb = decoded_out["rgb"]
-                # Denormalize from [-1, 1] to [0, 1]
+                # RGBHead uses tanh activation by default, outputting in [-1, 1] range
+                # Denormalize from [-1, 1] to [0, 1] for image saving
+                # This matches how images are saved during autoencoder training (train.py line 186-187)
                 rgb = (rgb + 1.0) / 2.0
+                # Clamp to ensure valid [0, 1] range (some values might be slightly outside due to numerical precision)
                 rgb = torch.clamp(rgb, 0.0, 1.0)
                 result["rgb"] = rgb
         
