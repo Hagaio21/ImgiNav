@@ -26,7 +26,7 @@ diffusion:
     dropout: 0.35
   scheduler:
     type: CosineScheduler
-    num_steps: 300
+    num_steps: 1000
   decoder:
     checkpoint: /work3/s233249/ImgiNav/experiments/phase1/phase1_6_AE_normalized/phase1_6_AE_normalized_checkpoint_best.pt
     frozen: true

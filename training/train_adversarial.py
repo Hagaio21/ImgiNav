@@ -787,9 +787,17 @@ def main():
     if not initial_checkpoint:
         raise ValueError("Initial diffusion checkpoint must be provided in config")
     
+    initial_checkpoint = Path(initial_checkpoint)
+    if not initial_checkpoint.exists():
+        raise FileNotFoundError(
+            f"Initial diffusion checkpoint not found: {initial_checkpoint}\n"
+            f"Please ensure the improved model has been trained and the checkpoint exists.\n"
+            f"Expected path format: /work3/s233249/ImgiNav/experiments/diffusion/ablation/capacity_unet*_d*_improved/checkpoints/diffusion_ablation_capacity_unet*_d*_improved_checkpoint_best.pt"
+        )
+    
     print(f"\nLoading initial diffusion checkpoint from: {initial_checkpoint}")
     model, _ = DiffusionModel.load_checkpoint(
-        initial_checkpoint,
+        str(initial_checkpoint),
         map_location=device,
         return_extra=True,
         config=config

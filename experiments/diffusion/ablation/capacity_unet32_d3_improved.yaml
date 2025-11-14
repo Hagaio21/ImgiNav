@@ -30,7 +30,7 @@ unet:
 
 scheduler:
   type: CosineScheduler
-  num_steps: 300  # Reduced steps to prevent memorization
+  num_steps: 1000  # Increased steps for better quality
 
 training:
   seed: 42

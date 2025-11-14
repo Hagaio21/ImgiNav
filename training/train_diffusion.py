@@ -671,26 +671,35 @@ def main():
             for k, v in val_logs.items():
                 print(f"  {k}: {v:.6f}")
             
+            # Check if this is the best validation loss BEFORE updating best_val_loss
+            is_best = val_loss < best_val_loss
+            
             # Early stopping logic
             if early_stopping_patience is not None:
                 improvement = best_val_loss - val_loss
                 if improvement > early_stopping_min_delta:
                     epochs_without_improvement = 0
-                    if val_loss < best_val_loss:
+                    if is_best:
                         best_val_loss = val_loss
                     print(f"  Improvement: {improvement:.6f} (new best: {best_val_loss:.6f})")
                 else:
                     epochs_without_improvement += 1
                     print(f"  No improvement for {epochs_without_improvement}/{early_stopping_patience} epochs")
+            elif is_best:
+                # Update best_val_loss if not using early stopping
+                best_val_loss = val_loss
         
         # Save samples
         if val_loader and (epoch + 1) % sample_interval == 0:
             save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name)
         
-        # Save checkpoint
-        is_best = val_loss < best_val_loss
-        if is_best:
-            best_val_loss = val_loss
+        # Save checkpoint (is_best was already determined above if validation ran)
+        if val_loader and (epoch + 1) % eval_interval == 0:
+            # is_best already determined above
+            pass
+        else:
+            # No validation this epoch, so not best
+            is_best = False
         
         # Record history
         history_entry = {
