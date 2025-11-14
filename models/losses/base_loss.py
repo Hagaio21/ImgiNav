@@ -73,7 +73,15 @@ class LatentStandardizationLoss(LossComponent):
     """
     Loss that encourages latents to be approximately N(0,1).
     Penalizes mean deviation from 0 and std deviation from 1.
+    
+    Uses a stronger penalty to ensure latents converge to N(0,1) distribution.
     """
+    def _build(self):
+        super()._build()
+        # Optional: use L1 penalty for mean (more aggressive) or L2 (smoother)
+        self.mean_penalty_type = self._init_kwargs.get("mean_penalty_type", "l2")  # "l1" or "l2"
+        self.std_penalty_type = self._init_kwargs.get("std_penalty_type", "l2")  # "l1" or "l2"
+    
     def forward(self, preds, targets=None):
         # Extract latent from encoder output
         latent = preds.get(self.key)  # key should be "latent" or "mu"
@@ -88,9 +96,17 @@ class LatentStandardizationLoss(LossComponent):
         latent_mean = latent_flat.mean()
         latent_std = latent_flat.std()
         
-        # Penalize mean ≠ 0 and std ≠ 1
-        mean_loss = latent_mean.pow(2)  # L2 penalty on mean
-        std_loss = (latent_std - 1.0).pow(2)  # L2 penalty on std deviation from 1
+        # Penalize mean ≠ 0
+        if self.mean_penalty_type == "l1":
+            mean_loss = torch.abs(latent_mean)  # L1 penalty (more aggressive)
+        else:  # l2
+            mean_loss = latent_mean.pow(2)  # L2 penalty on mean
+        
+        # Penalize std ≠ 1
+        if self.std_penalty_type == "l1":
+            std_loss = torch.abs(latent_std - 1.0)  # L1 penalty (more aggressive)
+        else:  # l2
+            std_loss = (latent_std - 1.0).pow(2)  # L2 penalty on std deviation from 1
         
         # Combined loss
         loss = (mean_loss + std_loss) * self.weight

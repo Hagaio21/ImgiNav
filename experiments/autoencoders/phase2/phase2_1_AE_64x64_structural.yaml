@@ -56,7 +56,7 @@ training:
   optimizer: AdamW
   weight_decay: 0.01
   save_interval: 5
-  sample_interval: 5
+  sample_interval: 1  # Save samples every epoch to monitor training progress
   early_stopping_patience: 5
   early_stopping_min_delta: 0.0001
   early_stopping_restore_best: true
@@ -83,5 +83,7 @@ training:
         weight: 0.15  # Structural constraints (Sobel gradients)
       - type: LatentStandardizationLoss
         key: latent  # Extract "latent" from encoder output
-        weight: 0.1  # Encourages latents to be ~N(0,1) for diffusion compatibility
+        weight: 0.5  # Increased weight to ensure latents converge to ~N(0,1) for diffusion compatibility
+        mean_penalty_type: l2  # L2 penalty on mean (smooth convergence)
+        std_penalty_type: l2  # L2 penalty on std (smooth convergence)
 
