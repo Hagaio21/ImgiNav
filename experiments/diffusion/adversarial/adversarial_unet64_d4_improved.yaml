@@ -18,7 +18,7 @@ diffusion:
     out_channels: 16
     base_channels: 64
     depth: 4
-    num_res_blocks: 1
+    num_res_blocks: 2  # Baseline blocks for better quality (with strong regularization)
     time_dim: 128
     cond_channels: 0
     fusion_mode: none
@@ -75,7 +75,7 @@ adversarial:
           key: pred_noise
           target: latent
           gradient_type: sobel
-          weight: 0.3
+          weight: 0.5  # Increased structural loss for better spatial quality
         - type: DiscriminatorLossWithReconnection
           weight: 0.1
           key: x0_pred

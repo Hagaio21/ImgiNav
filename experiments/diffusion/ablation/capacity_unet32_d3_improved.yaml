@@ -21,7 +21,7 @@ unet:
   out_channels: 16
   base_channels: 32  # Small capacity to prevent memorization
   depth: 3  # Reduced depth
-  num_res_blocks: 1  # Reduced blocks
+  num_res_blocks: 2  # Baseline blocks for better quality (with strong regularization)
   time_dim: 128
   cond_channels: 0
   fusion_mode: none
@@ -67,5 +67,5 @@ training:
         key: pred_noise
         target: latent
         gradient_type: sobel
-        weight: 0.3  # Increased structural loss for better spatial quality
+        weight: 0.5  # Increased structural loss for better spatial quality
 
