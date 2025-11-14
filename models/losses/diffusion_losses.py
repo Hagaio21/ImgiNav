@@ -186,6 +186,10 @@ class LatentStructuralLoss(LossComponent):
     then minimizes their difference. This encourages the UNet to learn spatially coherent
     latent representations where boundaries and transitions align with real layout geometry.
     
+    The loss is SNR-weighted: it applies more weight at low noise levels (high alpha_bar)
+    where the predicted x0 is more accurate, and less weight at high noise levels where
+    the predicted x0 is expected to be noisy even with perfect noise prediction.
+    
     Config:
         key: Key in preds for predicted noise (default: "pred_noise")
         target: Key in targets for ground-truth latent (default: "latent")
@@ -304,12 +308,20 @@ class LatentStructuralLoss(LossComponent):
         pred_gradients = self._compute_gradients(pred_latents)
         gt_gradients = self._compute_gradients(gt_latents)
         
-        # Compute loss as L1 difference between gradient magnitudes
+        # Compute base structural loss (L1 difference between gradient magnitudes)
         # This preserves boundaries and transitions in latent space
+        gradient_diff = torch.abs(pred_gradients - gt_gradients)
+        
+        # Apply SNR weighting: weight more at low noise (high alpha_bar) where pred_latents is more accurate
+        # At high noise (low alpha_bar), pred_latents is expected to be noisy, so weight less
+        snr = alpha_bar / (1 - alpha_bar + 1e-8)  # Signal-to-noise ratio
+        snr_weight = snr / (1 + snr)  # SNR weighting (same as SNRWeightedNoiseLoss)
+        # Higher weight when alpha_bar is high (low noise), lower when alpha_bar is low (high noise)
+        
         if self.reduction == "mean":
-            loss = F.l1_loss(pred_gradients, gt_gradients) * self.weight
+            loss = (gradient_diff * snr_weight).mean() * self.weight
         else:  # sum
-            loss = torch.abs(pred_gradients - gt_gradients).sum() / (pred_gradients.numel()) * self.weight
+            loss = (gradient_diff * snr_weight).sum() / (pred_gradients.numel()) * self.weight
         
         return loss, {
             "latent_structural_loss": loss.detach(),
