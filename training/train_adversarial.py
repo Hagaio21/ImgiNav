@@ -727,10 +727,12 @@ def main():
         dataset_cfg = config.get("dataset", {})
         
         # Check if dataset has pre-embedded latents
-        if "latent_path" not in dataset_cfg.get("outputs", {}):
+        # The dataset outputs key is "latent" (from "latent_path" column)
+        outputs = dataset_cfg.get("outputs", {})
+        if "latent" not in outputs:
             raise ValueError(
                 "real_latents_path must be provided in adversarial config, OR "
-                "dataset must have 'latent_path' in outputs to extract real latents"
+                "dataset must have 'latent' in outputs (e.g., outputs: {latent: latent_path}) to extract real latents"
             )
         
         # Extract real latents from dataset
@@ -755,8 +757,10 @@ def main():
                 if len(real_latents_list) >= num_real_samples:
                     break
                 
+                # Dataset returns "latent" key (from outputs config)
                 latents = batch.get("latent")
                 if latents is None:
+                    print(f"Warning: No 'latent' key in batch. Available keys: {list(batch.keys())}")
                     continue
                 
                 # Filter for non-augmented if possible (check batch metadata)
