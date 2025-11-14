@@ -252,13 +252,15 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
         
         # Run embedding script
+        # Note: --output is required but for layout manifest-based workflow, --output-manifest is what we actually use
         result = subprocess.run(
             [
                 sys.executable,
                 str(embed_script),
                 "--type", "layout",
                 "--manifest", str(input_manifest_abs),
-                "--output-manifest", str(output_manifest_abs),
+                "--output", str(output_manifest_abs.parent),  # Required: output directory
+                "--output-manifest", str(output_manifest_abs),  # Actual manifest path
                 "--autoencoder-config", str(ae_config_abs),
                 "--autoencoder-checkpoint", str(ae_checkpoint_abs),
                 "--batch-size", str(batch_size),
