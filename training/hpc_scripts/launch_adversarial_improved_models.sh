@@ -22,7 +22,7 @@ echo "  [4] UNet64 (d3, improved)"
 echo "  [5] UNet64 (d4, improved)"
 echo ""
 echo "All jobs use:"
-echo "  - Queue: gpuv100"
+echo "  - Queue: gpul40s"
 echo "  - 3 adversarial iterations"
 echo "  - 10000 fake samples per iteration"
 echo "  - Discriminator loss weight: 0.1"
@@ -36,10 +36,17 @@ JOB_IDS=()
 
 echo "Submitting UNet32 (d3, improved)..."
 OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet32_d3_improved.sh" 2>&1)
-if [[ $? -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oP '<\d+>' | tr -d '<>')
-    JOB_IDS+=("$JOBID")
-    echo "  ✓ Job submitted: $JOBID"
+EXIT_CODE=$?
+if [[ $EXIT_CODE -eq 0 ]]; then
+    # Extract job ID from bsub output (format: "Job <12345> is submitted...")
+    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
+    if [[ -n "$JOBID" ]]; then
+        JOB_IDS+=("$JOBID")
+        echo "  ✓ Job submitted: $JOBID"
+    else
+        echo "  ⚠ Job submitted but couldn't extract job ID"
+        echo "  Output: $OUTPUT"
+    fi
 else
     echo "  ✗ Failed to submit"
     echo "$OUTPUT"
@@ -49,10 +56,16 @@ fi
 echo ""
 echo "Submitting UNet48 (d3, improved)..."
 OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d3_improved.sh" 2>&1)
-if [[ $? -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oP '<\d+>' | tr -d '<>')
-    JOB_IDS+=("$JOBID")
-    echo "  ✓ Job submitted: $JOBID"
+EXIT_CODE=$?
+if [[ $EXIT_CODE -eq 0 ]]; then
+    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
+    if [[ -n "$JOBID" ]]; then
+        JOB_IDS+=("$JOBID")
+        echo "  ✓ Job submitted: $JOBID"
+    else
+        echo "  ⚠ Job submitted but couldn't extract job ID"
+        echo "  Output: $OUTPUT"
+    fi
 else
     echo "  ✗ Failed to submit"
     echo "$OUTPUT"
@@ -62,10 +75,16 @@ fi
 echo ""
 echo "Submitting UNet48 (d4, improved)..."
 OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet48_d4_improved.sh" 2>&1)
-if [[ $? -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oP '<\d+>' | tr -d '<>')
-    JOB_IDS+=("$JOBID")
-    echo "  ✓ Job submitted: $JOBID"
+EXIT_CODE=$?
+if [[ $EXIT_CODE -eq 0 ]]; then
+    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
+    if [[ -n "$JOBID" ]]; then
+        JOB_IDS+=("$JOBID")
+        echo "  ✓ Job submitted: $JOBID"
+    else
+        echo "  ⚠ Job submitted but couldn't extract job ID"
+        echo "  Output: $OUTPUT"
+    fi
 else
     echo "  ✗ Failed to submit"
     echo "$OUTPUT"
@@ -75,10 +94,16 @@ fi
 echo ""
 echo "Submitting UNet64 (d3, improved)..."
 OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d3_improved.sh" 2>&1)
-if [[ $? -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oP '<\d+>' | tr -d '<>')
-    JOB_IDS+=("$JOBID")
-    echo "  ✓ Job submitted: $JOBID"
+EXIT_CODE=$?
+if [[ $EXIT_CODE -eq 0 ]]; then
+    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
+    if [[ -n "$JOBID" ]]; then
+        JOB_IDS+=("$JOBID")
+        echo "  ✓ Job submitted: $JOBID"
+    else
+        echo "  ⚠ Job submitted but couldn't extract job ID"
+        echo "  Output: $OUTPUT"
+    fi
 else
     echo "  ✗ Failed to submit"
     echo "$OUTPUT"
@@ -88,10 +113,16 @@ fi
 echo ""
 echo "Submitting UNet64 (d4, improved)..."
 OUTPUT=$(bsub < "${SCRIPT_DIR}/run_adversarial_unet64_d4_improved.sh" 2>&1)
-if [[ $? -eq 0 ]]; then
-    JOBID=$(echo "$OUTPUT" | grep -oP '<\d+>' | tr -d '<>')
-    JOB_IDS+=("$JOBID")
-    echo "  ✓ Job submitted: $JOBID"
+EXIT_CODE=$?
+if [[ $EXIT_CODE -eq 0 ]]; then
+    JOBID=$(echo "$OUTPUT" | grep -oE '<[0-9]+>' | head -1 | tr -d '<>')
+    if [[ -n "$JOBID" ]]; then
+        JOB_IDS+=("$JOBID")
+        echo "  ✓ Job submitted: $JOBID"
+    else
+        echo "  ⚠ Job submitted but couldn't extract job ID"
+        echo "  Output: $OUTPUT"
+    fi
 else
     echo "  ✗ Failed to submit"
     echo "$OUTPUT"
