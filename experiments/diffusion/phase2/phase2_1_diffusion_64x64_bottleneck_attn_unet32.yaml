@@ -66,6 +66,9 @@ training:
   
   # Gradient clipping for stability (prevents network collapse)
   max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
+  early_stopping_patience: 20  # Stop if no improvement for 20 epochs
+  early_stopping_min_delta: 0.00001  # Much smaller delta for diffusion (losses ~0.1, improvements ~0.00001)
+  use_non_uniform_sampling: true  # Favor high-noise timesteps for better generalization (CRITICAL for low-diversity datasets)
   
   scheduler:
     type: linear

@@ -86,4 +86,5 @@ training:
         weight: 0.5  # Increased weight to ensure latents converge to ~N(0,1) for diffusion compatibility
         mean_penalty_type: l2  # L2 penalty on mean (smooth convergence)
         std_penalty_type: l2  # L2 penalty on std (smooth convergence)
+        per_channel: true  # Use per-channel statistics to handle channel imbalances (critical for proper standardization)
 
