@@ -1,0 +1,76 @@
+# Phase 2.1: Diffusion with High-Resolution Latents and Bottleneck-Only Attention
+# Uses Phase 2.1 autoencoder (64×64×4 latents)
+# Lightweight UNet with attention only in bottleneck for global context
+# 300 noise steps for stable gradients with small model and low-diversity dataset
+
+experiment:
+  name: phase2_1_diffusion_64x64_bottleneck_attn
+  phase: phase2_1_diffusion
+  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn
+  epochs_target: 500  # Match training epochs for proper LR decay
+
+dataset:
+  manifest: /work3/s233249/ImgiNav/datasets/augmented/manifest.csv  # Augmented dataset manifest with original + augmented images and latents
+  outputs:
+    latent: latent_path  # Use pre-embedded latents for faster training
+  filters:
+    is_empty: [false]
+    is_augmented: true  # Only use real (non-augmented) samples
+  return_path: false
+
+autoencoder:
+  # Checkpoint path will be automatically updated by train_pipeline_phase2.py
+  # after autoencoder training completes
+  checkpoint: null  # Will be set by pipeline script
+  frozen: true
+
+unet:
+  type: UnetWithAttention  # Use attention-enabled UNet
+  in_channels: 4  # Matches new 64×64×4 latent space
+  out_channels: 4  # Matches new 64×64×4 latent space
+  base_channels: 32  # Lightweight model
+  depth: 3  # Reduced depth
+  num_res_blocks: 2
+  time_dim: 128
+  cond_channels: 0
+  fusion_mode: none
+  norm_groups: 8
+  dropout: 0.2  # Increased from 0.1 to prevent memorization with predictable augmentations
+  use_attention: true  # Enable attention
+  attention_heads: null  # Auto (channels // 32)
+  attention_at: ["bottleneck"]  # Attention only in bottleneck for global context without significant computational cost
+
+scheduler:
+  type: CosineScheduler
+  num_steps: 300  # ~300 noise steps for strong and stable gradients with small model and low-diversity dataset
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 128  # Larger batch for smallest model (base_channels: 32)
+  num_workers: 8
+  shuffle: true
+  epochs: 500
+  learning_rate: 0.00015  # Slightly reduced for cosine scheduler stability
+  optimizer: AdamW
+  weight_decay: 0.1  # Increased from 0.05 for stronger regularization to prevent memorization
+  save_interval: 99999
+  eval_interval: 5
+  sample_interval: 10
+  use_amp: true
+  
+  # Weighted sampling disabled
+  use_weighted_sampling: false
+  
+  # Gradient clipping for stability (prevents network collapse, especially with cosine schedulers)
+  max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
+  
+  scheduler:
+    type: cosine
+  loss:
+    type: MSELoss
+    key: pred_noise
+    target: noise
+    weight: 1.0
+

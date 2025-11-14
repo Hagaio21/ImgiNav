@@ -7,6 +7,7 @@ from .base_loss import (
     LatentStandardizationLoss,
     CrossEntropyLoss,
     PerceptualLoss,
+    LatentStructuralLossAE,
     CompositeLoss,
 )
 from .semantic_loss import SemanticLoss
@@ -29,6 +30,7 @@ __all__ = [
     "LatentStandardizationLoss",
     "CrossEntropyLoss",
     "PerceptualLoss",
+    "LatentStructuralLossAE",
     "CompositeLoss",
     "SemanticLoss",
     "SNRWeightedNoiseLoss",
