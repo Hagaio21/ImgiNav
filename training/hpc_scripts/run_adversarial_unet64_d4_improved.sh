@@ -5,7 +5,7 @@
 #BSUB -n 8
 #BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
-#BSUB -W 72:00
+#BSUB -W 48:00  # 48 hours (max for gpul40s queue, 3 iterations)
 #BSUB -q gpul40s
 
 set -euo pipefail
