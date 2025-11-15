@@ -212,10 +212,6 @@ def train_epoch(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
         
-        # Step scheduler
-        if scheduler:
-            scheduler.step()
-        
         batch_size = latents.shape[0]
         loss_val = total_loss_val.detach().item()
         total_loss += loss_val * batch_size
@@ -236,6 +232,11 @@ def train_epoch(
     
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
+    
+    # Step scheduler once per epoch (not per batch)
+    # Most schedulers (CosineAnnealingLR, LinearLR, StepLR) are epoch-based
+    if scheduler:
+        scheduler.step()
     
     return avg_loss, avg_logs
 
