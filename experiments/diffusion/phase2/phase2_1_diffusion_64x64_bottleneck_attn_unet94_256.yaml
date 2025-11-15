@@ -18,6 +18,7 @@ dataset:
     type: type  # Room/scene conditioning: "room" -> 0, "scene" -> 1
   filters:
     is_empty: [false]
+    whiteness_ratio__lt: 0.95  # Exclude images with ≥95% white pixels
   return_path: false
 
 autoencoder:

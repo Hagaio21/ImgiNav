@@ -197,36 +197,69 @@ def create_layout_embeddings_from_manifest(
             print(f"[INFO] Could not load filters from autoencoder config: {e}, using default filters")
     
     # Apply filters using ManifestDataset's filter logic
+    initial_count = len(df)
     for key, value in filters.items():
+        before_count = len(df)
         if "__lt" in key:
             col = key.replace("__lt", "")
             if col in df.columns:
                 df = df[df[col] < value]
+                removed = before_count - len(df)
+                if removed > 0:
+                    print(f"[INFO] Filter {key}: removed {removed} samples (kept {len(df)})")
+            else:
+                print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
         elif "__gt" in key:
             col = key.replace("__gt", "")
             if col in df.columns:
                 df = df[df[col] > value]
+                removed = before_count - len(df)
+                if removed > 0:
+                    print(f"[INFO] Filter {key}: removed {removed} samples (kept {len(df)})")
+            else:
+                print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
         elif "__le" in key:
             col = key.replace("__le", "")
             if col in df.columns:
                 df = df[df[col] <= value]
+                removed = before_count - len(df)
+                if removed > 0:
+                    print(f"[INFO] Filter {key}: removed {removed} samples (kept {len(df)})")
+            else:
+                print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
         elif "__ge" in key:
             col = key.replace("__ge", "")
             if col in df.columns:
                 df = df[df[col] >= value]
+                removed = before_count - len(df)
+                if removed > 0:
+                    print(f"[INFO] Filter {key}: removed {removed} samples (kept {len(df)})")
+            else:
+                print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
         elif "__ne" in key:
             col = key.replace("__ne", "")
             if col in df.columns:
                 df = df[df[col] != value]
+                removed = before_count - len(df)
+                if removed > 0:
+                    print(f"[INFO] Filter {key}: removed {removed} samples (kept {len(df)})")
+            else:
+                print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
         else:
             if key in df.columns:
                 if isinstance(value, (list, tuple, set)):
                     df = df[df[key].isin(value)]
                 else:
                     df = df[df[key] == value]
+                removed = before_count - len(df)
+                if removed > 0:
+                    print(f"[INFO] Filter {key}: removed {removed} samples (kept {len(df)})")
+            else:
+                print(f"[WARNING] Filter column '{key}' not found in manifest (filter skipped)")
     df = df.reset_index(drop=True)
     
-    print(f"After filtering: {len(df)} samples")
+    total_removed = initial_count - len(df)
+    print(f"After filtering: {len(df)} samples (removed {total_removed} total)")
     
     # Create dataset for loading images (using filtered manifest)
     # Load transform from autoencoder config if available (for consistent preprocessing)
