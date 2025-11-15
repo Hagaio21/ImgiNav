@@ -54,7 +54,7 @@ training:
   max_grad_norm: 0.5
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
-  use_non_uniform_sampling: true
+  use_non_uniform_sampling: false
   cfg_dropout_rate: 0.1
   guidance_scale: 2.0
   scheduler:

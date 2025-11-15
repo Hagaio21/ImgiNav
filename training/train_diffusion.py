@@ -686,7 +686,7 @@ def main():
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
-    use_non_uniform_sampling = config["training"].get("use_non_uniform_sampling", True)  # Default True for improved training
+    use_non_uniform_sampling = config["training"].get("use_non_uniform_sampling", False)  # Default False for uniform sampling
     early_stopping_patience = config["training"].get("early_stopping_patience", None)
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
     

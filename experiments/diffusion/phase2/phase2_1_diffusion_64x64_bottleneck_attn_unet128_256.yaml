@@ -71,7 +71,7 @@ training:
   max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
   early_stopping_patience: 20  # Stop if no improvement for 20 epochs
   early_stopping_min_delta: 0.00001  # Much smaller delta for diffusion (losses ~0.1, improvements ~0.00001)
-  use_non_uniform_sampling: true  # Favor high-noise timesteps for better generalization (CRITICAL for low-diversity datasets)
+  use_non_uniform_sampling: false  # Use uniform timestep sampling (all timesteps have equal probability)
   cfg_dropout_rate: 0.1  # Classifier-Free Guidance: randomly drop condition 10% of the time during training
   guidance_scale: 2.0  # CFG guidance scale for sampling (1.0 = no CFG, higher = stronger conditioning)
   

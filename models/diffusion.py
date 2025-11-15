@@ -25,10 +25,18 @@ class DiffusionModel(BaseModel):
         if ae_cfg:
             # Autoencoder config provided
             ae_checkpoint = ae_cfg.get("checkpoint")
+            
+            # Check if using VAE (for clamping bounds later)
+            encoder_cfg = ae_cfg.get("encoder", {}) if isinstance(ae_cfg, dict) else {}
+            self._is_vae = isinstance(encoder_cfg, dict) and encoder_cfg.get("variational", False)
+            
             if ae_checkpoint:
                 # Checkpoint path provided - load from external checkpoint (initial training)
                 autoencoder = Autoencoder.load_checkpoint(ae_checkpoint, map_location="cpu")
                 self.decoder = autoencoder.decoder
+                # Also check loaded autoencoder's encoder to confirm VAE
+                if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
+                    self._is_vae = getattr(autoencoder.encoder, 'variational', False)
             else:
                 # No checkpoint path - build from config (loading from diffusion checkpoint)
                 # Decoder config should be in autoencoder.decoder subconfig
@@ -50,11 +58,18 @@ class DiffusionModel(BaseModel):
         elif decoder_cfg:
             # Decoder config provided
             decoder_checkpoint = decoder_cfg.get("checkpoint")
+            
+            # Check if using VAE (for clamping bounds later)
+            # If loading from checkpoint, check the loaded autoencoder
+            self._is_vae = False
             if decoder_checkpoint:
                 # Checkpoint path provided - load from external checkpoint (initial training)
                 # Note: decoder checkpoint should actually be an autoencoder checkpoint
                 autoencoder = Autoencoder.load_checkpoint(decoder_checkpoint, map_location="cpu")
                 self.decoder = autoencoder.decoder
+                # Check loaded autoencoder's encoder to confirm VAE
+                if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
+                    self._is_vae = getattr(autoencoder.encoder, 'variational', False)
             else:
                 # No checkpoint path - build from config (loading from diffusion checkpoint)
                 decoder_cfg_copy = decoder_cfg.copy()
@@ -320,10 +335,17 @@ class DiffusionModel(BaseModel):
                 history.append(latents.clone())
         
         # Ensure latents are within reasonable bounds (prevent out-of-bounds values)
-        # Clamp to [-1, 1] to match the typical range of latents that the decoder
-        # was trained on during autoencoder training (most N(0,1) values fall within this range)
-        # This ensures the decoder only sees latents within the expected training distribution
-        latents = torch.clamp(latents, -1.0, 1.0)
+        # For VAE: use wider bounds [-2, 2] (covers ~95% of N(0,1)) since VAE has better KL regularization
+        # For AE: use [-1, 1] (covers ~68% of N(0,1)) to match training distribution
+        # Use stored VAE flag from _build()
+        is_vae = getattr(self, '_is_vae', False)
+        
+        if is_vae:
+            # VAE: wider bounds due to better KL regularization
+            latents = torch.clamp(latents, -2.0, 2.0)
+        else:
+            # AE: tighter bounds to match training distribution
+            latents = torch.clamp(latents, -1.0, 1.0)
         
         # Latents are now clamped and in the correct space
         # Build output dict

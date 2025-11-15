@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_pipeline_phase2.py"
-AE_CONFIG="${BASE_DIR}/experiments/autoencoders/phase2/phase2_1_AE_64x64_structural_256.yaml"
+AE_CONFIG="${BASE_DIR}/experiments/autoencoders/phase2/phase2_1_VAE_64x64_structural_256.yaml"
 DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet48_256.yaml"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
@@ -68,9 +68,9 @@ echo "Start: $(date)"
 echo "=========================================="
 echo ""
 echo "Pipeline Overview:"
-echo "  1. Train autoencoder with structural constraints (256×256 input)"
-echo "  2. Update diffusion config with autoencoder checkpoint"
-echo "  3. Train diffusion model (UNet48, base_channels=48, 256×256)"
+echo "  1. Train VAE with structural constraints (256×256 input)"
+echo "  2. Embed dataset using trained VAE"
+echo "  3. Train diffusion model (UNet48, base_channels=48, 256×256) with room/scene conditioning"
 echo "=========================================="
 
 cd "${BASE_DIR}"
