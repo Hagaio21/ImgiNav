@@ -58,7 +58,7 @@ training:
   weight_decay: 0.15  # Increased from 0.1 for stronger regularization
   save_interval: 99999
   eval_interval: 5
-  sample_interval: 10
+  sample_interval: 5
   use_amp: false
   
   # Weighted sampling disabled
