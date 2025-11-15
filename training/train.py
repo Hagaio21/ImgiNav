@@ -768,6 +768,76 @@ def main():
         plt.close()
         print(f"  Saved per-class losses plot: {plot_path}")
     
+    def _plot_kld_loss(df, output_dir, exp_name):
+        """Plot KLD (KL Divergence) loss from KLDLoss."""
+        # Check if KLD columns exist
+        has_train_kld = 'train_KLD' in df.columns
+        has_val_kld = 'val_KLD' in df.columns
+        
+        if not has_train_kld and not has_val_kld:
+            return  # No KLD loss to plot
+        
+        epochs = df['epoch'].values
+        
+        # Create figure
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig.suptitle(f'KL Divergence Loss - {exp_name}', fontsize=16, fontweight='bold')
+        
+        # Plot 1: KLD Loss over time
+        ax = axes[0]
+        if has_train_kld:
+            ax.plot(epochs, df['train_KLD'], label='Train KLD', linewidth=2, marker='o', markersize=3, color='blue')
+        if has_val_kld:
+            ax.plot(epochs, df['val_KLD'], label='Val KLD', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('KLD Loss')
+        ax.set_title('KL Divergence Loss (should decrease or stabilize)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        if len(df) > 1 and has_train_kld:
+            max_val = df['train_KLD'].max()
+            min_val = df['train_KLD'].min()
+            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                ax.set_yscale('log')
+        
+        # Plot 2: KLD Loss trend (smoothed)
+        ax = axes[1]
+        if has_train_kld:
+            # Compute moving average for smoother trend
+            window = min(5, len(df) // 4) if len(df) > 4 else 1
+            if window > 1:
+                train_smooth = df['train_KLD'].rolling(window=window, center=True).mean()
+                ax.plot(epochs, df['train_KLD'], label='Train KLD (raw)', linewidth=1, alpha=0.3, color='blue')
+                ax.plot(epochs, train_smooth, label=f'Train KLD (MA-{window})', linewidth=2, marker='o', markersize=3, color='blue')
+            else:
+                ax.plot(epochs, df['train_KLD'], label='Train KLD', linewidth=2, marker='o', markersize=3, color='blue')
+        if has_val_kld:
+            window = min(5, len(df) // 4) if len(df) > 4 else 1
+            if window > 1:
+                val_smooth = df['val_KLD'].rolling(window=window, center=True).mean()
+                ax.plot(epochs, df['val_KLD'], label='Val KLD (raw)', linewidth=1, alpha=0.3, color='red', linestyle='--')
+                ax.plot(epochs, val_smooth, label=f'Val KLD (MA-{window})', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
+            else:
+                ax.plot(epochs, df['val_KLD'], label='Val KLD', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('KLD Loss')
+        ax.set_title('KLD Loss Trend (smoothed)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        if len(df) > 1 and has_train_kld:
+            max_val = df['train_KLD'].max()
+            min_val = df['train_KLD'].min()
+            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                ax.set_yscale('log')
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = output_dir / f'{exp_name}_kld_loss.png'
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved KLD loss plot: {plot_path}")
+    
     for epoch in range(start_epoch, end_epoch):
         # Training
         avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
@@ -866,6 +936,9 @@ def main():
         
         # Plot per-class losses if available (from ClassWeightedMSELoss)
         _plot_per_class_losses(df, output_dir, exp_name)
+        
+        # Plot KLD loss if available (from KLDLoss)
+        _plot_kld_loss(df, output_dir, exp_name)
         
         # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
