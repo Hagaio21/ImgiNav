@@ -7,7 +7,6 @@ dataset:
   manifest: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet48_256/embeddings/manifest_with_latents.csv
   outputs:
     latent: latent_path
-    type: type  # Room/scene conditioning: "room" -> 0, "scene" -> 1
   filters:
     is_empty:
     - false
@@ -25,8 +24,8 @@ unet:
   time_dim: 128
   cond_channels: 0
   fusion_mode: none
-  cond_dim: 128  # Condition embedding dimension (same as time_dim)
-  num_cond_classes: 2  # ROOM=0, SCENE=1
+  cond_dim: 128
+  num_cond_classes: 2
   norm_groups: 8
   dropout: 0.2
   use_attention: true
@@ -56,8 +55,8 @@ training:
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: true
-  cfg_dropout_rate: 0.1  # Classifier-Free Guidance: randomly drop condition 10% of the time during training
-  guidance_scale: 2.0  # CFG guidance scale for sampling (1.0 = no CFG, higher = stronger conditioning)
+  cfg_dropout_rate: 0.1
+  guidance_scale: 2.0
   scheduler:
     type: linear
   loss:
