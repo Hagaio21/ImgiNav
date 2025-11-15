@@ -12,7 +12,7 @@ dataset:
     - false
   return_path: false
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_AE_64x64_structural_256/phase2_1_AE_64x64_structural_256_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_VAE_64x64_structural_256/phase2_1_VAE_64x64_structural_256_checkpoint_best.pt
   frozen: true
 unet:
   type: UnetWithAttention
