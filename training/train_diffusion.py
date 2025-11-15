@@ -354,11 +354,16 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     if torch.cuda.is_available() and cuda_rng_states is not None:
         torch.cuda.set_rng_state_all(cuda_rng_states)
     
-    if "rgb" in sample_output:
-        samples = sample_output["rgb"]
-    else:
-        decoded = model.decoder({"latent": sample_output["latent"]})
-        samples = (decoded["rgb"] + 1.0) / 2.0
+    # Decode using the decoder - normalize from [-1, 1] to [0, 1] like autoencoder training does
+    with torch.no_grad():
+        decoded_out = model.decoder({"latent": sample_output["latent"]})
+        if "rgb" in decoded_out:
+            rgb = decoded_out["rgb"]  # Output from tanh is in [-1, 1]
+            # Denormalize from [-1, 1] to [0, 1] for visualization (matches train.py line 186-187)
+            samples = (rgb + 1.0) / 2.0
+            # Don't clamp - preserve the actual output range (matches train.py line 189)
+        else:
+            raise ValueError(f"Decoder output missing 'rgb' key. Got keys: {list(decoded_out.keys())}")
     
     grid_n = int(math.sqrt(sample_batch_size))  # 8x8 grid for 64 samples
     grid_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_samples.png" if exp_name else f"epoch_{epoch:03d}_samples.png")
