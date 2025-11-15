@@ -21,10 +21,10 @@ unet:
   base_channels: 64
   depth: 3
   num_res_blocks: 2
-  time_dim: 128
+  time_dim: 256  # Increased from 128 for richer temporal encoding
   cond_channels: 0
   fusion_mode: none
-  cond_dim: 128
+  cond_dim: 256  # Increased from 128 for stronger room/scene conditioning
   num_cond_classes: 2
   norm_groups: 8
   dropout: 0.1  # Reduced from 0.2 for better learning

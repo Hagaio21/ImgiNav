@@ -388,8 +388,12 @@ def create_layout_embeddings_from_manifest(
         if all_latents_tensor.ndim == 4:  # [B, C, H, W]
             per_channel_mean = all_latents_tensor.mean(dim=(0, 2, 3)).cpu().numpy()  # [C]
             per_channel_std = all_latents_tensor.std(dim=(0, 2, 3)).cpu().numpy()  # [C]
-            per_channel_min = all_latents_tensor.min(dim=(0, 2, 3))[0].cpu().numpy()  # [C]
-            per_channel_max = all_latents_tensor.max(dim=(0, 2, 3))[0].cpu().numpy()  # [C]
+            # min/max need to be called with a single dim, so we need to reshape first
+            # Reshape to [B*H*W, C] then take min/max along first dim
+            B, C, H, W = all_latents_tensor.shape
+            latents_reshaped = all_latents_tensor.permute(1, 0, 2, 3).reshape(C, -1)  # [C, B*H*W]
+            per_channel_min = latents_reshaped.min(dim=1)[0].cpu().numpy()  # [C]
+            per_channel_max = latents_reshaped.max(dim=1)[0].cpu().numpy()  # [C]
             
             print(f"\n{'='*60}")
             print(f"Latent Distribution Statistics (After Encoding)")
