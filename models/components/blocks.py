@@ -16,6 +16,26 @@ class TimeEmbedding(nn.Module):
         return self.fc2(t)
 
 
+class ConditionEmbedding(nn.Module):
+    """
+    Simple embedding for discrete conditions (room/scene IDs).
+    Similar to TimeEmbedding but for categorical labels.
+    """
+    def __init__(self, num_classes: int, dim: int):
+        super().__init__()
+        self.embedding = nn.Embedding(num_classes, dim)
+    
+    def forward(self, cond_ids):
+        """
+        Args:
+            cond_ids: [B] tensor of class indices (0=ROOM, 1=SCENE)
+        
+        Returns:
+            [B, dim] tensor of condition embeddings
+        """
+        return self.embedding(cond_ids)
+
+
 def _compute_num_groups(num_channels, requested_groups=8):
     """Compute valid number of groups for GroupNorm."""
     # Find the largest valid divisor <= requested_groups
@@ -26,7 +46,7 @@ def _compute_num_groups(num_channels, requested_groups=8):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0):
+    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, cond_dim=0):
         super().__init__()
         norm_groups_in = _compute_num_groups(in_ch, norm_groups)
         norm_groups_out = _compute_num_groups(out_ch, norm_groups)
@@ -38,6 +58,12 @@ class ResidualBlock(nn.Module):
         self.dropout1 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
 
         self.time_emb = nn.Linear(time_dim, out_ch)
+        
+        # Optional conditioning embedding
+        if cond_dim > 0:
+            self.cond_emb = nn.Linear(cond_dim, out_ch)
+        else:
+            self.cond_emb = None
 
         self.norm2 = nn.GroupNorm(norm_groups_out, out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
@@ -47,13 +73,17 @@ class ResidualBlock(nn.Module):
 
         self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def forward(self, x, t_emb):
+    def forward(self, x, t_emb, cond_emb=None):
         h = self.act(self.norm1(x))
         h = self.conv1(h)
         h = self.dropout1(h)
 
         t = self.time_emb(t_emb).unsqueeze(-1).unsqueeze(-1)
-        h = h + t
+        if self.cond_emb is not None and cond_emb is not None:
+            c = self.cond_emb(cond_emb).unsqueeze(-1).unsqueeze(-1)
+            h = h + t + c  # Add both time and condition embeddings
+        else:
+            h = h + t  # Only time embedding (backward compatible)
 
         h = self.act(self.norm2(h))
         h = self.conv2(h)
@@ -63,40 +93,37 @@ class ResidualBlock(nn.Module):
 
 
 class DownBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0):
+    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, cond_dim=0):
         super().__init__()
         self.res_blocks = nn.ModuleList([
-            ResidualBlock(in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout)
+            ResidualBlock(in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout, cond_dim)
             for i in range(num_res_blocks)
         ])
         self.downsample = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
 
-    def forward(self, x, t_emb):
+    def forward(self, x, t_emb, cond_emb=None):
         for res in self.res_blocks:
-            x = res(x, t_emb)
+            x = res(x, t_emb, cond_emb)
         skip = x
         x = self.downsample(x)
         return x, skip
 
 class UpBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0):
+    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, cond_dim=0):
         super().__init__()
 
         self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
 
         self.res_blocks = nn.ModuleList([
-            ResidualBlock(out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout)
+            ResidualBlock(out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout, cond_dim)
             for i in range(num_res_blocks)
         ])
 
-    def forward(self, x, skip, t_emb):
-
+    def forward(self, x, skip, t_emb, cond_emb=None):
         x = self.upsample(x)
-        
         x = torch.cat([x, skip], dim=1)
-        
         for res in self.res_blocks:
-            x = res(x, t_emb)
+            x = res(x, t_emb, cond_emb)
         return x
 
 
@@ -179,7 +206,7 @@ class ResidualBlockWithAttention(nn.Module):
     Residual block with optional self-attention.
     Similar to ResidualBlock but can include attention after the second conv.
     """
-    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None):
+    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None, cond_dim=0):
         super().__init__()
         norm_groups_in = _compute_num_groups(in_ch, norm_groups)
         norm_groups_out = _compute_num_groups(out_ch, norm_groups)
@@ -191,6 +218,12 @@ class ResidualBlockWithAttention(nn.Module):
         self.dropout1 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
 
         self.time_emb = nn.Linear(time_dim, out_ch)
+        
+        # Optional conditioning embedding
+        if cond_dim > 0:
+            self.cond_emb = nn.Linear(cond_dim, out_ch)
+        else:
+            self.cond_emb = None
 
         self.norm2 = nn.GroupNorm(norm_groups_out, out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
@@ -207,13 +240,17 @@ class ResidualBlockWithAttention(nn.Module):
 
         self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def forward(self, x, t_emb):
+    def forward(self, x, t_emb, cond_emb=None):
         h = self.act(self.norm1(x))
         h = self.conv1(h)
         h = self.dropout1(h)
 
         t = self.time_emb(t_emb).unsqueeze(-1).unsqueeze(-1)
-        h = h + t
+        if self.cond_emb is not None and cond_emb is not None:
+            c = self.cond_emb(cond_emb).unsqueeze(-1).unsqueeze(-1)
+            h = h + t + c  # Add both time and condition embeddings
+        else:
+            h = h + t  # Only time embedding (backward compatible)
 
         h = self.act(self.norm2(h))
         h = self.conv2(h)
@@ -229,20 +266,20 @@ class ResidualBlockWithAttention(nn.Module):
 class DownBlockWithAttention(nn.Module):
     """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, 
-                 use_attention=False, attention_heads=None):
+                 use_attention=False, attention_heads=None, cond_dim=0):
         super().__init__()
         self.res_blocks = nn.ModuleList([
             ResidualBlockWithAttention(
                 in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
-                use_attention=use_attention, attention_heads=attention_heads
+                use_attention=use_attention, attention_heads=attention_heads, cond_dim=cond_dim
             )
             for i in range(num_res_blocks)
         ])
         self.downsample = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
 
-    def forward(self, x, t_emb):
+    def forward(self, x, t_emb, cond_emb=None):
         for res in self.res_blocks:
-            x = res(x, t_emb)
+            x = res(x, t_emb, cond_emb)
         skip = x
         x = self.downsample(x)
         return x, skip
@@ -251,20 +288,20 @@ class DownBlockWithAttention(nn.Module):
 class UpBlockWithAttention(nn.Module):
     """UpBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0,
-                 use_attention=False, attention_heads=None):
+                 use_attention=False, attention_heads=None, cond_dim=0):
         super().__init__()
         self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
         self.res_blocks = nn.ModuleList([
             ResidualBlockWithAttention(
                 out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
-                use_attention=use_attention, attention_heads=attention_heads
+                use_attention=use_attention, attention_heads=attention_heads, cond_dim=cond_dim
             )
             for i in range(num_res_blocks)
         ])
 
-    def forward(self, x, skip, t_emb):
+    def forward(self, x, skip, t_emb, cond_emb=None):
         x = self.upsample(x)
         x = torch.cat([x, skip], dim=1)
         for res in self.res_blocks:
-            x = res(x, t_emb)
+            x = res(x, t_emb, cond_emb)
         return x

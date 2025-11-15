@@ -161,7 +161,33 @@ def train_epoch(
             # Uniform sampling (default)
             t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
         noise = model.scheduler.randn_like(latents)
-        cond = batch.get("cond", None)
+        
+        # Extract and convert type labels (room/scene) to condition indices
+        # type column contains "room" or "scene" strings, convert to 0=ROOM, 1=SCENE
+        cond = None
+        type_labels = batch.get("type", None)
+        if type_labels is not None:
+            # Handle both string and tensor types
+            if isinstance(type_labels, (list, tuple)) and len(type_labels) > 0:
+                if isinstance(type_labels[0], str):
+                    # Convert string labels to indices: "room" -> 0, "scene" -> 1
+                    cond = torch.tensor(
+                        [0 if t.lower().strip() == "room" else 1 for t in type_labels],
+                        device=device_obj, dtype=torch.long
+                    )
+                else:
+                    # Already tensor indices
+                    cond = type_labels.to(device_obj) if isinstance(type_labels, torch.Tensor) else torch.tensor(type_labels, device=device_obj, dtype=torch.long)
+            elif isinstance(type_labels, torch.Tensor):
+                # Tensor might contain strings or indices
+                if type_labels.dtype == torch.long or type_labels.dtype == torch.int:
+                    cond = type_labels.to(device_obj)
+                else:
+                    # Convert string tensor to indices
+                    cond = torch.tensor(
+                        [0 if str(t).lower().strip() == "room" else 1 for t in type_labels.cpu().tolist()],
+                        device=device_obj, dtype=torch.long
+                    )
         
         # Compute loss
         if use_amp and device_obj.type == "cuda":
@@ -272,7 +298,33 @@ def eval_epoch(
             num_steps = model.scheduler.num_steps
             t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
             noise = model.scheduler.randn_like(latents)
-            cond = batch.get("cond", None)
+            
+            # Extract and convert type labels (room/scene) to condition indices
+            # type column contains "room" or "scene" strings, convert to 0=ROOM, 1=SCENE
+            cond = None
+            type_labels = batch.get("type", None)
+            if type_labels is not None:
+                # Handle both string and tensor types
+                if isinstance(type_labels, (list, tuple)) and len(type_labels) > 0:
+                    if isinstance(type_labels[0], str):
+                        # Convert string labels to indices: "room" -> 0, "scene" -> 1
+                        cond = torch.tensor(
+                            [0 if t.lower().strip() == "room" else 1 for t in type_labels],
+                            device=device_obj, dtype=torch.long
+                        )
+                    else:
+                        # Already tensor indices
+                        cond = type_labels.to(device_obj) if isinstance(type_labels, torch.Tensor) else torch.tensor(type_labels, device=device_obj, dtype=torch.long)
+                elif isinstance(type_labels, torch.Tensor):
+                    # Tensor might contain strings or indices
+                    if type_labels.dtype == torch.long or type_labels.dtype == torch.int:
+                        cond = type_labels.to(device_obj)
+                    else:
+                        # Convert string tensor to indices
+                        cond = torch.tensor(
+                            [0 if str(t).lower().strip() == "room" else 1 for t in type_labels.cpu().tolist()],
+                            device=device_obj, dtype=torch.long
+                        )
             
             if use_amp and device_obj.type == "cuda":
                 with torch.amp.autocast('cuda'):
@@ -336,7 +388,20 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         torch.cuda.manual_seed_all(sampling_seed)
     
     num_steps = model.scheduler.num_steps
-    print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps) with seed {sampling_seed}...")
+    
+    # Check if model supports conditioning (room/scene)
+    cond = None
+    if hasattr(model.unet, 'cond_embedding') and model.unet.cond_embedding is not None:
+        # Generate half room (0) and half scene (1) samples
+        num_room = sample_batch_size // 2
+        num_scene = sample_batch_size - num_room
+        cond = torch.cat([
+            torch.zeros(num_room, dtype=torch.long, device=device_obj),  # ROOM
+            torch.ones(num_scene, dtype=torch.long, device=device_obj)   # SCENE
+        ])
+        print(f"  Generating {sample_batch_size} samples ({num_room} ROOM, {num_scene} SCENE) using DDPM ({num_steps} steps) with seed {sampling_seed}...")
+    else:
+        print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps) with seed {sampling_seed}...")
     
     with torch.no_grad():
         sample_output = model.sample(
@@ -344,6 +409,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             num_steps=num_steps,  # Use full DDPM schedule
             method="ddpm",
             eta=1.0,  # eta=1.0 for full DDPM (stochastic)
+            cond=cond,  # Pass conditioning if available
             device=device_obj,
             verbose=False
         )

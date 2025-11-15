@@ -177,7 +177,19 @@ class UnetWithAttention(BaseComponent):
         if not isinstance(attention_at, list):
             attention_at = [attention_at] if attention_at else []
         
+        # Conditioning configuration (optional, backward compatible)
+        cond_dim = self._init_kwargs.get("cond_dim", 0)
+        num_cond_classes = self._init_kwargs.get("num_cond_classes", 0)
+        
         self.time_mlp = TimeEmbedding(time_dim)
+        
+        # Build condition embedding if specified
+        if cond_dim > 0 and num_cond_classes > 0:
+            from .blocks import ConditionEmbedding
+            self.cond_embedding = ConditionEmbedding(num_cond_classes, cond_dim)
+        else:
+            self.cond_embedding = None
+            cond_dim = 0  # Ensure cond_dim is 0 if not using conditioning
 
         self.downs = nn.ModuleList()
         prev_ch = in_ch
@@ -190,10 +202,10 @@ class UnetWithAttention(BaseComponent):
             if use_attn_downs:
                 self.downs.append(DownBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
-                    use_attention=True, attention_heads=attention_heads
+                    use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim
                 ))
             else:
-                self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout))
+                self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout, cond_dim))
             prev_ch = ch
             feats.append(ch)
 
@@ -202,10 +214,10 @@ class UnetWithAttention(BaseComponent):
         if use_attn_bottleneck:
             self.bottleneck = ResidualBlockWithAttention(
                 prev_ch, prev_ch, time_dim, norm_groups, dropout,
-                use_attention=True, attention_heads=attention_heads
+                use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim
             )
         else:
-            self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups, dropout)
+            self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups, dropout, cond_dim)
 
         # Build upsampling blocks
         self.ups = nn.ModuleList()
@@ -214,27 +226,43 @@ class UnetWithAttention(BaseComponent):
             if use_attn_ups:
                 self.ups.append(UpBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
-                    use_attention=True, attention_heads=attention_heads
+                    use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim
                 ))
             else:
-                self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout))
+                self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout, cond_dim))
             prev_ch = ch
 
         self.final = nn.Conv2d(prev_ch, out_ch, 1)
 
     def forward(self, x_t, t, cond=None):
-        """Forward pass. cond parameter is ignored (kept for API compatibility)."""
+        """
+        Forward pass with optional conditioning.
+        
+        Args:
+            x_t: Noisy latents [B, C, H, W]
+            t: Timesteps [B]
+            cond: Optional condition IDs [B] where 0=ROOM, 1=SCENE. If None, no conditioning is used.
+        
+        Returns:
+            Predicted noise [B, C, H, W]
+        """
         t_emb = self.time_mlp(t.float())
+        
+        # Process conditioning if available
+        cond_emb = None
+        if self.cond_embedding is not None and cond is not None:
+            cond_emb = self.cond_embedding(cond)  # [B, cond_dim]
+        
         skips = []
 
         for down in self.downs:
-            x_t, skip = down(x_t, t_emb)
+            x_t, skip = down(x_t, t_emb, cond_emb)
             skips.append(skip)
 
-        x_t = self.bottleneck(x_t, t_emb)
+        x_t = self.bottleneck(x_t, t_emb, cond_emb)
 
         for up, skip in zip(self.ups, reversed(skips)):
-            x_t = up(x_t, skip, t_emb)
+            x_t = up(x_t, skip, t_emb, cond_emb)
 
         return self.final(x_t)
     
@@ -272,24 +300,35 @@ class UnetWithAttention(BaseComponent):
         """Freeze all upsampling blocks."""
         self.freeze_blocks(["ups"])
     
-    def get_skip_connections(self, x_t, t):
+    def get_skip_connections(self, x_t, t, cond=None):
         """
         Forward pass that returns skip connections for ControlNet attachment.
+        
+        Args:
+            x_t: Noisy latents [B, C, H, W]
+            t: Timesteps [B]
+            cond: Optional condition IDs [B] where 0=ROOM, 1=SCENE. If None, no conditioning is used.
         
         Returns:
             tuple: (output, skips) where skips is a list of skip connection tensors
         """
         t_emb = self.time_mlp(t.float())
+        
+        # Process conditioning if available
+        cond_emb = None
+        if self.cond_embedding is not None and cond is not None:
+            cond_emb = self.cond_embedding(cond)  # [B, cond_dim]
+        
         skips = []
         
         for down in self.downs:
-            x_t, skip = down(x_t, t_emb)
+            x_t, skip = down(x_t, t_emb, cond_emb)
             skips.append(skip)
         
-        x_t = self.bottleneck(x_t, t_emb)
+        x_t = self.bottleneck(x_t, t_emb, cond_emb)
         
         for up, skip in zip(self.ups, reversed(skips)):
-            x_t = up(x_t, skip, t_emb)
+            x_t = up(x_t, skip, t_emb, cond_emb)
         
         return self.final(x_t), skips
 
@@ -307,5 +346,7 @@ class UnetWithAttention(BaseComponent):
             "use_attention": self._init_kwargs.get("use_attention", True),
             "attention_heads": self._init_kwargs.get("attention_heads", None),
             "attention_at": self._init_kwargs.get("attention_at", ["bottleneck", "downs", "ups"]),
+            "cond_dim": self._init_kwargs.get("cond_dim", 0),
+            "num_cond_classes": self._init_kwargs.get("num_cond_classes", 0),
         })
         return cfg

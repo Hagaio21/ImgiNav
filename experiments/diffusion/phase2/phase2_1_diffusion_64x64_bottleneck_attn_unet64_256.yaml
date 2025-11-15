@@ -15,6 +15,7 @@ dataset:
   manifest: /work3/s233249/ImgiNav/datasets/layouts.csv  # Will be updated to embedded manifest
   outputs:
     latent: latent_path  # Use pre-embedded latents (will be set after embedding)
+    type: type  # Room/scene conditioning: "room" -> 0, "scene" -> 1
   filters:
     is_empty: [false]
   return_path: false
@@ -35,6 +36,8 @@ unet:
   time_dim: 128
   cond_channels: 0
   fusion_mode: none
+  cond_dim: 128  # Condition embedding dimension (same as time_dim)
+  num_cond_classes: 2  # ROOM=0, SCENE=1
   norm_groups: 8
   dropout: 0.2  # Increased from 0.1 to prevent memorization with predictable augmentations
   use_attention: true  # Enable attention
