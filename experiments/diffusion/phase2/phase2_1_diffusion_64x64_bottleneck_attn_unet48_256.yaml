@@ -27,7 +27,7 @@ unet:
   cond_dim: 128
   num_cond_classes: 2
   norm_groups: 8
-  dropout: 0.2
+  dropout: 0.1  # Reduced from 0.2 for smaller model capacity
   use_attention: true
   attention_heads: null
   attention_at:
@@ -45,17 +45,17 @@ training:
   epochs: 500
   learning_rate: 0.00015
   optimizer: AdamW
-  weight_decay: 0.15
+  weight_decay: 0.05  # Reduced from 0.15 to reduce over-regularization
   save_interval: 99999
   eval_interval: 5
   sample_interval: 5
   use_amp: false
   use_weighted_sampling: false
-  max_grad_norm: 0.5
+  max_grad_norm: 1.0  # Increased from 0.5 to allow stronger gradients
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: false
-  cfg_dropout_rate: 0.1
+  cfg_dropout_rate: 0.05  # Reduced from 0.1 for better early learning
   guidance_scale: 2.0
   scheduler:
     type: linear
@@ -66,3 +66,5 @@ training:
       key: pred_noise
       target: noise
       weight: 1.0
+    - type: LatentStructuralLoss
+      weight: 0.1  # Small weight to guide structure learning

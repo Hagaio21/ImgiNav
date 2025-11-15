@@ -149,7 +149,8 @@ def load_sentence_transformer_model(model_name: str = "all-MiniLM-L6-v2"):
 
 def create_layout_embeddings_from_manifest(
     encoder, manifest_path, output_manifest_path, batch_size=32, 
-    num_workers=8, overwrite=False, device="cuda", autoencoder_config_path=None
+    num_workers=8, overwrite=False, device="cuda", autoencoder_config_path=None,
+    output_latent_dir=None
 ):
     """
     Create layout embeddings from manifest (manifest-based workflow).
@@ -289,25 +290,30 @@ def create_layout_embeddings_from_manifest(
                     # If relative, resolve relative to manifest directory
                     layout_path = (manifest_dir / layout_path).resolve()
                 
-                # For augmented dataset: create latents in /work3/s233249/ImgiNav/datasets/augmented/latents/
-                # Structure: images/name.png -> latents/name.pt
-                # Find the augmented directory in the path
-                latent_base_dir = None
-                if "augmented" in layout_path.parts:
-                    # Find the augmented directory and use it as base
-                    parts = list(layout_path.parts)
-                    for j, part in enumerate(parts):
-                        if part == "augmented":
-                            # Use everything up to and including "augmented" as base
-                            latent_base_dir = Path(*parts[:j+1])
-                            break
-                
-                if latent_base_dir is None:
-                    # Fallback: use manifest directory's parent (assuming it's in datasets/augmented/)
-                    latent_base_dir = manifest_dir.parent if manifest_dir.name != "augmented" else manifest_dir
-                
-                # Create latent path: augmented/latents/filename.pt
-                latent_dir = latent_base_dir / "latents"
+                # Use output_latent_dir if provided (experiment folder), otherwise use dataset structure
+                if output_latent_dir is not None:
+                    # Save in experiment folder (preferred for diffusion training)
+                    latent_dir = Path(output_latent_dir)
+                else:
+                    # Legacy: For augmented dataset: create latents in /work3/s233249/ImgiNav/datasets/augmented/latents/
+                    # Structure: images/name.png -> latents/name.pt
+                    # Find the augmented directory in the path
+                    latent_base_dir = None
+                    if "augmented" in layout_path.parts:
+                        # Find the augmented directory and use it as base
+                        parts = list(layout_path.parts)
+                        for j, part in enumerate(parts):
+                            if part == "augmented":
+                                # Use everything up to and including "augmented" as base
+                                latent_base_dir = Path(*parts[:j+1])
+                                break
+                    
+                    if latent_base_dir is None:
+                        # Fallback: use manifest directory's parent (assuming it's in datasets/augmented/)
+                        latent_base_dir = manifest_dir.parent if manifest_dir.name != "augmented" else manifest_dir
+                    
+                    # Create latent path: augmented/latents/filename.pt
+                    latent_dir = latent_base_dir / "latents"
                 
                 # Get filename from layout_path and change extension
                 if layout_path.name:
@@ -375,42 +381,68 @@ def create_layout_embeddings_from_manifest(
         # Compute global statistics
         latent_mean = latent_flat.mean().item()
         latent_std = latent_flat.std().item()
+        latent_min = latent_flat.min().item()
+        latent_max = latent_flat.max().item()
         
         # Compute per-channel statistics (if spatial dimensions exist)
         if all_latents_tensor.ndim == 4:  # [B, C, H, W]
             per_channel_mean = all_latents_tensor.mean(dim=(0, 2, 3)).cpu().numpy()  # [C]
             per_channel_std = all_latents_tensor.std(dim=(0, 2, 3)).cpu().numpy()  # [C]
+            per_channel_min = all_latents_tensor.min(dim=(0, 2, 3))[0].cpu().numpy()  # [C]
+            per_channel_max = all_latents_tensor.max(dim=(0, 2, 3))[0].cpu().numpy()  # [C]
             
             print(f"\n{'='*60}")
-            print(f"Latent Statistics Summary")
+            print(f"Latent Distribution Statistics (After Encoding)")
+            print(f"{'='*60}")
+            print(f"Global Statistics:")
+            print(f"  Mean: {latent_mean:.6f} (target: 0.0, ideal for N(0,1))")
+            print(f"  Std:  {latent_std:.6f} (target: 1.0, ideal for N(0,1))")
+            print(f"  Min:  {latent_min:.6f}")
+            print(f"  Max:  {latent_max:.6f}")
+            print(f"  Range: [{latent_min:.6f}, {latent_max:.6f}]")
+            
+            mean_deviation = abs(latent_mean)
+            std_deviation = abs(latent_std - 1.0)
+            print(f"\nDistribution Quality:")
+            if mean_deviation < 0.1 and std_deviation < 0.2:
+                print(f"  ✓ Good: Mean deviation {mean_deviation:.6f} < 0.1, Std deviation {std_deviation:.6f} < 0.2")
+            elif mean_deviation < 0.2 and std_deviation < 0.5:
+                print(f"  ⚠ Moderate: Mean deviation {mean_deviation:.6f}, Std deviation {std_deviation:.6f}")
+            else:
+                print(f"  ✗ Poor: Mean deviation {mean_deviation:.6f}, Std deviation {std_deviation:.6f}")
+                print(f"    Consider adjusting LatentStandardizationLoss or KLDLoss weight")
+            
+            print(f"\nPer-Channel Statistics:")
+            print(f"  Channel | Mean      | Std       | Min       | Max       | Status")
+            print(f"  {'-'*70}")
+            for ch_idx in range(len(per_channel_mean)):
+                ch_mean = per_channel_mean[ch_idx]
+                ch_std = per_channel_std[ch_idx]
+                ch_min = per_channel_min[ch_idx]
+                ch_max = per_channel_max[ch_idx]
+                mean_dev = abs(ch_mean)
+                std_dev = abs(ch_std - 1.0)
+                status = "✓" if mean_dev < 0.1 and std_dev < 0.2 else "⚠" if mean_dev < 0.2 and std_dev < 0.5 else "✗"
+                print(f"  {ch_idx:7d} | {ch_mean:9.6f} | {ch_std:9.6f} | {ch_min:9.6f} | {ch_max:9.6f} | {status}")
+            
+            # Check bounds for VAE vs AE
+            if abs(latent_max) > 2.0 or abs(latent_min) > 2.0:
+                print(f"\n⚠ Warning: Latents exceed [-2, 2] range (VAE bounds)")
+                print(f"   Consider using wider bounds in diffusion sampling or adjusting VAE KL weight")
+            elif abs(latent_max) > 1.0 or abs(latent_min) > 1.0:
+                print(f"\nℹ Info: Latents exceed [-1, 1] range (AE bounds)")
+                print(f"   This is expected for VAE. Diffusion should use [-2, 2] clamping.")
+            
+            print(f"{'='*60}")
+        else:
+            print(f"\n{'='*60}")
+            print(f"Latent Distribution Statistics (After Encoding)")
             print(f"{'='*60}")
             print(f"Global Statistics:")
             print(f"  Mean: {latent_mean:.6f} (target: 0.0)")
             print(f"  Std:  {latent_std:.6f} (target: 1.0)")
-            print(f"  Mean deviation: {abs(latent_mean):.6f}")
-            print(f"  Std deviation:  {abs(latent_std - 1.0):.6f}")
-            print(f"\nPer-Channel Statistics:")
-            print(f"  Channel | Mean      | Std       | Mean Dev | Std Dev")
-            print(f"  {'-'*55}")
-            for ch_idx in range(len(per_channel_mean)):
-                ch_mean = per_channel_mean[ch_idx]
-                ch_std = per_channel_std[ch_idx]
-                mean_dev = abs(ch_mean)
-                std_dev = abs(ch_std - 1.0)
-                print(f"  {ch_idx:7d} | {ch_mean:9.6f} | {ch_std:9.6f} | {mean_dev:9.6f} | {std_dev:9.6f}")
+            print(f"  Min: {latent_min:.6f}, Max: {latent_max:.6f}")
             print(f"{'='*60}")
-            
-            # Check if standardized
-            if abs(latent_mean) < 0.1 and 0.9 < latent_std < 1.1:
-                print("✓ Latents appear to be well-standardized (~N(0,1))")
-            elif abs(latent_mean) < 0.5 and 0.5 < latent_std < 1.5:
-                print("⚠ Latents are somewhat standardized but could be better")
-            else:
-                print("✗ Latents are NOT well-standardized - may need retraining")
-        else:
-            print(f"\nGlobal Statistics:")
-            print(f"  Mean: {latent_mean:.6f} (target: 0.0)")
-            print(f"  Std:  {latent_std:.6f} (target: 1.0)")
     else:
         print("⚠ No latents collected for statistics (all skipped?)")
     
@@ -819,6 +851,11 @@ def main():
         help="Output manifest path (for layout manifest-based workflow)"
     )
     parser.add_argument(
+        "--output-latent-dir",
+        default=None,
+        help="Directory to save latent files (default: uses dataset structure, set to experiment/embeddings/latents for diffusion)"
+    )
+    parser.add_argument(
         "--manifest-out",
         default=None,
         help="Output manifest filename (for layout directory-based workflow, saved in data-root)"
@@ -850,6 +887,14 @@ def main():
         if args.manifest and args.output_manifest:
             # Manifest-based workflow (preferred for diffusion)
             print("[INFO] Using manifest-based workflow")
+            # Determine output latent directory
+            output_latent_dir = args.output_latent_dir
+            if output_latent_dir is None:
+                # Default: use embeddings/latents subdirectory in output manifest directory
+                output_latent_dir = Path(args.output_manifest).parent / "latents"
+            else:
+                output_latent_dir = Path(output_latent_dir)
+            
             create_layout_embeddings_from_manifest(
                 encoder=model.encoder,
                 manifest_path=args.manifest,
@@ -858,7 +903,8 @@ def main():
                 autoencoder_config_path=args.autoencoder_config,
                 num_workers=args.num_workers,
                 overwrite=args.overwrite,
-                device=str(device)
+                device=str(device),
+                output_latent_dir=output_latent_dir
             )
         elif args.data_root:
             # Directory-based workflow (legacy)

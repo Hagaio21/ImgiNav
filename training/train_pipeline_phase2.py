@@ -292,6 +292,9 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         # Ensure output directory exists
         output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
         
+        # Create latents directory in experiment embeddings folder
+        latents_dir = output_manifest_abs.parent / "latents"
+        
         # Run embedding script
         # Note: --output is required but for layout manifest-based workflow, --output-manifest is what we actually use
         result = subprocess.run(
@@ -302,6 +305,7 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
                 "--manifest", str(input_manifest_abs),
                 "--output", str(output_manifest_abs.parent),  # Required: output directory
                 "--output-manifest", str(output_manifest_abs),  # Actual manifest path
+                "--output-latent-dir", str(latents_dir),  # Save latents in experiment folder
                 "--autoencoder-config", str(ae_config_abs),
                 "--autoencoder-checkpoint", str(ae_checkpoint_abs),
                 "--batch-size", str(batch_size),
