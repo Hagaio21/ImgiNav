@@ -68,8 +68,8 @@ echo "Start: $(date)"
 echo "=========================================="
 echo ""
 echo "Pipeline Overview:"
-echo "  1. Train VAE with structural constraints (256×256 input)"
-echo "  2. Embed dataset using trained VAE"
+echo "  1. Train VAE (or use existing checkpoint if found)"
+echo "  2. Embed dataset using VAE (analyze whiteness + filter during embedding)"
 echo "  3. Train diffusion model (UNet128, base_channels=128, 256×256) with room/scene conditioning"
 echo "=========================================="
 
@@ -82,6 +82,7 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
 fi
 
 # Run pipeline with whiteness analysis
+# Pipeline will automatically detect if VAE checkpoint exists and skip training if found
 python "${PYTHON_SCRIPT}" \
   --ae-config "${AE_CONFIG}" \
   --diffusion-config "${DIFFUSION_CONFIG}" \

@@ -150,7 +150,7 @@ def load_sentence_transformer_model(model_name: str = "all-MiniLM-L6-v2"):
 def create_layout_embeddings_from_manifest(
     encoder, manifest_path, output_manifest_path, batch_size=32, 
     num_workers=8, overwrite=False, device="cuda", autoencoder_config_path=None,
-    output_latent_dir=None
+    output_latent_dir=None, diffusion_config_path=None
 ):
     """
     Create layout embeddings from manifest (manifest-based workflow).
@@ -170,16 +170,63 @@ def create_layout_embeddings_from_manifest(
     df = df.dropna(subset=required_cols)
     
     # Apply filters (same as ManifestDataset)
+    # Default: filter empty layouts
     filters = {"is_empty": [False]}
+    
+    # Try to load filters from config
+    # Priority: 1) diffusion config filters (for whiteness filtering), 2) autoencoder config filters, 3) default
+    if diffusion_config_path:
+        try:
+            from training.utils import load_config
+            config = load_config(diffusion_config_path)
+            dataset_filters = config.get("dataset", {}).get("filters", None)
+            if dataset_filters:
+                filters = dataset_filters
+                print(f"[INFO] Using filters from diffusion config: {filters}")
+        except Exception as e:
+            print(f"[INFO] Could not load filters from diffusion config: {e}")
+    elif autoencoder_config_path:
+        try:
+            from training.utils import load_config
+            config = load_config(autoencoder_config_path)
+            dataset_filters = config.get("dataset", {}).get("filters", None)
+            if dataset_filters:
+                filters = dataset_filters
+                print(f"[INFO] Using filters from autoencoder config: {filters}")
+        except Exception as e:
+            print(f"[INFO] Could not load filters from autoencoder config: {e}, using default filters")
+    
+    # Apply filters using ManifestDataset's filter logic
     for key, value in filters.items():
-        if key in df.columns:
-            if isinstance(value, (list, tuple, set)):
-                df = df[df[key].isin(value)]
-            else:
-                df = df[df[key] == value]
+        if "__lt" in key:
+            col = key.replace("__lt", "")
+            if col in df.columns:
+                df = df[df[col] < value]
+        elif "__gt" in key:
+            col = key.replace("__gt", "")
+            if col in df.columns:
+                df = df[df[col] > value]
+        elif "__le" in key:
+            col = key.replace("__le", "")
+            if col in df.columns:
+                df = df[df[col] <= value]
+        elif "__ge" in key:
+            col = key.replace("__ge", "")
+            if col in df.columns:
+                df = df[df[col] >= value]
+        elif "__ne" in key:
+            col = key.replace("__ne", "")
+            if col in df.columns:
+                df = df[df[col] != value]
+        else:
+            if key in df.columns:
+                if isinstance(value, (list, tuple, set)):
+                    df = df[df[key].isin(value)]
+                else:
+                    df = df[df[key] == value]
     df = df.reset_index(drop=True)
     
-    print(f"After filtering (non-empty layouts): {len(df)} samples")
+    print(f"After filtering: {len(df)} samples")
     
     # Create dataset for loading images (using filtered manifest)
     # Load transform from autoencoder config if available (for consistent preprocessing)
@@ -200,10 +247,12 @@ def create_layout_embeddings_from_manifest(
     else:
         print("[INFO] No autoencoder config path provided, using default image loading")
     
+    # Use the same filters for ManifestDataset
+    dataset_filters = filters if filters else None
     dataset = ManifestDataset(
         manifest=str(manifest_path),
         outputs={"rgb": "layout_path"},
-        filters={"is_empty": [False]} if "is_empty" in df.columns else None,
+        filters=dataset_filters,
         return_path=False,
         transform=transform  # Pass transform if available
     )
@@ -860,6 +909,11 @@ def main():
         help="Directory to save latent files (default: uses dataset structure, set to experiment/embeddings/latents for diffusion)"
     )
     parser.add_argument(
+        "--diffusion-config",
+        default=None,
+        help="Path to diffusion config YAML (optional, used to get filters for whiteness filtering during embedding)"
+    )
+    parser.add_argument(
         "--manifest-out",
         default=None,
         help="Output manifest filename (for layout directory-based workflow, saved in data-root)"
@@ -908,7 +962,8 @@ def main():
                 num_workers=args.num_workers,
                 overwrite=args.overwrite,
                 device=str(device),
-                output_latent_dir=output_latent_dir
+                output_latent_dir=output_latent_dir,
+                diffusion_config_path=args.diffusion_config
             )
         elif args.data_root:
             # Directory-based workflow (legacy)

@@ -352,7 +352,7 @@ def train_autoencoder(ae_config_path):
         return None
 
 
-def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, output_manifest_path, batch_size=32, num_workers=8):
+def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, output_manifest_path, batch_size=32, num_workers=8, diffusion_config_path=None, analyze_whiteness=False, whiteness_threshold=0.9, overwrite_whiteness=False):
     """
     Embed dataset using the trained autoencoder.
     
@@ -363,6 +363,10 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         output_manifest_path: Path to output manifest (with latent_path column)
         batch_size: Batch size for encoding
         num_workers: Number of workers for data loading
+        diffusion_config_path: Optional path to diffusion config (to get filters for whiteness, etc.)
+        analyze_whiteness: Whether to analyze whiteness before embedding
+        whiteness_threshold: Pixel value threshold for "white" in [0, 1] range
+        overwrite_whiteness: Whether to overwrite existing whiteness_ratio column
         
     Returns:
         True if embedding succeeded, False otherwise
@@ -375,6 +379,33 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
     print(f"Output manifest: {output_manifest_path}")
     print(f"{'='*60}\n")
     
+    # Step 2.0: Analyze whiteness if requested (before embedding)
+    working_manifest_path = input_manifest_path
+    if analyze_whiteness:
+        working_manifest = Path(input_manifest_path)
+        if working_manifest.exists():
+            print(f"\n{'='*60}")
+            print("Analyzing image whiteness before embedding...")
+            print(f"{'='*60}")
+            
+            # Create manifest with whiteness in embeddings directory
+            output_manifest_abs = Path(output_manifest_path).resolve()
+            whiteness_manifest = output_manifest_abs.parent / "manifest_with_whiteness.csv"
+            
+            whiteness_manifest = analyze_whiteness(
+                input_manifest_path=str(working_manifest),
+                output_manifest_path=str(whiteness_manifest),
+                white_threshold=whiteness_threshold,
+                workers=8,
+                overwrite=overwrite_whiteness
+            )
+            
+            # Use manifest with whiteness for embedding
+            if whiteness_manifest.exists():
+                working_manifest_path = str(whiteness_manifest)
+                print(f"Using manifest with whiteness_ratio: {working_manifest_path}")
+            print(f"{'='*60}\n")
+    
     import subprocess
     
     try:
@@ -383,7 +414,8 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         embed_script = base_dir / "data_preparation" / "create_embeddings.py"
         ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
         ae_config_abs = Path(ae_config_path).resolve()
-        input_manifest_abs = Path(input_manifest_path).resolve()
+        # Use working_manifest_path (may have been updated to whiteness manifest)
+        input_manifest_abs = Path(working_manifest_path).resolve()
         output_manifest_abs = Path(output_manifest_path).resolve()
         
         # Ensure output directory exists
@@ -392,23 +424,33 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         # Create latents directory in experiment embeddings folder
         latents_dir = output_manifest_abs.parent / "latents"
         
+        # Load diffusion config to get filters for embedding
+        diffusion_config_abs = Path(diffusion_config_path).resolve() if diffusion_config_path else None
+        
+        # Build command
+        cmd = [
+            sys.executable,
+            str(embed_script),
+            "--type", "layout",
+            "--manifest", str(input_manifest_abs),
+            "--output", str(output_manifest_abs.parent),  # Required: output directory
+            "--output-manifest", str(output_manifest_abs),  # Actual manifest path
+            "--output-latent-dir", str(latents_dir),  # Save latents in experiment folder
+            "--autoencoder-config", str(ae_config_abs),
+            "--autoencoder-checkpoint", str(ae_checkpoint_abs),
+            "--batch-size", str(batch_size),
+            "--num-workers", str(num_workers),
+            "--device", "cuda"
+        ]
+        
+        # Add diffusion config if provided (for filters like whiteness_ratio__lt)
+        if diffusion_config_abs and diffusion_config_abs.exists():
+            cmd.extend(["--diffusion-config", str(diffusion_config_abs)])
+        
         # Run embedding script
         # Note: --output is required but for layout manifest-based workflow, --output-manifest is what we actually use
         result = subprocess.run(
-            [
-                sys.executable,
-                str(embed_script),
-                "--type", "layout",
-                "--manifest", str(input_manifest_abs),
-                "--output", str(output_manifest_abs.parent),  # Required: output directory
-                "--output-manifest", str(output_manifest_abs),  # Actual manifest path
-                "--output-latent-dir", str(latents_dir),  # Save latents in experiment folder
-                "--autoencoder-config", str(ae_config_abs),
-                "--autoencoder-checkpoint", str(ae_checkpoint_abs),
-                "--batch-size", str(batch_size),
-                "--num-workers", str(num_workers),
-                "--device", "cuda"
-            ],
+            cmd,
             check=True,
             cwd=base_dir
         )
@@ -538,38 +580,6 @@ def main():
         print(f"ERROR: Diffusion config not found: {args.diffusion_config}")
         sys.exit(1)
     
-    # Step 0: Analyze whiteness (optional, before autoencoder training)
-    base_input_manifest = Path("/work3/s233249/ImgiNav/datasets/layouts.csv")
-    if not base_input_manifest.exists():
-        # Try alternative path
-        base_input_manifest = Path("/work3/s233249/ImgiNav/datasets/augmented/manifest_images.csv")
-    
-    input_manifest = base_input_manifest
-    if args.analyze_whiteness and base_input_manifest.exists():
-        # Create filtered manifest in experiment directory
-        diffusion_config = load_config(args.diffusion_config)
-        exp_save_path = diffusion_config.get("experiment", {}).get("save_path")
-        if exp_save_path is None:
-            exp_name = diffusion_config.get("experiment", {}).get("name", "unnamed")
-            exp_save_path = Path("outputs") / exp_name
-        else:
-            exp_save_path = Path(exp_save_path)
-        
-        filtered_manifest = exp_save_path / "manifest_with_whiteness.csv"
-        
-        filtered_manifest = analyze_whiteness(
-            input_manifest_path=str(input_manifest),
-            output_manifest_path=str(filtered_manifest),
-            white_threshold=args.whiteness_threshold,
-            workers=8,
-            overwrite=args.overwrite_whiteness
-        )
-        
-        # Update input_manifest to use filtered version
-        if filtered_manifest.exists():
-            input_manifest = filtered_manifest
-            print(f"Using filtered manifest: {input_manifest}")
-    
     # Step 1: Train autoencoder (or use existing checkpoint)
     # First, check if autoencoder checkpoint already exists
     ae_config = load_config(args.ae_config)
@@ -614,9 +624,11 @@ def main():
     embeddings_dir = exp_save_path / "embeddings"
     embeddings_dir.mkdir(parents=True, exist_ok=True)
     
-    # Input manifest (use filtered manifest if whiteness analysis was done, otherwise original)
-    # Note: input_manifest was already set in Step 0 if whiteness analysis was enabled
-    # If it wasn't set, use the base manifest
+    # Input manifest (original dataset)
+    input_manifest = Path("/work3/s233249/ImgiNav/datasets/layouts.csv")
+    if not input_manifest.exists():
+        # Try alternative path
+        input_manifest = Path("/work3/s233249/ImgiNav/datasets/augmented/manifest_images.csv")
     
     # Output manifest (with embedded latents, saved in experiment embeddings folder)
     output_manifest = embeddings_dir / "manifest_with_latents.csv"
@@ -658,7 +670,11 @@ def main():
                 str(input_manifest),
                 str(output_manifest),
                 batch_size=32,
-                num_workers=8
+                num_workers=8,
+                diffusion_config_path=args.diffusion_config,  # Pass diffusion config to get filters
+                analyze_whiteness=args.analyze_whiteness,  # Analyze whiteness during embedding
+                whiteness_threshold=args.whiteness_threshold,
+                overwrite_whiteness=args.overwrite_whiteness
             )
             if success:
                 embedded_manifest = output_manifest
