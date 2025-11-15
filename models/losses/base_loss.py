@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import yaml
+from pathlib import Path
 from ..components.base_component import BaseComponent
 
 LOSS_REGISTRY = {}
@@ -52,6 +54,96 @@ class MSELoss(LossComponent):
             device = next(self.criterion.parameters(), torch.zeros(1)).device
             return torch.tensor(0.0, device=device), {}
         loss = self.criterion(preds[self.key], targets[self.target_key]) * self.weight
+        return loss, {f"MSE_{self.key}": loss.detach()}
+
+
+@register_loss
+class ClassWeightedMSELoss(LossComponent):
+    """
+    MSE loss with class-based pixel weighting.
+    Uses rgb_to_class.yaml mapping to assign weights based on pixel class.
+    
+    Config:
+        key: Key in preds for predictions
+        target: Key in targets for targets
+        weight: Loss weight
+        class_weights: Dict mapping class names to weights (e.g., {"background": 0.1, "wall": 1.0, "bed": 1.0})
+                      If not provided, uses defaults: background=0.1, all others=1.0
+        default_weight: Weight for classes not in class_weights (default: 1.0)
+        unknown_weight: Weight for pixels that don't match any class (default: 1.0)
+    """
+    def _build(self):
+        super()._build()
+        from models.losses.loss_utils import RGB_TO_CLASS
+        
+        # Load class mapping
+        self.rgb_to_class = RGB_TO_CLASS
+        
+        # Load class names from YAML
+        loss_dir = Path(__file__).parent
+        rgb_config_path = loss_dir / "rgb_to_class.yaml"
+        with open(rgb_config_path, "r") as f:
+            config = yaml.safe_load(f)
+        
+        # Build class_index -> class_name mapping
+        self.class_idx_to_name = {}
+        for name, entry in config.items():
+            self.class_idx_to_name[entry["class_index"]] = name
+        
+        # Get class weights from config
+        class_weights_dict = self._init_kwargs.get("class_weights", {})
+        default_weight = self._init_kwargs.get("default_weight", 1.0)
+        
+        # Build class_index -> weight mapping
+        self.class_weights = {}
+        for class_idx, class_name in self.class_idx_to_name.items():
+            if class_name in class_weights_dict:
+                self.class_weights[class_idx] = class_weights_dict[class_name]
+            else:
+                # Use defaults: background gets 0.1, everything else (including wall) gets 1.0
+                if class_name == "background":
+                    self.class_weights[class_idx] = class_weights_dict.get("background", 0.1)
+                else:
+                    # Wall and all object classes get full weight by default
+                    self.class_weights[class_idx] = default_weight
+    
+    def forward(self, preds, targets):
+        if self.key not in preds or self.target_key not in targets:
+            device = next(iter(preds.values())).device if preds else torch.device("cpu")
+            return torch.tensor(0.0, device=device), {}
+        
+        pred = preds[self.key]  # [B, 3, H, W] in [-1, 1]
+        target = targets[self.target_key]  # [B, 3, H, W] in [-1, 1]
+        
+        # Convert target to segmentation mask to get class indices
+        from models.losses.loss_utils import create_seg_mask
+        seg_mask = create_seg_mask(target, ignore_index=-1)  # [B, H, W] with class indices
+        
+        # Create weight tensor: [B, H, W]
+        device = pred.device
+        weight_map = torch.zeros_like(seg_mask, dtype=torch.float32)
+        
+        for class_idx, weight in self.class_weights.items():
+            mask = (seg_mask == class_idx)
+            weight_map[mask] = weight
+        
+        # Handle pixels that don't match any class (ignore_index)
+        unknown_mask = (seg_mask == -1)
+        unknown_weight = self._init_kwargs.get("unknown_weight", 1.0)
+        weight_map[unknown_mask] = unknown_weight
+        
+        # Expand weight map to match pred shape: [B, 1, H, W]
+        weight_map = weight_map.unsqueeze(1)
+        
+        # Compute per-pixel MSE
+        squared_diff = (pred - target) ** 2  # [B, 3, H, W]
+        
+        # Apply class-based weights
+        weighted_squared_diff = squared_diff * weight_map
+        
+        # Average over all dimensions
+        loss = weighted_squared_diff.mean() * self.weight
+        
         return loss, {f"MSE_{self.key}": loss.detach()}
 
 

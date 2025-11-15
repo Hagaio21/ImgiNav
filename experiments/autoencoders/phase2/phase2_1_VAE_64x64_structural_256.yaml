@@ -71,19 +71,15 @@ training:
   loss:
     type: CompositeLoss
     losses:
-      - type: MSELoss
+      - type: ClassWeightedMSELoss
         key: rgb
         target: rgb
         weight: 1.0
-      - type: PerceptualLoss
-        key: rgb
-        target: rgb
-        weight: 0.1  # Perceptual guidance (VGG features)
-      - type: LatentStructuralLossAE
-        key: mu  # Use mu (mean) from VAE encoder for structural loss
-        target: rgb  # Compare to input image structure
-        gradient_type: sobel
-        weight: 0.15  # Structural constraints (Sobel gradients)
+        class_weights:
+          background: 0.1  # Lower weight for background (trivial but meaningful)
+          # Wall and all object classes (bed, chair, sofa, etc.) get default_weight: 1.0
+        default_weight: 1.0  # Full weight for wall and object classes
+        unknown_weight: 1.0  # Weight for pixels that don't match any class
       - type: KLDLoss
         weight: 0.01  # KL divergence loss (encourages N(0,1) latent space)
         # Note: KLDLoss automatically extracts mu and logvar from encoder output
