@@ -319,10 +319,9 @@ def compute_loss_with_reconnection(
                 needs_decoding = True
                 break
     
-    if needs_decoding and "rgb" in batch and "segmentation" in batch:
+    if needs_decoding and "rgb" in batch:
         decoded = model.decoder({"latent": latents})
         preds["decoded_rgb"] = decoded.get("rgb")
-        preds["decoded_segmentation"] = decoded.get("segmentation")
     
     # Prepare targets dict
     targets = {
@@ -332,8 +331,6 @@ def compute_loss_with_reconnection(
     
     if "rgb" in batch:
         targets["rgb"] = batch["rgb"]
-    if "segmentation" in batch:
-        targets["segmentation"] = batch["segmentation"]
     
     # Compute loss using CompositeLoss
     if use_amp and device_obj.type == "cuda":

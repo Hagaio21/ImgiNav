@@ -2,7 +2,7 @@
 # Higher latent resolution (64×64×4) with stronger structural constraints
 # Architecture: 64×64×4 = 16,384 dims (same total as Phase 1.6, but higher spatial resolution)
 # Encoder: Deterministic AE with structural loss, perceptual guidance, and latent standardization
-# Loss: MSE=1.0, Seg=0.2, Perceptual=0.1, LatentStructural=0.15, LatentStd=0.5 (per-channel)
+# Loss: MSE=1.0, Perceptual=0.1, LatentStructural=0.15, LatentStd=0.1 (per-channel)
 
 experiment:
   name: "phase2_1_AE_64x64_structural"
@@ -13,7 +13,6 @@ dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
   outputs:
     rgb: "layout_path"
-    segmentation: "layout_path"
     label: "type"
   filters:
     is_empty: [false]
@@ -40,9 +39,6 @@ autoencoder:
         name: rgb
         out_channels: 3
         final_activation: tanh
-      - type: SegmentationHead
-        name: segmentation
-        num_classes: 10
 
 training:
   seed: 42
@@ -68,10 +64,6 @@ training:
         key: rgb
         target: rgb
         weight: 1.0
-      - type: CrossEntropyLoss
-        key: segmentation
-        target: segmentation
-        weight: 0.2  # Segmentation loss
       - type: PerceptualLoss
         key: rgb
         target: rgb
@@ -83,7 +75,7 @@ training:
         weight: 0.15  # Structural constraints (Sobel gradients)
       - type: LatentStandardizationLoss
         key: latent  # Extract "latent" from encoder output
-        weight: 0.5  # Increased weight to ensure latents converge to ~N(0,1) for diffusion compatibility
+        weight: 0.1  # Reduced weight to allow more expressive latent space while still encouraging ~N(0,1)
         mean_penalty_type: l2  # L2 penalty on mean (smooth convergence)
         std_penalty_type: l2  # L2 penalty on std (smooth convergence)
         per_channel: true  # Use per-channel statistics to handle channel imbalances (critical for proper standardization)

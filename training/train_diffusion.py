@@ -51,8 +51,8 @@ def compute_loss(
         preds["pred_noise"], preds["scheduler"], preds["timesteps"], preds["noisy_latent"]
         targets["latent"]
     - SemanticLoss:
-        preds["decoded_rgb"], preds["decoded_segmentation"]
-        targets["rgb"], targets["segmentation"]
+        preds["decoded_rgb"]
+        targets["rgb"]
     
     Args:
         model: Diffusion model
@@ -92,10 +92,9 @@ def compute_loss(
                 needs_decoding = True
                 break
     
-    if needs_decoding and "rgb" in batch and "segmentation" in batch:
+    if needs_decoding and "rgb" in batch:
         decoded = model.decoder({"latent": latents})
         preds["decoded_rgb"] = decoded.get("rgb")              # For SemanticLoss (perceptual)
-        preds["decoded_segmentation"] = decoded.get("segmentation")  # For SemanticLoss (segmentation)
     
     # Prepare targets dict
     # All loss components will receive this dict, but only use the keys they need
@@ -104,11 +103,9 @@ def compute_loss(
         "latent": latents,   # For LatentStructuralLoss (ground-truth clean latents)
     }
     
-    # Add RGB and segmentation if available (for SemanticLoss)
+    # Add RGB if available (for SemanticLoss)
     if "rgb" in batch:
         targets["rgb"] = batch["rgb"]  # For SemanticLoss (perceptual)
-    if "segmentation" in batch:
-        targets["segmentation"] = batch["segmentation"]  # For SemanticLoss (segmentation)
     
     # Compute loss using CompositeLoss
     if use_amp and device_obj.type == "cuda":
