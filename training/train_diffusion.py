@@ -676,7 +676,8 @@ def main():
                 best_val_loss = val_loss
         
         # Save samples
-        if val_loader and (epoch + 1) % sample_interval == 0:
+        # Always save at epoch 1, then every sample_interval epochs
+        if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
             save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name)
         
         # Save checkpoint (is_best was already determined above if validation ran)
