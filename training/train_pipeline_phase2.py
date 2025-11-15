@@ -68,6 +68,26 @@ def update_diffusion_config_manifest(diffusion_config_path, manifest_path):
         'latent': 'latent_path'  # Use pre-embedded latents
     }
     
+    # CRITICAL: Ensure UNet is NOT frozen (must be trainable for diffusion training)
+    if 'unet' not in config:
+        config['unet'] = {}
+    
+    # Explicitly ensure UNet is not frozen
+    if config['unet'].get('frozen', False):
+        print("WARNING: UNet was marked as frozen in config! Setting to trainable...")
+        config['unet']['frozen'] = False
+    
+    # Remove any freeze_blocks settings that would freeze parts of UNet
+    if 'freeze_blocks' in config['unet']:
+        print("WARNING: UNet had freeze_blocks setting! Removing to ensure full training...")
+        del config['unet']['freeze_blocks']
+    if 'freeze_downblocks' in config['unet']:
+        print("WARNING: UNet had freeze_downblocks setting! Removing to ensure full training...")
+        del config['unet']['freeze_downblocks']
+    if 'freeze_upblocks' in config['unet']:
+        print("WARNING: UNet had freeze_upblocks setting! Removing to ensure full training...")
+        del config['unet']['freeze_upblocks']
+    
     # Save updated config
     with open(diffusion_config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
@@ -112,11 +132,32 @@ def update_diffusion_config_with_ae_checkpoint(diffusion_config_path, ae_checkpo
     
     config['autoencoder']['checkpoint'] = str(ae_checkpoint_abs)
     
+    # CRITICAL: Ensure UNet is NOT frozen (must be trainable for diffusion training)
+    if 'unet' not in config:
+        config['unet'] = {}
+    
+    # Explicitly ensure UNet is not frozen
+    if config['unet'].get('frozen', False):
+        print("WARNING: UNet was marked as frozen in config! Setting to trainable...")
+        config['unet']['frozen'] = False
+    
+    # Remove any freeze_blocks settings that would freeze parts of UNet
+    if 'freeze_blocks' in config['unet']:
+        print("WARNING: UNet had freeze_blocks setting! Removing to ensure full training...")
+        del config['unet']['freeze_blocks']
+    if 'freeze_downblocks' in config['unet']:
+        print("WARNING: UNet had freeze_downblocks setting! Removing to ensure full training...")
+        del config['unet']['freeze_downblocks']
+    if 'freeze_upblocks' in config['unet']:
+        print("WARNING: UNet had freeze_upblocks setting! Removing to ensure full training...")
+        del config['unet']['freeze_upblocks']
+    
     # Save updated config (preserve comments and structure as much as possible)
     with open(diffusion_config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     
     print(f"Updated autoencoder checkpoint path to: {ae_checkpoint_abs}")
+    print(f"Verified UNet is trainable (frozen=false)")
     print(f"Config saved to: {diffusion_config_path}")
 
 
@@ -488,6 +529,24 @@ def main():
         print(f"{'='*60}")
         print(f"Manifest path: {final_manifest}")
         print(f"Outputs: {final_outputs}")
+        
+        # Verify UNet config is trainable
+        unet_cfg = final_config.get('unet', {})
+        unet_frozen = unet_cfg.get('frozen', False)
+        has_freeze_blocks = 'freeze_blocks' in unet_cfg or 'freeze_downblocks' in unet_cfg or 'freeze_upblocks' in unet_cfg
+        
+        print(f"UNet config:")
+        print(f"  frozen: {unet_frozen} (must be False)")
+        if has_freeze_blocks:
+            print(f"  WARNING: freeze_blocks settings found: {[k for k in ['freeze_blocks', 'freeze_downblocks', 'freeze_upblocks'] if k in unet_cfg]}")
+        else:
+            print(f"  freeze_blocks: None (OK)")
+        
+        if unet_frozen or has_freeze_blocks:
+            print(f"  ERROR: UNet will be frozen! Training will fail!")
+        else:
+            print(f"  OK: UNet is trainable")
+        
         print(f"{'='*60}\n")
     else:
         # If embedding failed or was skipped, we need to ensure the model has encoder

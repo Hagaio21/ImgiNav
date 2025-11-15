@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Unified training script for diffusion models (Stage 1, Stage 2, Stage 3).
-Uses CompositeLoss from config to combine noise, semantic, and discriminator losses.
+Uses CompositeLoss from config to combine noise and semantic losses.
 """
 
 import argparse
@@ -29,13 +29,12 @@ from training.utils import (
 from training.plotting_utils import plot_diffusion_metrics_epochs
 from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
-from models.components.discriminator import LatentDiscriminator
 from torchvision.utils import save_image
 
 
 def compute_loss(
     model, batch, latents, t, noise, cond, loss_fn, 
-    discriminator=None, use_amp=False, device_obj=None
+    use_amp=False, device_obj=None
 ):
     """
     Compute loss using CompositeLoss from config.
@@ -53,9 +52,6 @@ def compute_loss(
     - SemanticLoss:
         preds["decoded_rgb"], preds["decoded_segmentation"]
         targets["rgb"], targets["segmentation"]
-    - DiscriminatorLoss:
-        preds["pred_latent"], preds["discriminator"]
-        (no targets needed - evaluates on predicted/denoised latents from model)
     
     Args:
         model: Diffusion model
@@ -65,7 +61,6 @@ def compute_loss(
         noise: Noise tensor [B, C, H, W]
         cond: Conditioning (optional)
         loss_fn: CompositeLoss built from config
-        discriminator: Optional discriminator for adversarial loss
         use_amp: Whether to use mixed precision
         device_obj: Device object
     
@@ -77,24 +72,12 @@ def compute_loss(
     
     # Prepare preds dict for loss computation
     # All loss components will receive this dict, but only use the keys they need
-    pred_latent = outputs.get("pred_latent")
-    
-    # Debug: Log once if pred_latent is missing
-    if pred_latent is None and not hasattr(compute_loss, '_warned_pred_latent'):
-        print(f"WARNING: compute_loss - pred_latent is None. Model outputs keys: {list(outputs.keys())}")
-        compute_loss._warned_pred_latent = True
-    
     preds = {
         "pred_noise": outputs["pred_noise"],      # For SNRWeightedNoiseLoss
-        "pred_latent": pred_latent,  # For DiscriminatorLoss (predicted/denoised latents)
         "scheduler": model.scheduler,            # For SNRWeightedNoiseLoss, LatentStructuralLoss
         "timesteps": t,                          # For SNRWeightedNoiseLoss, LatentStructuralLoss
         "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss
     }
-    
-    # Add discriminator if available (for DiscriminatorLoss)
-    if discriminator is not None:
-        preds["discriminator"] = discriminator
     
     # Decode latents if semantic losses are needed
     # Check if any loss component needs decoded outputs
@@ -137,7 +120,7 @@ def compute_loss(
 
 
 def train_epoch(
-    model, dataloader, scheduler, loss_fn, discriminator, 
+    model, dataloader, scheduler, loss_fn, 
     optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False
 ):
     """Train for one epoch using CompositeLoss."""
@@ -196,7 +179,7 @@ def train_epoch(
             with torch.amp.autocast('cuda'):
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    discriminator, use_amp, device_obj
+                    use_amp, device_obj
                 )
             
             optimizer.zero_grad()
@@ -213,13 +196,14 @@ def train_epoch(
                 scaler.step(optimizer)
                 scaler.update()
             else:
+                total_loss_val.backward()
                 if max_grad_norm is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
                 optimizer.step()
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
-                discriminator, use_amp, device_obj
+                use_amp, device_obj
             )
             
             optimizer.zero_grad()
@@ -257,7 +241,7 @@ def train_epoch(
 
 
 def eval_epoch(
-    model, dataloader, scheduler, loss_fn, discriminator, 
+    model, dataloader, scheduler, loss_fn, 
     device, use_amp=False
 ):
     """Evaluate for one epoch using CompositeLoss."""
@@ -294,12 +278,12 @@ def eval_epoch(
                 with torch.amp.autocast('cuda'):
                     total_loss_val, logs = compute_loss(
                         model, batch, latents, t, noise, cond, loss_fn,
-                        discriminator, use_amp, device_obj
+                        use_amp, device_obj
                     )
             else:
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    discriminator, use_amp, device_obj
+                    use_amp, device_obj
                 )
             
             batch_size = latents.shape[0]
@@ -574,35 +558,6 @@ def main():
         )
         print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)}")
     
-    # Load discriminator (if specified for Stage 3)
-    discriminator = None
-    discriminator_path = config.get("discriminator", {}).get("checkpoint")
-    if discriminator_path:
-        print(f"Loading discriminator from {discriminator_path}")
-        discriminator_checkpoint = torch.load(discriminator_path, map_location=device_obj)
-        discriminator_config = discriminator_checkpoint.get("config")
-        if discriminator_config:
-            discriminator = LatentDiscriminator.from_config(discriminator_config)
-        else:
-            # Fallback: infer from latents
-            sample_latent = next(iter(train_loader))["latent"][0:1]
-            latent_channels = sample_latent.shape[1]
-            discriminator = LatentDiscriminator(
-                latent_channels=latent_channels,
-                base_channels=64,
-                num_layers=4
-            )
-        
-        discriminator.load_state_dict(discriminator_checkpoint["state_dict"])
-        discriminator = discriminator.to(device_obj)
-        discriminator.eval()  # Freeze discriminator during training
-        for param in discriminator.parameters():
-            param.requires_grad = False
-        
-        print(f"  Discriminator loaded")
-    else:
-        print("  No discriminator configured")
-    
     # Build loss function from config (uses CompositeLoss)
     print("Building loss function from config...")
     loss_fn = build_loss(config)
@@ -650,7 +605,7 @@ def main():
         
         # Train
         train_loss, train_logs = train_epoch(
-            model, train_loader, scheduler, loss_fn, discriminator,
+            model, train_loader, scheduler, loss_fn,
             optimizer, device_obj, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm,
             use_non_uniform_sampling=use_non_uniform_sampling
         )
@@ -664,7 +619,7 @@ def main():
         val_logs = {}
         if val_loader and (epoch + 1) % eval_interval == 0:
             val_loss, val_logs = eval_epoch(
-                model, val_loader, scheduler, loss_fn, discriminator,
+                model, val_loader, scheduler, loss_fn,
                 device_obj, use_amp=use_amp
             )
             print(f"Val Loss: {val_loss:.6f}")

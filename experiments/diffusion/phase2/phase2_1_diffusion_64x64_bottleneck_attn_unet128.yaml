@@ -59,7 +59,7 @@ training:
   save_interval: 99999
   eval_interval: 5
   sample_interval: 10
-  use_amp: true
+  use_amp: false
   
   # Weighted sampling disabled
   use_weighted_sampling: false

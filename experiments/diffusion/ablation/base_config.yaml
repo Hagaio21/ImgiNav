@@ -56,7 +56,7 @@ training:
   sample_interval: 10  # Generate samples every 10 epochs
   
   # Mixed precision for efficiency
-  use_amp: true
+  use_amp: false
   
   # Weighted sampling disabled
   use_weighted_sampling: false
