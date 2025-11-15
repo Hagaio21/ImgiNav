@@ -110,12 +110,10 @@ class SemanticLoss(LossComponent):
         if self.perc_loss is not None:
             if self.decoded_rgb_key in preds and self.target_rgb_key in targets:
                 # Normalize RGB to [0, 1] for perceptual loss (VGG expects [0, 1])
-                decoded_rgb = preds[self.decoded_rgb_key]
+                # Decoder outputs tanh ([-1, 1]), so normalize directly without checking
+                decoded_rgb = (preds[self.decoded_rgb_key] + 1.0) / 2.0
                 target_rgb = targets[self.target_rgb_key]
-                
-                # Handle tanh output ([-1, 1]) -> [0, 1]
-                if decoded_rgb.min() < 0:
-                    decoded_rgb = (decoded_rgb + 1.0) / 2.0
+                # Target RGB may be [-1, 1] or [0, 1], normalize if needed
                 if target_rgb.min() < 0:
                     target_rgb = (target_rgb + 1.0) / 2.0
                 

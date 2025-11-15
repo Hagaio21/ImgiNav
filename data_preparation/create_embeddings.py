@@ -149,7 +149,7 @@ def load_sentence_transformer_model(model_name: str = "all-MiniLM-L6-v2"):
 
 def create_layout_embeddings_from_manifest(
     encoder, manifest_path, output_manifest_path, batch_size=32, 
-    num_workers=8, overwrite=False, device="cuda"
+    num_workers=8, overwrite=False, device="cuda", autoencoder_config_path=None
 ):
     """
     Create layout embeddings from manifest (manifest-based workflow).
@@ -181,11 +181,30 @@ def create_layout_embeddings_from_manifest(
     print(f"After filtering (non-empty layouts): {len(df)} samples")
     
     # Create dataset for loading images (using filtered manifest)
+    # Load transform from autoencoder config if available (for consistent preprocessing)
+    # This ensures embedding uses same transform as training (e.g., 256×256 resize)
+    transform = None
+    if autoencoder_config_path:
+        try:
+            from training.utils import load_config
+            config = load_config(autoencoder_config_path)
+            transform = config.get("dataset", {}).get("transform", None)
+            if transform:
+                print(f"[INFO] Using transform from autoencoder config: {transform.get('type', 'Compose')}")
+            else:
+                print("[INFO] No transform found in config, using default image loading")
+        except Exception as e:
+            print(f"Warning: Could not load transform from config: {e}")
+            print("Using default image loading (no transform)")
+    else:
+        print("[INFO] No autoencoder config path provided, using default image loading")
+    
     dataset = ManifestDataset(
         manifest=str(manifest_path),
         outputs={"rgb": "layout_path"},
         filters={"is_empty": [False]} if "is_empty" in df.columns else None,
-        return_path=False
+        return_path=False,
+        transform=transform  # Pass transform if available
     )
     
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, 
@@ -822,6 +841,7 @@ def main():
                 manifest_path=args.manifest,
                 output_manifest_path=args.output_manifest,
                 batch_size=args.batch_size,
+                autoencoder_config_path=args.autoencoder_config,
                 num_workers=args.num_workers,
                 overwrite=args.overwrite,
                 device=str(device)

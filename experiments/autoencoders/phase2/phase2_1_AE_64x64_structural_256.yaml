@@ -1,0 +1,92 @@
+# Phase 2.1: High-Resolution Autoencoder with Structural Constraints (256×256)
+# Optimized for small datasets: 256×256 input → 64×64×4 latents
+# Architecture: 64×64×4 = 16,384 dims
+# Encoder: Deterministic AE with structural loss, perceptual guidance, and latent standardization
+# Loss: MSE=1.0, Perceptual=0.1, LatentStructural=0.15, LatentStd=0.1 (per-channel)
+
+experiment:
+  name: "phase2_1_AE_64x64_structural_256"
+  phase: "phase2_1_structural_training"
+  save_path: "/work3/s233249/ImgiNav/experiments/phase2/phase2_1_AE_64x64_structural_256"
+
+dataset:
+  manifest: "/work3/s233249/ImgiNav/datasets/layouts.csv"
+  outputs:
+    rgb: "layout_path"
+    label: "type"
+  filters:
+    is_empty: [false]
+  return_path: false
+  # Add resize transform for 256×256 input
+  transform:
+    type: Compose
+    transforms:
+      - type: Resize
+        size: [256, 256]
+      - type: ToTensor
+      - type: Normalize
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]  # Normalizes to [-1, 1] range
+
+autoencoder:
+  encoder:
+    in_channels: 3
+    latent_channels: 4  # 64×64×4 latent space
+    base_channels: 24  # Reduced from 32 for smaller model (~44% fewer params)
+    downsampling_steps: 2  # Changed from 3: 256 -> 128 -> 64 (64×64 spatial resolution)
+    activation: SiLU
+    norm_groups: 8
+    variational: false  # Deterministic AE
+  
+  decoder:
+    latent_channels: 4  # 64×64×4 latent space
+    base_channels: 24  # Reduced from 32 for smaller model
+    upsampling_steps: 2  # Changed from 3: 64 -> 128 -> 256 (64×64 spatial resolution)
+    activation: SiLU
+    norm_groups: 8
+    heads:
+      - type: RGBHead
+        name: rgb
+        out_channels: 3
+        final_activation: tanh
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 32  # Increased from 16 (can fit 2x more with 256×256)
+  num_workers: 8
+  shuffle: true
+  epochs: 50  # Full training
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.02  # Increased from 0.01 for stronger regularization
+  save_interval: 5
+  sample_interval: 1  # Save samples every epoch to monitor training progress
+  early_stopping_patience: 5
+  early_stopping_min_delta: 0.0001
+  early_stopping_restore_best: true
+  
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: MSELoss
+        key: rgb
+        target: rgb
+        weight: 1.0
+      - type: PerceptualLoss
+        key: rgb
+        target: rgb
+        weight: 0.1  # Perceptual guidance (VGG features)
+      - type: LatentStructuralLossAE
+        key: latent  # Predicted latent from encoder
+        target: rgb  # Compare to input image structure
+        gradient_type: sobel
+        weight: 0.15  # Structural constraints (Sobel gradients)
+      - type: LatentStandardizationLoss
+        key: latent  # Extract "latent" from encoder output
+        weight: 0.1  # Reduced weight to allow more expressive latent space while still encouraging ~N(0,1)
+        mean_penalty_type: l2  # L2 penalty on mean (smooth convergence)
+        std_penalty_type: l2  # L2 penalty on std (smooth convergence)
+        per_channel: true  # Use per-channel statistics to handle channel imbalances (critical for proper standardization)
+

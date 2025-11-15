@@ -5,6 +5,7 @@ import pandas as pd
 from pathlib import Path
 import numpy as np
 import sys
+from torchvision import transforms
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -29,7 +30,9 @@ class ManifestDataset(BaseComponent, Dataset):
 
             self.df = pd.read_csv(manifest, low_memory=False)
             self.manifest_dir = manifest.parent  # Store manifest directory for relative path resolution
-        self.transform = self._init_kwargs.get("transform", None)
+        transform_cfg = self._init_kwargs.get("transform", None)
+        # Build transform from config if provided, otherwise use as-is (for callable transforms)
+        self.transform = self._build_transform(transform_cfg) if transform_cfg else None
         self.return_path = self._init_kwargs.get("return_path", False)
 
         # two modes
@@ -114,6 +117,66 @@ class ManifestDataset(BaseComponent, Dataset):
     # ------------------------
     # Helpers
     # ------------------------
+    def _build_transform(self, transform_cfg):
+        """
+        Build transform from config dict or return callable as-is.
+        
+        Args:
+            transform_cfg: Either a dict with 'type' and 'transforms' keys, or a callable
+            
+        Returns:
+            Transform callable
+        """
+        # If it's already a callable, return as-is
+        if callable(transform_cfg):
+            return transform_cfg
+        
+        # If it's a dict, build transform from config
+        if isinstance(transform_cfg, dict):
+            if transform_cfg.get("type") == "Compose":
+                # Build Compose transform from list of transforms
+                transform_list = []
+                for t_cfg in transform_cfg.get("transforms", []):
+                    t_type = t_cfg.get("type")
+                    if t_type == "Resize":
+                        size = t_cfg.get("size")
+                        transform_list.append(transforms.Resize(size))
+                    elif t_type == "ToTensor":
+                        transform_list.append(transforms.ToTensor())
+                    elif t_type == "Normalize":
+                        mean = t_cfg.get("mean", [0.5, 0.5, 0.5])
+                        std = t_cfg.get("std", [0.5, 0.5, 0.5])
+                        transform_list.append(transforms.Normalize(mean=mean, std=std))
+                    elif t_type == "CenterCrop":
+                        size = t_cfg.get("size")
+                        transform_list.append(transforms.CenterCrop(size))
+                    elif t_type == "RandomCrop":
+                        size = t_cfg.get("size")
+                        transform_list.append(transforms.RandomCrop(size))
+                    else:
+                        raise ValueError(f"Unknown transform type: {t_type}")
+                
+                if transform_list:
+                    return transforms.Compose(transform_list)
+                else:
+                    return None
+            else:
+                # Single transform (not Compose)
+                t_type = transform_cfg.get("type")
+                if t_type == "Resize":
+                    return transforms.Resize(transform_cfg.get("size"))
+                elif t_type == "ToTensor":
+                    return transforms.ToTensor()
+                elif t_type == "Normalize":
+                    return transforms.Normalize(
+                        mean=transform_cfg.get("mean", [0.5, 0.5, 0.5]),
+                        std=transform_cfg.get("std", [0.5, 0.5, 0.5])
+                    )
+                else:
+                    raise ValueError(f"Unknown transform type: {t_type}")
+        
+        return None
+    
     def _load_value(self, val):
         """Auto-load image, tensor, or numeric."""
         # Handle NaN values from pandas

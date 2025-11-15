@@ -35,7 +35,7 @@ from models.losses.base_loss import LOSS_REGISTRY
 
 def compute_loss(
     model, batch, latents, t, noise, cond, loss_fn, 
-    use_amp=False, device_obj=None
+    use_amp=False, device_obj=None, needs_decoding=False
 ):
     """
     Compute loss using CompositeLoss from config.
@@ -80,18 +80,7 @@ def compute_loss(
         "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss
     }
     
-    # Decode latents if semantic losses are needed
-    # Check if any loss component needs decoded outputs
-    needs_decoding = False
-    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
-    SemanticLossClass = LOSS_REGISTRY.get("SemanticLoss")
-    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-        # Check if any sub-loss needs decoded outputs
-        for sub_loss in loss_fn.losses:
-            if SemanticLossClass and isinstance(sub_loss, SemanticLossClass):
-                needs_decoding = True
-                break
-    
+    # Decode latents if semantic losses are needed (needs_decoding is cached from train_epoch)
     if needs_decoding and "rgb" in batch:
         decoded = model.decoder({"latent": latents})
         preds["decoded_rgb"] = decoded.get("rgb")              # For SemanticLoss (perceptual)
@@ -128,13 +117,16 @@ def train_epoch(
     log_dict = {}
     
     device_obj = to_device(device)
-    # Store non-uniform sampling flag for use in timestep sampling
-    train_epoch._use_non_uniform_sampling = use_non_uniform_sampling
     
-    # Keep decoder frozen - only UNet is trained
-    if hasattr(model, 'decoder'):
-        for param in model.decoder.parameters():
-            param.requires_grad = False
+    # Cache loss class lookups and check if decoding is needed (once per epoch, not per batch)
+    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+    SemanticLossClass = LOSS_REGISTRY.get("SemanticLoss")
+    needs_decoding = False
+    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+        for sub_loss in loss_fn.losses:
+            if SemanticLossClass and isinstance(sub_loss, SemanticLossClass):
+                needs_decoding = True
+                break
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch_idx, batch in enumerate(pbar):
@@ -159,7 +151,6 @@ def train_epoch(
         num_steps = model.scheduler.num_steps
         # Support non-uniform timestep sampling (favors high-noise timesteps for better generalization)
         # This helps with low-diversity datasets by focusing on harder denoising tasks
-        use_non_uniform_sampling = getattr(train_epoch, '_use_non_uniform_sampling', False)
         if use_non_uniform_sampling:
             # Higher probability for early timesteps (high noise)
             # Exponential decay: early timesteps have higher probability
@@ -177,7 +168,7 @@ def train_epoch(
             with torch.amp.autocast('cuda'):
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj
+                    use_amp, device_obj, needs_decoding
                 )
             
             optimizer.zero_grad()
@@ -201,7 +192,7 @@ def train_epoch(
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
-                use_amp, device_obj
+                use_amp, device_obj, needs_decoding
             )
             
             optimizer.zero_grad()
@@ -251,6 +242,16 @@ def eval_epoch(
     
     device_obj = to_device(device)
     
+    # Cache loss class lookups and check if decoding is needed (once per epoch)
+    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+    SemanticLossClass = LOSS_REGISTRY.get("SemanticLoss")
+    needs_decoding = False
+    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+        for sub_loss in loss_fn.losses:
+            if SemanticLossClass and isinstance(sub_loss, SemanticLossClass):
+                needs_decoding = True
+                break
+    
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
             batch = move_batch_to_device(batch, device_obj)
@@ -277,12 +278,12 @@ def eval_epoch(
                 with torch.amp.autocast('cuda'):
                     total_loss_val, logs = compute_loss(
                         model, batch, latents, t, noise, cond, loss_fn,
-                        use_amp, device_obj
+                        use_amp, device_obj, needs_decoding
                     )
             else:
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj
+                    use_amp, device_obj, needs_decoding
                 )
             
             batch_size = latents.shape[0]
