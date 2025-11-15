@@ -56,6 +56,8 @@ training:
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: true
+  cfg_dropout_rate: 0.1  # Classifier-Free Guidance: randomly drop condition 10% of the time during training
+  guidance_scale: 2.0  # CFG guidance scale for sampling (1.0 = no CFG, higher = stronger conditioning)
   scheduler:
     type: linear
   loss:

@@ -108,7 +108,7 @@ def compute_loss(
 
 def train_epoch(
     model, dataloader, scheduler, loss_fn, 
-    optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False
+    optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False, cfg_dropout_rate=0.0
 ):
     """Train for one epoch using CompositeLoss."""
     model.train()
@@ -188,6 +188,13 @@ def train_epoch(
                         [0 if str(t).lower().strip() == "room" else 1 for t in type_labels.cpu().tolist()],
                         device=device_obj, dtype=torch.long
                     )
+        
+        # Apply CFG condition dropout (randomly drop condition with cfg_dropout_rate probability)
+        # This teaches the model to work both conditionally and unconditionally
+        # Use per-batch dropout: randomly set entire batch to None with probability cfg_dropout_rate
+        if cfg_dropout_rate > 0.0 and cond is not None:
+            if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
+                cond = None  # Drop entire batch condition for CFG training
         
         # Compute loss
         if use_amp and device_obj.type == "cuda":
@@ -360,7 +367,7 @@ def eval_epoch(
     return avg_loss, avg_logs
 
 
-def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=64, exp_name=None):
+def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=64, exp_name=None, guidance_scale=1.0):
     """Generate and save sample images."""
     model.eval()
     samples_dir = output_dir / "samples"
@@ -399,7 +406,8 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             torch.zeros(num_room, dtype=torch.long, device=device_obj),  # ROOM
             torch.ones(num_scene, dtype=torch.long, device=device_obj)   # SCENE
         ])
-        print(f"  Generating {sample_batch_size} samples ({num_room} ROOM, {num_scene} SCENE) using DDPM ({num_steps} steps) with seed {sampling_seed}...")
+        cfg_info = f" with CFG scale={guidance_scale}" if guidance_scale > 1.0 else ""
+        print(f"  Generating {sample_batch_size} samples ({num_room} ROOM, {num_scene} SCENE) using DDPM ({num_steps} steps){cfg_info} with seed {sampling_seed}...")
     else:
         print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps) with seed {sampling_seed}...")
     
@@ -410,6 +418,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             method="ddpm",
             eta=1.0,  # eta=1.0 for full DDPM (stochastic)
             cond=cond,  # Pass conditioning if available
+            guidance_scale=guidance_scale,  # CFG guidance scale
             device=device_obj,
             verbose=False
         )
@@ -691,6 +700,12 @@ def main():
     print(f"  Mixed precision: {use_amp}")
     print(f"  Max grad norm: {max_grad_norm}")
     print(f"  Non-uniform timestep sampling: {use_non_uniform_sampling}")
+    cfg_dropout_rate = config.get("training", {}).get("cfg_dropout_rate", 0.0)
+    guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
+    if cfg_dropout_rate > 0.0:
+        print(f"  CFG dropout rate: {cfg_dropout_rate} (condition randomly dropped {cfg_dropout_rate*100:.1f}% of the time)")
+    if guidance_scale > 1.0:
+        print(f"  CFG guidance scale: {guidance_scale} (used during sampling)")
     if early_stopping_patience is not None:
         print(f"  Early stopping: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
     
@@ -701,10 +716,14 @@ def main():
         print(f"{'='*60}")
         
         # Train
+        # Get CFG parameters from config
+        cfg_dropout_rate = config.get("training", {}).get("cfg_dropout_rate", 0.0)
+        guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
+        
         train_loss, train_logs = train_epoch(
             model, train_loader, scheduler, loss_fn,
             optimizer, device_obj, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm,
-            use_non_uniform_sampling=use_non_uniform_sampling
+            use_non_uniform_sampling=use_non_uniform_sampling, cfg_dropout_rate=cfg_dropout_rate
         )
         
         print(f"Train Loss: {train_loss:.6f}")
@@ -744,7 +763,9 @@ def main():
         # Save samples
         # Always save at epoch 1, then every sample_interval epochs
         if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
-            save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name)
+            # Get guidance_scale from config (default 1.0 = no CFG)
+            guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
+            save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale)
         
         # Save checkpoint (is_best was already determined above if validation ran)
         if val_loader and (epoch + 1) % eval_interval == 0:

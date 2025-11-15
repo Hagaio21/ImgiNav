@@ -241,7 +241,7 @@ class UnetWithAttention(BaseComponent):
         Args:
             x_t: Noisy latents [B, C, H, W]
             t: Timesteps [B]
-            cond: Optional condition IDs [B] where 0=ROOM, 1=SCENE. If None, no conditioning is used.
+            cond: Optional condition IDs [B] where 0=ROOM, 1=SCENE. If None, no conditioning is used (CFG dropout).
         
         Returns:
             Predicted noise [B, C, H, W]

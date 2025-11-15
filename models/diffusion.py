@@ -190,7 +190,7 @@ class DiffusionModel(BaseModel):
     # Sampling
     # ------------------------------------------------------------------
     def sample(self, batch_size=1, latent_shape=None, cond=None, num_steps=50, 
-               method="ddim", eta=0.0, device=None, return_history=False, verbose=False):
+               method="ddim", eta=0.0, device=None, return_history=False, verbose=False, guidance_scale=1.0):
  
         if device is None:
             device = next(self.parameters()).device
@@ -233,7 +233,18 @@ class DiffusionModel(BaseModel):
                 # Use live UNet for sampling
                 unet = self.unet
                 unet.eval()
-                pred_noise = unet(latents, t_batch, cond)
+                
+                # Classifier-Free Guidance (CFG)
+                if guidance_scale > 1.0 and cond is not None:
+                    # Run UNet with condition (conditional prediction)
+                    cond_pred = unet(latents, t_batch, cond)
+                    # Run UNet without condition (unconditional prediction)
+                    uncond_pred = unet(latents, t_batch, None)
+                    # Combine: pred = uncond + scale * (cond - uncond)
+                    pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
+                else:
+                    # No CFG: use conditional or unconditional prediction directly
+                    pred_noise = unet(latents, t_batch, cond)
             
             # DDIM step
             if method == "ddim":
