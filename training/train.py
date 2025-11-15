@@ -695,6 +695,79 @@ def main():
         plt.close()
         print(f"  Saved latent statistics plot: {plot_path}")
     
+    def _plot_per_class_losses(df, output_dir, exp_name):
+        """Plot per-class MSE losses from ClassWeightedMSELoss."""
+        # Find all per-class loss columns (format: train_MSE_rgb_<class_name> or val_MSE_rgb_<class_name>)
+        per_class_cols = [col for col in df.columns if 'MSE_rgb_' in col and col != 'train_MSE_rgb' and col != 'val_MSE_rgb']
+        
+        if not per_class_cols:
+            return  # No per-class losses to plot
+        
+        # Extract class names and split train/val
+        train_cols = [col for col in per_class_cols if col.startswith('train_')]
+        val_cols = [col for col in per_class_cols if col.startswith('val_')]
+        
+        if not train_cols and not val_cols:
+            return
+        
+        epochs = df['epoch'].values
+        
+        # Determine number of subplots needed (max 6 classes per row)
+        num_classes = max(len(train_cols), len(val_cols))
+        num_rows = (num_classes + 5) // 6  # 6 classes per row
+        num_cols = min(6, num_classes)
+        
+        fig, axes = plt.subplots(num_rows, num_cols, figsize=(4*num_cols, 3*num_rows))
+        fig.suptitle(f'Per-Class MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
+        
+        # Flatten axes if needed
+        if num_rows == 1:
+            axes = axes.reshape(1, -1) if num_cols > 1 else [axes]
+        axes_flat = axes.flatten() if num_rows > 1 or num_cols > 1 else [axes]
+        
+        # Get unique class names (remove train_/val_ prefix and MSE_rgb_ prefix)
+        class_names = set()
+        for col in train_cols + val_cols:
+            # Extract class name: train_MSE_rgb_bed -> bed
+            parts = col.split('_')
+            if len(parts) >= 4:
+                class_name = '_'.join(parts[3:])  # Handle multi-word class names
+                class_names.add(class_name)
+        
+        class_names = sorted(class_names)
+        
+        # Plot each class
+        for idx, class_name in enumerate(class_names):
+            if idx >= len(axes_flat):
+                break
+            
+            ax = axes_flat[idx]
+            train_col = f'train_MSE_rgb_{class_name}'
+            val_col = f'val_MSE_rgb_{class_name}'
+            
+            if train_col in df.columns:
+                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=2, color='blue')
+            if val_col in df.columns:
+                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=2, color='red', linestyle='--')
+            
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('MSE Loss')
+            ax.set_title(f'{class_name.replace("_", " ").title()}')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+        
+        # Hide unused subplots
+        for idx in range(len(class_names), len(axes_flat)):
+            axes_flat[idx].axis('off')
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = output_dir / f'{exp_name}_per_class_losses.png'
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved per-class losses plot: {plot_path}")
+    
     for epoch in range(start_epoch, end_epoch):
         # Training
         avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
@@ -790,6 +863,9 @@ def main():
         
         # Plot latent statistics if available (from LatentStandardizationLoss)
         _plot_latent_statistics(df, output_dir, exp_name)
+        
+        # Plot per-class losses if available (from ClassWeightedMSELoss)
+        _plot_per_class_losses(df, output_dir, exp_name)
         
         # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch

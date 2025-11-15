@@ -144,7 +144,30 @@ class ClassWeightedMSELoss(LossComponent):
         # Average over all dimensions
         loss = weighted_squared_diff.mean() * self.weight
         
-        return loss, {f"MSE_{self.key}": loss.detach()}
+        # Compute per-class losses for logging/plotting
+        logs = {f"MSE_{self.key}": loss.detach()}
+        
+        # Track per-class MSE (unweighted, for monitoring)
+        per_class_losses = {}
+        squared_diff_per_pixel = squared_diff.mean(dim=1)  # [B, H, W] - average over RGB channels
+        
+        for class_idx, class_name in self.class_idx_to_name.items():
+            mask = (seg_mask == class_idx)
+            if mask.any():
+                # Compute MSE for this class (unweighted, just for monitoring)
+                class_squared_diff = squared_diff_per_pixel[mask]
+                class_loss = class_squared_diff.mean()
+                per_class_losses[f"MSE_{self.key}_{class_name}"] = class_loss.detach()
+        
+        # Also track unknown pixels
+        if unknown_mask.any():
+            unknown_squared_diff = squared_diff_per_pixel[unknown_mask]
+            unknown_loss = unknown_squared_diff.mean()
+            per_class_losses[f"MSE_{self.key}_unknown"] = unknown_loss.detach()
+        
+        logs.update(per_class_losses)
+        
+        return loss, logs
 
 
 @register_loss
