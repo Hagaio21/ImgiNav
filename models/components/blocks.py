@@ -45,6 +45,27 @@ def _compute_num_groups(num_channels, requested_groups=8):
     return 1  # Fallback: single group
 
 
+def _compute_num_heads(channels, target_heads_per_32=1):
+    """
+    Compute valid number of attention heads that divides channels evenly.
+    
+    Args:
+        channels: Number of channels
+        target_heads_per_32: Target number of heads per 32 channels (default: 1, i.e., channels // 32)
+    
+    Returns:
+        Valid num_heads that divides channels evenly
+    """
+    # Target: channels // 32 heads (or similar ratio)
+    target = max(1, channels // (32 // target_heads_per_32))
+    
+    # Find the largest divisor of channels that is <= target
+    for num_heads in range(min(target, channels), 0, -1):
+        if channels % num_heads == 0:
+            return num_heads
+    return 1  # Fallback: single head
+
+
 class ResidualBlock(nn.Module):
     def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, cond_dim=0):
         super().__init__()
@@ -142,9 +163,14 @@ class SelfAttentionBlock(nn.Module):
         self.channels = channels
         self.norm_groups = _compute_num_groups(channels, norm_groups)
         
-        # Default to channels // 32 heads, but at least 1
+        # Ensure num_heads divides channels evenly
         if num_heads is None:
-            num_heads = max(1, channels // 32)
+            num_heads = _compute_num_heads(channels, target_heads_per_32=1)
+        else:
+            # If explicitly provided, ensure it divides channels
+            if channels % num_heads != 0:
+                # Find the closest valid num_heads
+                num_heads = _compute_num_heads(channels, target_heads_per_32=1)
         self.num_heads = num_heads
         
         # GroupNorm + SiLU + QKV projection
