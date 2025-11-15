@@ -11,6 +11,8 @@ import torch.nn as nn
 from pathlib import Path
 from tqdm import tqdm
 import math
+import numpy as np
+from PIL import Image
 
 from training.utils import (
     load_config,
@@ -29,7 +31,6 @@ from training.utils import (
 from training.plotting_utils import plot_diffusion_metrics_epochs
 from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
-from torchvision.utils import save_image
 
 
 def compute_loss(
@@ -354,17 +355,33 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     if torch.cuda.is_available() and cuda_rng_states is not None:
         torch.cuda.set_rng_state_all(cuda_rng_states)
     
-    # Decode using the decoder - it knows how to decode properly
+    # Decode using the decoder - it returns a dict with "rgb" as an image in [0, 255] range
     with torch.no_grad():
-        decoded_out = model.decoder({"latent": sample_output["latent"]})
-        if "rgb" in decoded_out:
-            samples = decoded_out["rgb"]
-        else:
-            raise ValueError(f"Decoder output missing 'rgb' key. Got keys: {list(decoded_out.keys())}")
+        outputs = model.decoder({"latent": sample_output["latent"]})
+        samples = outputs["rgb"]  # Already in [0, 255] range
     
+    # Convert to numpy and create grid manually
+    samples_np = samples.cpu().numpy()  # [B, C, H, W] in [0, 255]
+    samples_np = np.clip(samples_np, 0, 255).astype(np.uint8)
+    
+    # Create grid manually
     grid_n = int(math.sqrt(sample_batch_size))  # 8x8 grid for 64 samples
+    images = []
+    for i in range(sample_batch_size):
+        img = samples_np[i].transpose(1, 2, 0)  # [C, H, W] -> [H, W, C]
+        images.append(Image.fromarray(img))
+    
+    # Create grid image
+    img_size = images[0].size[0]
+    grid_size = img_size * grid_n
+    grid_img = Image.new('RGB', (grid_size, grid_size))
+    for idx, img in enumerate(images):
+        row = idx // grid_n
+        col = idx % grid_n
+        grid_img.paste(img, (col * img_size, row * img_size))
+    
     grid_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_samples.png" if exp_name else f"epoch_{epoch:03d}_samples.png")
-    save_image(samples, grid_path, nrow=grid_n, normalize=False)
+    grid_img.save(grid_path)
     print(f"  Saved samples to {samples_dir}")
 
 

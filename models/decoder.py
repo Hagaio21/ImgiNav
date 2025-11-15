@@ -73,7 +73,18 @@ class Decoder(BaseComponent):
             raise TypeError(f"Decoder forward expects dict, got {type(z_or_dict)}")
         
         feats = self.shared_decoder(z)
-        return {name: head(feats) for name, head in self.heads.items()}
+        outputs = {name: head(feats) for name, head in self.heads.items()}
+        
+        # Convert RGB from [-1, 1] (tanh) to [0, 255] for proper image values
+        if "rgb" in outputs:
+            rgb = outputs["rgb"]  # RGB in [-1, 1] range from tanh
+            # Convert to [0, 255] range
+            rgb = (rgb + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+            rgb = rgb * 255.0  # [0, 1] -> [0, 255]
+            rgb = torch.clamp(rgb, 0.0, 255.0)  # Ensure valid range
+            outputs["rgb"] = rgb
+        
+        return outputs
 
     def to_config(self):
         cfg = super().to_config()
