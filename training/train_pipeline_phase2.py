@@ -492,6 +492,13 @@ def main():
             print("Embedded manifest already exists in experiment directory")
             print(f"{'='*60}")
             print(f"Found: {output_manifest}")
+            print("")
+            print("WARNING: Using existing embeddings. If the autoencoder was retrained,")
+            print("you MUST re-embed the dataset or colors will be wrong!")
+            print("")
+            print("To force re-embedding, delete the manifest:")
+            print(f"  rm {output_manifest}")
+            print("")
             print("Skipping embedding step.")
             print(f"{'='*60}\n")
             embedded_manifest = output_manifest

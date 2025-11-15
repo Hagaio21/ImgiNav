@@ -234,9 +234,23 @@ def create_layout_embeddings_from_manifest(
     output_manifest_dir.mkdir(parents=True, exist_ok=True)
     
     print("Encoding images to latents...")
+    print(f"[INFO] Using transform: {dataset.transform}")
+    print(f"[INFO] Sample RGB range check (first batch):")
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding")):
             rgb_images = batch["rgb"].to(device_obj, non_blocking=True)
+            
+            # Log RGB range for first batch to verify normalization
+            if batch_idx == 0:
+                rgb_min = rgb_images.min().item()
+                rgb_max = rgb_images.max().item()
+                rgb_mean = rgb_images.mean().item()
+                print(f"[INFO] First batch RGB stats: min={rgb_min:.3f}, max={rgb_max:.3f}, mean={rgb_mean:.3f}")
+                print(f"[INFO] Expected range: [-1, 1] (if using Normalize with mean=0.5, std=0.5)")
+                if rgb_min < -1.1 or rgb_max > 1.1:
+                    print(f"[WARNING] RGB values outside expected [-1, 1] range! Transform may be incorrect.")
+                elif rgb_min > -0.1 and rgb_max < 1.1:
+                    print(f"[WARNING] RGB values in [0, 1] range - transform may be missing Normalize step!")
             
             # Encode to latents
             encoder_out = encoder(rgb_images)  # Returns dict
