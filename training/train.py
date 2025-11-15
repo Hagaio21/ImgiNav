@@ -126,6 +126,20 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
     
+    # Ensure all expected class keys are present (defensive check)
+    # This handles edge cases where initialization might have been skipped
+    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+        for sub_loss in loss_fn.losses:
+            if ClassWeightedMSELossClass and isinstance(sub_loss, ClassWeightedMSELossClass):
+                if hasattr(sub_loss, 'class_idx_to_name'):
+                    key = sub_loss.key if hasattr(sub_loss, 'key') else 'rgb'
+                    for class_name in sub_loss.class_idx_to_name.values():
+                        log_key = f"MSE_{key}_{class_name}"
+                        if log_key not in avg_logs:
+                            avg_logs[log_key] = 0.0
+                    if f"MSE_{key}_unknown" not in avg_logs:
+                        avg_logs[f"MSE_{key}_unknown"] = 0.0
+    
     return avg_loss, avg_logs
 
 
@@ -184,6 +198,24 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
     
     avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
+    
+    # Ensure all expected class keys are present (defensive check)
+    # This handles edge cases where initialization might have been skipped
+    from models.losses.base_loss import LOSS_REGISTRY
+    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+    ClassWeightedMSELossClass = LOSS_REGISTRY.get("ClassWeightedMSELoss")
+    
+    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+        for sub_loss in loss_fn.losses:
+            if ClassWeightedMSELossClass and isinstance(sub_loss, ClassWeightedMSELossClass):
+                if hasattr(sub_loss, 'class_idx_to_name'):
+                    key = sub_loss.key if hasattr(sub_loss, 'key') else 'rgb'
+                    for class_name in sub_loss.class_idx_to_name.values():
+                        log_key = f"MSE_{key}_{class_name}"
+                        if log_key not in avg_logs:
+                            avg_logs[log_key] = 0.0
+                    if f"MSE_{key}_unknown" not in avg_logs:
+                        avg_logs[f"MSE_{key}_unknown"] = 0.0
     
     return avg_loss, avg_logs
 

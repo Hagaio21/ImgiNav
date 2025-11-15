@@ -122,19 +122,24 @@ def _segment_single(image: torch.Tensor, ignore_index: int = -1) -> torch.Tensor
     rgb_values, class_indices = _get_lookup_tensors(device)  # (num_classes, 3), (num_classes,)
     
     # Batched comparison: compare all pixels against all RGB values at once
+    # Use tolerance-based matching to handle floating-point precision issues
+    # after normalization and conversion back to uint8
     # image_flat: (H*W, 3), rgb_values: (num_classes, 3)
     # Expand dimensions for broadcasting: (H*W, 1, 3) vs (1, num_classes, 3)
     image_expanded = image_flat.unsqueeze(1)  # (H*W, 1, 3)
     rgb_expanded = rgb_values.unsqueeze(0)  # (1, num_classes, 3)
     
-    # Compare all pixels with all RGB values: (H*W, num_classes, 3)
-    matches = (image_expanded == rgb_expanded).all(dim=2)  # (H*W, num_classes)
+    # Compute L1 distance (sum of absolute differences) for each pixel-class pair
+    # Tolerance: allow ±2 in each channel (total L1 distance ≤ 6)
+    # This handles floating-point precision issues from normalization
+    l1_distances = torch.abs(image_expanded.float() - rgb_expanded.float()).sum(dim=2)  # (H*W, num_classes)
+    tolerance = 6.0  # Allow ±2 in each of 3 channels = 6 total L1 distance
+    matches = (l1_distances <= tolerance)  # (H*W, num_classes)
     
     # Find which class (if any) each pixel matches
-    # matches is (H*W, num_classes) boolean tensor
-    # We want to find the first True value in each row (pixel)
-    match_indices = matches.long().argmax(dim=1)  # (H*W,) - index of matching class, or 0 if no match
-    has_match = matches.any(dim=1)  # (H*W,) - whether pixel matched any class
+    # If multiple classes match (shouldn't happen with proper colors), pick the closest one
+    match_indices = l1_distances.argmin(dim=1)  # (H*W,) - index of closest matching class
+    has_match = matches.any(dim=1)  # (H*W,) - whether pixel matched any class within tolerance
     
     # Assign class indices: use matched class if found, otherwise ignore_index
     seg = torch.where(

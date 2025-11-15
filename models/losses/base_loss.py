@@ -110,7 +110,12 @@ class ClassWeightedMSELoss(LossComponent):
     def forward(self, preds, targets):
         if self.key not in preds or self.target_key not in targets:
             device = next(iter(preds.values())).device if preds else torch.device("cpu")
-            return torch.tensor(0.0, device=device), {}
+            # Still return all class keys (with 0.0 values) for consistent logging
+            logs = {f"MSE_{self.key}": torch.tensor(0.0, device=device)}
+            for class_name in self.class_idx_to_name.values():
+                logs[f"MSE_{self.key}_{class_name}"] = torch.tensor(0.0, device=device)
+            logs[f"MSE_{self.key}_unknown"] = torch.tensor(0.0, device=device)
+            return torch.tensor(0.0, device=device), logs
         
         pred = preds[self.key]  # [B, 3, H, W] in [-1, 1]
         target = targets[self.target_key]  # [B, 3, H, W] in [-1, 1]
