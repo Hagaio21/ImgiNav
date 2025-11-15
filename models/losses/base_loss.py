@@ -148,6 +148,7 @@ class ClassWeightedMSELoss(LossComponent):
         logs = {f"MSE_{self.key}": loss.detach()}
         
         # Track per-class MSE (unweighted, for monitoring)
+        # Always track ALL classes, even if they don't appear in this batch (for consistent logging/plotting)
         per_class_losses = {}
         squared_diff_per_pixel = squared_diff.mean(dim=1)  # [B, H, W] - average over RGB channels
         
@@ -158,12 +159,19 @@ class ClassWeightedMSELoss(LossComponent):
                 class_squared_diff = squared_diff_per_pixel[mask]
                 class_loss = class_squared_diff.mean()
                 per_class_losses[f"MSE_{self.key}_{class_name}"] = class_loss.detach()
+            else:
+                # Class not present in this batch - log as 0.0 for consistency
+                # This ensures all classes appear in logs/plots even if they're rare
+                per_class_losses[f"MSE_{self.key}_{class_name}"] = torch.tensor(0.0, device=device)
         
         # Also track unknown pixels
         if unknown_mask.any():
             unknown_squared_diff = squared_diff_per_pixel[unknown_mask]
             unknown_loss = unknown_squared_diff.mean()
             per_class_losses[f"MSE_{self.key}_unknown"] = unknown_loss.detach()
+        else:
+            # No unknown pixels in this batch
+            per_class_losses[f"MSE_{self.key}_unknown"] = torch.tensor(0.0, device=device)
         
         logs.update(per_class_losses)
         

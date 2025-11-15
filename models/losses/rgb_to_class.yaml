@@ -38,7 +38,11 @@ wall:
   rgb: [200, 200, 200]
   class_index: 8
 
+floor:
+  rgb: [50, 50, 50]
+  class_index: 9
+
 background:
   rgb: [240, 240, 240]
-  class_index: 9
+  class_index: 10
 

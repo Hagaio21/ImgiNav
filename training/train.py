@@ -20,6 +20,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for HPC
 import matplotlib.pyplot as plt
+import seaborn as sns
 import json
 
 # Suppress torchvision.io extension warning (we use PIL, not torchvision.io)
@@ -518,6 +519,7 @@ def main():
     
     def _plot_normalizer_convergence(df, output_dir, exp_name):
         """Plot normalizer parameter convergence from training history."""
+        sns.set_style("darkgrid")
         # Check if normalizer columns exist
         required_cols = ['enc_shift_mean', 'enc_scale_mean', 'dec_shift_mean', 'dec_scale_mean']
         if not all(col in df.columns for col in required_cols):
@@ -616,6 +618,7 @@ def main():
     
     def _plot_latent_statistics(df, output_dir, exp_name):
         """Plot latent statistics from standardization loss."""
+        sns.set_style("darkgrid")
         # Check if latent statistics columns exist (from LatentStandardizationLoss)
         has_train_stats = 'train_LatentStd_MeanVal' in df.columns
         has_val_stats = 'val_LatentStd_MeanVal' in df.columns
@@ -696,7 +699,8 @@ def main():
         print(f"  Saved latent statistics plot: {plot_path}")
     
     def _plot_per_class_losses(df, output_dir, exp_name):
-        """Plot per-class MSE losses from ClassWeightedMSELoss."""
+        """Plot per-class MSE losses from ClassWeightedMSELoss with class colors."""
+        sns.set_style("darkgrid")
         # Find all per-class loss columns (format: train_MSE_rgb_<class_name> or val_MSE_rgb_<class_name>)
         per_class_cols = [col for col in df.columns if 'MSE_rgb_' in col and col != 'train_MSE_rgb' and col != 'val_MSE_rgb']
         
@@ -710,20 +714,19 @@ def main():
         if not train_cols and not val_cols:
             return
         
+        # Load class colors from rgb_to_class.yaml
+        import yaml
+        from pathlib import Path
+        rgb_config_path = Path(__file__).parent.parent / "models" / "losses" / "rgb_to_class.yaml"
+        class_colors = {}
+        with open(rgb_config_path, "r") as f:
+            config = yaml.safe_load(f)
+            for name, entry in config.items():
+                rgb = entry["rgb"]
+                # Convert RGB [0-255] to matplotlib color [0-1]
+                class_colors[name] = tuple(c / 255.0 for c in rgb)
+        
         epochs = df['epoch'].values
-        
-        # Determine number of subplots needed (max 6 classes per row)
-        num_classes = max(len(train_cols), len(val_cols))
-        num_rows = (num_classes + 5) // 6  # 6 classes per row
-        num_cols = min(6, num_classes)
-        
-        fig, axes = plt.subplots(num_rows, num_cols, figsize=(4*num_cols, 3*num_rows))
-        fig.suptitle(f'Per-Class MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
-        
-        # Flatten axes if needed
-        if num_rows == 1:
-            axes = axes.reshape(1, -1) if num_cols > 1 else [axes]
-        axes_flat = axes.flatten() if num_rows > 1 or num_cols > 1 else [axes]
         
         # Get unique class names (remove train_/val_ prefix and MSE_rgb_ prefix)
         class_names = set()
@@ -736,29 +739,35 @@ def main():
         
         class_names = sorted(class_names)
         
-        # Plot each class
-        for idx, class_name in enumerate(class_names):
-            if idx >= len(axes_flat):
-                break
-            
-            ax = axes_flat[idx]
+        # Create a single plot with all classes (overlaid)
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        fig.suptitle(f'Per-Class MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
+        
+        # Plot each class with its RGB color
+        for class_name in class_names:
             train_col = f'train_MSE_rgb_{class_name}'
             val_col = f'val_MSE_rgb_{class_name}'
             
-            if train_col in df.columns:
-                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=2, color='blue')
-            if val_col in df.columns:
-                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=2, color='red', linestyle='--')
+            # Get color for this class (default to gray if not found)
+            color = class_colors.get(class_name, (0.5, 0.5, 0.5))
             
-            ax.set_xlabel('Epoch')
-            ax.set_ylabel('MSE Loss')
-            ax.set_title(f'{class_name.replace("_", " ").title()}')
-            ax.legend(fontsize=8)
-            ax.grid(True, alpha=0.3)
+            # Use slightly darker color for validation
+            val_color = tuple(max(0, c * 0.7) for c in color)
+            
+            label_name = class_name.replace("_", " ").title()
+            
+            if train_col in df.columns:
+                ax.plot(epochs, df[train_col], label=f'{label_name} (train)', 
+                       linewidth=2, marker='o', markersize=2, color=color, alpha=0.8)
+            if val_col in df.columns:
+                ax.plot(epochs, df[val_col], label=f'{label_name} (val)', 
+                       linewidth=2, marker='s', markersize=2, color=val_color, 
+                       linestyle='--', alpha=0.8)
         
-        # Hide unused subplots
-        for idx in range(len(class_names), len(axes_flat)):
-            axes_flat[idx].axis('off')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('MSE Loss', fontsize=12)
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
+        ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
         
@@ -770,6 +779,7 @@ def main():
     
     def _plot_kld_loss(df, output_dir, exp_name):
         """Plot KLD (KL Divergence) loss from KLDLoss."""
+        sns.set_style("darkgrid")
         # Check if KLD columns exist
         has_train_kld = 'train_KLD' in df.columns
         has_val_kld = 'val_KLD' in df.columns
