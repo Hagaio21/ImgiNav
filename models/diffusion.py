@@ -309,10 +309,10 @@ class DiffusionModel(BaseModel):
                 history.append(latents.clone())
         
         # Ensure latents are within reasonable bounds (prevent out-of-bounds values)
-        # Latents are trained to be approximately N(0,1) via LatentStandardizationLoss
-        # Most values (99.7%) are in [-3, 3], so clamp to [-3, 3] to allow natural variation
-        # while preventing extreme outliers that could cause decoder issues
-        latents = torch.clamp(latents, -3.0, 3.0)
+        # Clamp to [-1, 1] to match the typical range of latents that the decoder
+        # was trained on during autoencoder training (most N(0,1) values fall within this range)
+        # This ensures the decoder only sees latents within the expected training distribution
+        latents = torch.clamp(latents, -1.0, 1.0)
         
         # Latents are now clamped and in the correct space
         # Build output dict
