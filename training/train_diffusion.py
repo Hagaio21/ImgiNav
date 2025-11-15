@@ -353,15 +353,23 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     if torch.cuda.is_available() and cuda_rng_states is not None:
         torch.cuda.set_rng_state_all(cuda_rng_states)
     
-    # Decode using the decoder - it returns a dict with "rgb" in [-1, 1] range (tanh)
-    with torch.no_grad():
-        outputs = model.decoder({"latent": sample_output["latent"]})
-        samples = outputs["rgb"]  # RGB in [-1, 1] range from tanh
-    
-    # Convert from [-1, 1] to [0, 255] for saving
-    samples = (samples + 1.0) / 2.0  # [-1, 1] -> [0, 1]
-    samples = samples * 255.0  # [0, 1] -> [0, 255]
-    samples = torch.clamp(samples, 0.0, 255.0)
+    # Check if model.sample() already decoded RGB (avoid double decoding)
+    if "rgb" in sample_output:
+        # model.sample() already decoded, use that (in [0, 1] range)
+        samples = sample_output["rgb"]  # Already in [0, 1] from model.sample()
+        # Convert from [0, 1] to [0, 255] for saving
+        samples = samples * 255.0  # [0, 1] -> [0, 255]
+        samples = torch.clamp(samples, 0.0, 255.0)
+    else:
+        # Decode using the decoder - it returns a dict with "rgb" in [-1, 1] range (tanh)
+        with torch.no_grad():
+            outputs = model.decoder({"latent": sample_output["latent"]})
+            samples = outputs["rgb"]  # RGB in [-1, 1] range from tanh
+        
+        # Convert from [-1, 1] to [0, 255] for saving
+        samples = (samples + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+        samples = samples * 255.0  # [0, 1] -> [0, 255]
+        samples = torch.clamp(samples, 0.0, 255.0)
     
     # Convert to numpy and create grid manually
     samples_np = samples.cpu().numpy()  # [B, C, H, W] in [0, 255]

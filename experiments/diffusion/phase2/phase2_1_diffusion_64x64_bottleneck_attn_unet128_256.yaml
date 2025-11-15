@@ -79,9 +79,4 @@ training:
         key: pred_noise
         target: noise
         weight: 1.0
-      - type: LatentStructuralLoss
-        key: pred_noise
-        target: latent
-        gradient_type: sobel
-        weight: 0.5  # Structural loss for better spatial quality
 

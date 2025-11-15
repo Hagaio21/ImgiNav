@@ -308,7 +308,13 @@ class DiffusionModel(BaseModel):
             if return_history:
                 history.append(latents.clone())
         
-        # Latents are already in the correct space (noise was scaled, so latents match original distribution)
+        # Ensure latents are within reasonable bounds (prevent out-of-bounds values)
+        # Latents are trained to be approximately N(0,1) via LatentStandardizationLoss
+        # Most values (99.7%) are in [-3, 3], so clamp to [-3, 3] to allow natural variation
+        # while preventing extreme outliers that could cause decoder issues
+        latents = torch.clamp(latents, -3.0, 3.0)
+        
+        # Latents are now clamped and in the correct space
         # Build output dict
         result = {"latent": latents}
         
