@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J phase2_1_pipeline_unet64_256
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet64_256.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet64_256.%J.err
+#BSUB -J phase2_1_pipeline_unet94_256
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet94_256.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet94_256.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=32000]"
 #BSUB -gpu "num=1"
@@ -16,7 +16,7 @@ set -euo pipefail
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_pipeline_phase2.py"
 AE_CONFIG="${BASE_DIR}/experiments/autoencoders/phase2/phase2_1_VAE_64x64_structural_256.yaml"
-DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet64_256.yaml"
+DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet94_256.yaml"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Ensure log directory exists
@@ -58,7 +58,7 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Phase 2.1: Training Pipeline (UNet64, 256×256)"
+echo "Phase 2.1: Training Pipeline (UNet94, 256×256)"
 echo "Autoencoder + Diffusion Training"
 echo "=========================================="
 echo "Autoencoder config: ${AE_CONFIG}"
@@ -70,7 +70,7 @@ echo ""
 echo "Pipeline Overview:"
 echo "  1. Train VAE with structural constraints (256×256 input)"
 echo "  2. Embed dataset using trained VAE"
-echo "  3. Train diffusion model (UNet64, base_channels=64, 256×256) with room/scene conditioning"
+echo "  3. Train diffusion model (UNet94, base_channels=94, 256×256) with room/scene conditioning"
 echo "=========================================="
 
 cd "${BASE_DIR}"

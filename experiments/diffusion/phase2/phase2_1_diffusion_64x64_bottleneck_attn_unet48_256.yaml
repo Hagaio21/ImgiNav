@@ -19,7 +19,7 @@ unet:
   in_channels: 4
   out_channels: 4
   base_channels: 48
-  depth: 3
+  depth: 4  # Increased from 3 for deeper model
   num_res_blocks: 2
   time_dim: 256  # Increased from 128 for richer temporal encoding
   cond_channels: 0
@@ -50,7 +50,8 @@ training:
   eval_interval: 5
   sample_interval: 5
   use_amp: false
-  use_weighted_sampling: false
+  use_weighted_sampling: true  # Enable weighted sampling for balanced room/scene distribution
+  weight_column: type  # Sample based on room/scene type
   max_grad_norm: 1.0  # Increased from 0.5 to allow stronger gradients
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
@@ -66,5 +67,3 @@ training:
       key: pred_noise
       target: noise
       weight: 1.0
-    - type: LatentStructuralLoss
-      weight: 0.1  # Small weight to guide structure learning

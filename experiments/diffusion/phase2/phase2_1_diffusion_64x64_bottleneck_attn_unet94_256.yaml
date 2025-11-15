@@ -1,24 +1,36 @@
+# Phase 2.1: Diffusion with 256×256 Input (64×64×4 latents)
+# Uses Phase 2.1 autoencoder (64×64×4 latents from 256×256 images)
+# Medium-Large UNet (base_channels: 94) with attention only in bottleneck for global context
+# Optimized for small datasets
+
 experiment:
-  name: phase2_1_diffusion_64x64_bottleneck_attn_unet64_256
+  name: phase2_1_diffusion_64x64_bottleneck_attn_unet94_256
   phase: phase2_1_diffusion
-  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet64_256
+  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet94_256
   epochs_target: 500
+
 dataset:
-  manifest: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet64_256/embeddings/manifest_with_latents.csv
+  # Manifest path will be automatically updated by train_pipeline_phase2.py
+  # after embedding completes (will point to manifest_with_latents.csv in experiment directory)
+  manifest: /work3/s233249/ImgiNav/datasets/layouts.csv  # Will be updated to embedded manifest
   outputs:
-    latent: latent_path
+    latent: latent_path  # Use pre-embedded latents (will be set after embedding)
+    type: type  # Room/scene conditioning: "room" -> 0, "scene" -> 1
   filters:
-    is_empty:
-    - false
+    is_empty: [false]
   return_path: false
+
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_VAE_64x64_structural_256/phase2_1_VAE_64x64_structural_256_checkpoint_best.pt
+  # Checkpoint path will be automatically updated by train_pipeline_phase2.py
+  # after autoencoder training completes
+  checkpoint: null  # Will be set by pipeline script
   frozen: true
+
 unet:
   type: UnetWithAttention
   in_channels: 4
   out_channels: 4
-  base_channels: 64
+  base_channels: 94  # Medium-large model capacity
   depth: 4  # Increased from 3 for deeper model
   num_res_blocks: 2
   time_dim: 256  # Increased from 128 for richer temporal encoding
@@ -32,14 +44,16 @@ unet:
   attention_heads: null
   attention_at:
   - bottleneck
+
 scheduler:
   type: LinearScheduler
   num_steps: 500
+
 training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 96
+  batch_size: 96  # Balanced batch size for medium-large model
   num_workers: 8
   shuffle: true
   epochs: 500
@@ -67,3 +81,4 @@ training:
       key: pred_noise
       target: noise
       weight: 1.0
+

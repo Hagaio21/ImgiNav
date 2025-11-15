@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from pathlib import Path
 from models.components.base_model import BaseModel
 from .encoder import Encoder
 from .decoder import Decoder
@@ -21,6 +22,9 @@ class Autoencoder(BaseModel):
             self.encoder.freeze()
         if decoder_cfg.get("frozen", False):
             self.decoder.freeze()
+        
+        # Write model statistics if save_path is available
+        self._write_model_statistics()
 
     def forward(self, x):
 
@@ -93,3 +97,51 @@ class Autoencoder(BaseModel):
         ae.encoder = encoder
         ae.decoder = decoder
         return ae
+    
+    def _write_model_statistics(self):
+        """Write model parameter statistics to Statistics.txt file."""
+        try:
+            # Get save path from experiment config if available
+            save_path = self._init_kwargs.get("save_path", None)
+            if save_path is None:
+                # Try to get from experiment config in parent kwargs
+                exp_cfg = self._init_kwargs.get("experiment", {})
+                save_path = exp_cfg.get("save_path", None)
+            
+            if save_path is None:
+                return  # No save path available, skip writing
+            
+            save_path = Path(save_path)
+            save_path.mkdir(parents=True, exist_ok=True)
+            stats_file = save_path / "Statistics.txt"
+            
+            # Count parameters
+            encoder_trainable = sum(p.numel() for p in self.encoder.parameters() if p.requires_grad)
+            encoder_total = sum(p.numel() for p in self.encoder.parameters())
+            encoder_frozen = encoder_total - encoder_trainable
+            
+            decoder_trainable = sum(p.numel() for p in self.decoder.parameters() if p.requires_grad)
+            decoder_total = sum(p.numel() for p in self.decoder.parameters())
+            decoder_frozen = decoder_total - decoder_trainable
+            
+            total_trainable = encoder_trainable + decoder_trainable
+            total_params = encoder_total + decoder_total
+            
+            # Write statistics
+            with open(stats_file, 'w') as f:
+                f.write("Model Statistics\n")
+                f.write("=" * 60 + "\n\n")
+                f.write("Encoder Parameters:\n")
+                f.write(f"  Trainable: {encoder_trainable:,} ({encoder_trainable / 1_000_000:.2f}M)\n")
+                f.write(f"  Total: {encoder_total:,} ({encoder_total / 1_000_000:.2f}M)\n")
+                f.write(f"  Frozen: {encoder_frozen:,} ({encoder_frozen / 1_000_000:.2f}M)\n")
+                f.write(f"\nDecoder Parameters:\n")
+                f.write(f"  Trainable: {decoder_trainable:,} ({decoder_trainable / 1_000_000:.2f}M)\n")
+                f.write(f"  Total: {decoder_total:,} ({decoder_total / 1_000_000:.2f}M)\n")
+                f.write(f"  Frozen: {decoder_frozen:,} ({decoder_frozen / 1_000_000:.2f}M)\n")
+                f.write(f"\nTotal Trainable Parameters: {total_trainable:,} ({total_trainable / 1_000_000:.2f}M)\n")
+                f.write(f"Total Parameters: {total_params:,} ({total_params / 1_000_000:.2f}M)\n")
+        except Exception as e:
+            # Don't fail model building if statistics writing fails
+            import warnings
+            warnings.warn(f"Failed to write model statistics: {e}")

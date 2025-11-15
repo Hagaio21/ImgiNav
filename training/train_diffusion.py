@@ -592,6 +592,10 @@ def main():
         
         if "type" in diffusion_cfg:
             diffusion_cfg = {k: v for k, v in diffusion_cfg.items() if k != "type"}
+        # Pass save_path from experiment config so model can write statistics
+        exp_cfg = config.get("experiment", {})
+        if exp_cfg.get("save_path"):
+            diffusion_cfg["save_path"] = exp_cfg["save_path"]
         model = DiffusionModel(**diffusion_cfg)
         model = model.to(device_obj)
     
@@ -610,7 +614,8 @@ def main():
     # Auto-generate weight stats if needed
     weights_stats_path = None
     if use_weighted_sampling:
-        weight_column = config["training"].get("column", None)
+        # Support both "weight_column" (new) and "column" (old) for backward compatibility
+        weight_column = config["training"].get("weight_column", None) or config["training"].get("column", None)
         if weight_column:
             # Get manifest path from dataset config
             manifest_path = Path(config["dataset"]["manifest"])
@@ -641,7 +646,7 @@ def main():
         pin_memory=device_obj.type == "cuda",
         persistent_workers=num_workers > 0,
         use_weighted_sampling=use_weighted_sampling,
-        weight_column=config["training"].get("column", None),
+        weight_column=config["training"].get("weight_column", None) or config["training"].get("column", None),
         weights_stats_path=weights_stats_path,
         use_grouped_weights=config["training"].get("use_grouped_weights", False),
         group_rare_classes=config["training"].get("group_rare_classes", False),

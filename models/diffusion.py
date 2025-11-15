@@ -117,6 +117,56 @@ class DiffusionModel(BaseModel):
         if sched_type not in SCHEDULER_REGISTRY:
             raise ValueError(f"Unknown scheduler: {sched_type}")
         self.scheduler = SCHEDULER_REGISTRY[sched_type].from_config(sched_cfg)
+        
+        # Write model statistics if save_path is available
+        self._write_model_statistics()
+
+    def _write_model_statistics(self):
+        """Write model parameter statistics to Statistics.txt file."""
+        try:
+            # Get save path from experiment config if available
+            save_path = self._init_kwargs.get("save_path", None)
+            if save_path is None:
+                # Try to get from experiment config in parent kwargs
+                exp_cfg = self._init_kwargs.get("experiment", {})
+                save_path = exp_cfg.get("save_path", None)
+            
+            if save_path is None:
+                return  # No save path available, skip writing
+            
+            save_path = Path(save_path)
+            save_path.mkdir(parents=True, exist_ok=True)
+            stats_file = save_path / "Statistics.txt"
+            
+            # Count parameters
+            # For diffusion, count UNet parameters (decoder is frozen)
+            unet_trainable = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
+            unet_total = sum(p.numel() for p in self.unet.parameters())
+            unet_frozen = unet_total - unet_trainable
+            
+            # Also count decoder if it exists (usually frozen)
+            decoder_trainable = 0
+            decoder_total = 0
+            if hasattr(self, 'decoder'):
+                decoder_trainable = sum(p.numel() for p in self.decoder.parameters() if p.requires_grad)
+                decoder_total = sum(p.numel() for p in self.decoder.parameters())
+            
+            # Write statistics
+            with open(stats_file, 'w') as f:
+                f.write("Model Statistics\n")
+                f.write("=" * 60 + "\n\n")
+                f.write("UNet Parameters:\n")
+                f.write(f"  Trainable: {unet_trainable:,} ({unet_trainable / 1_000_000:.2f}M)\n")
+                f.write(f"  Total: {unet_total:,} ({unet_total / 1_000_000:.2f}M)\n")
+                f.write(f"  Frozen: {unet_frozen:,} ({unet_frozen / 1_000_000:.2f}M)\n")
+                if hasattr(self, 'decoder'):
+                    f.write(f"\nDecoder Parameters (frozen):\n")
+                    f.write(f"  Total: {decoder_total:,} ({decoder_total / 1_000_000:.2f}M)\n")
+                f.write(f"\nTotal Trainable Parameters: {unet_trainable:,} ({unet_trainable / 1_000_000:.2f}M)\n")
+        except Exception as e:
+            # Don't fail model building if statistics writing fails
+            import warnings
+            warnings.warn(f"Failed to write model statistics: {e}")
 
     # ------------------------------------------------------------------
     # Forward

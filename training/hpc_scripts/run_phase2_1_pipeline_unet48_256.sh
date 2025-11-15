@@ -81,10 +81,11 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   exit 1
 fi
 
-# Run pipeline
+# Run pipeline with whiteness analysis
 python "${PYTHON_SCRIPT}" \
   --ae-config "${AE_CONFIG}" \
-  --diffusion-config "${DIFFUSION_CONFIG}"
+  --diffusion-config "${DIFFUSION_CONFIG}" \
+  --analyze-whiteness
 
 EXIT_CODE=$?
 

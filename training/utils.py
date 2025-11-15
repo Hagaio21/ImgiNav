@@ -172,7 +172,11 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
 
 def build_model(config):
     """Build autoencoder from config."""
-    ae_cfg = config["autoencoder"]
+    ae_cfg = config["autoencoder"].copy() if isinstance(config["autoencoder"], dict) else config["autoencoder"]
+    # Pass save_path from experiment config so model can write statistics
+    exp_cfg = config.get("experiment", {})
+    if isinstance(ae_cfg, dict) and exp_cfg.get("save_path"):
+        ae_cfg["save_path"] = exp_cfg["save_path"]
     model = Autoencoder.from_config(ae_cfg)
     return model
 

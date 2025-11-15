@@ -31,12 +31,12 @@ unet:
   in_channels: 4  # Matches 64×64×4 latent space
   out_channels: 4  # Matches 64×64×4 latent space
   base_channels: 128  # Large model
-  depth: 3  # Reduced depth
+  depth: 4  # Increased from 3 for deeper model
   num_res_blocks: 2
-  time_dim: 128
+  time_dim: 256  # Increased from 128 for richer temporal encoding
   cond_channels: 0
   fusion_mode: none
-  cond_dim: 128  # Condition embedding dimension (same as time_dim)
+  cond_dim: 256  # Increased from 128 for stronger room/scene conditioning
   num_cond_classes: 2  # ROOM=0, SCENE=1
   norm_groups: 8
   dropout: 0.2  # Increased from 0.1 to prevent memorization with predictable augmentations
@@ -63,12 +63,9 @@ training:
   eval_interval: 5
   sample_interval: 5
   use_amp: false
-  
-  # Weighted sampling disabled
-  use_weighted_sampling: false
-  
-  # Gradient clipping for stability (prevents network collapse)
-  max_grad_norm: 0.5  # More aggressive clipping to prevent network collapse (was 1.0)
+  use_weighted_sampling: true  # Enable weighted sampling for balanced room/scene distribution
+  weight_column: type  # Sample based on room/scene type
+  max_grad_norm: 1.0  # Increased from 0.5 to allow stronger gradients
   early_stopping_patience: 20  # Stop if no improvement for 20 epochs
   early_stopping_min_delta: 0.00001  # Much smaller delta for diffusion (losses ~0.1, improvements ~0.00001)
   use_non_uniform_sampling: false  # Use uniform timestep sampling (all timesteps have equal probability)
