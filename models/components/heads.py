@@ -3,6 +3,15 @@ import torch.nn as nn
 from .base_component import BaseComponent
 
 
+def _compute_num_groups(num_channels, requested_groups=8):
+    """Compute valid number of groups for GroupNorm."""
+    # Find the largest valid divisor <= requested_groups
+    for g in range(min(requested_groups, num_channels), 0, -1):
+        if num_channels % g == 0:
+            return g
+    return 1  # Fallback: single group
+
+
 class DecoderHead(BaseComponent):
     def _build(self):
         in_ch = self._init_kwargs.get("in_channels", 64)
@@ -11,9 +20,11 @@ class DecoderHead(BaseComponent):
         norm_groups = self._init_kwargs.get("norm_groups", 8)
         final_act = self._init_kwargs.get("final_activation", None)
 
+        # Compute valid num_groups for GroupNorm
+        valid_groups = _compute_num_groups(in_ch, norm_groups)
         layers = [
             nn.Conv2d(in_ch, in_ch, 3, padding=1),
-            nn.GroupNorm(norm_groups, in_ch),
+            nn.GroupNorm(valid_groups, in_ch),
             activation,
             nn.Conv2d(in_ch, out_ch, 3, padding=1),
         ]

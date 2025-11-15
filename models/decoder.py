@@ -4,6 +4,15 @@ from .components.base_component import BaseComponent
 from .components.heads import HEAD_REGISTRY
 
 
+def _compute_num_groups(num_channels, requested_groups=8):
+    """Compute valid number of groups for GroupNorm."""
+    # Find the largest valid divisor <= requested_groups
+    for g in range(min(requested_groups, num_channels), 0, -1):
+        if num_channels % g == 0:
+            return g
+    return 1  # Fallback: single group
+
+
 class Decoder(BaseComponent):
     def _build(self):
         latent_ch = self._init_kwargs.get("latent_channels", 4)
@@ -17,19 +26,24 @@ class Decoder(BaseComponent):
         in_ch = latent_ch
         out_ch = base_ch * (2 ** (up_steps - 1))
 
+        # Compute valid num_groups for initial layer
+        valid_groups = _compute_num_groups(out_ch, norm_groups)
         layers += [
             nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.GroupNorm(norm_groups, out_ch),
+            nn.GroupNorm(valid_groups, out_ch),
             activation,
         ]
 
         for _ in range(up_steps):
+            out_ch_next = out_ch // 2
+            # Compute valid num_groups for this layer
+            valid_groups = _compute_num_groups(out_ch_next, norm_groups)
             layers += [
-                nn.ConvTranspose2d(out_ch, out_ch // 2, 4, stride=2, padding=1),
-                nn.GroupNorm(norm_groups, out_ch // 2),
+                nn.ConvTranspose2d(out_ch, out_ch_next, 4, stride=2, padding=1),
+                nn.GroupNorm(valid_groups, out_ch_next),
                 activation,
             ]
-            out_ch //= 2
+            out_ch = out_ch_next
 
         self.shared_decoder = nn.Sequential(*layers)
         self.shared_out_channels = out_ch
