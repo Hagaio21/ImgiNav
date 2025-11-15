@@ -352,7 +352,7 @@ def train_autoencoder(ae_config_path):
         return None
 
 
-def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, output_manifest_path, batch_size=32, num_workers=8, diffusion_config_path=None, analyze_whiteness=False, whiteness_threshold=0.9, overwrite_whiteness=False):
+def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, output_manifest_path, batch_size=32, num_workers=8, diffusion_config_path=None, should_analyze_whiteness=False, whiteness_threshold=0.9, overwrite_whiteness=False):
     """
     Embed dataset using the trained autoencoder.
     
@@ -364,7 +364,7 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         batch_size: Batch size for encoding
         num_workers: Number of workers for data loading
         diffusion_config_path: Optional path to diffusion config (to get filters for whiteness, etc.)
-        analyze_whiteness: Whether to analyze whiteness before embedding
+        should_analyze_whiteness: Whether to analyze whiteness before embedding
         whiteness_threshold: Pixel value threshold for "white" in [0, 1] range
         overwrite_whiteness: Whether to overwrite existing whiteness_ratio column
         
@@ -381,7 +381,7 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
     
     # Step 2.0: Analyze whiteness if requested (before embedding)
     working_manifest_path = input_manifest_path
-    if analyze_whiteness:
+    if should_analyze_whiteness:
         working_manifest = Path(input_manifest_path)
         if working_manifest.exists():
             print(f"\n{'='*60}")
@@ -672,7 +672,7 @@ def main():
                 batch_size=32,
                 num_workers=8,
                 diffusion_config_path=args.diffusion_config,  # Pass diffusion config to get filters
-                analyze_whiteness=args.analyze_whiteness,  # Analyze whiteness during embedding
+                should_analyze_whiteness=args.analyze_whiteness,  # Analyze whiteness during embedding
                 whiteness_threshold=args.whiteness_threshold,
                 overwrite_whiteness=args.overwrite_whiteness
             )

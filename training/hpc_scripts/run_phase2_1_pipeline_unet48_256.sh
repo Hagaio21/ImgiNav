@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet48_256.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet48_256.%J.err
 #BSUB -n 8
-#BSUB -R "rusage[mem=32000]"
+#BSUB -R "rusage[mem=16000]"  # Reduced from 32GB - 64x64x4 latents are much smaller than 512x512 images
 #BSUB -gpu "num=1"
 #BSUB -W 24:00  # Extended wall time for both autoencoder and diffusion training
 #BSUB -q gpul40s
