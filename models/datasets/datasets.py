@@ -140,7 +140,17 @@ class ManifestDataset(BaseComponent, Dataset):
                     t_type = t_cfg.get("type")
                     if t_type == "Resize":
                         size = t_cfg.get("size")
-                        transform_list.append(transforms.Resize(size))
+                        # Use nearest-neighbor interpolation to preserve exact RGB values
+                        # This is critical for segmentation-based losses that require exact color matching
+                        interpolation = t_cfg.get("interpolation", "nearest")
+                        if interpolation == "nearest":
+                            # PIL.Image.NEAREST = 0
+                            transform_list.append(transforms.Resize(size, interpolation=0))
+                        elif interpolation == "bilinear":
+                            # PIL.Image.BILINEAR = 2
+                            transform_list.append(transforms.Resize(size, interpolation=2))
+                        else:
+                            transform_list.append(transforms.Resize(size))
                     elif t_type == "ToTensor":
                         transform_list.append(transforms.ToTensor())
                     elif t_type == "Normalize":
@@ -164,7 +174,14 @@ class ManifestDataset(BaseComponent, Dataset):
                 # Single transform (not Compose)
                 t_type = transform_cfg.get("type")
                 if t_type == "Resize":
-                    return transforms.Resize(transform_cfg.get("size"))
+                    size = transform_cfg.get("size")
+                    interpolation = transform_cfg.get("interpolation", "nearest")
+                    if interpolation == "nearest":
+                        return transforms.Resize(size, interpolation=0)
+                    elif interpolation == "bilinear":
+                        return transforms.Resize(size, interpolation=2)
+                    else:
+                        return transforms.Resize(size)
                 elif t_type == "ToTensor":
                     return transforms.ToTensor()
                 elif t_type == "Normalize":

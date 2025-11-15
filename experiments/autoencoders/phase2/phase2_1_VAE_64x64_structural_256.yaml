@@ -24,6 +24,7 @@ dataset:
     transforms:
       - type: Resize
         size: [256, 256]
+        interpolation: nearest  # Preserve exact RGB values for class matching
       - type: ToTensor
       - type: Normalize
         mean: [0.5, 0.5, 0.5]
@@ -76,7 +77,7 @@ training:
         target: rgb
         weight: 1.0
         class_weights:
-          background: 0.1  # Lower weight for background (trivial but meaningful)
+          background: 0.5  # Moderate weight for background (important for scene structure)
           # Wall and all object classes (bed, chair, sofa, etc.) get default_weight: 1.0
         default_weight: 1.0  # Full weight for wall and object classes
         unknown_weight: 1.0  # Weight for pixels that don't match any class

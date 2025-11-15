@@ -55,6 +55,24 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
     
     device_obj = to_device(device)
     
+    # Initialize all expected class loss keys at the start of epoch
+    # This ensures all classes appear in logs even if they never appear in any batch
+    from models.losses.base_loss import LOSS_REGISTRY
+    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+    ClassWeightedMSELossClass = LOSS_REGISTRY.get("ClassWeightedMSELoss")
+    
+    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+        for sub_loss in loss_fn.losses:
+            if ClassWeightedMSELossClass and isinstance(sub_loss, ClassWeightedMSELossClass):
+                # Get all expected class names from the loss
+                if hasattr(sub_loss, 'class_idx_to_name'):
+                    key = sub_loss.key if hasattr(sub_loss, 'key') else 'rgb'
+                    for class_name in sub_loss.class_idx_to_name.values():
+                        log_key = f"MSE_{key}_{class_name}"
+                        log_dict[log_key] = 0.0
+                    # Also initialize unknown
+                    log_dict[f"MSE_{key}_unknown"] = 0.0
+    
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch in pbar:
         # Move batch to device (non_blocking if using CUDA with pin_memory)
@@ -119,6 +137,24 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
     log_dict = {}
     
     device_obj = to_device(device)
+    
+    # Initialize all expected class loss keys at the start of epoch
+    # This ensures all classes appear in logs even if they never appear in any batch
+    from models.losses.base_loss import LOSS_REGISTRY
+    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+    ClassWeightedMSELossClass = LOSS_REGISTRY.get("ClassWeightedMSELoss")
+    
+    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+        for sub_loss in loss_fn.losses:
+            if ClassWeightedMSELossClass and isinstance(sub_loss, ClassWeightedMSELossClass):
+                # Get all expected class names from the loss
+                if hasattr(sub_loss, 'class_idx_to_name'):
+                    key = sub_loss.key if hasattr(sub_loss, 'key') else 'rgb'
+                    for class_name in sub_loss.class_idx_to_name.values():
+                        log_key = f"MSE_{key}_{class_name}"
+                        log_dict[log_key] = 0.0
+                    # Also initialize unknown
+                    log_dict[f"MSE_{key}_unknown"] = 0.0
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Eval", leave=False):

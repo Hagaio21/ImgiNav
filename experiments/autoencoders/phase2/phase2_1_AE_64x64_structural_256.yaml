@@ -23,6 +23,7 @@ dataset:
     transforms:
       - type: Resize
         size: [256, 256]
+        interpolation: nearest  # Preserve exact RGB values for class matching
       - type: ToTensor
       - type: Normalize
         mean: [0.5, 0.5, 0.5]
