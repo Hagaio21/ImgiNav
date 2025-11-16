@@ -37,12 +37,29 @@ except ImportError:
 
 
 class LayoutDataset(Dataset):
-    """Dataset for layout images."""
+    """Dataset for layout images from directory or manifest."""
     
-    def __init__(self, image_dir, image_size=512, transform=None):
-        self.image_dir = Path(image_dir)
-        self.image_paths = sorted(list(self.image_dir.glob("*.png")) + list(self.image_dir.glob("*.jpg")))
+    def __init__(self, image_dir=None, manifest_path=None, image_size=512, transform=None):
         self.image_size = image_size
+        
+        if manifest_path is not None:
+            # Load from manifest
+            import pandas as pd
+            manifest_path = Path(manifest_path)
+            self.manifest_dir = manifest_path.parent
+            df = pd.read_csv(manifest_path)
+            if "layout_path" in df.columns:
+                self.image_paths = [Path(p) for p in df["layout_path"].tolist() if pd.notna(p)]
+            elif "image_path" in df.columns:
+                self.image_paths = [Path(p) for p in df["image_path"].tolist() if pd.notna(p)]
+            else:
+                raise ValueError("Manifest must contain 'layout_path' or 'image_path' column")
+        elif image_dir is not None:
+            # Load from directory
+            self.image_dir = Path(image_dir)
+            self.image_paths = sorted(list(self.image_dir.glob("*.png")) + list(self.image_dir.glob("*.jpg")))
+        else:
+            raise ValueError("Must provide either 'image_dir' or 'manifest_path'")
         
         if transform is None:
             self.transform = transforms.Compose([
@@ -58,14 +75,21 @@ class LayoutDataset(Dataset):
     
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
+        if not img_path.is_absolute():
+            # Try relative to current working directory
+            if not img_path.exists():
+                # Try relative to manifest directory if available
+                if hasattr(self, 'manifest_dir'):
+                    img_path = self.manifest_dir / img_path
         image = Image.open(img_path).convert("RGB")
         image = self.transform(image)
         return {"pixel_values": image}
 
 
 def finetune_sd_unet(
-    dataset_dir,
-    output_dir,
+    dataset_dir=None,
+    manifest_path=None,
+    output_dir=None,
     model_id="runwayml/stable-diffusion-v1-5",
     epochs=50,
     batch_size=4,
@@ -78,7 +102,8 @@ def finetune_sd_unet(
     Fine-tune Stable Diffusion UNet on layout dataset.
     
     Args:
-        dataset_dir: Directory containing layout images
+        dataset_dir: Directory containing layout images (optional if manifest_path provided)
+        manifest_path: Path to CSV manifest with layout_path column (optional if dataset_dir provided)
         output_dir: Directory to save fine-tuned model
         model_id: HuggingFace model ID
         epochs: Number of training epochs
@@ -135,8 +160,14 @@ def finetune_sd_unet(
     print(f"Trainable parameters: {sum(p.numel() for p in unet.parameters() if p.requires_grad):,}")
     
     # Create dataset
-    print(f"Loading dataset from: {dataset_dir}")
-    dataset = LayoutDataset(dataset_dir, image_size=512)
+    if manifest_path is not None:
+        print(f"Loading dataset from manifest: {manifest_path}")
+        dataset = LayoutDataset(manifest_path=manifest_path, image_size=512)
+    elif dataset_dir is not None:
+        print(f"Loading dataset from directory: {dataset_dir}")
+        dataset = LayoutDataset(image_dir=dataset_dir, image_size=512)
+    else:
+        raise ValueError("Must provide either 'dataset_dir' or 'manifest_path'")
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -298,8 +329,10 @@ def finetune_sd_unet(
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune Stable Diffusion on layout dataset")
-    parser.add_argument("--dataset_dir", type=Path, required=True,
-                       help="Directory containing layout images")
+    parser.add_argument("--dataset_dir", type=Path, default=None,
+                       help="Directory containing layout images (optional if --manifest_path provided)")
+    parser.add_argument("--manifest_path", type=Path, default=None,
+                       help="Path to CSV manifest with layout_path column (optional if --dataset_dir provided)")
     parser.add_argument("--output_dir", type=Path, required=True,
                        help="Output directory for fine-tuned model")
     parser.add_argument("--model_id", type=str, default="runwayml/stable-diffusion-v1-5",
@@ -319,8 +352,12 @@ def main():
     
     args = parser.parse_args()
     
+    if args.dataset_dir is None and args.manifest_path is None:
+        parser.error("Must provide either --dataset_dir or --manifest_path")
+    
     finetune_sd_unet(
         dataset_dir=args.dataset_dir,
+        manifest_path=args.manifest_path,
         output_dir=args.output_dir,
         model_id=args.model_id,
         epochs=args.epochs,
