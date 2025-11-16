@@ -44,7 +44,7 @@ training:
   num_workers: 8
   shuffle: true
   epochs: 500
-  learning_rate: 0.00015
+  learning_rate: 0.00005  # Further reduced learning rate
   optimizer: AdamW
   weight_decay: 0.05
   save_interval: 99999
@@ -64,7 +64,7 @@ training:
   loss:
     type: CompositeLoss
     losses:
-    - type: MSELoss
+    - type: SNRWeightedNoiseLoss
       key: pred_noise
       target: noise
       weight: 1.0
