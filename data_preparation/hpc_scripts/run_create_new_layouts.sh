@@ -106,7 +106,7 @@ python "${PYTHON_SCRIPT}" \
   --manifest "${CHUNK_FILE}" \
   --mode "room" \
   --res 512 \
-  --hmin 0.2 \
+  --hmin 0.1 \
   --hmax 1.8 \
   --point-size 5 \
   --object-point-size-multiplier 1.5 \

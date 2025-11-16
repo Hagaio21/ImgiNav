@@ -102,7 +102,7 @@ def create_room_layout_new(
     color_mode: str = "category",
     resolution: int = 512,
     margin: int = 10,
-    height_min: float = 0.2,
+    height_min: float = 0.1,
     height_max: float = 1.8,
     point_size: int = 1,
     floor_point_size: int = None,
@@ -157,16 +157,16 @@ def create_room_layout_new(
     is_floor = np.isin(labels, np.array(floor_ids, dtype=labels.dtype)) if floor_ids else np.zeros(len(labels), dtype=bool)
 
     # Filter points:
-    # - Regular (non-floor) points: height between 0.2 and 1.8
+    # - Regular (non-floor) points: height between 0.1 and 1.8 (original layout band)
     # - Floor points: include all floor points (regardless of height)
-    regular_height_mask = (uvh[:, 2] >= 0.2) & (uvh[:, 2] <= 1.8)
+    regular_height_mask = (uvh[:, 2] >= 0.1) & (uvh[:, 2] <= 1.8)
     floor_mask = is_floor  # Include all floor points
     
     # Combine: regular points in height band OR floor points
     total_mask = (regular_height_mask & ~is_floor) | floor_mask
     
     if total_mask.sum() == 0:
-        print(f"[warn] no points (regular in [0.2, 1.8] or floor) in {parquet_path}", flush=True)
+        print(f"[warn] no points (regular in [0.1, 1.8] or floor) in {parquet_path}", flush=True)
         return False
 
     # Get filtered data
@@ -285,7 +285,7 @@ def create_scene_layout_new(
     color_mode: str = "category",
     resolution: int = 512,
     margin: int = 10,
-    height_min: float = 0.2,
+    height_min: float = 0.1,
     height_max: float = 1.8,
     point_size: int = 1,
     floor_point_size: int = None,
@@ -354,9 +354,9 @@ def create_scene_layout_new(
             is_floor = np.isin(labels, np.array(floor_ids, dtype=labels.dtype)) if floor_ids else np.zeros(len(labels), dtype=bool)
             
             # Filter points:
-            # - Regular (non-floor) points: height between 0.2 and 1.8
+            # - Regular (non-floor) points: height between 0.1 and 1.8 (original layout band)
             # - Floor points: include all floor points (regardless of height)
-            regular_height_mask = (uvh[:, 2] >= 0.2) & (uvh[:, 2] <= 1.8)
+            regular_height_mask = (uvh[:, 2] >= 0.1) & (uvh[:, 2] <= 1.8)
             floor_mask = is_floor  # Include all floor points
             
             # Combine: regular points in height band OR floor points
@@ -444,7 +444,7 @@ def main():
     ap.add_argument("--output_dir", required=True, help="Output directory (will create 'layout_new' subfolder)")
     ap.add_argument("--pattern", help="Glob pattern for parquet files")
     ap.add_argument("--res", type=int, default=512, help="Output image resolution")
-    ap.add_argument("--hmin", type=float, default=0.2, help="Minimum height filter for regular points (default: 0.2). Floor points are always included regardless of height.")
+    ap.add_argument("--hmin", type=float, default=0.1, help="Minimum height filter for regular points (default: 0.1, original layout band). Floor points are always included regardless of height.")
     ap.add_argument("--hmax", type=float, default=1.8, help="Maximum height filter (default: 1.8)")
     ap.add_argument("--point-size", type=int, default=5, help="Point rendering size for regular points")
     ap.add_argument("--floor-point-size", type=int, default=None, help="Point rendering size for floor points (default: 2x point-size, minimum 3)")
