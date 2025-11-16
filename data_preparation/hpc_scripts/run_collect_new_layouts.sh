@@ -20,7 +20,7 @@ LOG_DIR="${BASE_DIR}/data_preparation/hpc_scripts/logs"
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"
 
-echo "Collecting new layout images into manifest"
+echo "Collecting all layout images from target folder into manifest"
 echo "Layout directory: ${LAYOUT_DIR}"
 echo "Output manifest: ${OUTPUT_CSV}"
 
@@ -35,6 +35,10 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   echo "ERROR: Python script not found: ${PYTHON_SCRIPT}"
   exit 1
 fi
+
+# Count files in directory for info
+FILE_COUNT=$(find "${LAYOUT_DIR}" -maxdepth 1 -type f | wc -l)
+echo "Found ${FILE_COUNT} files in ${LAYOUT_DIR}"
 
 # Conda activation
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
@@ -52,7 +56,7 @@ fi
 cd "${BASE_DIR}"
 export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 
-# Run collection script
+# Run collection script - collects all files in the target folder
 python "${PYTHON_SCRIPT}" \
   --layout_dir "${LAYOUT_DIR}" \
   --output "${OUTPUT_CSV}" \
