@@ -33,6 +33,7 @@ unet:
   attention_heads: null
   attention_at:
   - bottleneck
+  use_ema: false  # Disable EMA for simpler training
 scheduler:
   type: LinearScheduler
   num_steps: 1000
@@ -44,9 +45,9 @@ training:
   num_workers: 8
   shuffle: true
   epochs: 500
-  learning_rate: 0.00015  # Increased from 0.0001
+  learning_rate: 0.0002  # Increased for better learning
   optimizer: AdamW
-  weight_decay: 0.15
+  weight_decay: 0.05  # Reduced from 0.15 to allow better learning
   save_interval: 99999
   eval_interval: 5
   sample_interval: 5

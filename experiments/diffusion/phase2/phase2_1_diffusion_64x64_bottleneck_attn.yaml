@@ -40,6 +40,7 @@ unet:
   use_attention: true  # Enable attention
   attention_heads: null  # Auto (channels // 32)
   attention_at: ["bottleneck"]  # Attention only in bottleneck for global context without significant computational cost
+  use_ema: false  # Disable EMA for simpler training
 
 scheduler:
   type: LinearScheduler
@@ -53,9 +54,9 @@ training:
   num_workers: 8
   shuffle: true
   epochs: 500
-  learning_rate: 0.00015  # Learning rate for linear scheduler
+  learning_rate: 0.0002  # Increased for better learning
   optimizer: AdamW
-  weight_decay: 0.1  # Increased from 0.05 for stronger regularization to prevent memorization
+  weight_decay: 0.05  # Reduced to allow better learning
   save_interval: 99999
   eval_interval: 5
   sample_interval: 10
