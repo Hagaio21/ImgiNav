@@ -512,12 +512,15 @@ def create_layout_embeddings_from_manifest(
                 print(f"  {ch_idx:7d} | {ch_mean:9.6f} | {ch_std:9.6f} | {ch_min:9.6f} | {ch_max:9.6f} | {status}")
             
             # Check bounds for VAE vs AE
-            if abs(latent_max) > 2.0 or abs(latent_min) > 2.0:
-                print(f"\n⚠ Warning: Latents exceed [-2, 2] range (VAE bounds)")
-                print(f"   Consider using wider bounds in diffusion sampling or adjusting VAE KL weight")
+            if abs(latent_max) > 4.0 or abs(latent_min) > 4.0:
+                print(f"\n⚠ Warning: Latents exceed [-4, 4] range (VAE clamping bounds)")
+                print(f"   Consider adjusting VAE KL weight or latent standardization loss")
+            elif abs(latent_max) > 2.0 or abs(latent_min) > 2.0:
+                print(f"\nℹ Info: Latents exceed [-2, 2] range but within [-4, 4] (VAE bounds)")
+                print(f"   This is acceptable - diffusion uses [-4, 4] clamping for VAE.")
             elif abs(latent_max) > 1.0 or abs(latent_min) > 1.0:
                 print(f"\nℹ Info: Latents exceed [-1, 1] range (AE bounds)")
-                print(f"   This is expected for VAE. Diffusion should use [-2, 2] clamping.")
+                print(f"   This is expected for VAE. Diffusion should use [-4, 4] clamping for VAE.")
             
             print(f"{'='*60}")
         else:
