@@ -32,9 +32,9 @@ unet:
   type: UnetWithAttention
   in_channels: 4
   out_channels: 4
-  base_channels: 64  # Increased from 48 (with attention in all layers)
-  depth: 4
-  num_res_blocks: 2
+  base_channels: 64  # Increased capacity (as requested)
+  depth: 3  # Reduced from 4 to save memory
+  num_res_blocks: 1  # Reduced from 2 to save memory
   time_dim: 256
   cond_channels: 0
   fusion_mode: none
@@ -45,9 +45,8 @@ unet:
   use_attention: true
   attention_heads: null
   attention_at:
-  - downs      # Attention in downsampling blocks
-  - bottleneck # Attention in bottleneck
-  # Removed ups attention due to memory constraints (OOM errors)
+  - bottleneck # Only bottleneck attention to fit in smaller GPU (15.77 GiB)
+  # Removed downs and ups attention due to memory constraints
   use_ema: true  # Enable EMA for UNet
   ema_decay: 0.9999  # EMA decay rate
 
@@ -59,7 +58,7 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 32  # Can increase slightly since we removed ups attention
+  batch_size: 8  # Very small batch size to accommodate EMA (which doubles UNet memory)
   num_workers: 8
   shuffle: true
   epochs: 500
