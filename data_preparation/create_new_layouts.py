@@ -21,6 +21,7 @@ from common.taxonomy import Taxonomy
 from utils.geometry_utils import (
     world_to_local_coords, points_to_image_coords
 )
+from utils.layout_analysis import count_distinct_colors
 
 TAXONOMY = None
 
@@ -45,6 +46,24 @@ def draw_point(canvas: np.ndarray, x: int, y: int, color: np.ndarray, size: int 
     canvas[y0:y1 + 1, x0:x1 + 1] = color
 
 
+def compute_whiteness_ratio(canvas: np.ndarray, white_threshold: int = 230) -> float:
+    """
+    Compute the ratio of white pixels in the canvas.
+    
+    Args:
+        canvas: Image array (H, W, 3) with values in [0, 255]
+        white_threshold: Pixel value threshold for "white" (default: 230)
+    
+    Returns:
+        float: Ratio of white pixels (0.0 to 1.0)
+    """
+    # Check if all channels are above threshold
+    white_mask = (canvas > white_threshold).all(axis=2)
+    total_pixels = white_mask.size
+    white_pixels = white_mask.sum()
+    return white_pixels / total_pixels if total_pixels > 0 else 0.0
+
+
 def create_room_layout_new(
     parquet_path: Path,
     output_path: Path,
@@ -57,16 +76,27 @@ def create_room_layout_new(
     point_size: int = 1,
     floor_point_size: int = None,
     floor_bbox_buffer: float = 0.1,
+    min_colors: int = 4,
+    max_whiteness: float = 0.85,
+    object_point_size_multiplier: float = 1.5,
 ):
     """
     Create room layout with new coloring scheme:
     - Uses height band [height_min, height_max] for all points (more permissive)
     - Floor points are colored separately (rendered first, then regular points on top)
     - Floor points use larger point size to fill gaps
+    - Objects use larger point size to reduce sparsity
     - Image is cropped to floor point bounding box with buffer
+    - Filters out empty/sparse rooms (min_colors, max_whiteness)
+    
+    Returns:
+        bool: True if image was created and passed filters, False if filtered out
     """
     if floor_point_size is None:
         floor_point_size = max(point_size * 2, 3)  # Default: 2x regular size, minimum 3
+    
+    # Calculate object point size to reduce sparsity
+    object_point_size = max(int(point_size * object_point_size_multiplier), point_size + 1)
     # Load room metadata
     meta = load_room_meta(parquet_path.parent)
     if meta is None:
@@ -103,7 +133,7 @@ def create_room_layout_new(
     
     if total_mask.sum() == 0:
         print(f"[warn] no points in height band [{height_min},{height_max}] or floor points in {parquet_path}", flush=True)
-        return
+        return False
 
     # Get filtered data
     u_vals = uvh[total_mask, 0]
@@ -137,8 +167,11 @@ def create_room_layout_new(
         else:
             color_tuple = taxonomy.get_color(lbl_int)
         color = np.array(color_tuple, dtype=np.uint8)
-        # Use larger point size for floor points to fill gaps
-        size = floor_point_size if is_floor_pt else point_size
+        # Use larger point size for floor points and objects to reduce sparsity
+        if is_floor_pt:
+            size = floor_point_size
+        else:
+            size = object_point_size  # Larger size for objects too
         draw_point(canvas, x, y, color, size=size)
         
         # Collect floor point coordinates for bbox calculation
@@ -177,9 +210,23 @@ def create_room_layout_new(
         canvas_pil = canvas_pil.resize((resolution, resolution), Image.Resampling.NEAREST)
         canvas = np.array(canvas_pil)
     
+    # Filter empty/sparse rooms before saving
+    # Check color count (excluding white/background)
+    color_count = count_distinct_colors(Image.fromarray(canvas), exclude_background=True, min_pixel_threshold=10)
+    if color_count < min_colors:
+        print(f"[filter] Skipping {parquet_path.name}: only {color_count} colors (min: {min_colors})", flush=True)
+        return False
+    
+    # Check whiteness ratio
+    whiteness_ratio = compute_whiteness_ratio(canvas, white_threshold=230)
+    if whiteness_ratio > max_whiteness:
+        print(f"[filter] Skipping {parquet_path.name}: whiteness ratio {whiteness_ratio:.3f} > {max_whiteness}", flush=True)
+        return False
+    
     # Save image
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)
+    return True
 
 
 def create_scene_layout_new(
@@ -349,6 +396,9 @@ def main():
     ap.add_argument("--point-size", type=int, default=5, help="Point rendering size for regular points")
     ap.add_argument("--floor-point-size", type=int, default=None, help="Point rendering size for floor points (default: 2x point-size, minimum 3)")
     ap.add_argument("--floor-bbox-buffer", type=float, default=0.1, help="Buffer around floor bbox as fraction of bbox size (default: 0.1 = 10%%)")
+    ap.add_argument("--object-point-size-multiplier", type=float, default=1.5, help="Multiply point size for objects to reduce sparsity (default: 1.5)")
+    ap.add_argument("--min-colors", type=int, default=4, help="Minimum number of distinct colors (excluding background) to keep image (default: 4)")
+    ap.add_argument("--max-whiteness", type=float, default=0.85, help="Maximum whiteness ratio to keep image (default: 0.85)")
     ap.add_argument("--manifest", help="Optional manifest CSV")
     ap.add_argument("--mode", choices=["room", "scene", "both"], default="both")
     ap.add_argument("--color-mode", choices=["category", "super"], default="category",
@@ -374,7 +424,7 @@ def main():
             # Save to single layout_new folder
             output_path = output_dir / f"{scene_id}_{room_id}_room_seg_layout.png"
             try:
-                create_room_layout_new(
+                success = create_room_layout_new(
                     parquet_path, output_path, TAXONOMY,
                     args.color_mode,
                     resolution=args.res, 
@@ -382,9 +432,15 @@ def main():
                     height_max=args.hmax,
                     point_size=args.point_size,
                     floor_point_size=args.floor_point_size,
-                    floor_bbox_buffer=args.floor_bbox_buffer
+                    floor_bbox_buffer=args.floor_bbox_buffer,
+                    min_colors=args.min_colors,
+                    max_whiteness=args.max_whiteness,
+                    object_point_size_multiplier=args.object_point_size_multiplier
                 )
-                progress(i, f"{parquet_path.name} -> {output_path}", True)
+                if success:
+                    progress(i, f"{parquet_path.name} -> {output_path}", True)
+                else:
+                    progress(i, f"{parquet_path.name} -> filtered out", False)
             except Exception as e:
                 progress(i, f"failed {parquet_path.name}: {e}", False)
 
