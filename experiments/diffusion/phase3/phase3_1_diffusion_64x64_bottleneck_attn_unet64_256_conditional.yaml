@@ -1,0 +1,75 @@
+experiment:
+  name: phase3_1_diffusion_64x64_bottleneck_attn_unet64_256_conditional
+  phase: phase3_1_diffusion
+  save_path: /work3/s233249/ImgiNav/experiments/phase3/phase3_1_diffusion_64x64_bottleneck_attn_unet64_256_conditional
+  epochs_target: 200  # Fine-tuning typically needs fewer epochs
+dataset:
+  manifest: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet64_256/embeddings/manifest_with_latents.csv
+  outputs:
+    latent: latent_path
+  filters:
+    is_empty:
+    - false
+    whiteness_ratio__lt: 0.95
+  return_path: false
+autoencoder:
+  checkpoint: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_VAE_64x64_structural_256/phase2_1_VAE_64x64_structural_256_checkpoint_best.pt
+  frozen: true
+# Reference to unconditional checkpoint (will be loaded as starting point)
+diffusion:
+  stage1_checkpoint: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet64_256_unconditional/checkpoints/phase2_1_diffusion_64x64_bottleneck_attn_unet64_256_unconditional_checkpoint_best.pt
+unet:
+  type: UnetWithAttention
+  in_channels: 4
+  out_channels: 4
+  base_channels: 64
+  depth: 4
+  num_res_blocks: 2
+  time_dim: 256
+  cond_channels: 0
+  fusion_mode: none
+  cond_dim: 256
+  num_cond_classes: 2
+  norm_groups: 8
+  dropout: 0.1
+  use_attention: true
+  attention_heads: null
+  attention_at:
+  - bottleneck
+  use_ema: false  # Disable EMA for simpler training
+scheduler:
+  type: LinearScheduler
+  num_steps: 1000
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 96
+  num_workers: 8
+  shuffle: true
+  epochs: 200  # Fine-tuning typically needs fewer epochs
+  learning_rate: 0.0001  # Lower learning rate for fine-tuning
+  optimizer: AdamW
+  weight_decay: 0.05
+  save_interval: 99999
+  eval_interval: 5
+  sample_interval: 5
+  use_amp: false
+  use_weighted_sampling: true
+  weight_column: type
+  max_grad_norm: 1.0
+  early_stopping_patience: 40  # Increased patience for slow diffusion improvements
+  early_stopping_min_delta: 1.0e-06  # More tolerant - accept smaller improvements
+  use_non_uniform_sampling: false
+  cfg_dropout_rate: 0.1  # Conditional training (10% dropout, 90% conditioning)
+  guidance_scale: 3.0  # Lower for simple/geometric images (7.5 was too high)
+  scheduler:
+    type: linear
+  loss:
+    type: CompositeLoss
+    losses:
+    - type: MSELoss
+      key: pred_noise
+      target: noise
+      weight: 1.0
+

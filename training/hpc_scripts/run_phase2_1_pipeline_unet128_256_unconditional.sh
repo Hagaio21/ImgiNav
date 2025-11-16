@@ -1,12 +1,12 @@
 #!/bin/bash
-#BSUB -J phase2_1_pipeline_unet48_256_unconditional
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet48_256_unconditional.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet48_256_unconditional.%J.err
+#BSUB -J phase2_1_pipeline_unet128_256_unconditional
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet128_256_unconditional.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_1_pipeline_unet128_256_unconditional.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=16000]"  # Reduced from 32GB - 64x64x4 latents are much smaller than 512x512 images
 #BSUB -gpu "num=1"
-#BSUB -W 24:00  # Extended wall time for both autoencoder and diffusion training
-#BSUB -q gpuv100
+#BSUB -W 48:00  # Extended wall time for both autoencoder and diffusion training
+#BSUB -q gpul40s
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ set -euo pipefail
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_pipeline_phase2.py"
 AE_CONFIG="${BASE_DIR}/experiments/autoencoders/phase2/phase2_1_VAE_64x64_structural_256.yaml"
-DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet48_256_unconditional.yaml"
+DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet128_256_unconditional.yaml"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Ensure log directory exists
@@ -58,7 +58,7 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Phase 2.1: Training Pipeline (UNet48, 256×256, Unconditional)"
+echo "Phase 2.1: Training Pipeline (UNet128, 256×256, Unconditional)"
 echo "Autoencoder + Diffusion Training (No Conditioning)"
 echo "=========================================="
 echo "Autoencoder config: ${AE_CONFIG}"
@@ -70,7 +70,7 @@ echo ""
 echo "Pipeline Overview:"
 echo "  1. Train VAE (or use existing checkpoint if found)"
 echo "  2. Embed dataset using VAE (analyze whiteness + filter during embedding)"
-echo "  3. Train diffusion model (UNet48, base_channels=48, 256×256) UNCONDITIONAL (cfg_dropout_rate=1.0)"
+echo "  3. Train diffusion model (UNet128, base_channels=128, 256×256) UNCONDITIONAL (cfg_dropout_rate=1.0)"
 echo "=========================================="
 
 cd "${BASE_DIR}"
