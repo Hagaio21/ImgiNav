@@ -22,6 +22,7 @@ from utils.geometry_utils import (
     world_to_local_coords, points_to_image_coords
 )
 from utils.layout_analysis import count_distinct_colors
+# We'll use our own numpy-based function instead
 
 TAXONOMY = None
 
@@ -64,6 +65,36 @@ def compute_whiteness_ratio(canvas: np.ndarray, white_threshold: int = 230) -> f
     return white_pixels / total_pixels if total_pixels > 0 else 0.0
 
 
+def count_distinct_colors_numpy(canvas: np.ndarray, min_pixel_threshold: int = 0) -> int:
+    """
+    Count distinct colors in a numpy canvas array.
+    Includes ALL colors (background, floor, walls, objects).
+    Empty rooms typically have only 3 colors: background + floor + wall.
+    
+    Args:
+        canvas: Image array (H, W, 3) with values in [0, 255]
+        min_pixel_threshold: Minimum number of pixels for a color to be counted
+    
+    Returns:
+        Number of distinct colors
+    """
+    # Reshape to (N, 3) where N = H * W
+    pixels = canvas.reshape(-1, 3)
+    
+    # Get unique colors and their counts
+    unique_colors, counts = np.unique(pixels, axis=0, return_counts=True)
+    
+    distinct_colors = 0
+    for color, count in zip(unique_colors, counts):
+        # Check minimum pixel threshold
+        if count < min_pixel_threshold:
+            continue
+        
+        distinct_colors += 1
+    
+    return distinct_colors
+
+
 def create_room_layout_new(
     parquet_path: Path,
     output_path: Path,
@@ -77,7 +108,7 @@ def create_room_layout_new(
     floor_point_size: int = None,
     floor_bbox_buffer: float = 0.1,
     min_colors: int = 4,
-    max_whiteness: float = 0.85,
+    max_whiteness: float = 0.95,
     object_point_size_multiplier: float = 1.5,
 ):
     """
@@ -211,10 +242,11 @@ def create_room_layout_new(
         canvas = np.array(canvas_pil)
     
     # Filter empty/sparse rooms before saving
-    # Check color count (excluding white/background)
-    color_count = count_distinct_colors(Image.fromarray(canvas), exclude_background=True, min_pixel_threshold=10)
+    # Count ALL colors (including background, floor, walls, objects)
+    # Empty rooms typically have only 3 colors: background + floor + wall
+    color_count = count_distinct_colors_numpy(canvas, min_pixel_threshold=10)
     if color_count < min_colors:
-        print(f"[filter] Skipping {parquet_path.name}: only {color_count} colors (min: {min_colors})", flush=True)
+        print(f"[filter] Skipping {parquet_path.name}: only {color_count} colors (min: {min_colors}) - likely empty room", flush=True)
         return False
     
     # Check whiteness ratio
@@ -223,7 +255,7 @@ def create_room_layout_new(
         print(f"[filter] Skipping {parquet_path.name}: whiteness ratio {whiteness_ratio:.3f} > {max_whiteness}", flush=True)
         return False
     
-    # Save image
+    # Image passed filters, save it
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)
     return True
@@ -397,8 +429,8 @@ def main():
     ap.add_argument("--floor-point-size", type=int, default=None, help="Point rendering size for floor points (default: 2x point-size, minimum 3)")
     ap.add_argument("--floor-bbox-buffer", type=float, default=0.1, help="Buffer around floor bbox as fraction of bbox size (default: 0.1 = 10%%)")
     ap.add_argument("--object-point-size-multiplier", type=float, default=1.5, help="Multiply point size for objects to reduce sparsity (default: 1.5)")
-    ap.add_argument("--min-colors", type=int, default=4, help="Minimum number of distinct colors (excluding background) to keep image (default: 4)")
-    ap.add_argument("--max-whiteness", type=float, default=0.85, help="Maximum whiteness ratio to keep image (default: 0.85)")
+    ap.add_argument("--min-colors", type=int, default=4, help="Minimum number of distinct colors (including background) to keep image. Empty rooms have 3 (background+floor+wall), so default 4 filters them out (default: 4)")
+    ap.add_argument("--max-whiteness", type=float, default=0.95, help="Maximum whiteness ratio to keep image (default: 0.95)")
     ap.add_argument("--manifest", help="Optional manifest CSV")
     ap.add_argument("--mode", choices=["room", "scene", "both"], default="both")
     ap.add_argument("--color-mode", choices=["category", "super"], default="category",

@@ -8,6 +8,7 @@
 #BSUB -q hpc
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
 # Configuration
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
@@ -110,7 +111,7 @@ python "${PYTHON_SCRIPT}" \
   --point-size 5 \
   --object-point-size-multiplier 1.5 \
   --min-colors 4 \
-  --max-whiteness 0.85 \
+  --max-whiteness 0.95 \
   --color-mode "category"
 
 echo "New layout creation task ${JOB_ID} completed successfully"
