@@ -119,11 +119,15 @@ def collect_new_layouts(
     if not layout_dir.exists():
         raise ValueError(f"Layout directory does not exist: {layout_dir}")
     
-    # Find all layout images
-    layout_patterns = ["*_room_seg_layout.png", "*_scene_layout.png"]
-    layout_files = []
-    for pattern in layout_patterns:
-        layout_files.extend(layout_dir.glob(pattern))
+    # Find all files in the target folder
+    # Collect all PNG files (or all files if needed)
+    layout_files = list(layout_dir.glob("*.png"))
+    
+    # If no PNG files, try all files
+    if not layout_files:
+        layout_files = list(layout_dir.glob("*"))
+        # Filter to only files (not directories)
+        layout_files = [f for f in layout_files if f.is_file()]
     
     layout_files = sorted(layout_files)
     
@@ -134,8 +138,17 @@ def collect_new_layouts(
     
     for layout_path in tqdm(layout_files, desc="Processing layouts"):
         try:
-            # Parse filename
-            scene_id, layout_type, room_id = parse_layout_filename(layout_path.name)
+            # Skip if not a file
+            if not layout_path.is_file():
+                continue
+            
+            # Parse filename - try to parse, but skip if it doesn't match expected patterns
+            try:
+                scene_id, layout_type, room_id = parse_layout_filename(layout_path.name)
+            except ValueError:
+                # If filename doesn't match expected patterns, skip it
+                print(f"[warn] Skipping file with unexpected name format: {layout_path.name}")
+                continue
             
             # Determine layout path (relative or absolute)
             if use_relative_paths and data_root:
