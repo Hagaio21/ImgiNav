@@ -59,7 +59,7 @@ training:
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: false
   cfg_dropout_rate: 0.1
-  guidance_scale: 7.5
+  guidance_scale: 3.0  # Lower for simple/geometric images (7.5 was too high)
   scheduler:
     type: linear
   loss:

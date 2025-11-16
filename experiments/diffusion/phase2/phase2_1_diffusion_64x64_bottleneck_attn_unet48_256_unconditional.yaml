@@ -1,10 +1,10 @@
 experiment:
-  name: phase2_1_diffusion_64x64_bottleneck_attn_unet128_256
+  name: phase2_1_diffusion_64x64_bottleneck_attn_unet48_256_unconditional
   phase: phase2_1_diffusion
-  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet128_256
+  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet48_256_unconditional
   epochs_target: 500
 dataset:
-  manifest: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet128_256/embeddings/manifest_with_latents.csv
+  manifest: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet48_256/embeddings/manifest_with_latents.csv
   outputs:
     latent: latent_path
   filters:
@@ -19,7 +19,7 @@ unet:
   type: UnetWithAttention
   in_channels: 4
   out_channels: 4
-  base_channels: 128
+  base_channels: 48
   depth: 4
   num_res_blocks: 2
   time_dim: 256
@@ -28,7 +28,7 @@ unet:
   cond_dim: 256
   num_cond_classes: 2
   norm_groups: 8
-  dropout: 0.2
+  dropout: 0.1
   use_attention: true
   attention_heads: null
   attention_at:
@@ -41,13 +41,13 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 64
+  batch_size: 128
   num_workers: 8
   shuffle: true
   epochs: 500
   learning_rate: 0.0002  # Increased for better learning
   optimizer: AdamW
-  weight_decay: 0.05  # Reduced from 0.15 to allow better learning
+  weight_decay: 0.05
   save_interval: 99999
   eval_interval: 5
   sample_interval: 5
@@ -58,8 +58,8 @@ training:
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: false
-  cfg_dropout_rate: 0.1
-  guidance_scale: 3.0  # Lower for simple/geometric images (7.5 was too high)
+  cfg_dropout_rate: 1.0  # 100% dropout = always unconditional training
+  guidance_scale: 1.0  # No guidance needed (unconditional model)
   scheduler:
     type: linear
   loss:
@@ -69,3 +69,4 @@ training:
       key: pred_noise
       target: noise
       weight: 1.0
+

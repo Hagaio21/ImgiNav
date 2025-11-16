@@ -1,6 +1,6 @@
 #!/bin/bash
-# Launch script for Phase 2.1 pipelines with 256x256 input (unet48, unet64, unet128)
-# This script submits all three pipeline jobs to the HPC cluster
+# Launch script for Phase 2.1 pipelines with 256x256 input (unet48, unet64, unet128, unet48_unconditional)
+# This script submits all four pipeline jobs to the HPC cluster
 
 set -euo pipefail
 
@@ -17,6 +17,7 @@ PIPELINE_SCRIPTS=(
     "run_phase2_1_pipeline_unet48_256.sh"
     "run_phase2_1_pipeline_unet64_256.sh"
     "run_phase2_1_pipeline_unet128_256.sh"
+    "run_phase2_1_pipeline_unet48_256_unconditional.sh"
 )
 
 # =============================================================================

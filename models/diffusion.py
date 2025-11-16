@@ -345,11 +345,8 @@ class DiffusionModel(BaseModel):
                 
                 # Predict x0 from current noisy latents
                 pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt().clamp(min=1e-8)
-                # Clamp to match decoder's expected latent range
-                if self._is_vae:
-                    pred_x0 = torch.clamp(pred_x0, -4.0, 4.0)
-                else:
-                    pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
+                # Don't clamp here - let the model learn the full range during sampling
+                # Clamping happens only at the final step before decoding to maintain training/sampling consistency
                 
                 # DDIM update (deterministic if eta=0)
                 # Standard DDIM formula: x_{t-1} = sqrt(alpha_bar_{t-1}) * pred_x0 + sqrt(1 - alpha_bar_{t-1} - sigma_t^2) * epsilon + sigma_t * z
@@ -396,23 +393,21 @@ class DiffusionModel(BaseModel):
                 else:
                     # Last step: predict x_0 and use it directly (no noise)
                     pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
-                    # Clamp to match decoder's expected latent range
-                    # VAE latents typically need [-4, 4] bounds, AE can use wider range
-                    if self._is_vae:
-                        pred_x0 = torch.clamp(pred_x0, -4.0, 4.0)
-                    else:
-                        pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
+                    # Don't clamp here - clamping happens before decoding to maintain training/sampling consistency
                     latents = pred_x0
             
             if return_history:
                 history.append(latents.clone())
         
         # Build output dict
-        result = {"latent": latents}
+        # Clamp final latents before decoding to ensure they're in valid range
+        # This prevents decoder from receiving out-of-range values that cause empty images
+        latents_clamped = torch.clamp(latents, -10.0, 10.0)
+        result = {"latent": latents_clamped}
         
         # Decode to RGB if decoder is available
         with torch.no_grad():
-            decoded_out = self.decoder({"latent": latents})
+            decoded_out = self.decoder({"latent": latents_clamped})
             if "rgb" in decoded_out:
                 rgb = decoded_out["rgb"]
                 # RGBHead uses tanh activation by default, outputting in [-1, 1] range

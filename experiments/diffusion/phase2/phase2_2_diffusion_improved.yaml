@@ -4,7 +4,7 @@
 # - EMA (Exponential Moving Average) for UNet
 # - MSELoss (reverted from SNRWeightedNoiseLoss)
 # - Increased UNet capacity (base_channels: 64)
-# - CosineScheduler instead of LinearScheduler
+# - LinearScheduler (good for simple/geometric images)
 # - More attention layers (downs, bottleneck, ups)
 # - CosineAnnealingLR learning rate scheduler
 
@@ -51,7 +51,7 @@ unet:
   ema_decay: 0.9999  # EMA decay rate
 
 scheduler:
-  type: CosineScheduler  # Changed from LinearScheduler
+  type: LinearScheduler  # Linear scheduler for simple/geometric images
   num_steps: 1000
 
 training:
@@ -76,7 +76,7 @@ training:
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: false
   cfg_dropout_rate: 0.1
-  guidance_scale: 7.5
+  guidance_scale: 3.0  # Lower for simple/geometric images (7.5 was too high)
   scheduler:
     type: cosine  # Changed from linear to cosine (CosineAnnealingLR)
   loss:
