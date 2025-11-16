@@ -44,7 +44,7 @@ training:
   num_workers: 8
   shuffle: true
   epochs: 500
-  learning_rate: 0.0001  # Reduced from 0.00015, but not too low to prevent empty images
+  learning_rate: 0.00015  # Increased from 0.0001
   optimizer: AdamW
   weight_decay: 0.05
   save_interval: 99999

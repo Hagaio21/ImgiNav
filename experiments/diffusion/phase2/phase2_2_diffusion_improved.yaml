@@ -62,7 +62,7 @@ training:
   num_workers: 8
   shuffle: true
   epochs: 500
-  learning_rate: 0.00015
+  learning_rate: 0.0002  # Increased learning rate
   optimizer: AdamW
   weight_decay: 0.05
   save_interval: 99999
@@ -71,7 +71,7 @@ training:
   use_amp: true  # Enable mixed precision to reduce memory usage (~50% reduction)
   use_weighted_sampling: true
   weight_column: type
-  max_grad_norm: 1.0
+  max_grad_norm: 1.0  # Gradient clipping enabled
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: false
