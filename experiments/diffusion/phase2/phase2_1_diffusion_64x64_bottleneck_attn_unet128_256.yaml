@@ -64,7 +64,7 @@ training:
   loss:
     type: CompositeLoss
     losses:
-    - type: SNRWeightedNoiseLoss
+    - type: MSELoss
       key: pred_noise
       target: noise
       weight: 1.0

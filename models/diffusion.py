@@ -209,9 +209,6 @@ class DiffusionModel(BaseModel):
             else:
                 raise ValueError(f"Encoder output must contain 'latent' or 'mu'/'logvar'. Got: {list(encoder_out.keys())}")
             
-            # Clamp latents to [-4, 4] right after loading (diffusion only sees clamped latents)
-            latents = torch.clamp(latents, -4.0, 4.0)
-            
             if noise is None:
                 noise = self.scheduler.randn_like(latents)
             elif noise.shape != latents.shape:
@@ -239,9 +236,6 @@ class DiffusionModel(BaseModel):
                     raise ValueError(f"Latent dict must contain 'latent' or 'mu'. Got: {list(x0_or_latents.keys())}")
             else:
                 latents = x0_or_latents  # Direct tensor
-            
-            # Clamp latents to [-4, 4] right after loading (diffusion only sees clamped latents)
-            latents = torch.clamp(latents, -4.0, 4.0)
             
             if noise is None:
                 noise = self.scheduler.randn_like(latents)
@@ -292,8 +286,6 @@ class DiffusionModel(BaseModel):
         # Create a dummy tensor with the right shape, then generate noise
         dummy = torch.zeros((batch_size, *latent_shape), device=device)
         latents = self.scheduler.randn_like(dummy)
-        # Clamp latents to [-4, 4] right after loading (diffusion only sees clamped latents)
-        latents = torch.clamp(latents, -4.0, 4.0)
         
         # Create timestep schedule
         # For both DDIM and DDPM, we go from high noise (T-1) to low noise (0)
@@ -315,9 +307,6 @@ class DiffusionModel(BaseModel):
                 print(f"  Sampling step {i+1}/{len(timesteps)} (t={t.item()})")
             
             t_batch = t.expand(batch_size)
-            
-            # Clamp latents before passing to UNet (diffusion always sees clamped latents)
-            latents = torch.clamp(latents, -4.0, 4.0)
             
             with torch.no_grad():
                 # Use EMA UNet for sampling if available, otherwise use live UNet
@@ -406,17 +395,6 @@ class DiffusionModel(BaseModel):
             
             if return_history:
                 history.append(latents.clone())
-        
-        # Clamp latents before decoding (decoder only sees clamped latents)
-        # Use stored VAE flag from _build()
-        is_vae = getattr(self, '_is_vae', False)
-        
-        if is_vae:
-            # VAE: wider bounds due to better KL regularization
-            latents = torch.clamp(latents, -4.0, 4.0)
-        else:
-            # AE: tighter bounds to match training distribution
-            latents = torch.clamp(latents, -1.0, 1.0)
         
         # Build output dict
         result = {"latent": latents}

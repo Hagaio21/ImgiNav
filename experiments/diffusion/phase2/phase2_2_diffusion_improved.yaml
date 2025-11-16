@@ -2,7 +2,7 @@
 # Uses Phase 2.1 autoencoder (64×64×4 latents)
 # Improvements:
 # - EMA (Exponential Moving Average) for UNet
-# - SNRWeightedNoiseLoss instead of MSELoss
+# - MSELoss (reverted from SNRWeightedNoiseLoss)
 # - Increased UNet capacity (base_channels: 64)
 # - CosineScheduler instead of LinearScheduler
 # - More attention layers (downs, bottleneck, ups)
@@ -82,7 +82,7 @@ training:
   loss:
     type: CompositeLoss
     losses:
-    - type: SNRWeightedNoiseLoss  # Changed from MSELoss
+    - type: MSELoss
       key: pred_noise
       target: noise
       weight: 1.0
