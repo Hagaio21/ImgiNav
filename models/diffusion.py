@@ -110,7 +110,21 @@ class DiffusionModel(BaseModel):
         if freeze_blocks:
             self.unet.freeze_blocks(freeze_blocks)
         
-        # EMA removed - using live UNet directly for sampling
+        # EMA (Exponential Moving Average) for UNet
+        # Create a copy of UNet for EMA - this will be used for sampling
+        ema_decay = unet_cfg.get("ema_decay", 0.9999)  # Default decay rate
+        self.use_ema = unet_cfg.get("use_ema", True)  # Can be disabled via config
+        if self.use_ema:
+            # Create EMA UNet by copying the structure
+            import copy
+            self.unet_ema = copy.deepcopy(self.unet)
+            # Freeze EMA UNet parameters (they'll be updated via EMA, not gradients)
+            for param in self.unet_ema.parameters():
+                param.requires_grad = False
+            self.ema_decay = ema_decay
+        else:
+            self.unet_ema = None
+            self.ema_decay = None
 
         # noise scheduler
         sched_type = sched_cfg.get("type", "CosineScheduler")
@@ -306,8 +320,11 @@ class DiffusionModel(BaseModel):
             latents = torch.clamp(latents, -4.0, 4.0)
             
             with torch.no_grad():
-                # Use live UNet for sampling
-                unet = self.unet
+                # Use EMA UNet for sampling if available, otherwise use live UNet
+                if self.use_ema and self.unet_ema is not None:
+                    unet = self.unet_ema
+                else:
+                    unet = self.unet
                 unet.eval()
                 
                 # Classifier-Free Guidance (CFG)
@@ -419,6 +436,25 @@ class DiffusionModel(BaseModel):
             result["history"] = history
         
         return result
+
+    # ------------------------------------------------------------------
+    # EMA Update
+    # ------------------------------------------------------------------
+    def update_ema(self):
+        """
+        Update EMA UNet parameters using exponential moving average.
+        Should be called after each optimizer step during training.
+        
+        Formula: ema_param = decay * ema_param + (1 - decay) * live_param
+        """
+        if not self.use_ema or self.unet_ema is None:
+            return
+        
+        with torch.no_grad():
+            # Update all parameters in EMA UNet
+            for ema_param, live_param in zip(self.unet_ema.parameters(), self.unet.parameters()):
+                if live_param.requires_grad:  # Only update if parameter is trainable
+                    ema_param.data.mul_(self.ema_decay).add_(live_param.data, alpha=1.0 - self.ema_decay)
 
     # ------------------------------------------------------------------
     # Config I/O

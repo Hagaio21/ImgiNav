@@ -222,6 +222,10 @@ def train_epoch(
                 if max_grad_norm is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
                 optimizer.step()
+            
+            # Update EMA after optimizer step
+            if hasattr(model, 'update_ema'):
+                model.update_ema()
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
@@ -233,6 +237,10 @@ def train_epoch(
             if max_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
+            
+            # Update EMA after optimizer step
+            if hasattr(model, 'update_ema'):
+                model.update_ema()
         
         batch_size = latents.shape[0]
         loss_val = total_loss_val.detach().item()
