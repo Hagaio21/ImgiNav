@@ -77,6 +77,12 @@ training:
         target: rgb
         weight: 1.0
       - type: KLDLoss
-        weight: 0.1  # Strong KL divergence loss (encourages N(0,1) latent space)
+        weight: 0.0001  # Strong KL divergence loss (encourages N(0,1) latent space)
         # Note: KLDLoss automatically extracts mu and logvar from encoder output
+      - type: LatentStandardizationLoss
+        key: mu  # Extract "mu" from VAE encoder output
+        weight: 0.1  # Encourage mu to be ~N(0,1) (complements KLD loss)
+        mean_penalty_type: l2  # L2 penalty on mean (smooth convergence)
+        std_penalty_type: l2  # L2 penalty on std (smooth convergence)
+        per_channel: true  # Use per-channel statistics to handle channel imbalances
 

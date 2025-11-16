@@ -1022,13 +1022,17 @@ def main():
         
         print(f"Epoch {epoch + 1}/{end_epoch} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():
-            print(f"  Train {k}: {v:.6f}")
+            if isinstance(v, str):
+                # Handle string values (e.g., JSON-encoded per-channel stats)
+                print(f"  Train {k}: {v}")
+            else:
+                print(f"  Train {k}: {v:.6f}")
         
         # Record training history
         epoch_log = {
             "epoch": epoch + 1,
             "train_loss": float(avg_loss),
-            **{f"train_{k}": float(v) for k, v in avg_logs.items()}
+            **{f"train_{k}": (v if isinstance(v, str) else float(v)) for k, v in avg_logs.items()}
         }
         
         # Extract normalizer statistics if available (for backward compatibility with old models)
@@ -1047,9 +1051,13 @@ def main():
             val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp, collect_latents=is_vae)
             print(f"  Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():
-                print(f"  Val {k}: {v:.6f}")
+                if isinstance(v, str):
+                    # Handle string values (e.g., JSON-encoded per-channel stats)
+                    print(f"  Val {k}: {v}")
+                else:
+                    print(f"  Val {k}: {v:.6f}")
             epoch_log["val_loss"] = float(val_loss)
-            epoch_log.update({f"val_{k}": float(v) for k, v in val_logs.items()})
+            epoch_log.update({f"val_{k}": (v if isinstance(v, str) else float(v)) for k, v in val_logs.items()})
             
             # Track and save best validation loss immediately
             improvement = best_val_loss - val_loss
