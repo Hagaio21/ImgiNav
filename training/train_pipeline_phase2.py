@@ -624,11 +624,22 @@ def main():
     embeddings_dir = exp_save_path / "embeddings"
     embeddings_dir.mkdir(parents=True, exist_ok=True)
     
-    # Input manifest (original dataset)
-    input_manifest = Path("/work3/s233249/ImgiNav/datasets/layouts.csv")
-    if not input_manifest.exists():
-        # Try alternative path
-        input_manifest = Path("/work3/s233249/ImgiNav/datasets/augmented/manifest_images.csv")
+    # Input manifest (use from autoencoder config, which should point to the correct dataset)
+    # ae_config was already loaded above, reuse it
+    if 'dataset' in ae_config and 'manifest' in ae_config['dataset']:
+        input_manifest = Path(ae_config['dataset']['manifest'])
+        if not input_manifest.is_absolute():
+            # If relative path, make it relative to config file location
+            config_dir = Path(args.ae_config).parent
+            input_manifest = (config_dir / input_manifest).resolve()
+    else:
+        # Fallback: try new layouts manifest first, then fall back to original
+        input_manifest = Path("/work3/s233249/ImgiNav/datasets/layouts_new.csv")
+        if not input_manifest.exists():
+            input_manifest = Path("/work3/s233249/ImgiNav/datasets/layouts.csv")
+        if not input_manifest.exists():
+            # Try alternative path
+            input_manifest = Path("/work3/s233249/ImgiNav/datasets/augmented/manifest_images.csv")
     
     # Output manifest (with embedded latents, saved in experiment embeddings folder)
     output_manifest = embeddings_dir / "manifest_with_latents.csv"
