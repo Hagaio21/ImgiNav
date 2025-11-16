@@ -33,24 +33,39 @@ def parse_layout_filename(filename: str) -> Tuple[str, str, str]:
     
     Formats:
     - Room: {scene_id}_{room_id}_room_seg_layout.png
+      Example: eff72f0f-049a-47b3-8685-b1b6af535435_3021_room_seg_layout.png
+      scene_id = eff72f0f-049a-47b3-8685-b1b6af535435
+      room_id = 3021 (4 digits, coded type)
+    
     - Scene: {scene_id}_scene_layout.png
+      Example: eff72f0f-049a-47b3-8685-b1b6af535435_scene_layout.png
+      scene_id = eff72f0f-049a-47b3-8685-b1b6af535435
+      room_id = "scene"
     
     Returns:
         (scene_id, type, room_id)
     """
     stem = Path(filename).stem
     
-    # Check for scene layout
+    # Check for scene layout: {scene_id}_scene_layout
     scene_match = re.match(r"^(.+?)_scene_layout$", stem)
     if scene_match:
         scene_id = scene_match.group(1)
         return (scene_id, "scene", "scene")
     
-    # Check for room layout
-    room_match = re.match(r"^(.+?)_(.+?)_room_seg_layout$", stem)
+    # Check for room layout: {scene_id}_{room_id}_room_seg_layout
+    # The room_id is typically 4 digits (coded type)
+    room_match = re.match(r"^(.+?)_(\d{4})_room_seg_layout$", stem)
     if room_match:
         scene_id = room_match.group(1)
-        room_id = room_match.group(2)
+        room_id = room_match.group(2)  # 4-digit room code
+        return (scene_id, "room", room_id)
+    
+    # Fallback: try more flexible pattern for room layouts
+    room_match_flex = re.match(r"^(.+?)_(.+?)_room_seg_layout$", stem)
+    if room_match_flex:
+        scene_id = room_match_flex.group(1)
+        room_id = room_match_flex.group(2)
         return (scene_id, "room", room_id)
     
     raise ValueError(f"Could not parse layout filename: {filename}")
@@ -141,7 +156,7 @@ def collect_new_layouts(
             manifest_rows.append({
                 "scene_id": scene_id,
                 "type": layout_type,
-                "room_id": room_id if layout_type == "room" else "scene",
+                "room_id": room_id,  # Keep room_id as-is (4 digits for rooms, "scene" for scenes)
                 "layout_path": layout_path_str,
                 "is_empty": str(is_empty)
             })
