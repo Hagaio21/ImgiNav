@@ -74,10 +74,10 @@ def compute_loss(
     # Prepare preds dict for loss computation
     # All loss components will receive this dict, but only use the keys they need
     preds = {
-        "pred_noise": outputs["pred_noise"],      # For SNRWeightedNoiseLoss
-        "scheduler": model.scheduler,            # For SNRWeightedNoiseLoss, LatentStructuralLoss
-        "timesteps": t,                          # For SNRWeightedNoiseLoss, LatentStructuralLoss
-        "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss
+        "pred_noise": outputs["pred_noise"],      # For MSELoss
+        "scheduler": model.scheduler,            # For LatentStructuralLoss (if used)
+        "timesteps": t,                          # For LatentStructuralLoss (if used)
+        "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss (if used)
     }
     
     # Decode latents if semantic losses are needed (needs_decoding is cached from train_epoch)
@@ -88,8 +88,8 @@ def compute_loss(
     # Prepare targets dict
     # All loss components will receive this dict, but only use the keys they need
     targets = {
-        "noise": noise,      # For SNRWeightedNoiseLoss
-        "latent": latents,   # For LatentStructuralLoss (ground-truth clean latents)
+        "noise": noise,      # For MSELoss
+        "latent": latents,   # For LatentStructuralLoss (ground-truth clean latents, if used)
     }
     
     # Add RGB if available (for SemanticLoss)
@@ -368,7 +368,14 @@ def eval_epoch(
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=64, exp_name=None, guidance_scale=1.0):
-    """Generate and save sample images."""
+    """Generate and save sample images.
+    
+    Generates 3 types of samples, each in a 4x4 grid:
+    - Unconditioned: 16 samples (4x4 grid, cond=None)
+    - Rooms: 16 samples (4x4 grid, cond=0)
+    - Scenes: 16 samples (4x4 grid, cond=1)
+    Total: 48 samples arranged in a 12x4 grid (3 sections of 4x4 stacked vertically)
+    """
     model.eval()
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
@@ -382,75 +389,125 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         return
     
     num_steps = model.scheduler.num_steps
+    samples_per_type = 16  # 4x4 = 16 samples for each type
+    grid_size = 4  # 4x4 grid for each type
     
     # Check if model supports conditioning (room/scene)
-    cond = None
-    if hasattr(model.unet, 'cond_embedding') and model.unet.cond_embedding is not None:
-        # Generate half room (0) and half scene (1) samples
-        num_room = sample_batch_size // 2
-        num_scene = sample_batch_size - num_room
-        cond = torch.cat([
-            torch.zeros(num_room, dtype=torch.long, device=device_obj),  # ROOM
-            torch.ones(num_scene, dtype=torch.long, device=device_obj)   # SCENE
-        ])
-        cfg_info = f" with CFG scale={guidance_scale}" if guidance_scale > 1.0 else ""
-        print(f"  Generating {sample_batch_size} samples ({num_room} ROOM, {num_scene} SCENE) using DDPM ({num_steps} steps){cfg_info}...")
-    else:
-        print(f"  Generating {sample_batch_size} samples using DDPM ({num_steps} steps)...")
+    supports_conditioning = hasattr(model.unet, 'cond_embedding') and model.unet.cond_embedding is not None
+    
+    all_samples = []
+    cfg_info = f" with CFG scale={guidance_scale}" if guidance_scale > 1.0 else ""
     
     with torch.no_grad():
-        sample_output = model.sample(
-            batch_size=sample_batch_size,
-            num_steps=num_steps,  # Use full DDPM schedule
-            method="ddpm",
-            eta=1.0,  # eta=1.0 for full DDPM (stochastic)
-            cond=cond,  # Pass conditioning if available
-            guidance_scale=guidance_scale,  # CFG guidance scale
-            device=device_obj,
-            verbose=False
-        )
-    
-    # Check if model.sample() already decoded RGB (avoid double decoding)
-    if "rgb" in sample_output:
-        # model.sample() already decoded, use that (in [0, 1] range)
-        samples = sample_output["rgb"]  # Already in [0, 1] from model.sample()
-        # Convert from [0, 1] to [0, 255] for saving
-        samples = samples * 255.0  # [0, 1] -> [0, 255]
-        samples = torch.clamp(samples, 0.0, 255.0)
-    else:
-        # Decode using the decoder - it returns a dict with "rgb" in [-1, 1] range (tanh)
-        with torch.no_grad():
-            outputs = model.decoder({"latent": sample_output["latent"]})
-            samples = outputs["rgb"]  # RGB in [-1, 1] range from tanh
+        # Generate unconditioned samples (if CFG is enabled, otherwise skip)
+        if supports_conditioning and guidance_scale > 1.0:
+            print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
+            sample_output = model.sample(
+                batch_size=samples_per_type,
+                num_steps=num_steps,
+                method="ddpm",
+                eta=1.0,
+                cond=None,  # Unconditioned
+                guidance_scale=guidance_scale,
+                device=device_obj,
+                verbose=False
+            )
+            all_samples.append(sample_output)
+        elif not supports_conditioning:
+            # If no conditioning support, generate unconditioned samples
+            print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps)...")
+            sample_output = model.sample(
+                batch_size=samples_per_type,
+                num_steps=num_steps,
+                method="ddpm",
+                eta=1.0,
+                cond=None,
+                guidance_scale=1.0,
+                device=device_obj,
+                verbose=False
+            )
+            all_samples.append(sample_output)
         
-        # Convert from [-1, 1] to [0, 255] for saving
-        samples = (samples + 1.0) / 2.0  # [-1, 1] -> [0, 1]
-        samples = samples * 255.0  # [0, 1] -> [0, 255]
-        samples = torch.clamp(samples, 0.0, 255.0)
+        # Generate room samples (cond=0)
+        if supports_conditioning:
+            print(f"  Generating {samples_per_type} ROOM samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
+            cond_room = torch.zeros(samples_per_type, dtype=torch.long, device=device_obj)
+            sample_output = model.sample(
+                batch_size=samples_per_type,
+                num_steps=num_steps,
+                method="ddpm",
+                eta=1.0,
+                cond=cond_room,
+                guidance_scale=guidance_scale,
+                device=device_obj,
+                verbose=False
+            )
+            all_samples.append(sample_output)
+        
+        # Generate scene samples (cond=1)
+        if supports_conditioning:
+            print(f"  Generating {samples_per_type} SCENE samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
+            cond_scene = torch.ones(samples_per_type, dtype=torch.long, device=device_obj)
+            sample_output = model.sample(
+                batch_size=samples_per_type,
+                num_steps=num_steps,
+                method="ddpm",
+                eta=1.0,
+                cond=cond_scene,
+                guidance_scale=guidance_scale,
+                device=device_obj,
+                verbose=False
+            )
+            all_samples.append(sample_output)
     
-    # Convert to numpy and create grid manually
-    samples_np = samples.cpu().numpy()  # [B, C, H, W] in [0, 255]
+    # Process all samples: decode and convert to [0, 255]
+    processed_samples = []
+    for sample_output in all_samples:
+        if "rgb" in sample_output:
+            # Already decoded, in [0, 1] range
+            samples = sample_output["rgb"] * 255.0
+            samples = torch.clamp(samples, 0.0, 255.0)
+        else:
+            # Decode from latents
+            outputs = model.decoder({"latent": sample_output["latent"]})
+            samples = outputs["rgb"]  # [-1, 1] range from tanh
+            samples = (samples + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+            samples = samples * 255.0  # [0, 1] -> [0, 255]
+            samples = torch.clamp(samples, 0.0, 255.0)
+        processed_samples.append(samples)
+    
+    # Concatenate all samples: [unconditioned, rooms, scenes]
+    all_samples_tensor = torch.cat(processed_samples, dim=0)  # [48, C, H, W] if all 3 types
+    
+    # Convert to numpy
+    samples_np = all_samples_tensor.cpu().numpy()
     samples_np = np.clip(samples_np, 0, 255).astype(np.uint8)
     
-    # Create grid manually
-    grid_n = int(math.sqrt(sample_batch_size))  # 8x8 grid for 64 samples
+    # Create grid: 3 sections stacked vertically, each 4x4
+    # Total: 12 rows x 4 columns (if all 3 types) or 4 rows x 4 columns (if only 1 type)
+    num_sections = len(processed_samples)  # Number of types (1, 2, or 3)
+    num_rows_total = num_sections * grid_size  # Total rows: 12 if 3 types, 4 if 1 type
+    num_cols = grid_size  # 4 columns
+    
     images = []
-    for i in range(sample_batch_size):
+    for i in range(all_samples_tensor.shape[0]):
         img = samples_np[i].transpose(1, 2, 0)  # [C, H, W] -> [H, W, C]
         images.append(Image.fromarray(img))
     
-    # Create grid image
+    # Create grid image: stacked 4x4 grids
     img_size = images[0].size[0]
-    grid_size = img_size * grid_n
-    grid_img = Image.new('RGB', (grid_size, grid_size))
+    grid_width = img_size * num_cols
+    grid_height = img_size * num_rows_total
+    grid_img = Image.new('RGB', (grid_width, grid_height))
+    
     for idx, img in enumerate(images):
-        row = idx // grid_n
-        col = idx % grid_n
+        row = idx // num_cols
+        col = idx % num_cols
         grid_img.paste(img, (col * img_size, row * img_size))
     
     grid_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_samples.png" if exp_name else f"epoch_{epoch:03d}_samples.png")
     grid_img.save(grid_path)
-    print(f"  Saved samples to {samples_dir}")
+    print(f"  Saved {all_samples_tensor.shape[0]} samples ({num_sections} types x {grid_size}x{grid_size} grids = {num_rows_total}x{num_cols} total grid) to {samples_dir}")
 
 
 def main():

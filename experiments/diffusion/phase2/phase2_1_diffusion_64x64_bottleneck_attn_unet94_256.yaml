@@ -48,7 +48,7 @@ unet:
 
 scheduler:
   type: LinearScheduler
-  num_steps: 500
+  num_steps: 1000  # 1000 noise steps with linear schedule for stable training
 
 training:
   seed: 42
@@ -78,7 +78,7 @@ training:
   loss:
     type: CompositeLoss
     losses:
-    - type: SNRWeightedNoiseLoss
+    - type: MSELoss
       key: pred_noise
       target: noise
       weight: 1.0

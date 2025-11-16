@@ -46,7 +46,60 @@ from training.utils import (
 )
 
 
-def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=False):
+def compute_latent_statistics(all_latents):
+    """
+    Compute statistics over all collected latents.
+    
+    Args:
+        all_latents: List of latent tensors [B, C, H, W] or [B, C]
+    
+    Returns:
+        Dictionary with statistics keys for logging
+    """
+    if not all_latents or len(all_latents) == 0:
+        return {}
+    
+    # Concatenate all latents
+    all_latents_tensor = torch.cat(all_latents, dim=0)
+    
+    # Flatten for global statistics
+    latent_flat = all_latents_tensor.reshape(all_latents_tensor.shape[0], -1)
+    
+    # Compute global statistics
+    latent_mean = latent_flat.mean().item()
+    latent_std = latent_flat.std().item()
+    latent_min = latent_flat.min().item()
+    latent_max = latent_flat.max().item()
+    
+    stats = {
+        "LatentStats_Mean": latent_mean,
+        "LatentStats_Std": latent_std,
+        "LatentStats_Min": latent_min,
+        "LatentStats_Max": latent_max,
+    }
+    
+    # Compute per-channel statistics if spatial dimensions exist
+    if all_latents_tensor.ndim == 4:  # [B, C, H, W]
+        B, C, H, W = all_latents_tensor.shape
+        # Per-channel mean and std
+        per_channel_mean = all_latents_tensor.mean(dim=(0, 2, 3)).cpu().numpy()  # [C]
+        per_channel_std = all_latents_tensor.std(dim=(0, 2, 3)).cpu().numpy()  # [C]
+        # Per-channel min/max
+        latents_reshaped = all_latents_tensor.permute(1, 0, 2, 3).reshape(C, -1)  # [C, B*H*W]
+        per_channel_min = latents_reshaped.min(dim=1)[0].cpu().numpy()  # [C]
+        per_channel_max = latents_reshaped.max(dim=1)[0].cpu().numpy()  # [C]
+        
+        # Store per-channel stats as JSON strings for CSV compatibility
+        import json
+        stats["LatentStats_MeanPerCh"] = json.dumps(per_channel_mean.tolist())
+        stats["LatentStats_StdPerCh"] = json.dumps(per_channel_std.tolist())
+        stats["LatentStats_MinPerCh"] = json.dumps(per_channel_min.tolist())
+        stats["LatentStats_MaxPerCh"] = json.dumps(per_channel_max.tolist())
+    
+    return stats
+
+
+def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=False, collect_latents=False):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
@@ -54,6 +107,9 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
     log_dict = {}
     
     device_obj = to_device(device)
+    
+    # Collect latents for statistics (if VAE and requested)
+    all_latents = [] if collect_latents else None
     
     # Initialize all expected class loss keys at the start of epoch
     # This ensures all classes appear in logs even if they never appear in any batch
@@ -83,6 +139,13 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
             with torch.amp.autocast('cuda'):
                 outputs = model(batch["rgb"])
                 loss, logs = loss_fn(outputs, batch)
+                
+                # Collect latents for statistics (VAE: mu, AE: latent)
+                if collect_latents and all_latents is not None:
+                    if "mu" in outputs:
+                        all_latents.append(outputs["mu"].detach().cpu())
+                    elif "latent" in outputs:
+                        all_latents.append(outputs["latent"].detach().cpu())
             
             # Backward pass with gradient scaling (scaler created once before loop)
             optimizer.zero_grad()
@@ -102,6 +165,13 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
             # Forward pass
             outputs = model(batch["rgb"])
             loss, logs = loss_fn(outputs, batch)
+            
+            # Collect latents for statistics (VAE: mu, AE: latent)
+            if collect_latents and all_latents is not None:
+                if "mu" in outputs:
+                    all_latents.append(outputs["mu"].detach().cpu())
+                elif "latent" in outputs:
+                    all_latents.append(outputs["latent"].detach().cpu())
             
             # Backward pass
             optimizer.zero_grad()
@@ -140,10 +210,15 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
                     if f"MSE_{key}_unknown" not in avg_logs:
                         avg_logs[f"MSE_{key}_unknown"] = 0.0
     
+    # Compute latent statistics if collected
+    if collect_latents and all_latents and len(all_latents) > 0:
+        latent_stats = compute_latent_statistics(all_latents)
+        avg_logs.update(latent_stats)
+    
     return avg_loss, avg_logs
 
 
-def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
+def eval_epoch(model, dataloader, loss_fn, device, use_amp=False, collect_latents=False):
     """Evaluate for one epoch."""
     model.eval()
     total_loss = 0.0
@@ -151,6 +226,9 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
     log_dict = {}
     
     device_obj = to_device(device)
+    
+    # Collect latents for statistics (if VAE and requested)
+    all_latents = [] if collect_latents else None
     
     # Initialize all expected class loss keys at the start of epoch
     # This ensures all classes appear in logs even if they never appear in any batch
@@ -180,9 +258,23 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
                 with torch.cuda.amp.autocast():
                     outputs = model(batch["rgb"])
                     loss, logs = loss_fn(outputs, batch)
+                    
+                    # Collect latents for statistics (VAE: mu, AE: latent)
+                    if collect_latents and all_latents is not None:
+                        if "mu" in outputs:
+                            all_latents.append(outputs["mu"].detach().cpu())
+                        elif "latent" in outputs:
+                            all_latents.append(outputs["latent"].detach().cpu())
             else:
                 outputs = model(batch["rgb"])
                 loss, logs = loss_fn(outputs, batch)
+                
+                # Collect latents for statistics (VAE: mu, AE: latent)
+                if collect_latents and all_latents is not None:
+                    if "mu" in outputs:
+                        all_latents.append(outputs["mu"].detach().cpu())
+                    elif "latent" in outputs:
+                        all_latents.append(outputs["latent"].detach().cpu())
             
             # Accumulate stats (detach before item())
             batch_size = batch["rgb"].shape[0]
@@ -216,6 +308,11 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False):
                             avg_logs[log_key] = 0.0
                     if f"MSE_{key}_unknown" not in avg_logs:
                         avg_logs[f"MSE_{key}_unknown"] = 0.0
+    
+    # Compute latent statistics if collected
+    if collect_latents and all_latents and len(all_latents) > 0:
+        latent_stats = compute_latent_statistics(all_latents)
+        avg_logs.update(latent_stats)
     
     return avg_loss, avg_logs
 
@@ -916,9 +1013,12 @@ def main():
         plt.close()
         print(f"  Saved KLD loss plot: {plot_path}")
     
+    # Check if model is VAE (variational encoder) to enable latent statistics collection
+    is_vae = hasattr(model.encoder, 'variational') and model.encoder.variational
+    
     for epoch in range(start_epoch, end_epoch):
         # Training
-        avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp)
+        avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp, collect_latents=is_vae)
         
         print(f"Epoch {epoch + 1}/{end_epoch} - Train Loss: {avg_loss:.6f}")
         for k, v in avg_logs.items():
@@ -944,7 +1044,7 @@ def main():
         
         # Evaluation (run every epoch if validation set exists)
         if val_loader:
-            val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp)
+            val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp, collect_latents=is_vae)
             print(f"  Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():
                 print(f"  Val {k}: {v:.6f}")

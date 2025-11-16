@@ -1,8 +1,8 @@
-# Phase 2.1: Variational Autoencoder (VAE) with Structural Constraints (256×256)
+# Phase 2.1: Variational Autoencoder (VAE) with Strong KL Regularization (256×256)
 # Optimized for small datasets: 256×256 input → 64×64×4 latents
 # Architecture: 64×64×4 = 16,384 dims
-# Encoder: VAE with KL divergence regularization, structural loss, and perceptual guidance
-# Loss: MSE=1.0, Perceptual=0.1, LatentStructural=0.15, KLD=0.01 (KL divergence for N(0,1) latent space)
+# Encoder: VAE with strong KL divergence regularization
+# Loss: MSE=1.0, KLD=0.1 (strong KL divergence for N(0,1) latent space)
 # VAE benefits: Better latent space regularization, less clipping artifacts, more stable diffusion training
 
 experiment:
@@ -34,7 +34,7 @@ autoencoder:
   encoder:
     in_channels: 3
     latent_channels: 4  # 64×64×4 latent space
-    base_channels: 24  # Reduced from 32 for smaller model (~44% fewer params)
+    base_channels: 48  # Increased from 24 for more complex model (2x more params)
     downsampling_steps: 2  # Changed from 3: 256 -> 128 -> 64 (64×64 spatial resolution)
     activation: SiLU
     norm_groups: 8
@@ -42,7 +42,7 @@ autoencoder:
   
   decoder:
     latent_channels: 4  # 64×64×4 latent space
-    base_channels: 24  # Reduced from 32 for smaller model
+    base_channels: 48  # Increased from 24 for more complex model (2x more params)
     upsampling_steps: 2  # Changed from 3: 64 -> 128 -> 256 (64×64 spatial resolution)
     activation: SiLU
     norm_groups: 8
@@ -72,16 +72,11 @@ training:
   loss:
     type: CompositeLoss
     losses:
-      - type: ClassWeightedMSELoss
+      - type: MSELoss
         key: rgb
         target: rgb
         weight: 1.0
-        class_weights:
-          background: 0.5  # Moderate weight for background (important for scene structure)
-          # Wall and all object classes (bed, chair, sofa, etc.) get default_weight: 1.0
-        default_weight: 1.0  # Full weight for wall and object classes
-        unknown_weight: 1.0  # Weight for pixels that don't match any class
       - type: KLDLoss
-        weight: 0.01  # KL divergence loss (encourages N(0,1) latent space)
+        weight: 0.1  # Strong KL divergence loss (encourages N(0,1) latent space)
         # Note: KLDLoss automatically extracts mu and logvar from encoder output
 
