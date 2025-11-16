@@ -54,6 +54,9 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   conda activate scenefactor || true
 fi
 
+# Change to base directory so Python can find common module
+cd "${BASE_DIR}"
+
 # Run create_new_layouts with manifest
 python "${PYTHON_SCRIPT}" \
   --in_root "${SCENES_ROOT}" \
