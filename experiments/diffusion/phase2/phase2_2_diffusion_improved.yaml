@@ -59,7 +59,7 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 48  # Conservative batch size due to attention in all layers (downs+bottleneck+ups). Can try 64 if memory allows.
+  batch_size: 32  # Reduced further due to attention in all layers (downs+bottleneck+ups) causing OOM
   num_workers: 8
   shuffle: true
   epochs: 500
@@ -69,7 +69,7 @@ training:
   save_interval: 99999
   eval_interval: 5
   sample_interval: 5
-  use_amp: false
+  use_amp: true  # Enable mixed precision to reduce memory usage (~50% reduction)
   use_weighted_sampling: true
   weight_column: type
   max_grad_norm: 1.0
