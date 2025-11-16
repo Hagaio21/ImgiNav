@@ -51,11 +51,18 @@ head -3 "${ROOM_MANIFEST}" || echo "Could not read manifest"
 # Conda activation
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate scenefactor || true
+  conda activate imginav || {
+    echo "Failed to activate conda environment 'imginav'" >&2
+    conda activate scenefactor || {
+      echo "Failed to activate any conda environment" >&2
+      exit 1
+    }
+  }
 fi
 
-# Change to base directory so Python can find common module
+# Change to base directory and set PYTHONPATH so Python can find common module
 cd "${BASE_DIR}"
+export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 
 # Run create_new_layouts with manifest
 python "${PYTHON_SCRIPT}" \
