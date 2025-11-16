@@ -109,7 +109,9 @@ python "${PYTHON_SCRIPT}" \
   --hmin 0.1 \
   --hmax 1.8 \
   --point-size 5 \
+  --scene-point-size 3 \
   --object-point-size-multiplier 1.5 \
+  --scene-object-point-size-multiplier 1.0 \
   --min-colors 4 \
   --max-whiteness 0.95 \
   --color-mode "category"

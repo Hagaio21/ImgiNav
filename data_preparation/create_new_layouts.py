@@ -290,13 +290,18 @@ def create_scene_layout_new(
     point_size: int = 1,
     floor_point_size: int = None,
     floor_bbox_buffer: float = 0.1,
+    object_point_size_multiplier: float = 1.0,
 ):
     """
     Create scene layout with new coloring scheme.
     Image is cropped to floor point bounding box with buffer.
+    Scenes typically use smaller point sizes than rooms.
     """
     if floor_point_size is None:
         floor_point_size = max(point_size * 2, 3)  # Default: 2x regular size, minimum 3
+    
+    # Calculate object point size (scenes typically use smaller multiplier)
+    object_point_size = max(int(point_size * object_point_size_multiplier), point_size)
     scene_id = scene_dir.name
     room_parquets = sorted(scene_dir.rglob("rooms/*/*.parquet"))
     if not room_parquets:
@@ -391,8 +396,11 @@ def create_scene_layout_new(
         else:
             color_tuple = taxonomy.get_color(lbl_int)
         color = np.array(color_tuple, dtype=np.uint8)
-        # Use larger point size for floor points to fill gaps
-        size = floor_point_size if is_floor_pt else point_size
+        # Use larger point size for floor points, and object size for regular points
+        if is_floor_pt:
+            size = floor_point_size
+        else:
+            size = object_point_size
         draw_point(canvas, x, y, color, size=size)
         
         # Collect floor point coordinates for bbox calculation
@@ -446,10 +454,13 @@ def main():
     ap.add_argument("--res", type=int, default=512, help="Output image resolution")
     ap.add_argument("--hmin", type=float, default=0.1, help="Minimum height filter for regular points (default: 0.1, original layout band). Floor points are always included regardless of height.")
     ap.add_argument("--hmax", type=float, default=1.8, help="Maximum height filter (default: 1.8)")
-    ap.add_argument("--point-size", type=int, default=5, help="Point rendering size for regular points")
+    ap.add_argument("--point-size", type=int, default=5, help="Point rendering size for regular points (rooms)")
+    ap.add_argument("--scene-point-size", type=int, default=None, help="Point rendering size for scenes (default: same as point-size, but typically smaller)")
     ap.add_argument("--floor-point-size", type=int, default=None, help="Point rendering size for floor points (default: 2x point-size, minimum 3)")
+    ap.add_argument("--scene-floor-point-size", type=int, default=None, help="Point rendering size for floor points in scenes (default: 2x scene-point-size)")
     ap.add_argument("--floor-bbox-buffer", type=float, default=0.1, help="Buffer around floor bbox as fraction of bbox size (default: 0.1 = 10%%)")
-    ap.add_argument("--object-point-size-multiplier", type=float, default=1.5, help="Multiply point size for objects to reduce sparsity (default: 1.5)")
+    ap.add_argument("--object-point-size-multiplier", type=float, default=1.5, help="Multiply point size for objects in rooms to reduce sparsity (default: 1.5)")
+    ap.add_argument("--scene-object-point-size-multiplier", type=float, default=1.0, help="Multiply point size for objects in scenes (default: 1.0, smaller than rooms)")
     ap.add_argument("--min-colors", type=int, default=4, help="Minimum number of distinct colors (including background) to keep image. Empty rooms have 3 (background+floor+wall), so default 4 filters them out (default: 4)")
     ap.add_argument("--max-whiteness", type=float, default=0.95, help="Maximum whiteness ratio to keep image (default: 0.95)")
     ap.add_argument("--manifest", help="Optional manifest CSV")
@@ -508,6 +519,15 @@ def main():
             scene_ids = [p.stem.replace("_scene_info", "") for p in scene_info_files]
 
         progress = create_progress_tracker(len(scene_ids), "scene layouts")
+        # Use scene-specific point sizes (default to smaller values than rooms)
+        if args.scene_point_size is not None:
+            scene_point_size = args.scene_point_size
+        else:
+            # Default to smaller than room point size (e.g., 3 instead of 5)
+            scene_point_size = max(1, args.point_size - 2)
+        
+        scene_floor_point_size = args.scene_floor_point_size if args.scene_floor_point_size is not None else None
+        
         for i, scene_id in enumerate(scene_ids, 1):
             scene_dir = in_root / scene_id
             # Save to single layout_new folder
@@ -519,9 +539,10 @@ def main():
                     resolution=args.res, 
                     height_min=args.hmin,
                     height_max=args.hmax,
-                    point_size=args.point_size,
-                    floor_point_size=args.floor_point_size,
-                    floor_bbox_buffer=args.floor_bbox_buffer
+                    point_size=scene_point_size,
+                    floor_point_size=scene_floor_point_size,
+                    floor_bbox_buffer=args.floor_bbox_buffer,
+                    object_point_size_multiplier=args.scene_object_point_size_multiplier
                 )
                 progress(i, f"{scene_id} -> {output_path}", True)
             except Exception as e:
