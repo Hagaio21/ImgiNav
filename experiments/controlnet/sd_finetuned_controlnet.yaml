@@ -1,0 +1,58 @@
+# ControlNet training config for fine-tuned Stable Diffusion UNet
+# Uses POV and graph embeddings for conditioning
+
+experiment:
+  name: "sd_finetuned_controlnet"
+  phase: "controlnet_sd_finetuned"
+  save_path: "/work3/s233249/ImgiNav/experiments/controlnet/sd_finetuned"
+
+# Fine-tuned UNet (will be loaded via --finetuned_unet_path argument)
+# Path: outputs/baseline_sd_finetuned_full/checkpoint-best/unet
+
+# Scheduler
+scheduler:
+  model_id: "runwayml/stable-diffusion-v1-5"  # Base SD model for scheduler config
+
+# Dataset: ControlNet requires layout latents + POV + graph embeddings
+dataset:
+  manifest: "/work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv"
+  # Manifest should have columns:
+  # - latent_path: Path to layout latent embeddings (.npy or .pt)
+  # - pov_embedding_path: Path to POV embeddings (.pt or .npy)
+  # - graph_embedding_path: Path to graph embeddings (.pt or .npy)
+
+# ControlNet adapter config
+# The adapter converts POV and graph embeddings to control features
+adapter:
+  type: "SimpleAdapter"  # Options: "SimpleAdapter", "MLPAdapter", "DeepAdapter"
+  text_dim: 384  # Graph embedding dimension (all-MiniLM-L6-v2 outputs 384)
+  pov_dim: 512   # POV embedding dimension (ResNet18 outputs 512)
+  # Note: base_channels and depth are estimated from SD UNet (typically 320, 4)
+
+# ControlNet fusion config
+controlnet:
+  fusion:
+    type: "add"  # Options: "add", "concat", "cross_attn"
+
+# Training config
+training:
+  seed: 42
+  batch_size: 16  # Smaller batch size for SD UNet (larger model)
+  num_workers: 4
+  shuffle: true
+  epochs: 100
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  
+  # Checkpoint settings
+  save_interval: 10  # Save every 10 epochs
+  eval_interval: 5   # Evaluate every 5 epochs
+  sample_interval: 10  # Generate samples every 10 epochs
+  
+  # Mixed precision for efficiency
+  use_amp: true
+  
+  # Gradient clipping for stability
+  max_grad_norm: 1.0
+

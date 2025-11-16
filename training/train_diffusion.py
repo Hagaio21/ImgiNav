@@ -650,6 +650,23 @@ def main():
         for param in model.decoder.parameters():
             param.requires_grad = False
     
+    # CRITICAL: Ensure UNet is trainable (explicitly set requires_grad=True)
+    # This overrides any frozen settings from config or checkpoint
+    if hasattr(model, 'unet'):
+        print("Ensuring UNet is trainable...")
+        trainable_count = 0
+        frozen_count = 0
+        for param in model.unet.parameters():
+            if param.requires_grad:
+                trainable_count += 1
+            else:
+                frozen_count += 1
+                param.requires_grad = True  # Force trainable
+        
+        if frozen_count > 0:
+            print(f"  WARNING: Found {frozen_count} frozen UNet parameters - setting them to trainable!")
+        print(f"  UNet parameters: {trainable_count + frozen_count} total, {trainable_count + frozen_count} trainable")
+    
     # Build data loaders
     batch_size = config["training"].get("batch_size", 32)
     num_workers = config["training"].get("num_workers", 8)
@@ -724,6 +741,20 @@ def main():
     # Build optimizer
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)
+    
+    # Verify optimizer has trainable parameters
+    total_optimizer_params = sum(len(group['params']) for group in optimizer.param_groups)
+    total_trainable_model_params = sum(1 for _ in model.trainable_parameters())
+    print(f"  Optimizer parameter groups: {len(optimizer.param_groups)}")
+    print(f"  Total trainable parameters in model: {total_trainable_model_params:,}")
+    
+    # Count UNet parameters specifically
+    if hasattr(model, 'unet'):
+        unet_trainable = sum(1 for p in model.unet.parameters() if p.requires_grad)
+        unet_total = sum(1 for _ in model.unet.parameters())
+        print(f"  UNet parameters: {unet_trainable:,} trainable / {unet_total:,} total")
+        if unet_trainable == 0:
+            print("  ERROR: UNet has no trainable parameters! Training will not work!")
     
     # Build learning rate scheduler (account for already-trained epochs when resuming)
     # Use last_epoch=-1 for fresh start, or start_epoch for resume

@@ -39,7 +39,17 @@ except ImportError:
 class LayoutDataset(Dataset):
     """Dataset for layout images from directory or manifest."""
     
-    def __init__(self, image_dir=None, manifest_path=None, image_size=512, transform=None):
+    def __init__(self, image_dir=None, manifest_path=None, image_size=512, transform=None,
+                 filter_empty=True, whiteness_threshold=0.95):
+        """
+        Args:
+            image_dir: Directory containing images (optional if manifest_path provided)
+            manifest_path: Path to CSV manifest with layout_path column (optional if image_dir provided)
+            image_size: Target image size for resizing
+            transform: Optional transform pipeline
+            filter_empty: Filter out empty layouts (is_empty == False)
+            whiteness_threshold: Filter out images with whiteness_ratio >= threshold (None to disable)
+        """
         self.image_size = image_size
         
         if manifest_path is not None:
@@ -47,13 +57,38 @@ class LayoutDataset(Dataset):
             import pandas as pd
             manifest_path = Path(manifest_path)
             self.manifest_dir = manifest_path.parent
-            df = pd.read_csv(manifest_path)
+            df = pd.read_csv(manifest_path, low_memory=False)
+            
+            # Apply filters similar to diffusion training
+            original_size = len(df)
+            
+            # Filter empty layouts
+            if filter_empty and "is_empty" in df.columns:
+                # Handle different representations of False
+                is_empty_values = df["is_empty"]
+                mask = (
+                    (is_empty_values == False) |  # Boolean False
+                    (is_empty_values == 0) |  # Integer 0
+                    (is_empty_values.astype(str).str.lower().isin(['false', '0', 'no']))  # String representations
+                )
+                df = df[mask].reset_index(drop=True)
+                print(f"Filtered empty layouts: {original_size} -> {len(df)} samples")
+            
+            # Filter by whiteness ratio
+            if whiteness_threshold is not None and "whiteness_ratio" in df.columns:
+                before_whiteness = len(df)
+                df = df[df["whiteness_ratio"] < whiteness_threshold].reset_index(drop=True)
+                print(f"Filtered white images (whiteness_ratio < {whiteness_threshold}): {before_whiteness} -> {len(df)} samples")
+            
+            # Get image paths
             if "layout_path" in df.columns:
                 self.image_paths = [Path(p) for p in df["layout_path"].tolist() if pd.notna(p)]
             elif "image_path" in df.columns:
                 self.image_paths = [Path(p) for p in df["image_path"].tolist() if pd.notna(p)]
             else:
                 raise ValueError("Manifest must contain 'layout_path' or 'image_path' column")
+            
+            print(f"Total valid images: {len(self.image_paths)}")
         elif image_dir is not None:
             # Load from directory
             self.image_dir = Path(image_dir)
@@ -96,7 +131,9 @@ def finetune_sd_unet(
     learning_rate=1e-5,
     num_workers=4,
     device="cuda",
-    seed=42
+    seed=42,
+    filter_empty=True,
+    whiteness_threshold=0.95
 ):
     """
     Fine-tune Stable Diffusion UNet on layout dataset.
@@ -162,7 +199,12 @@ def finetune_sd_unet(
     # Create dataset
     if manifest_path is not None:
         print(f"Loading dataset from manifest: {manifest_path}")
-        dataset = LayoutDataset(manifest_path=manifest_path, image_size=512)
+        dataset = LayoutDataset(
+            manifest_path=manifest_path, 
+            image_size=512,
+            filter_empty=filter_empty,
+            whiteness_threshold=whiteness_threshold
+        )
     elif dataset_dir is not None:
         print(f"Loading dataset from directory: {dataset_dir}")
         dataset = LayoutDataset(image_dir=dataset_dir, image_size=512)
@@ -313,17 +355,27 @@ def finetune_sd_unet(
             
             print(f"  ✓ New best checkpoint saved (loss: {best_loss:.6f})")
     
-    # Save final model
-    print(f"\nSaving final model to {output_dir}")
-    unet.save_pretrained(output_dir / "unet")
-    
-    # Save full pipeline for easy loading
-    pipe.unet = unet
-    pipe.save_pretrained(output_dir / "pipeline")
-    
+    # Only save best checkpoint (no final model to save disk space)
     print(f"\n{'='*60}")
     print("Fine-tuning Complete!")
-    print(f"Model saved to: {output_dir}")
+    print(f"{'='*60}")
+    if best_checkpoint_dir is not None and best_checkpoint_dir.exists():
+        print(f"\nBest checkpoint saved to: {best_checkpoint_dir}")
+        print(f"  - UNet: {best_checkpoint_dir / 'unet'}")
+        print(f"  - Full Pipeline: {best_checkpoint_dir / 'pipeline'}")
+        print(f"\nBest loss: {best_loss:.6f}")
+        print(f"\nTo use with ControlNet:")
+        print(f"  The UNet can be loaded from: {best_checkpoint_dir / 'unet'}")
+        print(f"  Use the helper script:")
+        print(f"    python baseline/use_finetuned_unet_with_controlnet.py \\")
+        print(f"        --checkpoint_dir {best_checkpoint_dir} \\")
+        print(f"        --num_samples 64")
+        print(f"  Or load programmatically:")
+        print(f"    from diffusers import UNet2DConditionModel, ControlNetModel")
+        print(f"    unet = UNet2DConditionModel.from_pretrained('{best_checkpoint_dir / 'unet'}')")
+        print(f"    controlnet = ControlNetModel.from_config(unet.config)")
+    else:
+        print(f"\nWARNING: No checkpoint was saved (training may have failed)")
     print(f"{'='*60}")
 
 
@@ -349,11 +401,20 @@ def main():
                        help="Device (cuda/cpu)")
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed")
+    parser.add_argument("--filter_empty", action="store_true", default=True,
+                       help="Filter out empty layouts (default: True)")
+    parser.add_argument("--no_filter_empty", dest="filter_empty", action="store_false",
+                       help="Disable filtering of empty layouts")
+    parser.add_argument("--whiteness_threshold", type=float, default=0.95,
+                       help="Filter out images with whiteness_ratio >= threshold (default: 0.95, set to 0 to disable)")
     
     args = parser.parse_args()
     
     if args.dataset_dir is None and args.manifest_path is None:
         parser.error("Must provide either --dataset_dir or --manifest_path")
+    
+    # Handle None for whiteness_threshold (0 means disable)
+    whiteness_threshold = args.whiteness_threshold if args.whiteness_threshold > 0 else None
     
     finetune_sd_unet(
         dataset_dir=args.dataset_dir,
@@ -365,7 +426,9 @@ def main():
         learning_rate=args.learning_rate,
         num_workers=args.num_workers,
         device=args.device,
-        seed=args.seed
+        seed=args.seed,
+        filter_empty=args.filter_empty,
+        whiteness_threshold=whiteness_threshold
     )
 
 

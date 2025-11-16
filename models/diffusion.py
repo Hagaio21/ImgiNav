@@ -345,6 +345,11 @@ class DiffusionModel(BaseModel):
                 
                 # Predict x0 from current noisy latents
                 pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt().clamp(min=1e-8)
+                # Clamp to match decoder's expected latent range
+                if self._is_vae:
+                    pred_x0 = torch.clamp(pred_x0, -4.0, 4.0)
+                else:
+                    pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
                 
                 # DDIM update (deterministic if eta=0)
                 # Standard DDIM formula: x_{t-1} = sqrt(alpha_bar_{t-1}) * pred_x0 + sqrt(1 - alpha_bar_{t-1} - sigma_t^2) * epsilon + sigma_t * z
@@ -391,6 +396,12 @@ class DiffusionModel(BaseModel):
                 else:
                     # Last step: predict x_0 and use it directly (no noise)
                     pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                    # Clamp to match decoder's expected latent range
+                    # VAE latents typically need [-4, 4] bounds, AE can use wider range
+                    if self._is_vae:
+                        pred_x0 = torch.clamp(pred_x0, -4.0, 4.0)
+                    else:
+                        pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
                     latents = pred_x0
             
             if return_history:
