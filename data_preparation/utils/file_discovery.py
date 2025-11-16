@@ -136,9 +136,11 @@ def find_room_files(root: Path, manifest: Optional[Path] = None,
     Replaces find_room_parquets, find_room_files (old), and discover_rooms.
     """
     if manifest is not None and manifest.exists():
-        files = discover_files('parquet', root, manifest, column_name='room_parquet_file_path')
-        if files:
-            return files
+        # Try multiple possible column names for room parquet files
+        for col_name in ['room_parquet_file_path', 'parquet_file_path', 'parquet_path', 'file_path']:
+            files = discover_files('parquet', root, manifest, column_name=col_name)
+            if files:
+                return files
     
     if pattern:
         files = sorted(root.rglob(pattern))
