@@ -102,7 +102,7 @@ def create_room_layout_new(
     color_mode: str = "category",
     resolution: int = 512,
     margin: int = 10,
-    height_min: float = -1.0,
+    height_min: float = 0.2,
     height_max: float = 1.8,
     point_size: int = 1,
     floor_point_size: int = None,
@@ -156,14 +156,17 @@ def create_room_layout_new(
     # Identify floor points
     is_floor = np.isin(labels, np.array(floor_ids, dtype=labels.dtype)) if floor_ids else np.zeros(len(labels), dtype=bool)
 
-    # Filter all points (both floor and regular) in height band [-1, 1.8]
-    height_mask = (uvh[:, 2] >= height_min) & (uvh[:, 2] <= height_max)
+    # Filter points:
+    # - Regular (non-floor) points: height between 0.2 and 1.8
+    # - Floor points: include all floor points (regardless of height)
+    regular_height_mask = (uvh[:, 2] >= 0.2) & (uvh[:, 2] <= 1.8)
+    floor_mask = is_floor  # Include all floor points
     
-    # Apply height filter
-    total_mask = height_mask
+    # Combine: regular points in height band OR floor points
+    total_mask = (regular_height_mask & ~is_floor) | floor_mask
     
     if total_mask.sum() == 0:
-        print(f"[warn] no points in height band [{height_min},{height_max}] or floor points in {parquet_path}", flush=True)
+        print(f"[warn] no points (regular in [0.2, 1.8] or floor) in {parquet_path}", flush=True)
         return False
 
     # Get filtered data
@@ -244,9 +247,23 @@ def create_room_layout_new(
     # Filter empty/sparse rooms before saving
     # Count ALL colors (including background, floor, walls, objects)
     # Empty rooms typically have only 3 colors: background + floor + wall
-    color_count = count_distinct_colors_numpy(canvas, min_pixel_threshold=10)
-    if color_count < min_colors:
-        print(f"[filter] Skipping {parquet_path.name}: only {color_count} colors (min: {min_colors}) - likely empty room", flush=True)
+    # But walls might be same color as background, so we need to check non-background colors too
+    color_count_all = count_distinct_colors_numpy(canvas, min_pixel_threshold=10)
+    
+    # Also count non-background colors to catch cases where walls = background
+    background_color = np.array([240, 240, 240])
+    pixels = canvas.reshape(-1, 3)
+    non_bg_mask = ~np.all(pixels == background_color, axis=1)
+    non_bg_pixels = pixels[non_bg_mask]
+    if len(non_bg_pixels) > 0:
+        unique_non_bg, counts_non_bg = np.unique(non_bg_pixels, axis=0, return_counts=True)
+        non_bg_color_count = np.sum(counts_non_bg >= 10)
+    else:
+        non_bg_color_count = 0
+    
+    # Filter if: total colors < 4 OR non-background colors < 2 (background + floor + wall = 3, but if wall=background then only 2)
+    if color_count_all < min_colors or non_bg_color_count < 2:
+        print(f"[filter] Skipping {parquet_path.name}: {color_count_all} total colors, {non_bg_color_count} non-bg colors (min: {min_colors} total, 2 non-bg) - likely empty room", flush=True)
         return False
     
     # Check whiteness ratio
@@ -268,7 +285,7 @@ def create_scene_layout_new(
     color_mode: str = "category",
     resolution: int = 512,
     margin: int = 10,
-    height_min: float = -1.0,
+    height_min: float = 0.2,
     height_max: float = 1.8,
     point_size: int = 1,
     floor_point_size: int = None,
@@ -336,10 +353,14 @@ def create_scene_layout_new(
             # Identify floor points
             is_floor = np.isin(labels, np.array(floor_ids, dtype=labels.dtype)) if floor_ids else np.zeros(len(labels), dtype=bool)
             
-            # Filter all points in height band [-1, 1.8]
-            height_mask = (uvh[:, 2] >= height_min) & (uvh[:, 2] <= height_max)
+            # Filter points:
+            # - Regular (non-floor) points: height between 0.2 and 1.8
+            # - Floor points: include all floor points (regardless of height)
+            regular_height_mask = (uvh[:, 2] >= 0.2) & (uvh[:, 2] <= 1.8)
+            floor_mask = is_floor  # Include all floor points
             
-            mask = height_mask
+            # Combine: regular points in height band OR floor points
+            mask = (regular_height_mask & ~is_floor) | floor_mask
             if mask.sum() == 0:
                 continue
 
@@ -423,7 +444,7 @@ def main():
     ap.add_argument("--output_dir", required=True, help="Output directory (will create 'layout_new' subfolder)")
     ap.add_argument("--pattern", help="Glob pattern for parquet files")
     ap.add_argument("--res", type=int, default=512, help="Output image resolution")
-    ap.add_argument("--hmin", type=float, default=-1.0, help="Minimum height filter (default: -1.0)")
+    ap.add_argument("--hmin", type=float, default=0.2, help="Minimum height filter for regular points (default: 0.2). Floor points are always included regardless of height.")
     ap.add_argument("--hmax", type=float, default=1.8, help="Maximum height filter (default: 1.8)")
     ap.add_argument("--point-size", type=int, default=5, help="Point rendering size for regular points")
     ap.add_argument("--floor-point-size", type=int, default=None, help="Point rendering size for floor points (default: 2x point-size, minimum 3)")
