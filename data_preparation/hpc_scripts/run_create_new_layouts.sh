@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J create_new_layouts[1-10]
-#BSUB -o /zhome/62/5/203350/ws/ImgiNav/data_preperation/hpc_scripts/logs/create_new_layouts.%I.%J.out
-#BSUB -e /zhome/62/5/203350/ws/ImgiNav/data_preperation/hpc_scripts/logs/create_new_layouts.%I.%J.err
+#BSUB -J create_new_layouts
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/create_new_layouts.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/create_new_layouts.%J.err
 #BSUB -n 10
 #BSUB -R "rusage[mem=4000]"
 #BSUB -W 10:00
@@ -10,24 +10,19 @@
 set -euo pipefail
 
 # Configuration
+BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 SCENES_ROOT="/work3/s233249/ImgiNav/datasets/scenes"
-TAXONOMY_FILE="/zhome/62/5/203350/ws/ImgiNav/config/taxonomy.json"
-PYTHON_SCRIPT="/zhome/62/5/203350/ws/ImgiNav/data_preperation/create_new_layouts.py"
+TAXONOMY_FILE="${BASE_DIR}/config/taxonomy.json"
+PYTHON_SCRIPT="${BASE_DIR}/data_preparation/create_new_layouts.py"
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets"
-MANIFEST_DIR="/zhome/62/5/203350/ws/ImgiNav/data_preperation/hpc_scripts/manifests/shards"
+ROOM_MANIFEST="/work3/s233249/ImgiNav/datasets/room_list.csv"
+LOG_DIR="${BASE_DIR}/data_preparation/hpc_scripts/logs"
 
-# Job array indexing - handle case where LSB_JOBINDEX might not be set
-if [ -z "${LSB_JOBINDEX:-}" ]; then
-  echo "ERROR: LSB_JOBINDEX is not set. This script must be run as a job array."
-  exit 1
-fi
+# Ensure log directory exists
+mkdir -p "${LOG_DIR}"
 
-IDX=$((LSB_JOBINDEX - 1))
-ROOM_MANIFEST="${MANIFEST_DIR}/room_manifest_shard$(printf "%03d" ${IDX}).csv"
-
-echo "Running new layout creation task ${LSB_JOBINDEX}/10 → shard ${IDX}"
+echo "Running new layout creation for all rooms"
 echo "Job ID: ${LSB_JOBID:-unknown}"
-echo "Job Index: ${LSB_JOBINDEX}"
 
 # Verify Python script exists
 if [ ! -f "${PYTHON_SCRIPT}" ]; then
@@ -45,7 +40,6 @@ fi
 # Verify manifest exists
 if [ ! -s "${ROOM_MANIFEST}" ]; then
   echo "ERROR: Room manifest not found: ${ROOM_MANIFEST}"
-  echo "Looking for manifest shard ${IDX}"
   exit 1
 fi
 
@@ -73,5 +67,5 @@ python "${PYTHON_SCRIPT}" \
   --point-size 5 \
   --color-mode "category"
 
-echo "New layout creation task ${LSB_JOBINDEX} completed successfully"
+echo "New layout creation completed successfully"
 
