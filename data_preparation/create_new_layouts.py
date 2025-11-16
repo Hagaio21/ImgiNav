@@ -55,12 +55,18 @@ def create_room_layout_new(
     height_min: float = -1.0,
     height_max: float = 1.8,
     point_size: int = 1,
+    floor_point_size: int = None,
+    floor_bbox_buffer: float = 0.1,
 ):
     """
     Create room layout with new coloring scheme:
     - Uses height band [height_min, height_max] for all points (more permissive)
     - Floor points are colored separately (rendered first, then regular points on top)
+    - Floor points use larger point size to fill gaps
+    - Image is cropped to floor point bounding box with buffer
     """
+    if floor_point_size is None:
+        floor_point_size = max(point_size * 2, 3)  # Default: 2x regular size, minimum 3
     # Load room metadata
     meta = load_room_meta(parquet_path.parent)
     if meta is None:
@@ -120,6 +126,10 @@ def create_room_layout_new(
     # Render to canvas - points are already sorted from low to high
     canvas = np.full((resolution, resolution, 3), 240, dtype=np.uint8)
     
+    # First pass: render all points and collect floor point coordinates
+    floor_x_coords = []
+    floor_y_coords = []
+    
     for is_floor_pt, lbl, x, y in zip(sorted_is_floor, sorted_labels, sorted_x_img, sorted_y_img):
         lbl_int = int(lbl)
         if color_mode == "category":
@@ -127,8 +137,46 @@ def create_room_layout_new(
         else:
             color_tuple = taxonomy.get_color(lbl_int)
         color = np.array(color_tuple, dtype=np.uint8)
-        draw_point(canvas, x, y, color, size=point_size)
-
+        # Use larger point size for floor points to fill gaps
+        size = floor_point_size if is_floor_pt else point_size
+        draw_point(canvas, x, y, color, size=size)
+        
+        # Collect floor point coordinates for bbox calculation
+        if is_floor_pt:
+            floor_x_coords.append(x)
+            floor_y_coords.append(y)
+    
+    # Crop to floor point bounding box with buffer
+    if floor_x_coords and floor_y_coords:
+        floor_x_coords = np.array(floor_x_coords)
+        floor_y_coords = np.array(floor_y_coords)
+        
+        # Calculate floor bbox
+        floor_x_min = int(np.min(floor_x_coords))
+        floor_x_max = int(np.max(floor_x_coords))
+        floor_y_min = int(np.min(floor_y_coords))
+        floor_y_max = int(np.max(floor_y_coords))
+        
+        # Add buffer (as percentage of bbox size)
+        bbox_width = floor_x_max - floor_x_min
+        bbox_height = floor_y_max - floor_y_min
+        buffer_x = int(bbox_width * floor_bbox_buffer)
+        buffer_y = int(bbox_height * floor_bbox_buffer)
+        
+        # Expand bbox with buffer
+        crop_x_min = max(0, floor_x_min - buffer_x)
+        crop_x_max = min(resolution - 1, floor_x_max + buffer_x)
+        crop_y_min = max(0, floor_y_min - buffer_y)
+        crop_y_max = min(resolution - 1, floor_y_max + buffer_y)
+        
+        # Crop the canvas
+        canvas = canvas[crop_y_min:crop_y_max+1, crop_x_min:crop_x_max+1]
+        
+        # Resize back to original resolution to maintain consistency
+        canvas_pil = Image.fromarray(canvas)
+        canvas_pil = canvas_pil.resize((resolution, resolution), Image.Resampling.NEAREST)
+        canvas = np.array(canvas_pil)
+    
     # Save image
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)
@@ -144,10 +192,15 @@ def create_scene_layout_new(
     height_min: float = -1.0,
     height_max: float = 1.8,
     point_size: int = 1,
+    floor_point_size: int = None,
+    floor_bbox_buffer: float = 0.1,
 ):
     """
     Create scene layout with new coloring scheme.
+    Image is cropped to floor point bounding box with buffer.
     """
+    if floor_point_size is None:
+        floor_point_size = max(point_size * 2, 3)  # Default: 2x regular size, minimum 3
     scene_id = scene_dir.name
     room_parquets = sorted(scene_dir.rglob("rooms/*/*.parquet"))
     if not room_parquets:
@@ -227,7 +280,10 @@ def create_scene_layout_new(
     # Sort all points by height (low to high) so floor appears under other points
     all_points.sort(key=lambda p: p[0])  # Sort by height (first element)
     
-    # Render points in order from low to high
+    # Render points in order from low to high and collect floor coordinates
+    floor_x_coords = []
+    floor_y_coords = []
+    
     for height, is_floor_pt, lbl, x, y in all_points:
         lbl_int = int(lbl)
         if color_mode == "category":
@@ -235,7 +291,45 @@ def create_scene_layout_new(
         else:
             color_tuple = taxonomy.get_color(lbl_int)
         color = np.array(color_tuple, dtype=np.uint8)
-        draw_point(canvas, x, y, color, size=point_size)
+        # Use larger point size for floor points to fill gaps
+        size = floor_point_size if is_floor_pt else point_size
+        draw_point(canvas, x, y, color, size=size)
+        
+        # Collect floor point coordinates for bbox calculation
+        if is_floor_pt:
+            floor_x_coords.append(x)
+            floor_y_coords.append(y)
+    
+    # Crop to floor point bounding box with buffer
+    if floor_x_coords and floor_y_coords:
+        floor_x_coords = np.array(floor_x_coords)
+        floor_y_coords = np.array(floor_y_coords)
+        
+        # Calculate floor bbox
+        floor_x_min = int(np.min(floor_x_coords))
+        floor_x_max = int(np.max(floor_x_coords))
+        floor_y_min = int(np.min(floor_y_coords))
+        floor_y_max = int(np.max(floor_y_coords))
+        
+        # Add buffer (as percentage of bbox size)
+        bbox_width = floor_x_max - floor_x_min
+        bbox_height = floor_y_max - floor_y_min
+        buffer_x = int(bbox_width * floor_bbox_buffer)
+        buffer_y = int(bbox_height * floor_bbox_buffer)
+        
+        # Expand bbox with buffer
+        crop_x_min = max(0, floor_x_min - buffer_x)
+        crop_x_max = min(resolution - 1, floor_x_max + buffer_x)
+        crop_y_min = max(0, floor_y_min - buffer_y)
+        crop_y_max = min(resolution - 1, floor_y_max + buffer_y)
+        
+        # Crop the canvas
+        canvas = canvas[crop_y_min:crop_y_max+1, crop_x_min:crop_x_max+1]
+        
+        # Resize back to original resolution to maintain consistency
+        canvas_pil = Image.fromarray(canvas)
+        canvas_pil = canvas_pil.resize((resolution, resolution), Image.Resampling.NEAREST)
+        canvas = np.array(canvas_pil)
 
     safe_mkdir(output_path.parent)
     Image.fromarray(canvas).save(output_path)
@@ -252,7 +346,9 @@ def main():
     ap.add_argument("--res", type=int, default=512, help="Output image resolution")
     ap.add_argument("--hmin", type=float, default=-1.0, help="Minimum height filter (default: -1.0)")
     ap.add_argument("--hmax", type=float, default=1.8, help="Maximum height filter (default: 1.8)")
-    ap.add_argument("--point-size", type=int, default=5, help="Point rendering size")
+    ap.add_argument("--point-size", type=int, default=5, help="Point rendering size for regular points")
+    ap.add_argument("--floor-point-size", type=int, default=None, help="Point rendering size for floor points (default: 2x point-size, minimum 3)")
+    ap.add_argument("--floor-bbox-buffer", type=float, default=0.1, help="Buffer around floor bbox as fraction of bbox size (default: 0.1 = 10%%)")
     ap.add_argument("--manifest", help="Optional manifest CSV")
     ap.add_argument("--mode", choices=["room", "scene", "both"], default="both")
     ap.add_argument("--color-mode", choices=["category", "super"], default="category",
@@ -284,7 +380,9 @@ def main():
                     resolution=args.res, 
                     height_min=args.hmin,
                     height_max=args.hmax,
-                    point_size=args.point_size
+                    point_size=args.point_size,
+                    floor_point_size=args.floor_point_size,
+                    floor_bbox_buffer=args.floor_bbox_buffer
                 )
                 progress(i, f"{parquet_path.name} -> {output_path}", True)
             except Exception as e:
@@ -312,7 +410,9 @@ def main():
                     resolution=args.res, 
                     height_min=args.hmin,
                     height_max=args.hmax,
-                    point_size=args.point_size
+                    point_size=args.point_size,
+                    floor_point_size=args.floor_point_size,
+                    floor_bbox_buffer=args.floor_bbox_buffer
                 )
                 progress(i, f"{scene_id} -> {output_path}", True)
             except Exception as e:
