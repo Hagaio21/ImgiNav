@@ -1,78 +1,64 @@
-# Phase 2.1: Diffusion with 256×256 Input (64×64×4 latents)
-# Uses Phase 2.1 autoencoder (64×64×4 latents from 256×256 images)
-# Medium-Large UNet (base_channels: 94) with attention only in bottleneck for global context
-# Optimized for small datasets
-
 experiment:
   name: phase2_1_diffusion_64x64_bottleneck_attn_unet94_256
   phase: phase2_1_diffusion
   save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet94_256
   epochs_target: 500
-
 dataset:
-  # Manifest path will be automatically updated by train_pipeline_phase2.py
-  # after embedding completes (will point to manifest_with_latents.csv in experiment directory)
-  manifest: /work3/s233249/ImgiNav/datasets/layouts.csv  # Will be updated to embedded manifest
+  manifest: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet94_256/embeddings/manifest_with_latents.csv
   outputs:
-    latent: latent_path  # Use pre-embedded latents (will be set after embedding)
-    type: type  # Room/scene conditioning: "room" -> 0, "scene" -> 1
+    latent: latent_path
   filters:
-    is_empty: [false]
-    whiteness_ratio__lt: 0.95  # Exclude images with ≥95% white pixels
+    is_empty:
+    - false
+    whiteness_ratio__lt: 0.95
   return_path: false
-
 autoencoder:
-  # Checkpoint path will be automatically updated by train_pipeline_phase2.py
-  # after autoencoder training completes
-  checkpoint: null  # Will be set by pipeline script
+  checkpoint: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_VAE_64x64_structural_256/phase2_1_VAE_64x64_structural_256_checkpoint_best.pt
   frozen: true
-
 unet:
   type: UnetWithAttention
   in_channels: 4
   out_channels: 4
-  base_channels: 94  # Medium-large model capacity
-  depth: 4  # Increased from 3 for deeper model
+  base_channels: 94
+  depth: 4
   num_res_blocks: 2
-  time_dim: 256  # Increased from 128 for richer temporal encoding
+  time_dim: 256
   cond_channels: 0
   fusion_mode: none
-  cond_dim: 256  # Increased from 128 for stronger room/scene conditioning
+  cond_dim: 256
   num_cond_classes: 2
   norm_groups: 8
-  dropout: 0.1  # Reduced from 0.2 for better learning
+  dropout: 0.1
   use_attention: true
   attention_heads: null
   attention_at:
   - bottleneck
-
 scheduler:
   type: LinearScheduler
-  num_steps: 1000  # 1000 noise steps with linear schedule for stable training
-
+  num_steps: 1000
 training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 96  # Balanced batch size for medium-large model
+  batch_size: 96
   num_workers: 8
   shuffle: true
   epochs: 500
   learning_rate: 0.00015
   optimizer: AdamW
-  weight_decay: 0.05  # Reduced from 0.15 to reduce over-regularization
+  weight_decay: 0.05
   save_interval: 99999
   eval_interval: 5
   sample_interval: 5
   use_amp: false
-  use_weighted_sampling: true  # Enable weighted sampling for balanced room/scene distribution
-  weight_column: type  # Sample based on room/scene type
-  max_grad_norm: 1.0  # Increased from 0.5 to allow stronger gradients
+  use_weighted_sampling: true
+  weight_column: type
+  max_grad_norm: 1.0
   early_stopping_patience: 20
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: false
-  cfg_dropout_rate: 0.2  # Increased for stronger CFG training
-  guidance_scale: 7.5  # Increased for stronger conditional generation
+  cfg_dropout_rate: 0.1
+  guidance_scale: 7.5
   scheduler:
     type: linear
   loss:
@@ -82,4 +68,3 @@ training:
       key: pred_noise
       target: noise
       weight: 1.0
-
