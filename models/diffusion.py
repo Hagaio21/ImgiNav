@@ -302,6 +302,9 @@ class DiffusionModel(BaseModel):
             
             t_batch = t.expand(batch_size)
             
+            # Clamp latents before passing to UNet (diffusion always sees clamped latents)
+            latents = torch.clamp(latents, -4.0, 4.0)
+            
             with torch.no_grad():
                 # Use live UNet for sampling
                 unet = self.unet
