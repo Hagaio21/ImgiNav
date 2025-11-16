@@ -16,7 +16,6 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PIPELINE_SCRIPTS=(
     "run_phase2_1_pipeline_unet48_256.sh"
     "run_phase2_1_pipeline_unet64_256.sh"
-    "run_phase2_1_pipeline_unet94_256.sh"
     "run_phase2_1_pipeline_unet128_256.sh"
 )
 
