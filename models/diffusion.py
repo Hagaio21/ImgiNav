@@ -195,6 +195,9 @@ class DiffusionModel(BaseModel):
             else:
                 raise ValueError(f"Encoder output must contain 'latent' or 'mu'/'logvar'. Got: {list(encoder_out.keys())}")
             
+            # Clamp latents to [-4, 4] right after loading (diffusion only sees clamped latents)
+            latents = torch.clamp(latents, -4.0, 4.0)
+            
             if noise is None:
                 noise = self.scheduler.randn_like(latents)
             elif noise.shape != latents.shape:
@@ -222,6 +225,10 @@ class DiffusionModel(BaseModel):
                     raise ValueError(f"Latent dict must contain 'latent' or 'mu'. Got: {list(x0_or_latents.keys())}")
             else:
                 latents = x0_or_latents  # Direct tensor
+            
+            # Clamp latents to [-4, 4] right after loading (diffusion only sees clamped latents)
+            latents = torch.clamp(latents, -4.0, 4.0)
+            
             if noise is None:
                 noise = self.scheduler.randn_like(latents)
 
@@ -240,7 +247,6 @@ class DiffusionModel(BaseModel):
         
         # Predict x0 from noisy latents: x0 = (x_t - sqrt(1 - alpha_bar) * epsilon) / sqrt(alpha_bar)
         pred_latent = (noisy_latents - (1 - alpha_bar).sqrt() * pred_noise) / alpha_bar.sqrt().clamp(min=1e-8)
-        pred_latent = torch.clamp(pred_latent, -10.0, 10.0)
 
         # Do NOT decode during training - decoder should only see clean latents at sampling time
         return {
@@ -272,6 +278,8 @@ class DiffusionModel(BaseModel):
         # Create a dummy tensor with the right shape, then generate noise
         dummy = torch.zeros((batch_size, *latent_shape), device=device)
         latents = self.scheduler.randn_like(dummy)
+        # Clamp latents to [-4, 4] right after loading (diffusion only sees clamped latents)
+        latents = torch.clamp(latents, -4.0, 4.0)
         
         # Create timestep schedule
         # For both DDIM and DDPM, we go from high noise (T-1) to low noise (0)
@@ -328,15 +336,12 @@ class DiffusionModel(BaseModel):
                 
                 # Predict x0 from current noisy latents
                 pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt().clamp(min=1e-8)
-                # Clamp to avoid numerical issues (latents should be roughly in range [-scale, scale])
-                pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
                 
                 # DDIM update (deterministic if eta=0)
                 # Standard DDIM formula: x_{t-1} = sqrt(alpha_bar_{t-1}) * pred_x0 + sqrt(1 - alpha_bar_{t-1} - sigma_t^2) * epsilon + sigma_t * z
                 if eta > 0 and i < len(timesteps) - 1:
                     # Add stochastic noise if eta > 0
                     sigma = eta * ((1 - alpha_bar_prev) / (1 - alpha_bar_t).clamp(min=1e-8) * (1 - alpha_bar_t / alpha_bar_prev.clamp(min=1e-8))).sqrt()
-                    sigma = torch.clamp(sigma, min=0.0, max=1.0)
                     pred_dir = (1 - alpha_bar_prev - sigma**2).sqrt().clamp(min=0.0) * pred_noise
                     noise = sigma * self.scheduler.randn_like(latents)
                 else:
@@ -377,27 +382,22 @@ class DiffusionModel(BaseModel):
                 else:
                     # Last step: predict x_0 and use it directly (no noise)
                     pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
-                    # Clamp to avoid numerical issues
-                    pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
                     latents = pred_x0
             
             if return_history:
                 history.append(latents.clone())
         
-        # Ensure latents are within reasonable bounds (prevent out-of-bounds values)
-        # For VAE: use wider bounds [-2, 2] (covers ~95% of N(0,1)) since VAE has better KL regularization
-        # For AE: use [-1, 1] (covers ~68% of N(0,1)) to match training distribution
+        # Clamp latents before decoding (decoder only sees clamped latents)
         # Use stored VAE flag from _build()
         is_vae = getattr(self, '_is_vae', False)
         
         if is_vae:
             # VAE: wider bounds due to better KL regularization
-            latents = torch.clamp(latents, -2.0, 2.0)
+            latents = torch.clamp(latents, -4.0, 4.0)
         else:
             # AE: tighter bounds to match training distribution
             latents = torch.clamp(latents, -1.0, 1.0)
         
-        # Latents are now clamped and in the correct space
         # Build output dict
         result = {"latent": latents}
         
@@ -410,8 +410,6 @@ class DiffusionModel(BaseModel):
                 # Denormalize from [-1, 1] to [0, 1] for image saving
                 # This matches how images are saved during autoencoder training (train.py line 186-187)
                 rgb = (rgb + 1.0) / 2.0
-                # Clamp to ensure valid [0, 1] range (some values might be slightly outside due to numerical precision)
-                rgb = torch.clamp(rgb, 0.0, 1.0)
                 result["rgb"] = rgb
         
         if return_history:

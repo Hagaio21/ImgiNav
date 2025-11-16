@@ -466,14 +466,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         if "rgb" in sample_output:
             # Already decoded, in [0, 1] range
             samples = sample_output["rgb"] * 255.0
-            samples = torch.clamp(samples, 0.0, 255.0)
         else:
             # Decode from latents
             outputs = model.decoder({"latent": sample_output["latent"]})
             samples = outputs["rgb"]  # [-1, 1] range from tanh
             samples = (samples + 1.0) / 2.0  # [-1, 1] -> [0, 1]
             samples = samples * 255.0  # [0, 1] -> [0, 255]
-            samples = torch.clamp(samples, 0.0, 255.0)
         processed_samples.append(samples)
     
     # Concatenate all samples: [unconditioned, rooms, scenes]
