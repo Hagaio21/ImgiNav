@@ -16,11 +16,18 @@ PYTHON_SCRIPT="/zhome/62/5/203350/ws/ImgiNav/data_preperation/create_new_layouts
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets"
 MANIFEST_DIR="/zhome/62/5/203350/ws/ImgiNav/data_preperation/hpc_scripts/manifests/shards"
 
-# Job array indexing
+# Job array indexing - handle case where LSB_JOBINDEX might not be set
+if [ -z "${LSB_JOBINDEX:-}" ]; then
+  echo "ERROR: LSB_JOBINDEX is not set. This script must be run as a job array."
+  exit 1
+fi
+
 IDX=$((LSB_JOBINDEX - 1))
 ROOM_MANIFEST="${MANIFEST_DIR}/room_manifest_shard$(printf "%03d" ${IDX}).csv"
 
 echo "Running new layout creation task ${LSB_JOBINDEX}/10 → shard ${IDX}"
+echo "Job ID: ${LSB_JOBID:-unknown}"
+echo "Job Index: ${LSB_JOBINDEX}"
 
 # Verify Python script exists
 if [ ! -f "${PYTHON_SCRIPT}" ]; then
@@ -29,15 +36,23 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   exit 1
 fi
 
+# Verify taxonomy file exists
+if [ ! -f "${TAXONOMY_FILE}" ]; then
+  echo "ERROR: Taxonomy file not found: ${TAXONOMY_FILE}"
+  exit 1
+fi
+
 # Verify manifest exists
 if [ ! -s "${ROOM_MANIFEST}" ]; then
   echo "ERROR: Room manifest not found: ${ROOM_MANIFEST}"
+  echo "Looking for manifest shard ${IDX}"
   exit 1
 fi
 
 echo "Using manifest: ${ROOM_MANIFEST}"
+echo "Manifest exists and has $(wc -l < "${ROOM_MANIFEST}") lines"
 echo "Sample entries:"
-head -3 "${ROOM_MANIFEST}"
+head -3 "${ROOM_MANIFEST}" || echo "Could not read manifest"
 
 # Conda activation
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
