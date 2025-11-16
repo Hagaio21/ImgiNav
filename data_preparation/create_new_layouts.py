@@ -510,9 +510,46 @@ def main():
 
     # Scenes
     if args.mode in ("scene", "both"):
-        if manifest_path:
-            # Use scene IDs from manifest
-            scene_ids = discover_scenes(manifest=manifest_path)
+        # Priority: 1) manifest_path (if provided), 2) scene_list.csv in datasets/, 3) file discovery
+        scene_list_manifest = None
+        
+        # If manifest_path is provided and mode is scene, use it (for job arrays with sharded manifests)
+        if manifest_path and manifest_path.exists():
+            scene_list_manifest = manifest_path
+        else:
+            # Try to find scene_list.csv in datasets/ directory
+            if in_root.parent:
+                # Try datasets/scene_list.csv (if in_root is datasets/scenes)
+                scene_list_manifest = in_root.parent / "scene_list.csv"
+                if not scene_list_manifest.exists():
+                    # Try datasets/scene_list.csv directly
+                    datasets_dir = Path("/work3/s233249/ImgiNav/datasets")
+                    scene_list_manifest = datasets_dir / "scene_list.csv"
+                    if not scene_list_manifest.exists():
+                        scene_list_manifest = None
+        
+        if scene_list_manifest and scene_list_manifest.exists():
+            # Use find_scene_pointclouds to get scene_id and verify paths
+            # Manifest format: scene_id,parquet_file_path,meta_file_path
+            from utils.file_discovery import find_scene_pointclouds
+            scene_tuples = find_scene_pointclouds(in_root, manifest=scene_list_manifest)
+            # Extract scene_ids and verify scene directories exist
+            scene_ids = []
+            for scene_id, pc_path in scene_tuples:
+                # Get scene directory from parquet file path (parent directory)
+                # parquet_file_path format: /work3/.../scenes/{scene_id}/{scene_id}_sem_pointcloud.parquet
+                # So pc_path.parent gives us the scene directory
+                scene_dir_from_path = pc_path.parent
+                # Verify scene directory exists and has rooms subdirectory
+                if scene_dir_from_path.exists() and (scene_dir_from_path / "rooms").exists():
+                    scene_ids.append(scene_id)
+                else:
+                    # Fallback: try constructing from scene_id
+                    scene_dir = in_root / scene_id
+                    if scene_dir.exists() and (scene_dir / "rooms").exists():
+                        scene_ids.append(scene_id)
+                    else:
+                        print(f"[warn] Scene directory not found for {scene_id}: {scene_dir_from_path} or {scene_dir}", flush=True)
         else:
             # Default discovery
             scene_info_files = list(in_root.rglob("*_scene_info.json"))
