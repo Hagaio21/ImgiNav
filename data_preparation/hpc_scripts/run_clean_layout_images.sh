@@ -65,13 +65,13 @@ export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 python "${PYTHON_SCRIPT}" \
   --input-dir "${LAYOUT_DIR}" \
   --taxonomy "${TAXONOMY_FILE}" \
-  --min-density 0.15 \
+  --min-density 0.1 \
   --tolerance 0 \
   --failed-dir "${FAILED_DIR}" \
   --clean-dir "${CLEANED_DIR}" \
   --extensions png jpg jpeg
 
 echo "Layout image cleaning completed successfully"
-echo "Failed images moved to: ${FAILED_DIR}"
+echo "Failed images copied to: ${FAILED_DIR}"
 echo "Cleaned images saved to: ${CLEANED_DIR}"
 
