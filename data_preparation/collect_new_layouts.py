@@ -150,15 +150,10 @@ def collect_new_layouts(
                 print(f"[warn] Skipping file with unexpected name format: {layout_path.name}")
                 continue
             
-            # Determine layout path (relative or absolute)
-            if use_relative_paths and data_root:
-                try:
-                    layout_path_str = str(layout_path.relative_to(data_root))
-                except ValueError:
-                    # If not under data_root, use absolute path
-                    layout_path_str = str(layout_path.resolve())
-            else:
-                layout_path_str = str(layout_path.resolve())
+            # Always use absolute paths to avoid resolution issues during embedding
+            # The embedding process resolves relative paths relative to manifest directory,
+            # which can cause issues if manifests are copied or moved
+            layout_path_str = str(layout_path.resolve())
             
             # Check if empty
             is_empty = 0

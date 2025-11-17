@@ -369,8 +369,21 @@ def create_layout_embeddings_from_manifest(
                 
                 # Convert to absolute path if relative
                 if not layout_path.is_absolute():
-                    # If relative, resolve relative to manifest directory
-                    layout_path = (manifest_dir / layout_path).resolve()
+                    # If relative, try resolving relative to manifest directory first
+                    # But also try resolving relative to common dataset locations
+                    resolved_path = (manifest_dir / layout_path).resolve()
+                    if not resolved_path.exists():
+                        # Try common dataset locations
+                        common_roots = [
+                            Path("/work3/s233249/ImgiNav/datasets"),
+                            manifest_dir.parent if manifest_dir.name == "datasets" else manifest_dir,
+                        ]
+                        for root in common_roots:
+                            alt_path = (root / layout_path).resolve()
+                            if alt_path.exists():
+                                resolved_path = alt_path
+                                break
+                    layout_path = resolved_path
                 
                 # Use output_latent_dir if provided (experiment folder), otherwise use dataset structure
                 if output_latent_dir is not None:
