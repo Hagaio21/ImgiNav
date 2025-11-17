@@ -8,6 +8,7 @@
 #BSUB -q hpc
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
 # Configuration
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
@@ -64,7 +65,7 @@ export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 python "${PYTHON_SCRIPT}" \
   --input-dir "${LAYOUT_DIR}" \
   --taxonomy "${TAXONOMY_FILE}" \
-  --min-density 0.1 \
+  --min-density 0.2 \
   --tolerance 0 \
   --failed-dir "${FAILED_DIR}" \
   --clean-dir "${CLEANED_DIR}" \
