@@ -654,18 +654,21 @@ def main():
     # This overrides any frozen settings from config or checkpoint
     if hasattr(model, 'unet'):
         print("Ensuring UNet is trainable...")
-        trainable_count = 0
-        frozen_count = 0
+        trainable_params = 0
+        frozen_params = 0
+        frozen_tensors = 0
         for param in model.unet.parameters():
             if param.requires_grad:
-                trainable_count += 1
+                trainable_params += param.numel()
             else:
-                frozen_count += 1
+                frozen_params += param.numel()
+                frozen_tensors += 1
                 param.requires_grad = True  # Force trainable
         
-        if frozen_count > 0:
-            print(f"  WARNING: Found {frozen_count} frozen UNet parameters - setting them to trainable!")
-        print(f"  UNet parameters: {trainable_count + frozen_count} total, {trainable_count + frozen_count} trainable")
+        if frozen_tensors > 0:
+            print(f"  WARNING: Found {frozen_tensors} frozen UNet parameter tensors ({frozen_params:,} params) - setting them to trainable!")
+        total_params = trainable_params + frozen_params
+        print(f"  UNet parameters: {total_params:,} total, {total_params:,} trainable")
     
     # Build data loaders
     batch_size = config["training"].get("batch_size", 32)
@@ -744,14 +747,14 @@ def main():
     
     # Verify optimizer has trainable parameters
     total_optimizer_params = sum(len(group['params']) for group in optimizer.param_groups)
-    total_trainable_model_params = sum(1 for _ in model.trainable_parameters())
+    total_trainable_model_params = sum(p.numel() for p in model.trainable_parameters())
     print(f"  Optimizer parameter groups: {len(optimizer.param_groups)}")
     print(f"  Total trainable parameters in model: {total_trainable_model_params:,}")
     
     # Count UNet parameters specifically
     if hasattr(model, 'unet'):
-        unet_trainable = sum(1 for p in model.unet.parameters() if p.requires_grad)
-        unet_total = sum(1 for _ in model.unet.parameters())
+        unet_trainable = sum(p.numel() for p in model.unet.parameters() if p.requires_grad)
+        unet_total = sum(p.numel() for p in model.unet.parameters())
         print(f"  UNet parameters: {unet_trainable:,} trainable / {unet_total:,} total")
         if unet_trainable == 0:
             print("  ERROR: UNet has no trainable parameters! Training will not work!")
