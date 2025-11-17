@@ -301,8 +301,8 @@ class LatentStructuralLoss(LossComponent):
         
         # Predict x0 from noisy latents: x0 = (x_t - sqrt(1 - alpha_bar) * epsilon) / sqrt(alpha_bar)
         pred_latents = (noisy_latents - (1 - alpha_bar).sqrt() * pred_noise) / alpha_bar.sqrt().clamp(min=1e-8)
-        # Clamp to avoid numerical issues
-        pred_latents = torch.clamp(pred_latents, -10.0, 10.0)
+        # Clamp to avoid numerical issues (use -6, 6 to match sampling clamping)
+        pred_latents = torch.clamp(pred_latents, -6.0, 6.0)
         
         # Compute gradients on both predicted and ground-truth latents
         pred_gradients = self._compute_gradients(pred_latents)

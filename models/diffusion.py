@@ -98,6 +98,11 @@ class DiffusionModel(BaseModel):
         else:
             # New format - use Unet (default)
             self.unet = Unet.from_config(unet_cfg)
+        
+        # Latent clamping bounds (for sampling/decoding)
+        # Default: -6.0 to 6.0 (can be overridden in config)
+        self._latent_clamp_min = self._init_kwargs.get("latent_clamp_min", -6.0)
+        self._latent_clamp_max = self._init_kwargs.get("latent_clamp_max", 6.0)
         # Freeze UNet if requested (or use special ControlNet freezing)
         if unet_cfg.get("frozen", False):
             self.unet.freeze()
@@ -402,7 +407,9 @@ class DiffusionModel(BaseModel):
         # Build output dict
         # Clamp final latents before decoding to ensure they're in valid range
         # This prevents decoder from receiving out-of-range values that cause empty images
-        latents_clamped = torch.clamp(latents, -10.0, 10.0)
+        clamp_min = getattr(self, '_latent_clamp_min', -6.0)
+        clamp_max = getattr(self, '_latent_clamp_max', 6.0)
+        latents_clamped = torch.clamp(latents, clamp_min, clamp_max)
         result = {"latent": latents_clamped}
         
         # Decode to RGB if decoder is available

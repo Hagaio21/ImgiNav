@@ -15,6 +15,8 @@ dataset:
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt
   frozen: true
+latent_clamp_min: -6.0
+latent_clamp_max: 6.0
 unet:
   type: UnetWithAttention
   in_channels: 4
