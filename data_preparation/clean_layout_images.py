@@ -5,15 +5,77 @@ Images with no floor color or low floor density are moved to a failed folder.
 """
 
 import argparse
+import csv
+import re
 import shutil
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict
 
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
 from common.taxonomy import Taxonomy
+from utils.layout_analysis import count_distinct_colors
+
+
+def parse_layout_filename(filename: str) -> Tuple[str, str, str]:
+    """
+    Parse layout filename to extract scene_id, type, and room_id.
+    
+    Formats:
+    - Room: {scene_id}_{room_id}_room_seg_layout.png
+    - Scene: {scene_id}_scene_layout.png
+    
+    Returns:
+        (scene_id, type, room_id)
+    """
+    stem = Path(filename).stem
+    
+    # Check for scene layout: {scene_id}_scene_layout
+    scene_match = re.match(r"^(.+?)_scene_layout$", stem)
+    if scene_match:
+        scene_id = scene_match.group(1)
+        return (scene_id, "scene", "scene")
+    
+    # Check for room layout: {scene_id}_{room_id}_room_seg_layout
+    room_match = re.match(r"^(.+?)_(\d{4})_room_seg_layout$", stem)
+    if room_match:
+        scene_id = room_match.group(1)
+        room_id = room_match.group(2)
+        return (scene_id, "room", room_id)
+    
+    # Fallback: try more flexible pattern for room layouts
+    room_match_flex = re.match(r"^(.+?)_(.+?)_room_seg_layout$", stem)
+    if room_match_flex:
+        scene_id = room_match_flex.group(1)
+        room_id = room_match_flex.group(2)
+        return (scene_id, "room", room_id)
+    
+    raise ValueError(f"Could not parse layout filename: {filename}")
+
+
+def check_if_empty(layout_path: Path, min_colors: int = 4) -> bool:
+    """
+    Check if a layout image is empty (too few colors).
+    
+    Args:
+        layout_path: Path to layout image
+        min_colors: Minimum number of distinct colors (excluding background)
+    
+    Returns:
+        True if empty, False otherwise
+    """
+    try:
+        color_count = count_distinct_colors(
+            layout_path, 
+            exclude_background=True, 
+            min_pixel_threshold=10
+        )
+        return color_count < min_colors
+    except Exception as e:
+        print(f"[warn] Error checking emptiness for {layout_path}: {e}", flush=True)
+        return True  # Assume empty if we can't check
 
 
 def get_floor_color(taxonomy: Taxonomy) -> Tuple[int, int, int]:
@@ -169,6 +231,89 @@ def clean_image(image: np.ndarray, floor_mask: np.ndarray,
     return cleaned
 
 
+def create_manifest_from_cleaned(cleaned_dir: Path, output_csv: Path, min_colors: int = 4):
+    """
+    Create manifest CSV from cleaned layout images.
+    
+    Args:
+        cleaned_dir: Directory containing cleaned layout images
+        output_csv: Output manifest CSV path
+        min_colors: Minimum colors for empty check
+    """
+    if not cleaned_dir.exists():
+        print(f"[WARN] Cleaned directory does not exist: {cleaned_dir}", flush=True)
+        return
+    
+    # Find all image files
+    image_files = []
+    for ext in ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]:
+        image_files.extend(cleaned_dir.glob(f"*.{ext}"))
+    
+    # Remove duplicates and filter to files only
+    image_files = list(set(image_files))
+    image_files = [f for f in image_files if f.is_file()]
+    image_files = sorted(image_files)
+    
+    print(f"[INFO] Found {len(image_files)} cleaned images for manifest", flush=True)
+    
+    # Prepare manifest rows
+    manifest_rows: List[Dict[str, str]] = []
+    
+    for layout_path in tqdm(image_files, desc="Creating manifest"):
+        try:
+            # Parse filename - try to parse, use fallback if it doesn't match expected patterns
+            try:
+                scene_id, layout_type, room_id = parse_layout_filename(layout_path.name)
+            except ValueError:
+                # If filename doesn't match expected patterns, use filename as scene_id
+                print(f"[warn] File with unexpected name format, using fallback: {layout_path.name}", flush=True)
+                scene_id = layout_path.stem  # Use filename without extension as scene_id
+                layout_type = "unknown"  # Mark as unknown type
+                room_id = "unknown"  # Mark as unknown room
+            
+            # Always use absolute paths
+            layout_path_str = str(layout_path.resolve())
+            
+            # Check if empty
+            is_empty = 0
+            if check_if_empty(layout_path, min_colors=min_colors):
+                is_empty = 1
+            
+            manifest_rows.append({
+                "scene_id": scene_id,
+                "type": layout_type,
+                "room_id": room_id,
+                "layout_path": layout_path_str,
+                "is_empty": str(is_empty)
+            })
+            
+        except Exception as e:
+            print(f"[warn] Error processing {layout_path} for manifest: {e}", flush=True)
+            continue
+    
+    # Write manifest CSV
+    fieldnames = ["scene_id", "type", "room_id", "layout_path", "is_empty"]
+    
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(manifest_rows)
+    
+    # Print statistics
+    scene_count = sum(1 for r in manifest_rows if r["type"] == "scene")
+    room_count = sum(1 for r in manifest_rows if r["type"] == "room")
+    empty_count = sum(1 for r in manifest_rows if r["is_empty"] == "1")
+    
+    print(f"\nManifest statistics:", flush=True)
+    print(f"  Total entries: {len(manifest_rows)}", flush=True)
+    print(f"  Scene layouts: {scene_count}", flush=True)
+    print(f"  Room layouts: {room_count}", flush=True)
+    print(f"  Empty layouts: {empty_count}", flush=True)
+    print(f"  Valid layouts: {len(manifest_rows) - empty_count}", flush=True)
+
+
 def process_image(image_path: Path, taxonomy: Taxonomy, 
                  min_density: float = 0.1,
                  tolerance: int = 0,
@@ -284,6 +429,12 @@ def main():
         help="Directory to save cleaned images (optional, default: don't save)"
     )
     parser.add_argument(
+        "--output-manifest",
+        type=str,
+        default=None,
+        help="Output path for manifest CSV (optional, creates manifest from cleaned images)"
+    )
+    parser.add_argument(
         "--extensions",
         type=str,
         nargs="+",
@@ -317,12 +468,20 @@ def main():
         clean_dir = Path(args.clean_dir)
         clean_dir.mkdir(parents=True, exist_ok=True)
     
-    # Find all images
+    # Find all images - process ALL files with image extensions, regardless of filename
     image_extensions = [ext.lower() for ext in args.extensions]
     image_files = []
     for ext in image_extensions:
+        # Find all files with this extension (case-insensitive)
         image_files.extend(input_dir.glob(f"*.{ext}"))
         image_files.extend(input_dir.glob(f"*.{ext.upper()}"))
+        image_files.extend(input_dir.glob(f"*.{ext.capitalize()}"))
+    
+    # Remove duplicates (in case of case variations)
+    image_files = list(set(image_files))
+    # Filter to only actual files (not directories)
+    image_files = [f for f in image_files if f.is_file()]
+    image_files = sorted(image_files)
     
     if len(image_files) == 0:
         print(f"[WARN] No images found in {input_dir} with extensions {image_extensions}", flush=True)
@@ -354,6 +513,22 @@ def main():
             
             if success:
                 success_count += 1
+                # Verify cleaned image was actually saved (if clean_dir specified)
+                if clean_dir is not None:
+                    cleaned_path = clean_dir / image_path.name
+                    if not cleaned_path.exists():
+                        # If save failed silently, mark as failed
+                        failed_count += 1
+                        success_count -= 1
+                        save_error_count += 1
+                        reason = "save_error: file not found after save"
+                        # Copy original to failed directory
+                        failed_path = failed_dir / image_path.name
+                        try:
+                            shutil.copy2(str(image_path), str(failed_path))
+                            tqdm.write(f"[FAILED] {image_path.name}: {reason} -> copied to {failed_dir}")
+                        except Exception as e:
+                            tqdm.write(f"[ERROR] Failed to copy {image_path.name}: {e}")
             else:
                 failed_count += 1
                 
@@ -395,6 +570,14 @@ def main():
     print("\n" + "="*60, flush=True)
     print("SUMMARY", flush=True)
     print("="*60, flush=True)
+    # Count actual files in output directories
+    cleaned_count = 0
+    failed_count_actual = 0
+    if clean_dir and clean_dir.exists():
+        cleaned_count = len(list(clean_dir.glob("*")))
+    if failed_dir.exists():
+        failed_count_actual = len(list(failed_dir.glob("*")))
+    
     print(f"Total images found: {len(image_files)}", flush=True)
     print(f"Total images processed: {success_count + failed_count}", flush=True)
     print(f"Successful: {success_count}", flush=True)
@@ -406,9 +589,30 @@ def main():
     print(f"  - Load errors: {skipped_count}", flush=True)
     if len(image_files) != (success_count + failed_count):
         print(f"  - Unprocessed: {len(image_files) - (success_count + failed_count)}", flush=True)
-    print(f"Failed images copied to: {failed_dir}", flush=True)
+    print(f"\nActual file counts in directories:", flush=True)
+    if clean_dir:
+        print(f"  Cleaned directory: {cleaned_count} files", flush=True)
+    print(f"  Failed directory: {failed_count_actual} files", flush=True)
+    total_in_dirs = cleaned_count + failed_count_actual
+    if len(image_files) != total_in_dirs:
+        print(f"\n⚠ WARNING: File count mismatch!", flush=True)
+        print(f"  Expected: {len(image_files)} files", flush=True)
+        print(f"  Found in dirs: {total_in_dirs} files", flush=True)
+        print(f"  Missing: {len(image_files) - total_in_dirs} files", flush=True)
+    print(f"\nFailed images copied to: {failed_dir}", flush=True)
     if clean_dir:
         print(f"Cleaned images saved to: {clean_dir}", flush=True)
+    
+    # Create manifest from cleaned images if requested
+    if clean_dir and args.output_manifest:
+        print(f"\n{'='*60}", flush=True)
+        print("Creating manifest from cleaned images", flush=True)
+        print(f"{'='*60}", flush=True)
+        
+        output_manifest = Path(args.output_manifest)
+        create_manifest_from_cleaned(clean_dir, output_manifest, min_colors=4)
+        
+        print(f"Manifest created: {output_manifest}", flush=True)
 
 
 if __name__ == "__main__":
