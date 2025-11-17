@@ -258,12 +258,6 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--parquet-root",
-        type=Path,
-        required=True,
-        help="Root directory containing scene parquet files"
-    )
-    parser.add_argument(
         "--taxonomy",
         type=Path,
         default=Path("config/taxonomy.json"),
@@ -278,14 +272,8 @@ def main():
     parser.add_argument(
         "--room-list",
         type=Path,
-        default=None,
+        required=True,
         help="Room list manifest CSV file (scene_id, room_id, room_parquet_file_path, ...)"
-    )
-    parser.add_argument(
-        "--pattern",
-        type=str,
-        default="rooms/*/*.parquet",
-        help="Pattern to match parquet files (e.g., 'rooms/*/*.parquet')"
     )
     
     args = parser.parse_args()
@@ -295,55 +283,44 @@ def main():
         raise FileNotFoundError(f"Taxonomy file not found: {args.taxonomy}")
     taxonomy = Taxonomy(args.taxonomy)
     
-    # Find all room parquet files
-    print(f"[INFO] Discovering room parquet files...")
+    # Verify room_list exists
+    if not args.room_list.exists():
+        raise FileNotFoundError(f"Room list manifest not found: {args.room_list}")
+    
+    # Read room parquet files directly from manifest
+    print(f"[INFO] Reading room_list from {args.room_list}...")
     
     room_files = []
     room_info = []  # List of (scene_id, room_id, parquet_path) tuples
     
-    # If room_list is provided, use it to find room files
-    if args.room_list and args.room_list.exists():
-        print(f"[INFO] Reading room_list from {args.room_list}...")
-        with open(args.room_list, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                scene_id = row.get("scene_id", "").strip()
-                room_id = row.get("room_id", "").strip()
-                
-                # Try to get parquet path from manifest
-                parquet_path = None
-                for col_name in ['room_parquet_file_path', 'parquet_file_path', 'parquet_path', 'file_path']:
-                    if col_name in row and row[col_name]:
-                        parquet_path = Path(row[col_name])
+    with open(args.room_list, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            scene_id = row.get("scene_id", "").strip()
+            room_id = row.get("room_id", "").strip()
+            
+            # Get parquet path from manifest (try multiple column names)
+            parquet_path = None
+            for col_name in ['room_parquet_file_path', 'parquet_file_path', 'parquet_path', 'file_path']:
+                if col_name in row and row[col_name]:
+                    parquet_path_str = row[col_name].strip()
+                    if parquet_path_str:
+                        parquet_path = Path(parquet_path_str)
+                        # Resolve relative paths if needed
+                        if not parquet_path.is_absolute():
+                            # Try relative to manifest directory
+                            parquet_path = (args.room_list.parent / parquet_path).resolve()
                         if parquet_path.exists():
                             break
-                
-                # If not in manifest, try to construct path
-                if parquet_path is None or not parquet_path.exists():
-                    scene_dir = args.parquet_root / scene_id
-                    if scene_dir.exists():
-                        # Look for rooms/{room_id}/*.parquet
-                        room_dir = scene_dir / "rooms" / room_id
-                        if room_dir.exists():
-                            parquet_files = list(room_dir.glob("*.parquet"))
-                            if parquet_files:
-                                parquet_path = parquet_files[0]
-                
-                if parquet_path and parquet_path.exists():
-                    room_files.append(parquet_path)
-                    room_info.append((scene_id, room_id, parquet_path))
-                else:
-                    print(f"[warn] Room parquet not found for scene_id={scene_id}, room_id={room_id}", flush=True)
-        
-        print(f"[INFO] Found {len(room_files)} room parquet files from room_list")
-    else:
-        # Use standard discovery
-        room_files = find_room_files(args.parquet_root, manifest=None, pattern=args.pattern)
-        # Extract scene_id and room_id from paths
-        for parquet_path in room_files:
-            scene_id, room_id = infer_ids_from_path(parquet_path)
-            room_info.append((str(scene_id), str(room_id), parquet_path))
-        print(f"[INFO] Found {len(room_files)} room parquet files from filesystem")
+            
+            if parquet_path is None or not parquet_path.exists():
+                print(f"[warn] Room parquet not found for scene_id={scene_id}, room_id={room_id}", flush=True)
+                continue
+            
+            room_files.append(parquet_path)
+            room_info.append((scene_id, room_id, parquet_path))
+    
+    print(f"[INFO] Found {len(room_files)} room parquet files from room_list")
     
     if not room_files:
         print(f"[ERROR] No room parquet files found")
@@ -382,8 +359,8 @@ def main():
     # Save zmaps
     safe_mkdir(args.output_dir)
     
-    scene_zmap_path = args.output_dir / "scene_zmap.json"
-    room_zmap_path = args.output_dir / "room_zmap.json"
+    scene_zmap_path = args.output_dir / "zmap_scenes.json"
+    room_zmap_path = args.output_dir / "zmap_rooms.json"
     
     write_json(scene_zmap, scene_zmap_path)
     write_json(room_zmaps, room_zmap_path)

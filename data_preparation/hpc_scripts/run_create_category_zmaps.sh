@@ -14,7 +14,6 @@ export MKL_INTERFACE_LAYER=LP64
 # CONFIGURATION
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-SCENES_ROOT="/work3/s233249/ImgiNav/datasets/scenes"
 TAXONOMY_FILE="${BASE_DIR}/config/taxonomy.json"
 PYTHON_SCRIPT="${BASE_DIR}/data_preparation/create_category_zmaps.py"
 OUTPUT_DIR="${BASE_DIR}/config"
@@ -30,7 +29,6 @@ mkdir -p "${LOG_DIR}"
 echo "=========================================="
 echo "Running Category Z-Map Creation"
 echo "Taxonomy: ${TAXONOMY_FILE}"
-echo "Source: ${SCENES_ROOT}"
 echo "Output Dir: ${OUTPUT_DIR}"
 echo "Room List: ${ROOM_MANIFEST}"
 echo "Start: $(date)"
@@ -75,27 +73,17 @@ fi
 cd "${BASE_DIR}"
 export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 
-# Run zmap creation with room_list if available
-if [ -s "${ROOM_MANIFEST}" ]; then
-  python "${PYTHON_SCRIPT}" \
-    --parquet-root "${SCENES_ROOT}" \
-    --taxonomy "${TAXONOMY_FILE}" \
-    --output-dir "${OUTPUT_DIR}" \
-    --room-list "${ROOM_MANIFEST}" \
-    --pattern "rooms/*/*.parquet"
-else
-  python "${PYTHON_SCRIPT}" \
-    --parquet-root "${SCENES_ROOT}" \
-    --taxonomy "${TAXONOMY_FILE}" \
-    --output-dir "${OUTPUT_DIR}" \
-    --pattern "rooms/*/*.parquet"
-fi
+# Run zmap creation with room_list
+python "${PYTHON_SCRIPT}" \
+  --taxonomy "${TAXONOMY_FILE}" \
+  --output-dir "${OUTPUT_DIR}" \
+  --room-list "${ROOM_MANIFEST}"
 
 echo "=========================================="
 echo "Category Z-Map creation COMPLETE"
 echo "Output files:"
-echo "  - Scene zmap: ${OUTPUT_DIR}/scene_zmap.json"
-echo "  - Room zmap: ${OUTPUT_DIR}/room_zmap.json"
+echo "  - Scene zmap: ${OUTPUT_DIR}/zmap_scenes.json"
+echo "  - Room zmap: ${OUTPUT_DIR}/zmap_rooms.json"
 echo "End: $(date)"
 echo "=========================================="
 
