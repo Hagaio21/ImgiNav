@@ -8,6 +8,7 @@
 #BSUB -q hpc
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
 # Configuration
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
