@@ -2,7 +2,7 @@
 #BSUB -J clean_layout_images
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/clean_layout_images.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/clean_layout_images.%J.err
-#BSUB -n 4
+#BSUB -n 8
 #BSUB -R "rusage[mem=2000]"
 #BSUB -W 04:00
 #BSUB -q hpc
@@ -65,7 +65,7 @@ export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 python "${PYTHON_SCRIPT}" \
   --input-dir "${LAYOUT_DIR}" \
   --taxonomy "${TAXONOMY_FILE}" \
-  --min-density 0.2 \
+  --min-density 0.15 \
   --tolerance 0 \
   --failed-dir "${FAILED_DIR}" \
   --clean-dir "${CLEANED_DIR}" \
