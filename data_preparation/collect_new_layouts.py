@@ -142,13 +142,16 @@ def collect_new_layouts(
             if not layout_path.is_file():
                 continue
             
-            # Parse filename - try to parse, but skip if it doesn't match expected patterns
+            # Parse filename - try to parse, use fallback if it doesn't match expected patterns
             try:
                 scene_id, layout_type, room_id = parse_layout_filename(layout_path.name)
             except ValueError:
-                # If filename doesn't match expected patterns, skip it
-                print(f"[warn] Skipping file with unexpected name format: {layout_path.name}")
-                continue
+                # If filename doesn't match expected patterns, use filename as scene_id
+                # This ensures ALL files are included in the manifest
+                print(f"[warn] File with unexpected name format, using fallback: {layout_path.name}")
+                scene_id = layout_path.stem  # Use filename without extension as scene_id
+                layout_type = "unknown"  # Mark as unknown type
+                room_id = "unknown"  # Mark as unknown room
             
             # Always use absolute paths to avoid resolution issues during embedding
             # The embedding process resolves relative paths relative to manifest directory,
