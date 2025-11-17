@@ -869,7 +869,7 @@ def main():
         if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
             # Get guidance_scale from config (default 1.0 = no CFG)
             guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
-            save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale)
+            save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale, cfg_dropout_rate=cfg_dropout_rate)
         
         # Save checkpoint (is_best was already determined above if validation ran)
         if val_loader and (epoch + 1) % eval_interval == 0:
