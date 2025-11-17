@@ -37,12 +37,8 @@ fi
 MOVED=0
 SKIPPED=0
 
-for img_file in "${TO_REVIEW_DIR}"/*.{png,jpg,jpeg} 2>/dev/null; do
-  # Check if file exists (glob might not match)
-  if [ ! -f "${img_file}" ]; then
-    continue
-  fi
-  
+# Use find to get all image files
+while IFS= read -r img_file; do
   filename=$(basename "${img_file}")
   dest_path="${LAYOUT_DIR}/${filename}"
   
@@ -56,7 +52,7 @@ for img_file in "${TO_REVIEW_DIR}"/*.{png,jpg,jpeg} 2>/dev/null; do
   # Move file
   mv "${img_file}" "${dest_path}"
   MOVED=$((MOVED + 1))
-done
+done < <(find "${TO_REVIEW_DIR}" -maxdepth 1 -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \))
 
 echo ""
 echo "=========================================="
