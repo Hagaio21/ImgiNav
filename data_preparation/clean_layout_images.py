@@ -23,6 +23,13 @@ def get_floor_color(taxonomy: Taxonomy) -> Tuple[int, int, int]:
     return tuple(color)
 
 
+def get_wall_color(taxonomy: Taxonomy) -> Tuple[int, int, int]:
+    """Get the wall color from taxonomy."""
+    wall_id = 2053  # Category ID for wall
+    color = taxonomy.get_color(wall_id, mode="category")
+    return tuple(color)
+
+
 def find_floor_pixels(image: np.ndarray, floor_color: Tuple[int, int, int], 
                      tolerance: int = 0) -> np.ndarray:
     """
@@ -44,6 +51,32 @@ def find_floor_pixels(image: np.ndarray, floor_color: Tuple[int, int, int],
     else:
         # Match within tolerance
         diff = np.abs(image.astype(np.int16) - floor_rgb)
+        mask = np.all(diff <= tolerance, axis=2)
+    
+    return mask
+
+
+def find_wall_pixels(image: np.ndarray, wall_color: Tuple[int, int, int], 
+                    tolerance: int = 0) -> np.ndarray:
+    """
+    Find pixels matching the wall color.
+    
+    Args:
+        image: Image array of shape (H, W, 3)
+        wall_color: RGB tuple (R, G, B)
+        tolerance: Color matching tolerance (0 = exact match)
+    
+    Returns:
+        Boolean mask of wall pixels
+    """
+    wall_rgb = np.array(wall_color, dtype=np.uint8)
+    
+    if tolerance == 0:
+        # Exact match
+        mask = np.all(image == wall_rgb, axis=2)
+    else:
+        # Match within tolerance
+        diff = np.abs(image.astype(np.int16) - wall_rgb)
         mask = np.all(diff <= tolerance, axis=2)
     
     return mask
@@ -139,7 +172,7 @@ def clean_image(image: np.ndarray, floor_mask: np.ndarray,
 def process_image(image_path: Path, taxonomy: Taxonomy, 
                  min_density: float = 0.1,
                  tolerance: int = 0,
-                 clean_output: Optional[Path] = None) -> Tuple[bool, float, Optional[Tuple[int, int, int, int]]]:
+                 clean_output: Optional[Path] = None) -> Tuple[bool, float, Optional[Tuple[int, int, int, int]], str]:
     """
     Process a single image.
     
@@ -151,7 +184,8 @@ def process_image(image_path: Path, taxonomy: Taxonomy,
         clean_output: Optional path to save cleaned image
     
     Returns:
-        (success, density, bbox) where success is True if image passes checks
+        (success, density, bbox, reason) where success is True if image passes checks,
+        reason is failure reason if success is False
     """
     # Load image
     try:
@@ -161,29 +195,39 @@ def process_image(image_path: Path, taxonomy: Taxonomy,
         image_array = np.array(img)
     except Exception as e:
         print(f"[ERROR] Failed to load {image_path}: {e}", flush=True)
-        return (False, 0.0, None)
+        return (False, 0.0, None, "load_error")
     
-    # Get floor color
+    # Get floor and wall colors
     floor_color = get_floor_color(taxonomy)
+    wall_color = get_wall_color(taxonomy)
     
-    # Find floor pixels
+    # Find floor and wall pixels
     floor_mask = find_floor_pixels(image_array, floor_color, tolerance=tolerance)
+    wall_mask = find_wall_pixels(image_array, wall_color, tolerance=tolerance)
+    
+    # Count pixels
+    floor_pixel_count = np.sum(floor_mask)
+    wall_pixel_count = np.sum(wall_mask)
     
     # Check if floor color exists
     if not np.any(floor_mask):
-        return (False, 0.0, None)
+        return (False, 0.0, None, "no floor color")
+    
+    # Check if wall color is more than floor color
+    if wall_pixel_count > floor_pixel_count:
+        return (False, 0.0, None, f"wall > floor (wall: {wall_pixel_count}, floor: {floor_pixel_count})")
     
     # Calculate bounding box
     bbox = calculate_floor_bbox(floor_mask)
     if bbox is None:
-        return (False, 0.0, None)
+        return (False, 0.0, None, "no floor bbox")
     
     # Calculate density within bbox
     density = calculate_floor_density(floor_mask, bbox)
     
     # Check if density meets threshold
     if density < min_density:
-        return (False, density, bbox)
+        return (False, density, bbox, f"low density ({density:.3f} < {min_density})")
     
     # Save cleaned image if requested
     if clean_output is not None:
@@ -192,7 +236,7 @@ def process_image(image_path: Path, taxonomy: Taxonomy,
         clean_output.parent.mkdir(parents=True, exist_ok=True)
         cleaned_pil.save(clean_output)
     
-    return (True, density, bbox)
+    return (True, density, bbox, "success")
 
 
 def main():
@@ -289,10 +333,11 @@ def main():
     failed_count = 0
     no_floor_count = 0
     low_density_count = 0
+    wall_exceeds_floor_count = 0
     
     for image_path in tqdm(image_files, desc="Processing images"):
         # Process image
-        success, density, bbox = process_image(
+        success, density, bbox, reason = process_image(
             image_path,
             taxonomy,
             min_density=args.min_density,
@@ -305,13 +350,13 @@ def main():
         else:
             failed_count += 1
             
-            # Determine failure reason
-            if density == 0.0 and bbox is None:
+            # Track failure reasons
+            if "no floor color" in reason:
                 no_floor_count += 1
-                reason = "no floor color"
-            else:
+            elif "wall > floor" in reason:
+                wall_exceeds_floor_count += 1
+            elif "low density" in reason:
                 low_density_count += 1
-                reason = f"low density ({density:.3f} < {args.min_density})"
             
             # Copy to failed directory (preserve original)
             failed_path = failed_dir / image_path.name
@@ -329,6 +374,7 @@ def main():
     print(f"Successful: {success_count}", flush=True)
     print(f"Failed: {failed_count}", flush=True)
     print(f"  - No floor color: {no_floor_count}", flush=True)
+    print(f"  - Wall > floor: {wall_exceeds_floor_count}", flush=True)
     print(f"  - Low density: {low_density_count}", flush=True)
     print(f"Failed images copied to: {failed_dir}", flush=True)
     if clean_dir:
