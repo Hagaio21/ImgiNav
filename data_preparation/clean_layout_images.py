@@ -231,10 +231,14 @@ def process_image(image_path: Path, taxonomy: Taxonomy,
     
     # Save cleaned image if requested
     if clean_output is not None:
-        cleaned_image = clean_image(image_array, floor_mask, bbox)
-        cleaned_pil = Image.fromarray(cleaned_image)
-        clean_output.parent.mkdir(parents=True, exist_ok=True)
-        cleaned_pil.save(clean_output)
+        try:
+            cleaned_image = clean_image(image_array, floor_mask, bbox)
+            cleaned_pil = Image.fromarray(cleaned_image)
+            clean_output.parent.mkdir(parents=True, exist_ok=True)
+            cleaned_pil.save(clean_output)
+        except Exception as e:
+            print(f"[ERROR] Failed to save cleaned image {clean_output}: {e}", flush=True)
+            return (False, density, bbox, f"save_error: {e}")
     
     return (True, density, bbox, "success")
 
@@ -334,48 +338,74 @@ def main():
     no_floor_count = 0
     low_density_count = 0
     wall_exceeds_floor_count = 0
+    save_error_count = 0
+    skipped_count = 0
     
     for image_path in tqdm(image_files, desc="Processing images"):
-        # Process image
-        success, density, bbox, reason = process_image(
-            image_path,
-            taxonomy,
-            min_density=args.min_density,
-            tolerance=args.tolerance,
-            clean_output=clean_dir / image_path.name if clean_dir else None
-        )
-        
-        if success:
-            success_count += 1
-        else:
+        try:
+            # Process image
+            success, density, bbox, reason = process_image(
+                image_path,
+                taxonomy,
+                min_density=args.min_density,
+                tolerance=args.tolerance,
+                clean_output=clean_dir / image_path.name if clean_dir else None
+            )
+            
+            if success:
+                success_count += 1
+            else:
+                failed_count += 1
+                
+                # Track failure reasons
+                if "no floor color" in reason:
+                    no_floor_count += 1
+                elif "wall > floor" in reason:
+                    wall_exceeds_floor_count += 1
+                elif "low density" in reason:
+                    low_density_count += 1
+                elif "save_error" in reason:
+                    save_error_count += 1
+                elif "load_error" in reason:
+                    skipped_count += 1
+                else:
+                    skipped_count += 1  # Track any other errors
+                
+                # Copy to failed directory (preserve original)
+                failed_path = failed_dir / image_path.name
+                try:
+                    shutil.copy2(str(image_path), str(failed_path))
+                    tqdm.write(f"[FAILED] {image_path.name}: {reason} -> copied to {failed_dir}")
+                except Exception as e:
+                    tqdm.write(f"[ERROR] Failed to copy {image_path.name}: {e}")
+        except Exception as e:
+            # Catch any unexpected errors during processing
             failed_count += 1
-            
-            # Track failure reasons
-            if "no floor color" in reason:
-                no_floor_count += 1
-            elif "wall > floor" in reason:
-                wall_exceeds_floor_count += 1
-            elif "low density" in reason:
-                low_density_count += 1
-            
-            # Copy to failed directory (preserve original)
+            skipped_count += 1
+            reason = f"unexpected_error: {e}"
+            tqdm.write(f"[ERROR] Unexpected error processing {image_path.name}: {e}")
+            # Try to copy to failed directory anyway
             failed_path = failed_dir / image_path.name
             try:
                 shutil.copy2(str(image_path), str(failed_path))
-                tqdm.write(f"[FAILED] {image_path.name}: {reason} -> copied to {failed_dir}")
-            except Exception as e:
-                tqdm.write(f"[ERROR] Failed to copy {image_path.name}: {e}")
+            except Exception as copy_e:
+                tqdm.write(f"[ERROR] Also failed to copy {image_path.name}: {copy_e}")
     
     # Print summary
     print("\n" + "="*60, flush=True)
     print("SUMMARY", flush=True)
     print("="*60, flush=True)
-    print(f"Total images processed: {len(image_files)}", flush=True)
+    print(f"Total images found: {len(image_files)}", flush=True)
+    print(f"Total images processed: {success_count + failed_count}", flush=True)
     print(f"Successful: {success_count}", flush=True)
     print(f"Failed: {failed_count}", flush=True)
     print(f"  - No floor color: {no_floor_count}", flush=True)
     print(f"  - Wall > floor: {wall_exceeds_floor_count}", flush=True)
     print(f"  - Low density: {low_density_count}", flush=True)
+    print(f"  - Save errors: {save_error_count}", flush=True)
+    print(f"  - Load errors: {skipped_count}", flush=True)
+    if len(image_files) != (success_count + failed_count):
+        print(f"  - Unprocessed: {len(image_files) - (success_count + failed_count)}", flush=True)
     print(f"Failed images copied to: {failed_dir}", flush=True)
     if clean_dir:
         print(f"Cleaned images saved to: {clean_dir}", flush=True)
