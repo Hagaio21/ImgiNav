@@ -220,11 +220,14 @@ class ManifestDataset(BaseComponent, Dataset):
                 return torch.tensor(int(float(val)), dtype=torch.long)
             # Otherwise treat as file path
             p = Path(val)
-            # Resolve relative paths relative to manifest directory
+            # All paths in manifest should be absolute
+            # If relative, resolve relative to manifest directory (for backward compatibility)
             if not p.is_absolute():
-                p = self.manifest_dir / p
+                p = (self.manifest_dir / p).resolve()
+                print(f"[WARNING] Found relative path in manifest: {val}, resolved to: {p}")
+                print(f"[WARNING] Please regenerate manifest with absolute paths")
             if not p.exists():
-                raise FileNotFoundError(f"File not found: {p}")
+                raise FileNotFoundError(f"File not found: {p}. Ensure manifest uses absolute paths.")
             ext = p.suffix.lower()
             if ext in [".png", ".jpg", ".jpeg", ".bmp"]:
                 img = Image.open(p).convert("RGB")
