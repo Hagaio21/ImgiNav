@@ -10,7 +10,7 @@ experiment:
   save_path: "/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256"
 
 dataset:
-  manifest: "/work3/s233249/ImgiNav/datasets/layouts_new.csv"
+  manifest: "/work3/s233249/ImgiNav/datasets/layouts_cleaned.csv"
   outputs:
     rgb: "layout_path"
     label: "type"
