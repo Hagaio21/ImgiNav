@@ -269,6 +269,12 @@ def main():
         help="Output directory for zmap files"
     )
     parser.add_argument(
+        "--scene-list",
+        type=Path,
+        required=True,
+        help="Scene list manifest CSV file (scene_id, parquet_file_path, ...)"
+    )
+    parser.add_argument(
         "--room-list",
         type=Path,
         required=True,
@@ -282,11 +288,65 @@ def main():
         raise FileNotFoundError(f"Taxonomy file not found: {args.taxonomy}")
     taxonomy = Taxonomy(args.taxonomy)
     
-    # Verify room_list exists
+    # Verify manifests exist
+    if not args.scene_list.exists():
+        raise FileNotFoundError(f"Scene list manifest not found: {args.scene_list}")
     if not args.room_list.exists():
         raise FileNotFoundError(f"Room list manifest not found: {args.room_list}")
     
-    # Read room parquet files directly from manifest - use paths as-is
+    # ============================================================================
+    # Process SCENES from scene_list manifest
+    # ============================================================================
+    print(f"[INFO] Reading scene_list from {args.scene_list}...")
+    
+    scene_files = []
+    scene_info = []  # List of (scene_id, parquet_path) tuples
+    
+    with open(args.scene_list, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            scene_id = row.get("scene_id", "").strip()
+            parquet_path_str = row.get("parquet_file_path", "").strip()
+            
+            if not scene_id or not parquet_path_str:
+                continue
+            
+            # Use path directly from manifest - no resolution, no discovery
+            parquet_path = Path(parquet_path_str)
+            
+            if not parquet_path.exists():
+                print(f"[warn] Scene parquet file does not exist: {parquet_path} (scene_id={scene_id})", flush=True)
+                continue
+            
+            scene_files.append(parquet_path)
+            scene_info.append((scene_id, parquet_path))
+    
+    print(f"[INFO] Found {len(scene_files)} scene parquet files from scene_list")
+    
+    # Process scenes for scene-level zmap
+    scene_category_heights = defaultdict(list)  # Global aggregation for scene_zmap
+    
+    if scene_files:
+        print(f"[INFO] Processing {len(scene_files)} scene parquet files for scene zmap...")
+        progress = create_progress_tracker(len(scene_files), "processing scenes")
+        
+        for i, (scene_id, parquet_path) in enumerate(scene_info, 1):
+            category_heights = process_room_parquet(parquet_path, taxonomy)
+            
+            if category_heights is not None:
+                # Aggregate for scene-level zmap
+                for color_str, heights in category_heights.items():
+                    scene_category_heights[color_str].extend(heights)
+            
+            progress(i, f"processed {scene_id}", True)
+    
+    # Create scene-level zmap
+    print(f"\n[INFO] Aggregating scene-level statistics for {len(scene_category_heights)} categories...")
+    scene_zmap = aggregate_zmap_statistics(scene_category_heights, taxonomy)
+    
+    # ============================================================================
+    # Process ROOMS from room_list manifest
+    # ============================================================================
     print(f"[INFO] Reading room_list from {args.room_list}...")
     
     room_files = []
@@ -306,7 +366,7 @@ def main():
             parquet_path = Path(parquet_path_str)
             
             if not parquet_path.exists():
-                print(f"[warn] Parquet file does not exist: {parquet_path} (scene_id={scene_id}, room_id={room_id})", flush=True)
+                print(f"[warn] Room parquet file does not exist: {parquet_path} (scene_id={scene_id}, room_id={room_id})", flush=True)
                 continue
             
             room_files.append(parquet_path)
@@ -318,11 +378,10 @@ def main():
         print(f"[ERROR] No room parquet files found")
         return 1
     
-    print(f"[INFO] Processing {len(room_files)} room parquet files")
+    print(f"[INFO] Processing {len(room_files)} room parquet files for room zmap...")
     
-    # Process all rooms - collect both scene-level and room-level statistics
-    scene_category_heights = defaultdict(list)  # Global aggregation for scene_zmap
-    room_zmaps = {}  # Per-room zmaps: {scene_id: {room_id: zmap}}
+    # Process all rooms - aggregate all rooms together for ONE room zmap
+    room_category_heights = defaultdict(list)  # Global aggregation for room_zmap
     
     progress = create_progress_tracker(len(room_files), "processing rooms")
     
@@ -330,23 +389,15 @@ def main():
         category_heights = process_room_parquet(parquet_path, taxonomy)
         
         if category_heights is not None:
-            # Aggregate for scene-level zmap (global)
+            # Aggregate all rooms together for room-level zmap
             for color_str, heights in category_heights.items():
-                scene_category_heights[color_str].extend(heights)
-            
-            # Create room-level zmap
-            room_zmap = aggregate_zmap_statistics(category_heights, taxonomy)
-            
-            # Store in nested structure: scene_id -> room_id -> zmap
-            if scene_id not in room_zmaps:
-                room_zmaps[scene_id] = {}
-            room_zmaps[scene_id][room_id] = room_zmap
+                room_category_heights[color_str].extend(heights)
         
         progress(i, f"processed {scene_id}/{room_id}", True)
     
-    # Create scene-level zmap (global aggregation)
-    print(f"\n[INFO] Aggregating scene-level statistics for {len(scene_category_heights)} categories...")
-    scene_zmap = aggregate_zmap_statistics(scene_category_heights, taxonomy)
+    # Create room-level zmap (aggregated from all rooms)
+    print(f"\n[INFO] Aggregating room-level statistics for {len(room_category_heights)} categories...")
+    room_zmap = aggregate_zmap_statistics(room_category_heights, taxonomy)
     
     # Save zmaps
     safe_mkdir(args.output_dir)
@@ -355,15 +406,12 @@ def main():
     room_zmap_path = args.output_dir / "zmap_rooms.json"
     
     write_json(scene_zmap, scene_zmap_path)
-    write_json(room_zmaps, room_zmap_path)
+    write_json(room_zmap, room_zmap_path)
     
     print(f"\n[INFO] Scene zmap saved to {scene_zmap_path}")
     print(f"[INFO] Room zmap saved to {room_zmap_path}")
-    print(f"[INFO] Scene zmap: {len(scene_zmap)} categories with height statistics")
-    
-    # Count total rooms in room_zmap
-    total_rooms = sum(len(rooms) for rooms in room_zmaps.values())
-    print(f"[INFO] Room zmap: {len(room_zmaps)} scenes, {total_rooms} rooms with height statistics")
+    print(f"[INFO] Scene zmap: {len(scene_zmap)} categories with height statistics (aggregated from {len(scene_files)} scenes)")
+    print(f"[INFO] Room zmap: {len(room_zmap)} categories with height statistics (aggregated from {len(room_files)} rooms)")
     
     # Print scene zmap summary
     print(f"\n[INFO] Scene zmap summary:")

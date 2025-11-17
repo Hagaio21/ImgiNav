@@ -17,6 +17,7 @@ BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 TAXONOMY_FILE="${BASE_DIR}/config/taxonomy.json"
 PYTHON_SCRIPT="${BASE_DIR}/data_preparation/create_category_zmaps.py"
 OUTPUT_DIR="${BASE_DIR}/config"
+SCENE_MANIFEST="/work3/s233249/ImgiNav/datasets/scene_list.csv"
 ROOM_MANIFEST="/work3/s233249/ImgiNav/datasets/room_list.csv"
 LOG_DIR="${BASE_DIR}/data_preparation/hpc_scripts/logs"
 
@@ -30,6 +31,7 @@ echo "=========================================="
 echo "Running Category Z-Map Creation"
 echo "Taxonomy: ${TAXONOMY_FILE}"
 echo "Output Dir: ${OUTPUT_DIR}"
+echo "Scene List: ${SCENE_MANIFEST}"
 echo "Room List: ${ROOM_MANIFEST}"
 echo "Start: $(date)"
 echo "=========================================="
@@ -46,10 +48,15 @@ if [ ! -f "${TAXONOMY_FILE}" ]; then
   exit 1
 fi
 
-# Verify room manifest exists (optional but recommended)
+# Verify manifests exist
+if [ ! -s "${SCENE_MANIFEST}" ]; then
+  echo "ERROR: Scene manifest not found: ${SCENE_MANIFEST}"
+  exit 1
+fi
+
 if [ ! -s "${ROOM_MANIFEST}" ]; then
-  echo "WARNING: Room manifest not found: ${ROOM_MANIFEST}"
-  echo "Will discover room files from filesystem"
+  echo "ERROR: Room manifest not found: ${ROOM_MANIFEST}"
+  exit 1
 fi
 
 # =============================================================================
@@ -73,10 +80,11 @@ fi
 cd "${BASE_DIR}"
 export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 
-# Run zmap creation with room_list
+# Run zmap creation with both manifests
 python "${PYTHON_SCRIPT}" \
   --taxonomy "${TAXONOMY_FILE}" \
   --output-dir "${OUTPUT_DIR}" \
+  --scene-list "${SCENE_MANIFEST}" \
   --room-list "${ROOM_MANIFEST}"
 
 echo "=========================================="
