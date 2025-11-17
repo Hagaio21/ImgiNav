@@ -31,7 +31,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from common.taxonomy import Taxonomy
 from common.utils import write_json, safe_mkdir, create_progress_tracker
 from data_preparation.utils.geometry_utils import pca_plane_fit, world_to_local_coords, build_orthonormal_frame
-from data_preparation.utils.file_discovery import find_room_files, infer_ids_from_path
 
 
 def orient_normal_upward(normal: np.ndarray, all_xyz: np.ndarray, origin: np.ndarray) -> np.ndarray:
@@ -287,7 +286,7 @@ def main():
     if not args.room_list.exists():
         raise FileNotFoundError(f"Room list manifest not found: {args.room_list}")
     
-    # Read room parquet files directly from manifest
+    # Read room parquet files directly from manifest - use paths as-is
     print(f"[INFO] Reading room_list from {args.room_list}...")
     
     room_files = []
@@ -298,23 +297,16 @@ def main():
         for row in reader:
             scene_id = row.get("scene_id", "").strip()
             room_id = row.get("room_id", "").strip()
+            parquet_path_str = row.get("room_parquet_file_path", "").strip()
             
-            # Get parquet path from manifest (try multiple column names)
-            parquet_path = None
-            for col_name in ['room_parquet_file_path', 'parquet_file_path', 'parquet_path', 'file_path']:
-                if col_name in row and row[col_name]:
-                    parquet_path_str = row[col_name].strip()
-                    if parquet_path_str:
-                        parquet_path = Path(parquet_path_str)
-                        # Resolve relative paths if needed
-                        if not parquet_path.is_absolute():
-                            # Try relative to manifest directory
-                            parquet_path = (args.room_list.parent / parquet_path).resolve()
-                        if parquet_path.exists():
-                            break
+            if not scene_id or not room_id or not parquet_path_str:
+                continue
             
-            if parquet_path is None or not parquet_path.exists():
-                print(f"[warn] Room parquet not found for scene_id={scene_id}, room_id={room_id}", flush=True)
+            # Use path directly from manifest - no resolution, no discovery
+            parquet_path = Path(parquet_path_str)
+            
+            if not parquet_path.exists():
+                print(f"[warn] Parquet file does not exist: {parquet_path} (scene_id={scene_id}, room_id={room_id})", flush=True)
                 continue
             
             room_files.append(parquet_path)
