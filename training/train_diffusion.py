@@ -375,10 +375,11 @@ def eval_epoch(
     return avg_loss, avg_logs
 
 
-def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=64, exp_name=None, guidance_scale=1.0):
+def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=64, exp_name=None, guidance_scale=1.0, cfg_dropout_rate=0.0):
     """Generate and save sample images.
     
-    Generates 3 types of samples, each in a 4x4 grid:
+    If cfg_dropout_rate == 1.0 (fully unconditional training), only generates unconditioned samples.
+    Otherwise generates 3 types of samples, each in a 4x4 grid:
     - Unconditioned: 16 samples (4x4 grid, cond=None)
     - Rooms: 16 samples (4x4 grid, cond=0)
     - Scenes: 16 samples (4x4 grid, cond=1)
@@ -403,70 +404,89 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # Check if model supports conditioning (room/scene)
     supports_conditioning = hasattr(model.unet, 'cond_embedding') and model.unet.cond_embedding is not None
     
+    # If cfg_dropout_rate == 1.0, model was trained fully unconditionally - only generate unconditioned samples
+    is_fully_unconditional = (cfg_dropout_rate >= 1.0)
+    
     all_samples = []
     cfg_info = f" with CFG scale={guidance_scale}" if guidance_scale > 1.0 else ""
     
     with torch.no_grad():
-        # Generate unconditioned samples (if CFG is enabled, otherwise skip)
-        if supports_conditioning and guidance_scale > 1.0:
-            print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
+        if is_fully_unconditional:
+            # Fully unconditional training: only generate unconditioned samples
+            print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps) [fully unconditional model]...")
             sample_output = model.sample(
                 batch_size=samples_per_type,
                 num_steps=num_steps,
                 method="ddpm",
                 eta=1.0,
-                cond=None,  # Unconditioned
-                guidance_scale=guidance_scale,
-                device=device_obj,
-                verbose=False
-            )
-            all_samples.append(sample_output)
-        elif not supports_conditioning:
-            # If no conditioning support, generate unconditioned samples
-            print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps)...")
-            sample_output = model.sample(
-                batch_size=samples_per_type,
-                num_steps=num_steps,
-                method="ddpm",
-                eta=1.0,
-                cond=None,
+                cond=None,  # Always unconditioned
                 guidance_scale=1.0,
                 device=device_obj,
                 verbose=False
             )
             all_samples.append(sample_output)
-        
-        # Generate room samples (cond=0)
-        if supports_conditioning:
-            print(f"  Generating {samples_per_type} ROOM samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
-            cond_room = torch.zeros(samples_per_type, dtype=torch.long, device=device_obj)
-            sample_output = model.sample(
-                batch_size=samples_per_type,
-                num_steps=num_steps,
-                method="ddpm",
-                eta=1.0,
-                cond=cond_room,
-                guidance_scale=guidance_scale,
-                device=device_obj,
-                verbose=False
-            )
-            all_samples.append(sample_output)
-        
-        # Generate scene samples (cond=1)
-        if supports_conditioning:
-            print(f"  Generating {samples_per_type} SCENE samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
-            cond_scene = torch.ones(samples_per_type, dtype=torch.long, device=device_obj)
-            sample_output = model.sample(
-                batch_size=samples_per_type,
-                num_steps=num_steps,
-                method="ddpm",
-                eta=1.0,
-                cond=cond_scene,
-                guidance_scale=guidance_scale,
-                device=device_obj,
-                verbose=False
-            )
-            all_samples.append(sample_output)
+        else:
+            # Conditional training: generate all types
+            # Generate unconditioned samples (if CFG is enabled, otherwise skip)
+            if supports_conditioning and guidance_scale > 1.0:
+                print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
+                sample_output = model.sample(
+                    batch_size=samples_per_type,
+                    num_steps=num_steps,
+                    method="ddpm",
+                    eta=1.0,
+                    cond=None,  # Unconditioned
+                    guidance_scale=guidance_scale,
+                    device=device_obj,
+                    verbose=False
+                )
+                all_samples.append(sample_output)
+            elif not supports_conditioning:
+                # If no conditioning support, generate unconditioned samples
+                print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps)...")
+                sample_output = model.sample(
+                    batch_size=samples_per_type,
+                    num_steps=num_steps,
+                    method="ddpm",
+                    eta=1.0,
+                    cond=None,
+                    guidance_scale=1.0,
+                    device=device_obj,
+                    verbose=False
+                )
+                all_samples.append(sample_output)
+            
+            # Generate room samples (cond=0) - only if not fully unconditional
+            if supports_conditioning:
+                print(f"  Generating {samples_per_type} ROOM samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
+                cond_room = torch.zeros(samples_per_type, dtype=torch.long, device=device_obj)
+                sample_output = model.sample(
+                    batch_size=samples_per_type,
+                    num_steps=num_steps,
+                    method="ddpm",
+                    eta=1.0,
+                    cond=cond_room,
+                    guidance_scale=guidance_scale,
+                    device=device_obj,
+                    verbose=False
+                )
+                all_samples.append(sample_output)
+            
+            # Generate scene samples (cond=1) - only if not fully unconditional
+            if supports_conditioning:
+                print(f"  Generating {samples_per_type} SCENE samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
+                cond_scene = torch.ones(samples_per_type, dtype=torch.long, device=device_obj)
+                sample_output = model.sample(
+                    batch_size=samples_per_type,
+                    num_steps=num_steps,
+                    method="ddpm",
+                    eta=1.0,
+                    cond=cond_scene,
+                    guidance_scale=guidance_scale,
+                    device=device_obj,
+                    verbose=False
+                )
+                all_samples.append(sample_output)
     
     # Process all samples: decode and convert to [0, 255]
     processed_samples = []
