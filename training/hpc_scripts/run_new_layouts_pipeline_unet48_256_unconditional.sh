@@ -71,7 +71,7 @@ echo "Pipeline Overview:"
 echo "  1. Train VAE (or use existing checkpoint if found)"
 echo "  2. Embed dataset using VAE (analyze whiteness + filter during embedding)"
 echo "  3. Train diffusion model (UNet48, base_channels=48, 256×256) UNCONDITIONAL (cfg_dropout_rate=1.0)"
-echo "  4. Uses new layouts manifest: /work3/s233249/ImgiNav/datasets/layouts_new.csv"
+echo "  4. Uses cleaned layouts manifest: /work3/s233249/ImgiNav/datasets/layouts_cleaned.csv"
 echo "=========================================="
 
 cd "${BASE_DIR}"
