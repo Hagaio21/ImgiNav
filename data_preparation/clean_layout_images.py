@@ -313,13 +313,13 @@ def main():
                 low_density_count += 1
                 reason = f"low density ({density:.3f} < {args.min_density})"
             
-            # Move to failed directory
+            # Copy to failed directory (preserve original)
             failed_path = failed_dir / image_path.name
             try:
-                shutil.move(str(image_path), str(failed_path))
-                tqdm.write(f"[FAILED] {image_path.name}: {reason} -> moved to {failed_dir}")
+                shutil.copy2(str(image_path), str(failed_path))
+                tqdm.write(f"[FAILED] {image_path.name}: {reason} -> copied to {failed_dir}")
             except Exception as e:
-                tqdm.write(f"[ERROR] Failed to move {image_path.name}: {e}")
+                tqdm.write(f"[ERROR] Failed to copy {image_path.name}: {e}")
     
     # Print summary
     print("\n" + "="*60, flush=True)
@@ -330,7 +330,7 @@ def main():
     print(f"Failed: {failed_count}", flush=True)
     print(f"  - No floor color: {no_floor_count}", flush=True)
     print(f"  - Low density: {low_density_count}", flush=True)
-    print(f"Failed images moved to: {failed_dir}", flush=True)
+    print(f"Failed images copied to: {failed_dir}", flush=True)
     if clean_dir:
         print(f"Cleaned images saved to: {clean_dir}", flush=True)
 
