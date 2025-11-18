@@ -4,7 +4,7 @@ experiment:
   save_path: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet48_256_unconditional
   epochs_target: 500
 dataset:
-  manifest: /work3/s233249/ImgiNav/datasets/layouts_cleaned.csv
+  manifest: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet48_256_unconditional/embeddings/manifest_with_latents.csv
   outputs:
     latent: latent_path
   filters:
