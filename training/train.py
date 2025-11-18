@@ -480,12 +480,12 @@ def main():
     if should_resume:
         print(f"\nResuming training from checkpoint: {checkpoint_to_resume}")
         
-        # Load checkpoint with extra state, using current config
+        # Load checkpoint with extra state (uses saved config from checkpoint)
         model, extra_state = Autoencoder.load_checkpoint(
             checkpoint_to_resume,
             map_location=device_obj,
             return_extra=True,
-            config=config
+            config=None  # Use saved config from checkpoint
         )
         model = model.to(device_obj)
         
