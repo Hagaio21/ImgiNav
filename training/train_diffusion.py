@@ -13,6 +13,10 @@ from tqdm import tqdm
 import math
 import numpy as np
 from PIL import Image
+import sys
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.utils import (
     load_config,
