@@ -411,6 +411,8 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
 def main():
     parser = argparse.ArgumentParser(description="Train autoencoder from experiment config")
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
+    parser.add_argument("--checkpoint", type=Path, default=None, 
+                       help="Path to checkpoint to resume from (overrides automatic latest checkpoint detection)")
     
     args = parser.parse_args()
     
@@ -450,8 +452,20 @@ def main():
         phase_dir.mkdir(parents=True, exist_ok=True)
         print(f"Phase directory: {phase_dir} (for shared metrics/samples)")
     
-    # Check for latest checkpoint (automatic resume)
-    latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
+    # Check for checkpoint to resume from
+    # Priority: 1) --checkpoint argument, 2) latest checkpoint in output_dir
+    checkpoint_to_resume = None
+    if args.checkpoint:
+        checkpoint_to_resume = Path(args.checkpoint)
+        if not checkpoint_to_resume.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_to_resume}")
+        print(f"Using checkpoint from argument: {checkpoint_to_resume}")
+    else:
+        latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
+        if latest_checkpoint.exists():
+            checkpoint_to_resume = latest_checkpoint
+            print(f"Found latest checkpoint: {latest_checkpoint}")
+    
     start_epoch = 0
     best_val_loss = float("inf")
     training_history = []
@@ -462,14 +476,13 @@ def main():
     
     device_obj = to_device(device)
     
-    should_resume = latest_checkpoint.exists()
+    should_resume = checkpoint_to_resume is not None
     if should_resume:
-        print(f"\nFound latest checkpoint: {latest_checkpoint}")
-        print("Resuming training...")
+        print(f"\nResuming training from checkpoint: {checkpoint_to_resume}")
         
         # Load checkpoint with extra state, using current config
         model, extra_state = Autoencoder.load_checkpoint(
-            latest_checkpoint,
+            checkpoint_to_resume,
             map_location=device_obj,
             return_extra=True,
             config=config
@@ -1013,6 +1026,50 @@ def main():
         plt.close()
         print(f"  Saved KLD loss plot: {plot_path}")
     
+    def _plot_loss_curves(df, output_dir, exp_name):
+        """Plot main training and validation loss curves."""
+        sns.set_style("darkgrid")
+        # Check if loss columns exist
+        has_train_loss = 'train_loss' in df.columns
+        has_val_loss = 'val_loss' in df.columns
+        
+        if not has_train_loss:
+            return  # No loss data to plot
+        
+        epochs = df['epoch'].values
+        
+        # Create figure
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        fig.suptitle(f'Training and Validation Loss - {exp_name}', fontsize=16, fontweight='bold')
+        
+        # Plot training loss
+        if has_train_loss:
+            ax.plot(epochs, df['train_loss'], label='Train Loss', linewidth=2, marker='o', markersize=3, color='blue', alpha=0.8)
+        
+        # Plot validation loss if available
+        if has_val_loss:
+            ax.plot(epochs, df['val_loss'], label='Val Loss', linewidth=2, marker='s', markersize=3, color='red', linestyle='--', alpha=0.8)
+        
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
+        ax.legend(fontsize=11)
+        ax.grid(True, alpha=0.3)
+        
+        # Use log scale if loss values span multiple orders of magnitude
+        if has_train_loss and len(df) > 1:
+            max_loss = df['train_loss'].max()
+            min_loss = df['train_loss'].min()
+            if max_loss > 0 and min_loss > 0 and max_loss / min_loss > 10:
+                ax.set_yscale('log')
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = output_dir / f'{exp_name}_loss_curves.png'
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved loss curves plot: {plot_path}")
+    
     # Check if model is VAE (variational encoder) to enable latent statistics collection
     is_vae = hasattr(model.encoder, 'variational') and model.encoder.variational
     
@@ -1112,6 +1169,9 @@ def main():
         
         # Create DataFrame for plotting
         df = pd.DataFrame(training_history)
+        
+        # Plot main loss curves (always plot if training loss exists)
+        _plot_loss_curves(df, output_dir, exp_name)
         
         # Plot normalizer convergence if available (overwrites same file each time)
         if norm_stats:

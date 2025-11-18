@@ -804,10 +804,15 @@ def main():
     print(f"  Mixed precision: {use_amp}")
     print(f"  Max grad norm: {max_grad_norm}")
     print(f"  Non-uniform timestep sampling: {use_non_uniform_sampling}")
-    cfg_dropout_rate = config.get("training", {}).get("cfg_dropout_rate", 0.0)
+    cfg_dropout_config = config.get("training", {}).get("cfg_dropout_rate", 0.0)
     guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
-    if cfg_dropout_rate > 0.0:
-        print(f"  CFG dropout rate: {cfg_dropout_rate} (condition randomly dropped {cfg_dropout_rate*100:.1f}% of the time)")
+    if isinstance(cfg_dropout_config, dict):
+        start_rate = cfg_dropout_config.get("start", 1.0)
+        end_rate = cfg_dropout_config.get("end", 0.1)
+        schedule_type = cfg_dropout_config.get("schedule", "linear")
+        print(f"  CFG dropout rate: scheduled from {start_rate} to {end_rate} ({schedule_type} schedule)")
+    elif cfg_dropout_config > 0.0:
+        print(f"  CFG dropout rate: {cfg_dropout_config} (condition randomly dropped {cfg_dropout_config*100:.1f}% of the time)")
     if guidance_scale > 1.0:
         print(f"  CFG guidance scale: {guidance_scale} (used during sampling)")
     if early_stopping_patience is not None:
@@ -821,7 +826,28 @@ def main():
         
         # Train
         # Get CFG parameters from config
-        cfg_dropout_rate = config.get("training", {}).get("cfg_dropout_rate", 0.0)
+        # Support scheduled CFG dropout (decreasing over epochs)
+        cfg_dropout_config = config.get("training", {}).get("cfg_dropout_rate", 0.0)
+        if isinstance(cfg_dropout_config, dict):
+            # Schedule format: {start: 1.0, end: 0.1, schedule: "linear"}
+            start_rate = cfg_dropout_config.get("start", 1.0)
+            end_rate = cfg_dropout_config.get("end", 0.1)
+            schedule_type = cfg_dropout_config.get("schedule", "linear")
+            
+            # Calculate current rate based on schedule
+            progress = (epoch + 1) / epochs  # 0 to 1
+            if schedule_type == "linear":
+                cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
+            elif schedule_type == "cosine":
+                import math
+                cfg_dropout_rate = end_rate + (start_rate - end_rate) * (1 + math.cos(math.pi * progress)) / 2
+            else:
+                # Default to linear
+                cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
+        else:
+            # Fixed rate (backward compatible)
+            cfg_dropout_rate = cfg_dropout_config
+        
         guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
         
         train_loss, train_logs = train_epoch(
@@ -830,6 +856,9 @@ def main():
             use_non_uniform_sampling=use_non_uniform_sampling, cfg_dropout_rate=cfg_dropout_rate
         )
         
+        # Print current CFG dropout rate if using schedule
+        if isinstance(cfg_dropout_config, dict):
+            print(f"  Current CFG dropout rate: {cfg_dropout_rate:.4f}")
         print(f"Train Loss: {train_loss:.6f}")
         for k, v in train_logs.items():
             print(f"  {k}: {v:.6f}")
