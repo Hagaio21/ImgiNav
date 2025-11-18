@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J phase2_3_diffusion_decreasing_cfg_unet64
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_3_diffusion_decreasing_cfg_unet64.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_3_diffusion_decreasing_cfg_unet64.%J.err
+#BSUB -J phase2_3_diffusion_decreasing_cfg_unet48
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_3_diffusion_decreasing_cfg_unet48.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/phase2_3_diffusion_decreasing_cfg_unet48.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=16000]"  # 64x64x4 latents are much smaller than 512x512 images
 #BSUB -gpu "num=1"
@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
-DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/phase2/phase2_3_diffusion_64x64_bottleneck_attn_unet64_256_decreasing_cfg.yaml"
+DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/phase2/phase2_3_diffusion_64x64_bottleneck_attn_unet48_256_decreasing_cfg.yaml"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Ensure log directory exists
@@ -64,13 +64,13 @@ echo "  - Decreasing CFG dropout schedule: 1.0 → 0.1 (linear)"
 echo "  - Changes every 10 epochs, plateaus at 0.1 after epoch 200"
 echo "  - Starts with fully unconditional training"
 echo "  - Gradually transitions to conditional training"
-echo "  - UNet64 architecture (base_channels=64)"
+echo "  - UNet48 architecture (base_channels=48)"
 echo ""
 echo "Training Details:"
 echo "  - Uses VAE from new_layouts_VAE_64x64_structural_256"
 echo "  - Loads from unconditional checkpoint (Stage 1)"
 echo "  - 500 epochs"
-echo "  - Batch size: 96"
+echo "  - Batch size: 128"
 echo "  - 1000 noise steps with LinearScheduler"
 echo "  - CFG dropout tracked and plotted during training"
 echo "=========================================="
@@ -84,7 +84,7 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
 fi
 
 # Check if embeddings exist (they should be created first if using pipeline)
-EMBEDDING_MANIFEST="/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet64_256_unconditional/embeddings/manifest_with_latents.csv"
+EMBEDDING_MANIFEST="/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet48_256_unconditional/embeddings/manifest_with_latents.csv"
 if [ ! -f "${EMBEDDING_MANIFEST}" ]; then
   echo ""
   echo "WARNING: Embeddings not found at: ${EMBEDDING_MANIFEST}"
