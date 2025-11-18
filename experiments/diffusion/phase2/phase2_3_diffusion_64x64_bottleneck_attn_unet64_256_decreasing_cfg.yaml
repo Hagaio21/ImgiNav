@@ -76,10 +76,13 @@ training:
   early_stopping_min_delta: 1.0e-05
   use_non_uniform_sampling: false
   # Decreasing CFG dropout schedule: start at 1.0 (fully unconditional), end at 0.1 (mostly conditional)
+  # Changes every 10 epochs, plateaus at 0.1 after 200 epochs
   cfg_dropout_rate:
     start: 1.0  # Start with 100% dropout (fully unconditional training)
     end: 0.1    # End with 10% dropout (90% conditional, 10% unconditional)
     schedule: linear  # Linear decrease over epochs
+    step_size: 10  # Change every 10 epochs (rate stays constant within each 10-epoch block)
+    plateau_epoch: 200  # After this epoch, stay at end value (0.1)
   guidance_scale: 3.0  # Lower for simple/geometric images (7.5 was too high)
   scheduler:
     type: linear

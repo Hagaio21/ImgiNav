@@ -814,7 +814,15 @@ def main():
         start_rate = cfg_dropout_config.get("start", 1.0)
         end_rate = cfg_dropout_config.get("end", 0.1)
         schedule_type = cfg_dropout_config.get("schedule", "linear")
-        print(f"  CFG dropout rate: scheduled from {start_rate} to {end_rate} ({schedule_type} schedule)")
+        step_size = cfg_dropout_config.get("step_size", 1)
+        plateau_epoch = cfg_dropout_config.get("plateau_epoch", None)
+        schedule_info = f"({schedule_type} schedule"
+        if step_size > 1:
+            schedule_info += f", changes every {step_size} epochs"
+        if plateau_epoch is not None:
+            schedule_info += f", plateaus at {end_rate} after epoch {plateau_epoch}"
+        schedule_info += ")"
+        print(f"  CFG dropout rate: scheduled from {start_rate} to {end_rate} {schedule_info}")
     elif cfg_dropout_config > 0.0:
         print(f"  CFG dropout rate: {cfg_dropout_config} (condition randomly dropped {cfg_dropout_config*100:.1f}% of the time)")
     if guidance_scale > 1.0:
@@ -833,21 +841,36 @@ def main():
         # Support scheduled CFG dropout (decreasing over epochs)
         cfg_dropout_config = config.get("training", {}).get("cfg_dropout_rate", 0.0)
         if isinstance(cfg_dropout_config, dict):
-            # Schedule format: {start: 1.0, end: 0.1, schedule: "linear"}
+            # Schedule format: {start: 1.0, end: 0.1, schedule: "linear", step_size: 10, plateau_epoch: 200}
             start_rate = cfg_dropout_config.get("start", 1.0)
             end_rate = cfg_dropout_config.get("end", 0.1)
             schedule_type = cfg_dropout_config.get("schedule", "linear")
+            step_size = cfg_dropout_config.get("step_size", 1)  # Change every N epochs (default: 1 for backward compatibility)
+            plateau_epoch = cfg_dropout_config.get("plateau_epoch", None)  # After this epoch, stay at end_rate
             
-            # Calculate current rate based on schedule
-            progress = (epoch + 1) / epochs  # 0 to 1
-            if schedule_type == "linear":
-                cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
-            elif schedule_type == "cosine":
-                import math
-                cfg_dropout_rate = end_rate + (start_rate - end_rate) * (1 + math.cos(math.pi * progress)) / 2
+            # If we've passed the plateau epoch, just use the end rate
+            if plateau_epoch is not None and epoch >= plateau_epoch:
+                cfg_dropout_rate = end_rate
             else:
-                # Default to linear
-                cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
+                # Calculate current rate based on schedule with step-based updates
+                # Use floor division to get the current step, so rate stays constant for step_size epochs
+                # If plateau_epoch is set, calculate progress based on plateau_epoch instead of total epochs
+                effective_max_epoch = plateau_epoch if plateau_epoch is not None else epochs
+                current_step = epoch // step_size
+                max_step = (effective_max_epoch - 1) // step_size  # Maximum step before plateau
+                if max_step > 0:
+                    progress = min(current_step / max_step, 1.0)  # Clamp to 1.0
+                else:
+                    progress = 0.0
+                
+                if schedule_type == "linear":
+                    cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
+                elif schedule_type == "cosine":
+                    import math
+                    cfg_dropout_rate = end_rate + (start_rate - end_rate) * (1 + math.cos(math.pi * progress)) / 2
+                else:
+                    # Default to linear
+                    cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
         else:
             # Fixed rate (backward compatible)
             cfg_dropout_rate = cfg_dropout_config
