@@ -26,6 +26,10 @@ autoencoder:
 latent_clamp_min: -6.0
 latent_clamp_max: 6.0
 
+diffusion:
+  # Load from unconditional checkpoint (Stage 1) - fine-tune with decreasing CFG
+  stage1_checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet64_256_unconditional/checkpoints/new_layouts_diffusion_64x64_bottleneck_attn_unet64_256_unconditional_checkpoint_best.pt
+
 unet:
   type: UnetWithAttention
   in_channels: 4
