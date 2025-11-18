@@ -1,17 +1,17 @@
-# Phase 2.3: Diffusion Model with Decreasing CFG Dropout Schedule
-# Uses Phase 2.1 autoencoder (64×64×4 latents)
+# Phase 2.3: Diffusion Model with Decreasing CFG Dropout Schedule (New Layouts)
+# Uses new layouts VAE (64×64×4 latents)
 # Strategy: Start with high CFG dropout (unconditional) and gradually decrease to conditional
 # This allows the model to learn unconditional generation first, then fine-tune with conditioning
 # CFG dropout schedule: 1.0 → 0.1 (linear decrease over training)
 
 experiment:
-  name: phase2_3_diffusion_64x64_bottleneck_attn_unet64_256_decreasing_cfg
-  phase: phase2_3_diffusion
-  save_path: /work3/s233249/ImgiNav/experiments/phase2/phase2_3_diffusion_64x64_bottleneck_attn_unet64_256_decreasing_cfg
+  name: new_layouts_phase2_3_diffusion_64x64_bottleneck_attn_unet64_256_decreasing_cfg
+  phase: new_layouts_phase2_3_diffusion
+  save_path: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_phase2_3_diffusion_64x64_bottleneck_attn_unet64_256_decreasing_cfg
   epochs_target: 500
 
 dataset:
-  manifest: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_diffusion_64x64_bottleneck_attn_unet64_256/embeddings/manifest_with_latents.csv
+  manifest: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet64_256_unconditional/embeddings/manifest_with_latents.csv
   outputs:
     latent: latent_path
   filters:
@@ -21,8 +21,10 @@ dataset:
   return_path: false
 
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/phase2/phase2_1_VAE_64x64_structural_256/phase2_1_VAE_64x64_structural_256_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt
   frozen: true
+latent_clamp_min: -6.0
+latent_clamp_max: 6.0
 
 unet:
   type: UnetWithAttention

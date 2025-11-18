@@ -480,9 +480,30 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.grid(True, alpha=0.3)
         ax.set_ylim([0, 1])
     
-    # Plot 8: Learning rate (if available)
-    if 'learning_rate' in history_df.columns:
+    # Plot 8: CFG Dropout Rate (if available)
+    if 'cfg_dropout_rate' in history_df.columns:
         ax = fig.add_subplot(gs[2, 1])
+        ax.plot(history_df[x_col], history_df['cfg_dropout_rate'], label='CFG Dropout Rate', marker='o', markersize=2, linewidth=1.5, color='red')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel('CFG Dropout Rate')
+        ax.set_title('CFG Dropout Schedule', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0, 1.05])
+    # Plot 9: Learning rate (if available and CFG dropout not present)
+    elif 'learning_rate' in history_df.columns:
+        ax = fig.add_subplot(gs[2, 1])
+        ax.plot(history_df[x_col], history_df['learning_rate'], label='Learning Rate', marker='o', markersize=2, linewidth=1.5, color='brown')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel('Learning Rate')
+        ax.set_title('Learning Rate Schedule', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_yscale('log')
+    
+    # Plot 9 (or 8 if CFG dropout was plotted): Learning rate (if available and CFG dropout was plotted)
+    if 'cfg_dropout_rate' in history_df.columns and 'learning_rate' in history_df.columns:
+        ax = fig.add_subplot(gs[2, 2])
         ax.plot(history_df[x_col], history_df['learning_rate'], label='Learning Rate', marker='o', markersize=2, linewidth=1.5, color='brown')
         ax.set_xlabel(x_col.capitalize())
         ax.set_ylabel('Learning Rate')

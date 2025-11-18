@@ -913,6 +913,7 @@ def main():
             "epoch": epoch + 1,
             "train_loss": train_loss,
             "val_loss": val_loss,
+            "cfg_dropout_rate": cfg_dropout_rate,  # Track CFG dropout rate
             **{f"train_{k}": v for k, v in train_logs.items()},
             **{f"val_{k}": v for k, v in val_logs.items()}
         }
