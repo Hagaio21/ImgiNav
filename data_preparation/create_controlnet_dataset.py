@@ -481,7 +481,8 @@ def create_controlnet_dataset(
         print(f"  Using POV manifest to match POVs to layouts...")
         for (scene_id, room_id), group in pov_df.groupby(["scene_id", "room_id"]):
             pov_paths = group["pov_path"].tolist()
-            pov_cache[(scene_id, room_id)] = pov_paths
+            # Use string keys to ensure matching
+            pov_cache[(str(scene_id), str(room_id))] = pov_paths
         print(f"  Found POVs for {len(pov_cache)} unique rooms")
     else:
         # Fallback: infer from file system (slow)
@@ -510,7 +511,9 @@ def create_controlnet_dataset(
         layout_type = row["type"]
         
         if layout_type == "room" and row.get("room_id") and not pd.isna(row.get("room_id")):
-            cache_key = (row["scene_id"], row["room_id"])
+            scene_id = str(row["scene_id"])
+            room_id = str(row["room_id"])
+            cache_key = (scene_id, room_id)
             pov_paths = pov_cache.get(cache_key, [])
             
             if pov_paths:
@@ -532,7 +535,8 @@ def create_controlnet_dataset(
             expanded_rows.append(new_row)
     
     layouts_df = pd.DataFrame(expanded_rows).reset_index(drop=True)
-    print(f"  Expanded to {len(layouts_df)} rows")
+    pov_count = (layouts_df["pov_path"] != "").sum()
+    print(f"  Expanded to {len(layouts_df)} rows ({pov_count} with POVs)")
     
     # Now find graph paths
     if graph_df is not None:
