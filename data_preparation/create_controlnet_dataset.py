@@ -206,24 +206,30 @@ def create_controlnet_dataset(
         
         # Try relative to layout path (structure: scenes/{scene_id}/rooms/{room_id}/layouts/...)
         if not pd.isna(layout_path_str):
-            layout_path = Path(layout_path_str)
-            layout_dir = layout_path.parent  # layouts/
-            room_dir = layout_dir.parent     # {room_id}/
-            
-            # POVs are in rooms/{room_id}/povs/tex/
-            pov_dir = room_dir / "povs" / "tex"
-            if pov_dir.exists():
-                # Find all POV files for this room
-                for pov_file in sorted(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png")):
-                    pov_paths.append(str(pov_file.resolve()))
+            try:
+                layout_path = Path(layout_path_str)
+                layout_dir = layout_path.parent  # layouts/
+                room_dir = layout_dir.parent     # {room_id}/
+                
+                # POVs are in rooms/{room_id}/povs/tex/
+                pov_dir = room_dir / "povs" / "tex"
+                if pov_dir.exists() and pov_dir.is_dir():
+                    # Find all POV files for this room - use list() to avoid iterator issues
+                    pov_files = list(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png"))
+                    pov_paths.extend([str(p.resolve()) for p in sorted(pov_files)])
+            except Exception as e:
+                # Skip if path operations fail
+                pass
         
-        # Also try collected directory
-        collected_pov_dir = Path(f"/work3/s233249/ImgiNav/datasets/collected/povs/tex")
-        if collected_pov_dir.exists():
-            for pov_file in sorted(collected_pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png")):
-                pov_path = str(pov_file.resolve())
-                if pov_path not in pov_paths:
-                    pov_paths.append(pov_path)
+        # Also try collected directory (only if we didn't find any in the room directory)
+        if not pov_paths:
+            try:
+                collected_pov_dir = Path(f"/work3/s233249/ImgiNav/datasets/collected/povs/tex")
+                if collected_pov_dir.exists() and collected_pov_dir.is_dir():
+                    pov_files = list(collected_pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png"))
+                    pov_paths.extend([str(p.resolve()) for p in sorted(pov_files)])
+            except Exception:
+                pass
         
         return pov_paths
     
@@ -284,9 +290,16 @@ def create_controlnet_dataset(
     
     # Expand layouts to include all POVs (one row per POV)
     print(f"  Finding all POVs for {len(layouts_df)} layouts...")
+    from tqdm import tqdm
+    
+    # Use vectorized operations where possible, but need to expand for POVs
     expanded_rows = []
     
-    for idx, row in layouts_df.iterrows():
+    # Group by (scene_id, room_id, type) to avoid redundant file system calls
+    # But we still need to check each layout_path individually
+    print(f"  Processing layouts (this may take a few minutes)...")
+    
+    for idx, row in tqdm(layouts_df.iterrows(), total=len(layouts_df), desc="Finding POVs"):
         layout_type = row["type"]
         
         # For room layouts, find all POVs
