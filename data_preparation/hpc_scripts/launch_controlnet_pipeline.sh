@@ -10,10 +10,10 @@
 # 3. Create ControlNet training manifest
 # 4. Train ControlNet model
 #
-# Usage:
-#     bsub < data_preparation/hpc_scripts/launch_controlnet_pipeline.sh
-# OR (if running directly on login node):
+# Usage (run directly on login node):
 #     bash data_preparation/hpc_scripts/launch_controlnet_pipeline.sh
+# OR:
+#     ./data_preparation/hpc_scripts/launch_controlnet_pipeline.sh
 
 # ----------------------------------------------------------------------
 # Create Log Directory
