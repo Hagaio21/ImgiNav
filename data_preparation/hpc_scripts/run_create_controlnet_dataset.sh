@@ -6,7 +6,7 @@
 #BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
 #BSUB -W 12:00
-#BSUB -q gpuv100
+#BSUB -q gpul40s
 
 export MKL_INTERFACE_LAYER=LP64
 # PyTorch memory management to avoid fragmentation
