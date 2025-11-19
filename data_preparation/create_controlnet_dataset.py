@@ -197,16 +197,12 @@ def create_controlnet_dataset(
     needs_graph = layouts_df["graph_path"].isna() | (layouts_df["graph_path"] == "")
     
     # Try to infer POV and graph paths from layout paths
-    def infer_pov_path(layout_path_str, scene_id, room_id):
-        """Infer POV path - only for room layouts, and prefer v01."""
+    def find_all_pov_paths(layout_path_str, scene_id, room_id):
+        """Find ALL POV paths for a room layout - returns list of paths."""
         if pd.isna(layout_path_str) or not room_id or pd.isna(room_id) or room_id == "":
-            return ""
+            return []
         
-        # Try collected directory first (most common)
-        # Prefer v01 first
-        collected_pov = Path(f"/work3/s233249/ImgiNav/datasets/collected/povs/tex/{scene_id}_{room_id}_v01_pov_tex.png")
-        if collected_pov.exists():
-            return str(collected_pov.resolve())
+        pov_paths = []
         
         # Try relative to layout path (structure: scenes/{scene_id}/rooms/{room_id}/layouts/...)
         if not pd.isna(layout_path_str):
@@ -217,17 +213,25 @@ def create_controlnet_dataset(
             # POVs are in rooms/{room_id}/povs/tex/
             pov_dir = room_dir / "povs" / "tex"
             if pov_dir.exists():
-                pov_file = pov_dir / f"{scene_id}_{room_id}_v01_pov_tex.png"
-                if pov_file.exists():
-                    return str(pov_file.resolve())
+                # Find all POV files for this room
+                for pov_file in sorted(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png")):
+                    pov_paths.append(str(pov_file.resolve()))
         
-        return ""
+        # Also try collected directory
+        collected_pov_dir = Path(f"/work3/s233249/ImgiNav/datasets/collected/povs/tex")
+        if collected_pov_dir.exists():
+            for pov_file in sorted(collected_pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png")):
+                pov_path = str(pov_file.resolve())
+                if pov_path not in pov_paths:
+                    pov_paths.append(pov_path)
+        
+        return pov_paths
     
     def infer_graph_path(layout_path_str, scene_id, room_id, layout_type):
         """Infer graph path based on actual directory structure.
         
-        For scenes: graphs are in scene root: scenes/{scene_id}/{scene_id}_scene_graph.json
-        For rooms: graphs are in layouts/: scenes/{scene_id}/rooms/{room_id}/layouts/{scene_id}_{room_id}_graph.json
+        For scenes: graphs are in scene root: datasets/scenes/{scene_id}/{scene_id}_scene_graph.json
+        For rooms: graphs are in layouts/: datasets/scenes/{scene_id}/rooms/{room_id}/layouts/{scene_id}_{room_id}_graph.json
         """
         if pd.isna(layout_path_str):
             return ""
@@ -237,13 +241,13 @@ def create_controlnet_dataset(
         
         if layout_type == "room" and room_id and not pd.isna(room_id) and room_id != "":
             # Room graphs: in the layouts/ directory with the layout
-            # Structure: scenes/{scene_id}/rooms/{room_id}/layouts/{scene_id}_{room_id}_graph.json
+            # Structure: datasets/scenes/{scene_id}/rooms/{room_id}/layouts/{scene_id}_{room_id}_graph.json
             graph_filenames = [
                 f"{scene_id}_{room_id}_graph.json",
                 f"{scene_id}_{room_id}_room_graph.json"
             ]
             
-            # Try in layouts directory (same as layout)
+            # Try in layouts directory (same as layout) - this should work
             for graph_filename in graph_filenames:
                 graph_file = layout_dir / graph_filename
                 if graph_file.exists():
@@ -254,13 +258,18 @@ def create_controlnet_dataset(
                 collected_graph = Path(f"/work3/s233249/ImgiNav/datasets/collected/graphs/{graph_filename}")
                 if collected_graph.exists():
                     return str(collected_graph.resolve())
+            
         else:
             # Scene graphs: in scene root, NOT in layouts/
-            # Structure: scenes/{scene_id}/{scene_id}_scene_graph.json
+            # Structure: datasets/scenes/{scene_id}/{scene_id}_scene_graph.json
             graph_filename = f"{scene_id}_scene_graph.json"
             
-            # Scene root is parent of layouts/ (or parent of parent if layouts/ exists)
-            scene_root = layout_dir.parent if layout_dir.name == "layouts" else layout_dir
+            # Scene root is parent of layouts/ directory
+            if layout_dir.name == "layouts":
+                scene_root = layout_dir.parent
+            else:
+                # If layout is directly in scene root, use that
+                scene_root = layout_dir
             
             graph_file = scene_root / graph_filename
             if graph_file.exists():
@@ -273,18 +282,44 @@ def create_controlnet_dataset(
         
         return ""
     
-    if needs_pov.any():
-        print(f"  Inferring POV paths for {needs_pov.sum()} entries...")
-        layouts_df.loc[needs_pov, "pov_path"] = layouts_df[needs_pov].apply(
-            lambda row: infer_pov_path(row["layout_path"], row["scene_id"], row.get("room_id", "")),
-            axis=1
-        )
-    else:
-        print("  Using existing POV paths from manifest")
+    # Expand layouts to include all POVs (one row per POV)
+    print(f"  Finding all POVs for {len(layouts_df)} layouts...")
+    expanded_rows = []
     
-    if needs_graph.any():
-        print(f"  Inferring graph paths for {needs_graph.sum()} entries...")
-        layouts_df.loc[needs_graph, "graph_path"] = layouts_df[needs_graph].apply(
+    for idx, row in layouts_df.iterrows():
+        layout_type = row["type"]
+        
+        # For room layouts, find all POVs
+        if layout_type == "room" and row.get("room_id") and not pd.isna(row.get("room_id")):
+            pov_paths = find_all_pov_paths(row["layout_path"], row["scene_id"], row.get("room_id", ""))
+            
+            if pov_paths:
+                # Create one row per POV
+                for pov_path in pov_paths:
+                    new_row = row.copy()
+                    new_row["pov_path"] = pov_path
+                    expanded_rows.append(new_row)
+            else:
+                # No POVs found, keep original row with empty POV
+                new_row = row.copy()
+                if "pov_path" not in new_row or pd.isna(new_row.get("pov_path")):
+                    new_row["pov_path"] = ""
+                expanded_rows.append(new_row)
+        else:
+            # Scene layouts or rows without room_id - keep as is
+            new_row = row.copy()
+            if "pov_path" not in new_row or pd.isna(new_row.get("pov_path")):
+                new_row["pov_path"] = ""
+            expanded_rows.append(new_row)
+    
+    # Replace dataframe with expanded version
+    layouts_df = pd.DataFrame(expanded_rows).reset_index(drop=True)
+    print(f"  Expanded to {len(layouts_df)} rows (one per POV-viewpoint)")
+    
+    # Now find graph paths
+    if needs_graph.any() or True:  # Always infer graphs
+        print(f"  Inferring graph paths for {len(layouts_df)} entries...")
+        layouts_df["graph_path"] = layouts_df.apply(
             lambda row: infer_graph_path(row["layout_path"], row["scene_id"], row.get("room_id", ""), row["type"]),
             axis=1
         )
@@ -295,6 +330,37 @@ def create_controlnet_dataset(
     graph_count = (layouts_df["graph_path"] != "").sum()
     print(f"  Found {pov_count} POV paths")
     print(f"  Found {graph_count} graph paths")
+    
+    # Debug: show a few examples of missing graphs
+    if graph_count == 0 and needs_graph.any():
+        print(f"\n  [DEBUG] Checking why graphs weren't found...")
+        sample_rows = layouts_df[needs_graph].head(3)
+        for idx, row in sample_rows.iterrows():
+            layout_path = Path(row["layout_path"])
+            layout_dir = layout_path.parent
+            scene_id = row["scene_id"]
+            room_id = row.get("room_id", "")
+            layout_type = row["type"]
+            
+            print(f"\n  Example {idx}:")
+            print(f"    Layout: {layout_path}")
+            print(f"    Layout dir: {layout_dir}")
+            print(f"    Type: {layout_type}, Scene: {scene_id}, Room: {room_id}")
+            
+            if layout_type == "room" and room_id:
+                expected_graph = layout_dir / f"{scene_id}_{room_id}_graph.json"
+                print(f"    Expected graph: {expected_graph}")
+                print(f"    Exists: {expected_graph.exists()}")
+                if layout_dir.exists():
+                    print(f"    Files in layout dir: {list(layout_dir.glob('*.json'))[:5]}")
+            else:
+                scene_root = layout_dir.parent if layout_dir.name == "layouts" else layout_dir
+                expected_graph = scene_root / f"{scene_id}_scene_graph.json"
+                print(f"    Scene root: {scene_root}")
+                print(f"    Expected graph: {expected_graph}")
+                print(f"    Exists: {expected_graph.exists()}")
+                if scene_root.exists():
+                    print(f"    Files in scene root: {list(scene_root.glob('*_scene_graph.json'))[:5]}")
     
     # Step 3: Embed POVs
     print(f"\n{'='*60}")
