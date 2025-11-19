@@ -478,17 +478,8 @@ def create_controlnet_dataset(
     pov_cache = {}
     
     if pov_df is not None:
-        # Use POV manifest - MUCH faster!
         print(f"  Using POV manifest to match POVs to layouts...")
-        # Filter for "tex" type POVs (not "seg")
-        if "type" in pov_df.columns:
-            pov_df_filtered = pov_df[pov_df["type"] == "tex"].copy()
-            print(f"  Filtered to {len(pov_df_filtered)} tex POVs (from {len(pov_df)} total)")
-        else:
-            pov_df_filtered = pov_df
-        
-        # Group POVs by (scene_id, room_id)
-        for (scene_id, room_id), group in pov_df_filtered.groupby(["scene_id", "room_id"]):
+        for (scene_id, room_id), group in pov_df.groupby(["scene_id", "room_id"]):
             pov_paths = group["pov_path"].tolist()
             pov_cache[(scene_id, room_id)] = pov_paths
         print(f"  Found POVs for {len(pov_cache)} unique rooms")
@@ -514,38 +505,34 @@ def create_controlnet_dataset(
     
     print(f"  Expanding layouts with found POVs...")
     
-    # Now expand all layouts using the cache
     expanded_rows = []
     for idx, row in layouts_df.iterrows():
         layout_type = row["type"]
         
-        # For room layouts, use cached POV paths
         if layout_type == "room" and row.get("room_id") and not pd.isna(row.get("room_id")):
             cache_key = (row["scene_id"], row["room_id"])
             pov_paths = pov_cache.get(cache_key, [])
             
             if pov_paths:
-                # Create one row per POV
                 for pov_path in pov_paths:
                     new_row = row.copy()
-                    new_row["pov_path"] = pov_path
+                    new_row["pov_path"] = str(pov_path)
+                    if pov_df is not None:
+                        pov_row = pov_df[pov_df["pov_path"] == pov_path]
+                        if len(pov_row) > 0:
+                            new_row["pov_type"] = pov_row.iloc[0].get("type", "")
                     expanded_rows.append(new_row)
             else:
-                # No POVs found, keep original row with empty POV
                 new_row = row.copy()
-                if "pov_path" not in new_row or pd.isna(new_row.get("pov_path")):
-                    new_row["pov_path"] = ""
+                new_row["pov_path"] = ""
                 expanded_rows.append(new_row)
         else:
-            # Scene layouts or rows without room_id - keep as is
             new_row = row.copy()
-            if "pov_path" not in new_row or pd.isna(new_row.get("pov_path")):
-                new_row["pov_path"] = ""
+            new_row["pov_path"] = ""
             expanded_rows.append(new_row)
     
-    # Replace dataframe with expanded version
     layouts_df = pd.DataFrame(expanded_rows).reset_index(drop=True)
-    print(f"  Expanded to {len(layouts_df)} rows (one per POV-viewpoint)")
+    print(f"  Expanded to {len(layouts_df)} rows")
     
     # Now find graph paths
     if graph_df is not None:
@@ -591,9 +578,8 @@ def create_controlnet_dataset(
     
     pov_count = (layouts_df["pov_path"] != "").sum()
     graph_count = (layouts_df["graph_path"] != "").sum()
-    unique_graphs = layouts_df[layouts_df["graph_path"] != ""]["graph_path"].nunique()
     print(f"  Found {pov_count} POV paths")
-    print(f"  Found {graph_count} graph paths ({unique_graphs} unique graph files)")
+    print(f"  Found {graph_count} graph paths")
     
     # Debug: show a few examples of missing graphs if none found
     if graph_count == 0:
