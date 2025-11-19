@@ -289,18 +289,47 @@ def create_controlnet_dataset(
         return ""
     
     # Expand layouts to include all POVs (one row per POV)
+    # OPTIMIZATION: Group by (scene_id, room_id) to avoid redundant file system calls
     print(f"  Finding all POVs for {len(layouts_df)} layouts...")
-    print(f"  Processing layouts (this may take a few minutes on network filesystem)...")
+    print(f"  Grouping layouts by scene/room to optimize file system access...")
     
+    # Build a cache: (scene_id, room_id) -> list of POV paths
+    pov_cache = {}
+    
+    # Get unique (scene_id, room_id) pairs for room layouts
+    room_layouts = layouts_df[
+        (layouts_df["type"] == "room") & 
+        (layouts_df["room_id"].notna()) & 
+        (layouts_df["room_id"] != "")
+    ].copy()
+    
+    if len(room_layouts) > 0:
+        # Get unique combinations
+        unique_rooms = room_layouts[["scene_id", "room_id", "layout_path"]].drop_duplicates(subset=["scene_id", "room_id"])
+        
+        print(f"  Checking POV directories for {len(unique_rooms)} unique rooms...")
+        
+        # Check each unique room once
+        for idx, row in tqdm(unique_rooms.iterrows(), total=len(unique_rooms), desc="Scanning POV dirs"):
+            scene_id = row["scene_id"]
+            room_id = row["room_id"]
+            layout_path_str = row["layout_path"]
+            
+            # Find all POVs for this room (only check once per room)
+            pov_paths = find_all_pov_paths(layout_path_str, scene_id, room_id)
+            pov_cache[(scene_id, room_id)] = pov_paths
+    
+    print(f"  Expanding layouts with found POVs...")
+    
+    # Now expand all layouts using the cache
     expanded_rows = []
-    
-    # Process with progress bar
-    for idx, row in tqdm(layouts_df.iterrows(), total=len(layouts_df), desc="Finding POVs"):
+    for idx, row in layouts_df.iterrows():
         layout_type = row["type"]
         
-        # For room layouts, find all POVs
+        # For room layouts, use cached POV paths
         if layout_type == "room" and row.get("room_id") and not pd.isna(row.get("room_id")):
-            pov_paths = find_all_pov_paths(row["layout_path"], row["scene_id"], row.get("room_id", ""))
+            cache_key = (row["scene_id"], row["room_id"])
+            pov_paths = pov_cache.get(cache_key, [])
             
             if pov_paths:
                 # Create one row per POV
