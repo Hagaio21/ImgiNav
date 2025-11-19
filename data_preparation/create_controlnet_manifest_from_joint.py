@@ -113,6 +113,9 @@ def create_controlnet_manifest_from_joint(
             "layout_embedding": layout_emb,
             "pov_embedding": pov_emb,
             "graph_embedding": graph_emb,
+            "layout_path": row.get("layout_path", ""),
+            "pov_path": row.get("pov_path", ""),
+            "graph_text_path": row.get("graph_text_path", ""),
         })
     
     # Process scene layouts
@@ -157,6 +160,9 @@ def create_controlnet_manifest_from_joint(
             "layout_embedding": layout_emb,
             "pov_embedding": pov_emb,
             "graph_embedding": graph_emb,
+            "layout_path": row.get("layout_path", ""),
+            "pov_path": row.get("pov_path", ""),
+            "graph_text_path": row.get("graph_text_path", ""),
         })
     
     # Create output DataFrame

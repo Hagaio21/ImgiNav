@@ -15,7 +15,7 @@ latent_clamp_min: -6.0
 latent_clamp_max: 6.0
 
 dataset:
-  manifest: /work3/s233249/ImgiNav/datasets/controlnet_training_manifest_new_layouts.csv
+  manifest: /work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv
   outputs:
     latent: layout_embedding
     text_emb: graph_embedding

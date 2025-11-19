@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import sys
+import json
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -16,6 +17,7 @@ from pathlib import Path
 from tqdm import tqdm
 import math
 import yaml
+from PIL import Image
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -190,7 +192,14 @@ def eval_epoch(model, controlnet, dataloader, scheduler, loss_fn, device, use_am
 
 
 def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None):
-    """Generate and save sample images using ControlNet, with target vs generated comparison."""
+    """Generate and save sample images using ControlNet, with target vs generated comparison.
+    
+    Saves:
+    - Target and generated images (individual and grids)
+    - Graph text files
+    - POV images (if available)
+    - Conditions, targets, and generated latents as .pt files
+    """
     model.eval()
     controlnet.eval()
     samples_dir = output_dir / "samples"
@@ -207,6 +216,13 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
         # Limit batch size
         batch_size = min(sample_batch_size, batch["latent"].shape[0])
         batch = {k: v[:batch_size] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        
+        # Get dataset to access paths
+        dataset = val_loader.dataset
+        # For validation, dataloader is typically sequential, so we can track which samples we're using
+        # We'll use a simple approach: get the first batch_size samples
+        # In practice, validation should be deterministic, so this should work
+        batch_indices = list(range(batch_size))
         
         text_emb = batch.get("text_emb")
         pov_emb = batch.get("pov_emb")
@@ -290,6 +306,97 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
         torch.set_rng_state(cpu_rng_state)
         if torch.cuda.is_available() and cuda_rng_states is not None:
             torch.cuda.set_rng_state_all(cuda_rng_states)
+        
+        # Save raw data: conditions, targets, and generated latents
+        data_dir = output_dir / "sample_data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        epoch_prefix = f"{exp_name}_epoch_{epoch:03d}" if exp_name else f"epoch_{epoch:03d}"
+        
+        # Save individual images and graph text
+        images_dir = data_dir / f"{epoch_prefix}_images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get paths from dataset
+        graph_texts = []
+        layout_paths = []
+        pov_paths = []
+        
+        for i in range(batch_size):
+            idx = batch_indices[i] if i < len(batch_indices) else i
+            row = dataset.df.iloc[idx]
+            
+            # Get graph text path
+            graph_text_path = row.get("graph_text_path", "")
+            if graph_text_path and Path(graph_text_path).exists():
+                try:
+                    with open(graph_text_path, 'r') as f:
+                        graph_text = f.read()
+                    graph_texts.append(graph_text)
+                    # Save graph text
+                    text_file = images_dir / f"sample_{i:03d}_graph_text.txt"
+                    with open(text_file, 'w') as f:
+                        f.write(graph_text)
+                except Exception as e:
+                    print(f"  Warning: Could not read graph text from {graph_text_path}: {e}")
+                    graph_texts.append("")
+            else:
+                graph_texts.append("")
+            
+            # Get layout path (for reference)
+            layout_path = row.get("layout_path", "")
+            layout_paths.append(layout_path)
+            
+            # Get POV path
+            pov_path = row.get("pov_path", "")
+            pov_paths.append(pov_path)
+            
+            # Save POV image if available
+            if pov_path and Path(pov_path).exists():
+                try:
+                    pov_img = Image.open(pov_path)
+                    pov_img.save(images_dir / f"sample_{i:03d}_pov.png")
+                except Exception as e:
+                    print(f"  Warning: Could not save POV image from {pov_path}: {e}")
+        
+        # Save target images individually
+        if target_rgb is not None:
+            for i in range(batch_size):
+                save_image(target_rgb[i], images_dir / f"sample_{i:03d}_target.png", normalize=False)
+        
+        # Save generated images individually
+        for i in range(batch_size):
+            save_image(generated_rgb[i], images_dir / f"sample_{i:03d}_generated.png", normalize=False)
+        
+        print(f"  Saved {batch_size} individual images and graph texts to {images_dir}")
+        
+        # Save metadata (paths and graph texts)
+        metadata = {
+            "layout_paths": layout_paths,
+            "pov_paths": pov_paths,
+            "graph_texts": graph_texts,
+        }
+        with open(images_dir / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        # Save conditioning embeddings
+        torch.save({
+            "graph_embeddings": text_emb.cpu(),  # Graph embeddings (conditions)
+            "pov_embeddings": pov_emb.cpu(),     # POV embeddings (conditions)
+        }, data_dir / f"{epoch_prefix}_conditions.pt")
+        print(f"  Saved conditioning embeddings to {data_dir / f'{epoch_prefix}_conditions.pt'}")
+        
+        # Save target latents
+        torch.save({
+            "target_latents": target_latents.cpu(),  # Target latents from dataset
+        }, data_dir / f"{epoch_prefix}_targets.pt")
+        print(f"  Saved target latents to {data_dir / f'{epoch_prefix}_targets.pt'}")
+        
+        # Save generated latents
+        torch.save({
+            "generated_latents": latents.cpu(),  # Generated latents from ControlNet
+        }, data_dir / f"{epoch_prefix}_generated.pt")
+        print(f"  Saved generated latents to {data_dir / f'{epoch_prefix}_generated.pt'}")
         
         # Create side-by-side comparison: target (left) | generated (right)
         grid_n = int(math.sqrt(batch_size))
