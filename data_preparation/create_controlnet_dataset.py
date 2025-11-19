@@ -63,7 +63,6 @@ def embed_layouts_from_manifest(
     
     # Use create_embeddings.py functionality
     from data_preparation.create_embeddings import create_layout_embeddings_from_manifest
-    from models.autoencoder import Autoencoder
     
     output_manifest = temp_dir / "layouts_with_latents.csv"
     output_latent_dir = temp_dir / "latents"
