@@ -290,15 +290,11 @@ def create_controlnet_dataset(
     
     # Expand layouts to include all POVs (one row per POV)
     print(f"  Finding all POVs for {len(layouts_df)} layouts...")
-    from tqdm import tqdm
+    print(f"  Processing layouts (this may take a few minutes on network filesystem)...")
     
-    # Use vectorized operations where possible, but need to expand for POVs
     expanded_rows = []
     
-    # Group by (scene_id, room_id, type) to avoid redundant file system calls
-    # But we still need to check each layout_path individually
-    print(f"  Processing layouts (this may take a few minutes)...")
-    
+    # Process with progress bar
     for idx, row in tqdm(layouts_df.iterrows(), total=len(layouts_df), desc="Finding POVs"):
         layout_type = row["type"]
         
