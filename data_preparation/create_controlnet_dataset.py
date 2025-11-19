@@ -616,80 +616,7 @@ def create_controlnet_dataset(
                     json_files = list(scene_root.glob('*_scene_graph.json'))
                     print(f"    Scene graph files: {[f.name for f in json_files[:5]]}")
     
-    # Step 3: Embed POVs
-    print(f"\n{'='*60}")
-    print("Step 3/4: Embedding POVs")
-    print(f"{'='*60}")
-    
-    pov_rows = layouts_df[layouts_df["pov_path"] != ""].copy()
-    if len(pov_rows) > 0:
-        import tempfile
-        temp_dir = Path(tempfile.mkdtemp())
-        temp_pov_manifest = temp_dir / "povs_for_embedding.csv"
-        output_pov_manifest = temp_dir / "povs_with_embeddings.csv"
-        
-        # Ensure is_empty column exists
-        if "is_empty" not in pov_rows.columns:
-            pov_rows["is_empty"] = False
-        
-        pov_rows[["pov_path", "is_empty"]].to_csv(temp_pov_manifest, index=False)
-        
-        # Embed POVs - this creates embeddings next to the POV files
-        create_pov_embeddings(
-            manifest_path=temp_pov_manifest,
-            output_manifest=output_pov_manifest,
-            batch_size=pov_batch_size,
-            save_format="pt"
-        )
-        
-        # Load the output manifest to get embedding paths
-        pov_emb_df = pd.read_csv(output_pov_manifest)
-        pov_emb_dict = dict(zip(pov_emb_df["pov_path"], pov_emb_df["embedding_path"]))
-        
-        # Add embedding paths to dataframe
-        layouts_df["pov_embedding_path"] = layouts_df["pov_path"].map(pov_emb_dict).fillna("")
-        print(f"  Embedded {len([x for x in layouts_df['pov_embedding_path'] if x != ''])} POVs")
-    else:
-        layouts_df["pov_embedding_path"] = ""
-        print("  No POVs to embed")
-    
-    # Step 4: Embed graphs
-    print(f"\n{'='*60}")
-    print("Step 4/4: Embedding Graphs")
-    print(f"{'='*60}")
-    
-    graph_rows = layouts_df[layouts_df["graph_path"] != ""].copy()
-    if len(graph_rows) > 0:
-        import tempfile
-        temp_dir = Path(tempfile.mkdtemp())
-        temp_graph_manifest = temp_dir / "graphs_for_embedding.csv"
-        output_graph_manifest = temp_dir / "graphs_with_embeddings.csv"
-        
-        graph_rows[["graph_path", "scene_id", "type", "room_id"]].to_csv(
-            temp_graph_manifest, index=False
-        )
-        
-        # Embed graphs - this creates embeddings next to the graph files
-        create_graph_embeddings(
-            manifest_path=temp_graph_manifest,
-            taxonomy_path=taxonomy_path,
-            output_manifest=output_graph_manifest,
-            model_name=graph_model,
-            save_format="pt"
-        )
-        
-        # Load the output manifest to get embedding paths
-        graph_emb_df = pd.read_csv(output_graph_manifest)
-        graph_emb_dict = dict(zip(graph_emb_df["graph_path"], graph_emb_df["embedding_path"]))
-        
-        # Add embedding paths to dataframe
-        layouts_df["graph_embedding_path"] = layouts_df["graph_path"].map(graph_emb_dict).fillna("")
-        print(f"  Embedded {len([x for x in layouts_df['graph_embedding_path'] if x != ''])} graphs")
-    else:
-        layouts_df["graph_embedding_path"] = ""
-        print("  No graphs to embed")
-    
-    # Step 5: Copy and organize files for standalone dataset
+    # Step 3: Copy and organize files for standalone dataset (before embedding)
     if create_standalone and output_base_dir:
         print(f"\n{'='*60}")
         print("Step 5/6: Creating Standalone Dataset")
@@ -721,28 +648,115 @@ def create_controlnet_dataset(
                 
                 layouts_df.at[idx, "pov_embedding_path"] = pov_embeddings_copied[pov_emb_path]
         
-        # Copy graph embeddings
-        graph_embeddings_copied = {}
-        for idx, row in layouts_df.iterrows():
-            graph_emb_path = row.get("graph_embedding_path", "")
-            if graph_emb_path and Path(graph_emb_path).exists():
-                if graph_emb_path not in graph_embeddings_copied:
-                    graph_emb_path_obj = Path(graph_emb_path)
-                    scene_id = row["scene_id"]
-                    room_id = row.get("room_id", "")
-                    layout_type = row["type"]
-                    
-                    if layout_type == "scene":
-                        dest_emb = embeddings_dir / f"{scene_id}_scene_graph.pt"
-                    else:
-                        dest_emb = embeddings_dir / f"{scene_id}_{room_id}_graph.pt"
-                    
-                    shutil.copy2(graph_emb_path_obj, dest_emb)
-                    graph_embeddings_copied[graph_emb_path] = str(dest_emb.resolve())
-                
-                layouts_df.at[idx, "graph_embedding_path"] = graph_embeddings_copied[graph_emb_path]
+    
+    # Step 4: Embed POVs
+    print(f"\n{'='*60}")
+    print("Step 4/6: Embedding POVs")
+    print(f"{'='*60}")
+    
+    pov_rows = layouts_df[layouts_df["pov_path"] != ""].copy()
+    if len(pov_rows) > 0:
+        import tempfile
+        temp_dir = Path(tempfile.mkdtemp())
+        temp_pov_manifest = temp_dir / "povs_for_embedding.csv"
+        output_pov_manifest = temp_dir / "povs_with_embeddings.csv"
         
-        print(f"  Copied embeddings to {embeddings_dir}")
+        if "is_empty" not in pov_rows.columns:
+            pov_rows["is_empty"] = False
+        
+        pov_rows[["pov_path", "is_empty"]].to_csv(temp_pov_manifest, index=False)
+        
+        create_pov_embeddings(
+            manifest_path=temp_pov_manifest,
+            output_manifest=output_pov_manifest,
+            batch_size=pov_batch_size,
+            save_format="pt"
+        )
+        
+        pov_emb_df = pd.read_csv(output_pov_manifest)
+        pov_emb_dict = dict(zip(pov_emb_df["pov_path"], pov_emb_df["embedding_path"]))
+        layouts_df["pov_embedding_path"] = layouts_df["pov_path"].map(pov_emb_dict).fillna("")
+        print(f"  Embedded {len([x for x in layouts_df['pov_embedding_path'] if x != ''])} POVs")
+        
+        # Copy POV embeddings to embeddings directory
+        if create_standalone and output_base_dir:
+            embeddings_dir = output_base_dir / "embeddings"
+            pov_embeddings_copied = {}
+            for idx, row in layouts_df.iterrows():
+                pov_emb_path = row.get("pov_embedding_path", "")
+                if pov_emb_path and Path(pov_emb_path).exists():
+                    if pov_emb_path not in pov_embeddings_copied:
+                        pov_path_obj = Path(pov_emb_path)
+                        scene_id = row["scene_id"]
+                        room_id = row.get("room_id", "")
+                        pov_path_str = row.get("pov_path", "")
+                        match = re.search(r'_v(\d+)_', pov_path_str) if pov_path_str else None
+                        view_num = match.group(1) if match else "01"
+                        
+                        dest_emb = embeddings_dir / f"{scene_id}_{room_id}_v{view_num}_pov_tex.pt"
+                        shutil.copy2(pov_path_obj, dest_emb)
+                        pov_embeddings_copied[pov_emb_path] = str(dest_emb.resolve())
+                    
+                    layouts_df.at[idx, "pov_embedding_path"] = pov_embeddings_copied[pov_emb_path]
+    else:
+        layouts_df["pov_embedding_path"] = ""
+        print("  No POVs to embed")
+    
+    # Step 5: Embed graphs (after copying, so text files exist and we use copied graph JSONs)
+    print(f"\n{'='*60}")
+    print("Step 5/6: Embedding Graphs")
+    print(f"{'='*60}")
+    
+    graph_rows = layouts_df[layouts_df["graph_path"] != ""].copy()
+    if len(graph_rows) > 0:
+        import tempfile
+        temp_dir = Path(tempfile.mkdtemp())
+        temp_graph_manifest = temp_dir / "graphs_for_embedding.csv"
+        output_graph_manifest = temp_dir / "graphs_with_embeddings.csv"
+        
+        graph_rows[["graph_path", "scene_id", "type", "room_id"]].to_csv(
+            temp_graph_manifest, index=False
+        )
+        
+        # Embed graphs: reads graph JSON -> converts to text -> embeds text
+        create_graph_embeddings(
+            manifest_path=temp_graph_manifest,
+            taxonomy_path=taxonomy_path,
+            output_manifest=output_graph_manifest,
+            model_name=graph_model,
+            save_format="pt"
+        )
+        
+        graph_emb_df = pd.read_csv(output_graph_manifest)
+        graph_emb_dict = dict(zip(graph_emb_df["graph_path"], graph_emb_df["embedding_path"]))
+        layouts_df["graph_embedding_path"] = layouts_df["graph_path"].map(graph_emb_dict).fillna("")
+        print(f"  Embedded {len([x for x in layouts_df['graph_embedding_path'] if x != ''])} graphs")
+        
+        # Copy graph embeddings to embeddings directory
+        if create_standalone and output_base_dir:
+            embeddings_dir = output_base_dir / "embeddings"
+            graph_embeddings_copied = {}
+            for idx, row in layouts_df.iterrows():
+                graph_emb_path = row.get("graph_embedding_path", "")
+                if graph_emb_path and Path(graph_emb_path).exists():
+                    if graph_emb_path not in graph_embeddings_copied:
+                        graph_emb_path_obj = Path(graph_emb_path)
+                        scene_id = row["scene_id"]
+                        room_id = row.get("room_id", "")
+                        layout_type = row["type"]
+                        
+                        if layout_type == "scene":
+                            dest_emb = embeddings_dir / f"{scene_id}_scene_graph.pt"
+                        else:
+                            dest_emb = embeddings_dir / f"{scene_id}_{room_id}_graph.pt"
+                        
+                        shutil.copy2(graph_emb_path_obj, dest_emb)
+                        graph_embeddings_copied[graph_emb_path] = str(dest_emb.resolve())
+                    
+                    layouts_df.at[idx, "graph_embedding_path"] = graph_embeddings_copied[graph_emb_path]
+    else:
+        layouts_df["graph_embedding_path"] = ""
+        print("  No graphs to embed")
     
     # Step 6: Create ControlNet training manifest
     print(f"\n{'='*60}")
