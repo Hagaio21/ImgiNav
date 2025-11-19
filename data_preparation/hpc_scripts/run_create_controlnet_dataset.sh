@@ -40,8 +40,10 @@ LAYOUTS_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_cleaned.csv"
 POV_MANIFEST="/work3/s233249/ImgiNav/datasets/povs.csv"
 GRAPH_MANIFEST="/work3/s233249/ImgiNav/datasets/graphs.csv"
 TAXONOMY="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
-AUTOENCODER_CONFIG="/work3/s233249/ImgiNav/ImgiNav/experiments/autoencoders/new_layouts_VAE_64x64_structural_256.yaml"
+# Autoencoder checkpoint (required for layout embeddings)
+# Config is optional - checkpoint contains embedded config
 AUTOENCODER_CHECKPOINT="/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt"
+AUTOENCODER_CONFIG=""  # Optional - will try to find from checkpoint path if not provided
 DATASET_DIR="/work3/s233249/ImgiNav/datasets"
 OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv"
 
@@ -69,13 +71,13 @@ if [ ! -f "${TAXONOMY}" ]; then
     echo "[ERROR] Taxonomy file not found: ${TAXONOMY}"
     exit 1
 fi
-if [ ! -f "${AUTOENCODER_CONFIG}" ]; then
-    echo "[ERROR] Autoencoder config not found: ${AUTOENCODER_CONFIG}"
-    exit 1
-fi
 if [ ! -f "${AUTOENCODER_CHECKPOINT}" ]; then
     echo "[ERROR] Autoencoder checkpoint not found: ${AUTOENCODER_CHECKPOINT}"
     exit 1
+fi
+if [ -n "${AUTOENCODER_CONFIG}" ] && [ ! -f "${AUTOENCODER_CONFIG}" ]; then
+    echo "[WARNING] Autoencoder config not found: ${AUTOENCODER_CONFIG}"
+    echo "[INFO] Will try to load config from checkpoint (config is embedded)"
 fi
 if [ ! -f "${SCRIPT_PATH}" ]; then
     echo "[ERROR] Python script not found: ${SCRIPT_PATH}"
@@ -99,8 +101,12 @@ echo " Layouts Manifest:        ${LAYOUTS_MANIFEST}"
 echo " POVs Manifest:           ${POV_MANIFEST}"
 echo " Graphs Manifest:         ${GRAPH_MANIFEST}"
 echo " Taxonomy:                ${TAXONOMY}"
-echo " Autoencoder Config:      ${AUTOENCODER_CONFIG}"
 echo " Autoencoder Checkpoint:  ${AUTOENCODER_CHECKPOINT}"
+if [ -n "${AUTOENCODER_CONFIG}" ]; then
+    echo " Autoencoder Config:      ${AUTOENCODER_CONFIG}"
+else
+    echo " Autoencoder Config:      (will use embedded config from checkpoint)"
+fi
 echo " Dataset Directory:       ${DATASET_DIR}"
 echo " Output Manifest:         ${OUTPUT_MANIFEST}"
 echo " Batch Size:              ${BATCH_SIZE}"
@@ -143,8 +149,16 @@ CMD=(
     --output "${OUTPUT_MANIFEST}"
     --dataset-dir "${DATASET_DIR}"
     --taxonomy "${TAXONOMY}"
-    --autoencoder-config "${AUTOENCODER_CONFIG}"
     --autoencoder-checkpoint "${AUTOENCODER_CHECKPOINT}"
+)
+
+# Add autoencoder config if provided
+if [ -n "${AUTOENCODER_CONFIG}" ]; then
+    CMD+=(--autoencoder-config "${AUTOENCODER_CONFIG}")
+fi
+
+# Add remaining arguments
+CMD+=(
     --device "${DEVICE}"
     --batch-size "${BATCH_SIZE}"
     --num-workers "${NUM_WORKERS}"

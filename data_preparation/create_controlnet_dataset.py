@@ -441,18 +441,42 @@ def create_embeddings_for_manifest(data_points: List[Dict], output_manifest: Pat
                 "is_empty": 0
             })
     
-    if layout_rows and autoencoder_config and autoencoder_checkpoint:
+    if layout_rows and autoencoder_checkpoint:
         layout_manifest_temp = temp_dir / "layouts_temp.csv"
         create_manifest(layout_rows, layout_manifest_temp, ["layout_path", "is_empty"])
         
         layout_manifest_out = temp_dir / "layouts_with_embeddings.csv"
         
-        # Load autoencoder
-        model = load_autoencoder_model(
-            str(autoencoder_config),
-            str(autoencoder_checkpoint),
-            device=device
-        )
+        # Load autoencoder - config is optional, checkpoint contains it
+        if autoencoder_config and autoencoder_config.exists():
+            model = load_autoencoder_model(
+                str(autoencoder_config),
+                str(autoencoder_checkpoint),
+                device=device
+            )
+            config_path = str(autoencoder_config)
+        else:
+            # Load from checkpoint only (config is embedded in checkpoint)
+            from models.autoencoder import Autoencoder
+            print(f"[INFO] Loading autoencoder from checkpoint (config embedded): {autoencoder_checkpoint}")
+            model = Autoencoder.load_checkpoint(str(autoencoder_checkpoint), map_location=device)
+            model = model.to(device)
+            model.eval()
+            # Try to find config from checkpoint path
+            checkpoint_path = Path(autoencoder_checkpoint)
+            # Look for config in same directory or parent
+            possible_configs = [
+                checkpoint_path.parent / f"{checkpoint_path.stem.replace('_checkpoint_best', '')}.yaml",
+                checkpoint_path.parent.parent / "experiment_config.yaml",
+            ]
+            config_path = None
+            for pc in possible_configs:
+                if pc.exists():
+                    config_path = str(pc)
+                    break
+            if not config_path:
+                print("[WARNING] Could not find config file, using defaults for transform")
+                config_path = None
         
         create_layout_embeddings_from_manifest(
             encoder=model.encoder,
@@ -462,7 +486,7 @@ def create_embeddings_for_manifest(data_points: List[Dict], output_manifest: Pat
             num_workers=num_workers,
             overwrite=overwrite,
             device=device,
-            autoencoder_config_path=str(autoencoder_config),
+            autoencoder_config_path=config_path,
             output_latent_dir=None,
             diffusion_config_path=None
         )
