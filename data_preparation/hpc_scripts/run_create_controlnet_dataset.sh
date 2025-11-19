@@ -37,18 +37,19 @@ export PROJECT_ROOT
 
 # --- Input/Output Paths ---
 LAYOUTS_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_cleaned.csv"
-AUTOENCODER_CHECKPOINT="/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt"
-TAXONOMY="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
 POV_MANIFEST="/work3/s233249/ImgiNav/datasets/povs.csv"
 GRAPH_MANIFEST="/work3/s233249/ImgiNav/datasets/graphs.csv"
+TAXONOMY="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
+AUTOENCODER_CONFIG="/work3/s233249/ImgiNav/ImgiNav/experiments/autoencoders/new_layouts_VAE_64x64_structural_256.yaml"
+AUTOENCODER_CHECKPOINT="/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt"
+DATASET_DIR="/work3/s233249/ImgiNav/datasets"
 OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv"
 
 # --- Parameters ---
-POV_BATCH_SIZE=32
-GRAPH_MODEL="all-MiniLM-L6-v2"
-LAYOUT_BATCH_SIZE=32
+BATCH_SIZE=32
 NUM_WORKERS=8
-HANDLE_SCENES="zero"  # Options: zero (recommended), empty
+DEVICE="cuda"
+OVERWRITE=false  # Set to true to overwrite existing files
 
 # --- Check that required files exist ---
 echo "[INFO] Checking for required files..."
@@ -56,12 +57,24 @@ if [ ! -f "${LAYOUTS_MANIFEST}" ]; then
     echo "[ERROR] Layouts manifest not found: ${LAYOUTS_MANIFEST}"
     exit 1
 fi
-if [ ! -f "${AUTOENCODER_CHECKPOINT}" ]; then
-    echo "[ERROR] Autoencoder checkpoint not found: ${AUTOENCODER_CHECKPOINT}"
+if [ ! -f "${POV_MANIFEST}" ]; then
+    echo "[ERROR] POVs manifest not found: ${POV_MANIFEST}"
+    exit 1
+fi
+if [ ! -f "${GRAPH_MANIFEST}" ]; then
+    echo "[ERROR] Graphs manifest not found: ${GRAPH_MANIFEST}"
     exit 1
 fi
 if [ ! -f "${TAXONOMY}" ]; then
     echo "[ERROR] Taxonomy file not found: ${TAXONOMY}"
+    exit 1
+fi
+if [ ! -f "${AUTOENCODER_CONFIG}" ]; then
+    echo "[ERROR] Autoencoder config not found: ${AUTOENCODER_CONFIG}"
+    exit 1
+fi
+if [ ! -f "${AUTOENCODER_CHECKPOINT}" ]; then
+    echo "[ERROR] Autoencoder checkpoint not found: ${AUTOENCODER_CHECKPOINT}"
     exit 1
 fi
 if [ ! -f "${SCRIPT_PATH}" ]; then
@@ -82,11 +95,18 @@ module load cudnn/v8.6.0.163-prod-cuda-11.X
 echo "=============================================================="
 echo " Creating ControlNet Training Dataset"
 echo "=============================================================="
-echo " Layouts Manifest:     ${LAYOUTS_MANIFEST}"
-echo " Autoencoder Checkpoint: ${AUTOENCODER_CHECKPOINT}"
-echo " Taxonomy:              ${TAXONOMY}"
-echo " Output Manifest:       ${OUTPUT_MANIFEST}"
-echo " Handle Scenes w/o POV: ${HANDLE_SCENES}"
+echo " Layouts Manifest:        ${LAYOUTS_MANIFEST}"
+echo " POVs Manifest:           ${POV_MANIFEST}"
+echo " Graphs Manifest:         ${GRAPH_MANIFEST}"
+echo " Taxonomy:                ${TAXONOMY}"
+echo " Autoencoder Config:      ${AUTOENCODER_CONFIG}"
+echo " Autoencoder Checkpoint:  ${AUTOENCODER_CHECKPOINT}"
+echo " Dataset Directory:       ${DATASET_DIR}"
+echo " Output Manifest:         ${OUTPUT_MANIFEST}"
+echo " Batch Size:              ${BATCH_SIZE}"
+echo " Num Workers:             ${NUM_WORKERS}"
+echo " Device:                  ${DEVICE}"
+echo " Overwrite:               ${OVERWRITE}"
 echo "=============================================================="
 
 # ----------------------------------------------------------------------
@@ -110,22 +130,33 @@ echo ""
 # ----------------------------------------------------------------------
 # Run script
 # ----------------------------------------------------------------------
-echo "[INFO] Starting unified ControlNet dataset creation..."
+echo "[INFO] Starting ControlNet dataset creation..."
 cd "${PROJECT_ROOT}/ImgiNav"
 # Use python -u for unbuffered output
-python -u "${SCRIPT_PATH}" \
-    --layouts-manifest "${LAYOUTS_MANIFEST}" \
-    --autoencoder-checkpoint "${AUTOENCODER_CHECKPOINT}" \
-    --taxonomy "${TAXONOMY}" \
-    --pov-manifest "${POV_MANIFEST}" \
-    --graph-manifest "${GRAPH_MANIFEST}" \
-    --output "${OUTPUT_MANIFEST}" \
-    --pov-batch-size "${POV_BATCH_SIZE}" \
-    --graph-model "${GRAPH_MODEL}" \
-    --layout-batch-size "${LAYOUT_BATCH_SIZE}" \
-    --num-workers "${NUM_WORKERS}" \
-    --device "cuda" \
-    --handle-scenes-without-pov "${HANDLE_SCENES}"
+
+# Build command
+CMD=(
+    python -u "${SCRIPT_PATH}"
+    --layouts-manifest "${LAYOUTS_MANIFEST}"
+    --pov-manifest "${POV_MANIFEST}"
+    --graph-manifest "${GRAPH_MANIFEST}"
+    --output "${OUTPUT_MANIFEST}"
+    --dataset-dir "${DATASET_DIR}"
+    --taxonomy "${TAXONOMY}"
+    --autoencoder-config "${AUTOENCODER_CONFIG}"
+    --autoencoder-checkpoint "${AUTOENCODER_CHECKPOINT}"
+    --device "${DEVICE}"
+    --batch-size "${BATCH_SIZE}"
+    --num-workers "${NUM_WORKERS}"
+)
+
+# Add overwrite flag if enabled
+if [ "${OVERWRITE}" = "true" ]; then
+    CMD+=(--overwrite)
+fi
+
+# Execute command
+"${CMD[@]}"
 
 # ----------------------------------------------------------------------
 EXIT_CODE=$?
@@ -134,23 +165,22 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "[DONE] ControlNet dataset creation completed successfully"
     echo "=============================================================="
     echo " Output manifest: ${OUTPUT_MANIFEST}"
+    echo " Dataset directory: ${DATASET_DIR}"
     echo "=============================================================="
     
-    # Submit next job: Train ControlNet
-    echo ""
-    echo "[INFO] Submitting next job: Train ControlNet..."
-    # Use PROJECT_ROOT that's already defined in this script
-    NEXT_SCRIPT="${PROJECT_ROOT}/ImgiNav/training/hpc_scripts/run_train_controlnet_new_layouts.sh"
-    if [ -f "${NEXT_SCRIPT}" ]; then
-        bsub < "${NEXT_SCRIPT}"
-        echo "[INFO] Next job submitted successfully"
-    else
-        echo "[WARN] Next job script not found: ${NEXT_SCRIPT}"
-    fi
+    # Optional: Submit next job (uncomment if needed)
+    # echo ""
+    # echo "[INFO] Submitting next job: Train ControlNet..."
+    # NEXT_SCRIPT="${PROJECT_ROOT}/ImgiNav/training/hpc_scripts/run_train_controlnet_new_layouts.sh"
+    # if [ -f "${NEXT_SCRIPT}" ]; then
+    #     bsub < "${NEXT_SCRIPT}"
+    #     echo "[INFO] Next job submitted successfully"
+    # else
+    #     echo "[WARN] Next job script not found: ${NEXT_SCRIPT}"
+    # fi
 else
     echo "=============================================================="
     echo "[ERROR] ControlNet dataset creation failed with exit code: ${EXIT_CODE}"
     echo "=============================================================="
     exit $EXIT_CODE
 fi
-
