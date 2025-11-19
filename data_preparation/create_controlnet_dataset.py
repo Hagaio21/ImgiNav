@@ -198,58 +198,78 @@ def create_controlnet_dataset(
     
     # Try to infer POV and graph paths from layout paths
     def infer_pov_path(layout_path_str, scene_id, room_id):
-        if pd.isna(layout_path_str) or not room_id:
+        """Infer POV path - only for room layouts, and prefer v01."""
+        if pd.isna(layout_path_str) or not room_id or pd.isna(room_id) or room_id == "":
             return ""
         
         # Try collected directory first (most common)
+        # Prefer v01 first
         collected_pov = Path(f"/work3/s233249/ImgiNav/datasets/collected/povs/tex/{scene_id}_{room_id}_v01_pov_tex.png")
         if collected_pov.exists():
             return str(collected_pov.resolve())
         
-        # Try other view numbers
-        for view_num in range(1, 10):
-            pov_path = Path(f"/work3/s233249/ImgiNav/datasets/collected/povs/tex/{scene_id}_{room_id}_v{view_num:02d}_pov_tex.png")
-            if pov_path.exists():
-                return str(pov_path.resolve())
-        
-        # Try relative to layout path
+        # Try relative to layout path (structure: scenes/{scene_id}/rooms/{room_id}/layouts/...)
         if not pd.isna(layout_path_str):
             layout_path = Path(layout_path_str)
-            # Try same directory structure
-            if "layout" in str(layout_path):
-                base_dir = layout_path.parent.parent if "layouts" in str(layout_path.parent) else layout_path.parent
-                pov_dir = base_dir / "povs" / "tex"
-                if pov_dir.exists():
-                    for pov_file in pov_dir.glob(f"{scene_id}_{room_id}_*_pov_tex.png"):
-                        return str(pov_file.resolve())
+            layout_dir = layout_path.parent  # layouts/
+            room_dir = layout_dir.parent     # {room_id}/
+            
+            # POVs are in rooms/{room_id}/povs/tex/
+            pov_dir = room_dir / "povs" / "tex"
+            if pov_dir.exists():
+                pov_file = pov_dir / f"{scene_id}_{room_id}_v01_pov_tex.png"
+                if pov_file.exists():
+                    return str(pov_file.resolve())
         
         return ""
     
     def infer_graph_path(layout_path_str, scene_id, room_id, layout_type):
+        """Infer graph path based on actual directory structure.
+        
+        For scenes: graphs are in scene root: scenes/{scene_id}/{scene_id}_scene_graph.json
+        For rooms: graphs are in layouts/: scenes/{scene_id}/rooms/{room_id}/layouts/{scene_id}_{room_id}_graph.json
+        """
         if pd.isna(layout_path_str):
             return ""
         
-        # Try collected directory first (most common)
-        if layout_type == "room" and room_id:
-            collected_graph = Path(f"/work3/s233249/ImgiNav/datasets/collected/graphs/{scene_id}_{room_id}_room_graph.json")
-        else:
-            collected_graph = Path(f"/work3/s233249/ImgiNav/datasets/collected/graphs/{scene_id}_scene_graph.json")
-        
-        if collected_graph.exists():
-            return str(collected_graph.resolve())
-        
-        # Try relative to layout path
         layout_path = Path(layout_path_str)
-        if "layout" in str(layout_path):
-            base_dir = layout_path.parent.parent if "layouts" in str(layout_path.parent) else layout_path.parent
-            graph_dir = base_dir / "graphs"
-            if graph_dir.exists():
-                if layout_type == "room" and room_id:
-                    for graph_file in graph_dir.glob(f"{scene_id}_{room_id}_*.json"):
-                        return str(graph_file.resolve())
-                else:
-                    for graph_file in graph_dir.glob(f"{scene_id}_scene_*.json"):
-                        return str(graph_file.resolve())
+        layout_dir = layout_path.parent  # layouts/ directory
+        
+        if layout_type == "room" and room_id and not pd.isna(room_id) and room_id != "":
+            # Room graphs: in the layouts/ directory with the layout
+            # Structure: scenes/{scene_id}/rooms/{room_id}/layouts/{scene_id}_{room_id}_graph.json
+            graph_filenames = [
+                f"{scene_id}_{room_id}_graph.json",
+                f"{scene_id}_{room_id}_room_graph.json"
+            ]
+            
+            # Try in layouts directory (same as layout)
+            for graph_filename in graph_filenames:
+                graph_file = layout_dir / graph_filename
+                if graph_file.exists():
+                    return str(graph_file.resolve())
+            
+            # Try collected directory
+            for graph_filename in graph_filenames:
+                collected_graph = Path(f"/work3/s233249/ImgiNav/datasets/collected/graphs/{graph_filename}")
+                if collected_graph.exists():
+                    return str(collected_graph.resolve())
+        else:
+            # Scene graphs: in scene root, NOT in layouts/
+            # Structure: scenes/{scene_id}/{scene_id}_scene_graph.json
+            graph_filename = f"{scene_id}_scene_graph.json"
+            
+            # Scene root is parent of layouts/ (or parent of parent if layouts/ exists)
+            scene_root = layout_dir.parent if layout_dir.name == "layouts" else layout_dir
+            
+            graph_file = scene_root / graph_filename
+            if graph_file.exists():
+                return str(graph_file.resolve())
+            
+            # Try collected directory
+            collected_graph = Path(f"/work3/s233249/ImgiNav/datasets/collected/graphs/{graph_filename}")
+            if collected_graph.exists():
+                return str(collected_graph.resolve())
         
         return ""
     
