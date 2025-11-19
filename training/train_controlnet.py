@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import sys
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -15,6 +16,9 @@ from pathlib import Path
 from tqdm import tqdm
 import math
 import yaml
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.utils import (
     load_config,
@@ -343,7 +347,10 @@ def main():
     set_deterministic(seed)
     
     # Get device
-    device = get_device(args.device)
+    if args.device is not None:
+        device = args.device
+    else:
+        device = get_device(config)
     print(f"Using device: {device}")
     
     # Build dataset
