@@ -35,7 +35,7 @@ export PROJECT_ROOT
 
 # --- Input/Output Paths ---
 JOINT_MANIFEST="/work3/s233249/ImgiNav/datasets/joint_manifest.csv"
-TAXONOMY="/work3/s233249/ImgiNav/config/taxonomy.json"
+TAXONOMY="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
 OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/joint_manifest_with_embeddings.csv"
 
 # --- Parameters ---
