@@ -5,8 +5,8 @@
 #BSUB -n 8
 #BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
-#BSUB -W 48:00  # Extended wall time for deeper model (500 epochs)
-#BSUB -q gpul40s
+#BSUB -W 24:00  # Extended wall time for attention at all layers (500 epochs)
+#BSUB -q gpuv100
 
 set -euo pipefail
 

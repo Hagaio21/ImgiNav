@@ -1,0 +1,90 @@
+==============================================================
+ Launching ControlNet Pipeline
+==============================================================
+ Pipeline steps:
+  1. Create joint manifest
+  2. Embed POVs and graphs
+  3. Create ControlNet training manifest
+==============================================================
+
+[INFO] Submitting first job: Create joint manifest...
+bsub info: Parallel job without span[...] info! Assuming hosts=1 (SMP job)!
+bsub info:   Add -R "span[...]" to your job script, to avoid this message!
+Job <27092062> is submitted to queue <hpc>.
+[INFO] Pipeline launched! Jobs will chain automatically.
+       Monitor progress with: bjobs
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@hpc.dtu.dk>
+Subject: Job 27092060: <NONAME> in cluster <dcc> Done
+
+Job <NONAME> was submitted from host <gbarlogin1> by user <s233249> in cluster <dcc> at Wed Nov 19 14:01:15 2025
+Job was executed on host(s) <n-62-31-23>, in queue <hpc>, as user <s233249> in cluster <dcc> at Wed Nov 19 14:01:17 2025
+</zhome/62/5/203350> was used as the home directory.
+</work3/s233249/ImgiNav/ImgiNav> was used as the working directory.
+Started at Wed Nov 19 14:01:17 2025
+Terminated at Wed Nov 19 14:01:23 2025
+Results reported at Wed Nov 19 14:01:23 2025
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+# Master script to launch the complete ControlNet pipeline.
+#
+# This script submits the first job in the chain, and each job will
+# automatically submit the next one upon successful completion.
+#
+# Pipeline:
+# 1. Create joint manifest (layouts + POVs + graphs)
+# 2. Embed POVs and graphs
+# 3. Create ControlNet training manifest
+#
+# Usage:
+#     bsub < data_preparation/hpc_scripts/launch_controlnet_pipeline.sh
+
+# Submit the first job in the pipeline
+PROJECT_ROOT="/work3/s233249/ImgiNav"
+FIRST_JOB="${PROJECT_ROOT}/ImgiNav/data_preparation/hpc_scripts/run_create_joint_manifest.sh"
+
+if [ ! -f "${FIRST_JOB}" ]; then
+    echo "[ERROR] First job script not found: ${FIRST_JOB}"
+    exit 1
+fi
+
+echo "=============================================================="
+echo " Launching ControlNet Pipeline"
+echo "=============================================================="
+echo " Pipeline steps:"
+echo "  1. Create joint manifest"
+echo "  2. Embed POVs and graphs"
+echo "  3. Create ControlNet training manifest"
+echo "=============================================================="
+echo ""
+echo "[INFO] Submitting first job: Create joint manifest..."
+bsub < "${FIRST_JOB}"
+
+echo "[INFO] Pipeline launched! Jobs will chain automatically."
+echo "       Monitor progress with: bjobs"
+
+
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   2.71 sec.
+    Max Memory :                                 -
+    Average Memory :                             -
+    Total Requested Memory :                     1024.00 MB
+    Delta Memory :                               -
+    Max Swap :                                   -
+    Max Processes :                              -
+    Max Threads :                                -
+    Run time :                                   19 sec.
+    Turnaround time :                            8 sec.
+
+The output (if any) is above this job summary.
+
