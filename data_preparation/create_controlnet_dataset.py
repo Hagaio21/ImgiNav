@@ -23,6 +23,7 @@ import torch
 from pathlib import Path
 from tqdm import tqdm
 import json
+import re
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -31,10 +32,13 @@ from data_preparation.create_embeddings import (
     create_pov_embeddings,
     create_graph_embeddings
 )
+from data_preparation.utils.text_utils import graph2text
+from common.taxonomy import Taxonomy
 from models.autoencoder import Autoencoder
 from data_preparation.create_controlnet_manifest_from_joint import (
     create_controlnet_manifest_from_joint
 )
+import shutil
 
 
 def embed_layouts_from_manifest(
@@ -113,17 +117,167 @@ def embed_layouts_from_manifest(
     return merged
 
 
+def copy_and_organize_files(layouts_df, output_base_dir: Path, taxonomy_path: Path):
+    """
+    Copy and organize all files for standalone ControlNet dataset.
+    
+    Creates structure:
+    datasets/controlnet/
+      graphs/     - graph JSONs and texts
+      povs/       - POV images
+      layouts/    - layout images
+      latents/    - layout embeddings
+      embeddings/ - POV and graph embeddings
+    """
+    output_base_dir = Path(output_base_dir)
+    output_base_dir.mkdir(parents=True, exist_ok=True)
+    
+    graphs_dir = output_base_dir / "graphs"
+    povs_dir = output_base_dir / "povs"
+    layouts_dir = output_base_dir / "layouts"
+    latents_dir = output_base_dir / "latents"
+    embeddings_dir = output_base_dir / "embeddings"
+    
+    for dir_path in [graphs_dir, povs_dir, layouts_dir, latents_dir, embeddings_dir]:
+        dir_path.mkdir(parents=True, exist_ok=True)
+    
+    print(f"\n{'='*60}")
+    print("Organizing Files for Standalone Dataset")
+    print(f"{'='*60}")
+    print(f"Output directory: {output_base_dir}")
+    
+    # Load taxonomy for graph text conversion
+    taxonomy = Taxonomy(taxonomy_path)
+    
+    # Track copied files to update paths
+    copied_graphs = {}
+    copied_povs = {}
+    copied_layouts = {}
+    copied_latents = {}
+    
+    print(f"\n  Copying and processing files...")
+    
+    for idx, row in tqdm(layouts_df.iterrows(), total=len(layouts_df), desc="Organizing files"):
+        scene_id = row["scene_id"]
+        room_id = row.get("room_id", "")
+        layout_type = row["type"]
+        
+        # Copy graph JSON and create text
+        graph_path = row.get("graph_path", "")
+        if graph_path and Path(graph_path).exists():
+            graph_path_obj = Path(graph_path)
+            
+            # Determine output filename
+            if layout_type == "scene":
+                graph_filename = f"{scene_id}_scene_graph.json"
+                graph_text_filename = f"{scene_id}_scene_graph.txt"
+            else:
+                graph_filename = f"{scene_id}_{room_id}_graph.json"
+                graph_text_filename = f"{scene_id}_{room_id}_graph.txt"
+            
+            dest_graph_json = graphs_dir / graph_filename
+            dest_graph_txt = graphs_dir / graph_text_filename
+            
+            # Copy graph JSON if not already copied
+            if graph_path not in copied_graphs:
+                shutil.copy2(graph_path_obj, dest_graph_json)
+                copied_graphs[graph_path] = str(dest_graph_json.resolve())
+                
+                # Convert to text
+                try:
+                    text = graph2text(graph_path_obj, taxonomy)
+                    if text:
+                        dest_graph_txt.write_text(text, encoding='utf-8')
+                except Exception as e:
+                    print(f"    Warning: Failed to convert graph to text for {graph_path}: {e}")
+            
+            # Update path in dataframe
+            layouts_df.at[idx, "graph_path"] = copied_graphs[graph_path]
+            layouts_df.at[idx, "graph_text_path"] = str(dest_graph_txt.resolve())
+        
+        # Copy POV image
+        pov_path = row.get("pov_path", "")
+        if pov_path and Path(pov_path).exists():
+            pov_path_obj = Path(pov_path)
+            
+            # Extract viewpoint number from filename (e.g., v01, v02)
+            match = re.search(r'_v(\d+)_', pov_path_obj.name)
+            view_num = match.group(1) if match else "01"
+            
+            pov_filename = f"{scene_id}_{room_id}_v{view_num}_pov_tex.png"
+            dest_pov = povs_dir / pov_filename
+            
+            # Copy POV if not already copied
+            if pov_path not in copied_povs:
+                shutil.copy2(pov_path_obj, dest_pov)
+                copied_povs[pov_path] = str(dest_pov.resolve())
+            
+            # Update path in dataframe
+            layouts_df.at[idx, "pov_path"] = copied_povs[pov_path]
+        
+        # Copy layout image
+        layout_path = row.get("layout_path", "")
+        if layout_path and Path(layout_path).exists():
+            layout_path_obj = Path(layout_path)
+            
+            if layout_type == "scene":
+                layout_filename = f"{scene_id}_scene_layout.png"
+            else:
+                layout_filename = f"{scene_id}_{room_id}_room_seg_layout.png"
+            
+            dest_layout = layouts_dir / layout_filename
+            
+            # Copy layout if not already copied
+            if layout_path not in copied_layouts:
+                shutil.copy2(layout_path_obj, dest_layout)
+                copied_layouts[layout_path] = str(dest_layout.resolve())
+            
+            # Update path in dataframe
+            layouts_df.at[idx, "layout_path"] = copied_layouts[layout_path]
+        
+        # Copy layout latent
+        latent_path = row.get("latent_path", "")
+        if latent_path and Path(latent_path).exists():
+            latent_path_obj = Path(latent_path)
+            
+            if layout_type == "scene":
+                latent_filename = f"{scene_id}_scene_layout.pt"
+            else:
+                latent_filename = f"{scene_id}_{room_id}_room_seg_layout.pt"
+            
+            dest_latent = latents_dir / latent_filename
+            
+            # Copy latent if not already copied
+            if latent_path not in copied_latents:
+                shutil.copy2(latent_path_obj, dest_latent)
+                copied_latents[latent_path] = str(dest_latent.resolve())
+            
+            # Update path in dataframe
+            layouts_df.at[idx, "latent_path"] = copied_latents[latent_path]
+    
+    print(f"\n  Copied:")
+    print(f"    Graphs: {len(copied_graphs)} JSONs + texts")
+    print(f"    POVs: {len(copied_povs)} images")
+    print(f"    Layouts: {len(copied_layouts)} images")
+    print(f"    Latents: {len(copied_latents)} embeddings")
+    
+    return layouts_df
+
+
 def create_controlnet_dataset(
     layouts_manifest: Path,
     autoencoder_checkpoint: Path,
     taxonomy_path: Path,
     output_manifest: Path,
+    pov_manifest: Path = None,
+    graph_manifest: Path = None,
     pov_batch_size: int = 32,
     graph_model: str = "all-MiniLM-L6-v2",
     layout_batch_size: int = 32,
     num_workers: int = 8,
     device: str = "cuda",
-    handle_scenes_without_pov: str = "zero"
+    handle_scenes_without_pov: str = "zero",
+    create_standalone: bool = True
 ):
     """
     Create complete ControlNet training dataset.
@@ -147,7 +301,14 @@ def create_controlnet_dataset(
     print(f"Autoencoder checkpoint: {autoencoder_checkpoint}")
     print(f"Taxonomy: {taxonomy_path}")
     print(f"Output: {output_manifest}")
+    print(f"Create standalone dataset: {create_standalone}")
     print(f"{'='*60}\n")
+    
+    # Determine output base directory for standalone dataset
+    if create_standalone:
+        output_base_dir = output_manifest.parent / "controlnet"
+    else:
+        output_base_dir = None
     
     # Load layouts manifest
     print("Loading layouts manifest...")
@@ -181,7 +342,7 @@ def create_controlnet_dataset(
     layouts_df = layouts_df[layouts_df["latent_path"].notna() & (layouts_df["latent_path"] != "")].copy()
     print(f"  Successfully embedded {len(layouts_df)} layouts")
     
-    # Step 2: Find POV and graph paths (use existing or infer from layout paths)
+    # Step 2: Find POV and graph paths (load from manifests if available, otherwise infer)
     print(f"\n{'='*60}")
     print("Step 2/4: Finding POV and Graph Paths")
     print(f"{'='*60}")
@@ -192,13 +353,34 @@ def create_controlnet_dataset(
     if "graph_path" not in layouts_df.columns:
         layouts_df["graph_path"] = ""
     
+    # Load POV manifest if provided
+    pov_df = None
+    if pov_manifest and pov_manifest.exists():
+        print(f"  Loading POV manifest: {pov_manifest}")
+        pov_df = pd.read_csv(pov_manifest)
+        print(f"  Loaded {len(pov_df)} POV entries")
+        # Filter out empty POVs
+        if "is_empty" in pov_df.columns:
+            pov_df = pov_df[pov_df["is_empty"] == 0].copy()
+            print(f"  After filtering empty: {len(pov_df)} POV entries")
+    
+    # Load graph manifest if provided
+    graph_df = None
+    if graph_manifest and graph_manifest.exists():
+        print(f"  Loading graph manifest: {graph_manifest}")
+        graph_df = pd.read_csv(graph_manifest)
+        print(f"  Loaded {len(graph_df)} graph entries")
+    
     # Only infer for rows that don't have paths
     needs_pov = layouts_df["pov_path"].isna() | (layouts_df["pov_path"] == "")
     needs_graph = layouts_df["graph_path"].isna() | (layouts_df["graph_path"] == "")
     
     # Try to infer POV and graph paths from layout paths
+    # Cache for directory existence to avoid repeated checks
+    _dir_cache = {}
+    
     def find_all_pov_paths(layout_path_str, scene_id, room_id):
-        """Find ALL POV paths for a room layout - returns list of paths."""
+        """Find ALL POV paths for a room layout - returns list of paths. OPTIMIZED."""
         if pd.isna(layout_path_str) or not room_id or pd.isna(room_id) or room_id == "":
             return []
         
@@ -213,23 +395,24 @@ def create_controlnet_dataset(
                 
                 # POVs are in rooms/{room_id}/povs/tex/
                 pov_dir = room_dir / "povs" / "tex"
-                if pov_dir.exists() and pov_dir.is_dir():
-                    # Find all POV files for this room - use list() to avoid iterator issues
-                    pov_files = list(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png"))
-                    pov_paths.extend([str(p.resolve()) for p in sorted(pov_files)])
-            except Exception as e:
-                # Skip if path operations fail
-                pass
-        
-        # Also try collected directory (only if we didn't find any in the room directory)
-        if not pov_paths:
-            try:
-                collected_pov_dir = Path(f"/work3/s233249/ImgiNav/datasets/collected/povs/tex")
-                if collected_pov_dir.exists() and collected_pov_dir.is_dir():
-                    pov_files = list(collected_pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png"))
-                    pov_paths.extend([str(p.resolve()) for p in sorted(pov_files)])
+                
+                # Cache directory existence check
+                pov_dir_str = str(pov_dir)
+                if pov_dir_str not in _dir_cache:
+                    _dir_cache[pov_dir_str] = pov_dir.exists() and pov_dir.is_dir()
+                
+                if _dir_cache[pov_dir_str]:
+                    # Find all POV files for this room - glob is still needed but we cache dir existence
+                    try:
+                        pov_files = list(pov_dir.glob(f"{scene_id}_{room_id}_v*_pov_tex.png"))
+                        pov_paths.extend([str(p.resolve()) for p in sorted(pov_files)])
+                    except Exception:
+                        pass
             except Exception:
                 pass
+        
+        # Skip collected directory check - assume POVs are in scenes structure
+        # This saves ~15k file system operations
         
         return pov_paths
     
@@ -289,35 +472,45 @@ def create_controlnet_dataset(
         return ""
     
     # Expand layouts to include all POVs (one row per POV)
-    # OPTIMIZATION: Group by (scene_id, room_id) to avoid redundant file system calls
     print(f"  Finding all POVs for {len(layouts_df)} layouts...")
-    print(f"  Grouping layouts by scene/room to optimize file system access...")
     
     # Build a cache: (scene_id, room_id) -> list of POV paths
     pov_cache = {}
     
-    # Get unique (scene_id, room_id) pairs for room layouts
-    room_layouts = layouts_df[
-        (layouts_df["type"] == "room") & 
-        (layouts_df["room_id"].notna()) & 
-        (layouts_df["room_id"] != "")
-    ].copy()
-    
-    if len(room_layouts) > 0:
-        # Get unique combinations
-        unique_rooms = room_layouts[["scene_id", "room_id", "layout_path"]].drop_duplicates(subset=["scene_id", "room_id"])
+    if pov_df is not None:
+        # Use POV manifest - MUCH faster!
+        print(f"  Using POV manifest to match POVs to layouts...")
+        # Filter for "tex" type POVs (not "seg")
+        if "type" in pov_df.columns:
+            pov_df_filtered = pov_df[pov_df["type"] == "tex"].copy()
+            print(f"  Filtered to {len(pov_df_filtered)} tex POVs (from {len(pov_df)} total)")
+        else:
+            pov_df_filtered = pov_df
         
-        print(f"  Checking POV directories for {len(unique_rooms)} unique rooms...")
-        
-        # Check each unique room once
-        for idx, row in tqdm(unique_rooms.iterrows(), total=len(unique_rooms), desc="Scanning POV dirs"):
-            scene_id = row["scene_id"]
-            room_id = row["room_id"]
-            layout_path_str = row["layout_path"]
-            
-            # Find all POVs for this room (only check once per room)
-            pov_paths = find_all_pov_paths(layout_path_str, scene_id, room_id)
+        # Group POVs by (scene_id, room_id)
+        for (scene_id, room_id), group in pov_df_filtered.groupby(["scene_id", "room_id"]):
+            pov_paths = group["pov_path"].tolist()
             pov_cache[(scene_id, room_id)] = pov_paths
+        print(f"  Found POVs for {len(pov_cache)} unique rooms")
+    else:
+        # Fallback: infer from file system (slow)
+        print(f"  No POV manifest provided, inferring from file system (this will be slow)...")
+        room_layouts = layouts_df[
+            (layouts_df["type"] == "room") & 
+            (layouts_df["room_id"].notna()) & 
+            (layouts_df["room_id"] != "")
+        ].copy()
+        
+        if len(room_layouts) > 0:
+            unique_rooms = room_layouts.groupby(["scene_id", "room_id"]).first().reset_index()
+            print(f"  Checking POV directories for {len(unique_rooms)} unique rooms...")
+            
+            for idx, row in tqdm(unique_rooms.iterrows(), total=len(unique_rooms), desc="Scanning POV dirs"):
+                scene_id = row["scene_id"]
+                room_id = row["room_id"]
+                layout_path_str = row["layout_path"]
+                pov_paths = find_all_pov_paths(layout_path_str, scene_id, room_id)
+                pov_cache[(scene_id, room_id)] = pov_paths
     
     print(f"  Expanding layouts with found POVs...")
     
@@ -355,8 +548,40 @@ def create_controlnet_dataset(
     print(f"  Expanded to {len(layouts_df)} rows (one per POV-viewpoint)")
     
     # Now find graph paths
-    if needs_graph.any() or True:  # Always infer graphs
-        print(f"  Inferring graph paths for {len(layouts_df)} entries...")
+    if graph_df is not None:
+        # Use graph manifest - MUCH faster!
+        print(f"  Using graph manifest to match graphs to layouts...")
+        # Create lookup: (scene_id, type, room_id) -> graph_path
+        graph_lookup = {}
+        for _, row in graph_df.iterrows():
+            scene_id = row["scene_id"]
+            graph_type = row.get("type", "room")
+            room_id = str(row.get("room_id", "")) if pd.notna(row.get("room_id")) else ""
+            graph_path = row.get("graph_path", "")
+            
+            if graph_type == "scene" or room_id == "scene" or room_id == "":
+                key = (scene_id, "scene")
+            else:
+                key = (scene_id, room_id)
+            graph_lookup[key] = graph_path
+        
+        # Match graphs to layouts
+        def get_graph_path(row):
+            scene_id = row["scene_id"]
+            layout_type = row["type"]
+            room_id = str(row.get("room_id", "")) if pd.notna(row.get("room_id")) else ""
+            
+            if layout_type == "scene" or room_id == "":
+                key = (scene_id, "scene")
+            else:
+                key = (scene_id, room_id)
+            return graph_lookup.get(key, "")
+        
+        layouts_df["graph_path"] = layouts_df.apply(get_graph_path, axis=1)
+        matched_count = (layouts_df["graph_path"] != "").sum()
+        print(f"  Matched graphs for {matched_count}/{len(layouts_df)} layouts")
+    elif needs_graph.any() or True:  # Fallback: infer from file system
+        print(f"  No graph manifest provided, inferring graph paths (this may be slow)...")
         layouts_df["graph_path"] = layouts_df.apply(
             lambda row: infer_graph_path(row["layout_path"], row["scene_id"], row.get("room_id", ""), row["type"]),
             axis=1
@@ -478,9 +703,64 @@ def create_controlnet_dataset(
         layouts_df["graph_embedding_path"] = ""
         print("  No graphs to embed")
     
-    # Step 5: Create ControlNet training manifest
+    # Step 5: Copy and organize files for standalone dataset
+    if create_standalone and output_base_dir:
+        print(f"\n{'='*60}")
+        print("Step 5/6: Creating Standalone Dataset")
+        print(f"{'='*60}")
+        layouts_df = copy_and_organize_files(
+            layouts_df, output_base_dir, taxonomy_path
+        )
+        
+        # Update embedding paths to point to embeddings directory
+        embeddings_dir = output_base_dir / "embeddings"
+        embeddings_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Copy POV embeddings
+        pov_embeddings_copied = {}
+        for idx, row in layouts_df.iterrows():
+            pov_emb_path = row.get("pov_embedding_path", "")
+            if pov_emb_path and Path(pov_emb_path).exists():
+                if pov_emb_path not in pov_embeddings_copied:
+                    pov_path_obj = Path(pov_emb_path)
+                    scene_id = row["scene_id"]
+                    room_id = row.get("room_id", "")
+                    pov_path_str = row.get("pov_path", "")
+                    match = re.search(r'_v(\d+)_', pov_path_str) if pov_path_str else None
+                    view_num = match.group(1) if match else "01"
+                    
+                    dest_emb = embeddings_dir / f"{scene_id}_{room_id}_v{view_num}_pov_tex.pt"
+                    shutil.copy2(pov_path_obj, dest_emb)
+                    pov_embeddings_copied[pov_emb_path] = str(dest_emb.resolve())
+                
+                layouts_df.at[idx, "pov_embedding_path"] = pov_embeddings_copied[pov_emb_path]
+        
+        # Copy graph embeddings
+        graph_embeddings_copied = {}
+        for idx, row in layouts_df.iterrows():
+            graph_emb_path = row.get("graph_embedding_path", "")
+            if graph_emb_path and Path(graph_emb_path).exists():
+                if graph_emb_path not in graph_embeddings_copied:
+                    graph_emb_path_obj = Path(graph_emb_path)
+                    scene_id = row["scene_id"]
+                    room_id = row.get("room_id", "")
+                    layout_type = row["type"]
+                    
+                    if layout_type == "scene":
+                        dest_emb = embeddings_dir / f"{scene_id}_scene_graph.pt"
+                    else:
+                        dest_emb = embeddings_dir / f"{scene_id}_{room_id}_graph.pt"
+                    
+                    shutil.copy2(graph_emb_path_obj, dest_emb)
+                    graph_embeddings_copied[graph_emb_path] = str(dest_emb.resolve())
+                
+                layouts_df.at[idx, "graph_embedding_path"] = graph_embeddings_copied[graph_emb_path]
+        
+        print(f"  Copied embeddings to {embeddings_dir}")
+    
+    # Step 6: Create ControlNet training manifest
     print(f"\n{'='*60}")
-    print("Step 5/5: Creating ControlNet Training Manifest")
+    print("Step 6/6: Creating ControlNet Training Manifest")
     print(f"{'='*60}")
     
     # Create a "joint manifest" structure in memory
@@ -543,6 +823,18 @@ def main():
         help="Path to taxonomy.json for graph embedding"
     )
     parser.add_argument(
+        "--pov-manifest",
+        type=Path,
+        default=None,
+        help="Path to POV manifest CSV (optional, speeds up POV finding significantly)"
+    )
+    parser.add_argument(
+        "--graph-manifest",
+        type=Path,
+        default=None,
+        help="Path to graph manifest CSV (optional, speeds up graph finding significantly)"
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         required=True,
@@ -585,6 +877,18 @@ def main():
         choices=["zero", "empty"],
         help="How to handle scenes without POVs"
     )
+    parser.add_argument(
+        "--create-standalone",
+        action="store_true",
+        default=True,
+        help="Create standalone dataset with all files copied to datasets/controlnet/"
+    )
+    parser.add_argument(
+        "--no-standalone",
+        dest="create_standalone",
+        action="store_false",
+        help="Don't create standalone dataset (use original file paths)"
+    )
     
     args = parser.parse_args()
     
@@ -606,12 +910,15 @@ def main():
         autoencoder_checkpoint=args.autoencoder_checkpoint,
         taxonomy_path=args.taxonomy,
         output_manifest=args.output,
+        pov_manifest=args.pov_manifest,
+        graph_manifest=args.graph_manifest,
         pov_batch_size=args.pov_batch_size,
         graph_model=args.graph_model,
         layout_batch_size=args.layout_batch_size,
         num_workers=args.num_workers,
         device=args.device,
-        handle_scenes_without_pov=args.handle_scenes_without_pov
+        handle_scenes_without_pov=args.handle_scenes_without_pov,
+        create_standalone=args.create_standalone
     )
 
 

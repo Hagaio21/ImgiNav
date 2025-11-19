@@ -39,6 +39,8 @@ export PROJECT_ROOT
 LAYOUTS_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_cleaned.csv"
 AUTOENCODER_CHECKPOINT="/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt"
 TAXONOMY="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
+POV_MANIFEST="/work3/s233249/ImgiNav/datasets/povs.csv"
+GRAPH_MANIFEST="/work3/s233249/ImgiNav/datasets/graphs.csv"
 OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv"
 
 # --- Parameters ---
@@ -115,6 +117,8 @@ python -u "${SCRIPT_PATH}" \
     --layouts-manifest "${LAYOUTS_MANIFEST}" \
     --autoencoder-checkpoint "${AUTOENCODER_CHECKPOINT}" \
     --taxonomy "${TAXONOMY}" \
+    --pov-manifest "${POV_MANIFEST}" \
+    --graph-manifest "${GRAPH_MANIFEST}" \
     --output "${OUTPUT_MANIFEST}" \
     --pov-batch-size "${POV_BATCH_SIZE}" \
     --graph-model "${GRAPH_MODEL}" \
