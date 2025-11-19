@@ -214,6 +214,13 @@ class ManifestDataset(BaseComponent, Dataset):
             # Handle empty strings
             if not val or val.strip() == "":
                 raise ValueError(f"Empty path in manifest")
+            
+            # Handle special markers for ControlNet (scenes without POVs)
+            if val == "ZERO_EMBEDDING":
+                # Return zero tensor for POV embeddings (512-dim for ResNet18)
+                # This is used for scenes that don't have POV embeddings
+                return torch.zeros(512, dtype=torch.float32)
+            
             # Try to convert string to number if it's numeric (for numeric room_ids as strings)
             if val.replace('.', '').replace('-', '').isdigit():
                 # Convert to int (long) for room_id values to maintain dtype consistency

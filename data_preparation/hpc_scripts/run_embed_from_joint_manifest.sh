@@ -1,11 +1,12 @@
 #!/bin/bash
-#BSUB -J joint_manifest
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/joint_manifest.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/joint_manifest.%J.err
-#BSUB -n 4
-#BSUB -R "rusage[mem=8000]"
-#BSUB -W 06:00
-#BSUB -q hpc
+#BSUB -J embed_joint
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/embed_joint.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/embed_joint.%J.err
+#BSUB -n 8
+#BSUB -R "rusage[mem=16000]"
+#BSUB -gpu "num=1"
+#BSUB -W 12:00
+#BSUB -q gpul40s
 
 export MKL_INTERFACE_LAYER=LP64
 set -euo pipefail
@@ -28,24 +29,28 @@ echo "[INFO] Setting up paths..."
 # --- Base Project Paths ---
 PROJECT_ROOT="/work3/s233249/ImgiNav"
 SCRIPT_DIR="${PROJECT_ROOT}/ImgiNav/data_preparation"
-SCRIPT_PATH="${SCRIPT_DIR}/create_joint_manifest.py"
+SCRIPT_PATH="${SCRIPT_DIR}/embed_from_joint_manifest.py"
 # Store for use in job chaining
 export PROJECT_ROOT
 
 # --- Input/Output Paths ---
-LAYOUTS_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_cleaned.csv"
-DATA_ROOT="/work3/s233249/ImgiNav/datasets/scenes"
-OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/joint_manifest.csv"
-OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/collected"
+JOINT_MANIFEST="/work3/s233249/ImgiNav/datasets/joint_manifest.csv"
+TAXONOMY="/work3/s233249/ImgiNav/config/taxonomy.json"
+OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/joint_manifest_with_embeddings.csv"
+
+# --- Parameters ---
+POV_BATCH_SIZE=32
+GRAPH_MODEL="all-MiniLM-L6-v2"
+FORMAT="pt"
 
 # --- Check that required files exist ---
 echo "[INFO] Checking for required files..."
-if [ ! -f "${LAYOUTS_MANIFEST}" ]; then
-    echo "[ERROR] Layouts manifest not found: ${LAYOUTS_MANIFEST}"
+if [ ! -f "${JOINT_MANIFEST}" ]; then
+    echo "[ERROR] Joint manifest not found: ${JOINT_MANIFEST}"
     exit 1
 fi
-if [ ! -d "${DATA_ROOT}" ]; then
-    echo "[ERROR] Data root directory not found: ${DATA_ROOT}"
+if [ ! -f "${TAXONOMY}" ]; then
+    echo "[ERROR] Taxonomy file not found: ${TAXONOMY}"
     exit 1
 fi
 if [ ! -f "${SCRIPT_PATH}" ]; then
@@ -58,13 +63,14 @@ echo "[INFO] All required files found."
 # Job Start
 # ----------------------------------------------------------------------
 echo "=============================================================="
-echo " Creating Joint Manifest"
+echo " Embedding POVs and Graphs from Joint Manifest"
 echo "=============================================================="
-echo " Layouts Manifest: ${LAYOUTS_MANIFEST}"
-echo " Data Root:        ${DATA_ROOT}"
-echo " Output Manifest:  ${OUTPUT_MANIFEST}"
-echo " Output Dir:       ${OUTPUT_DIR}"
-echo " Log Directory:    ${LOG_DIR}"
+echo " Joint Manifest: ${JOINT_MANIFEST}"
+echo " Taxonomy:       ${TAXONOMY}"
+echo " Output:         ${OUTPUT_MANIFEST}"
+echo " POV Batch Size: ${POV_BATCH_SIZE}"
+echo " Graph Model:    ${GRAPH_MODEL}"
+echo " Format:         ${FORMAT}"
 echo "=============================================================="
 
 # ----------------------------------------------------------------------
@@ -91,28 +97,27 @@ echo ""
 echo "[INFO] Starting Python script..."
 # Use python -u for unbuffered output
 python -u "${SCRIPT_PATH}" \
-    --layouts-manifest "${LAYOUTS_MANIFEST}" \
-    --data-root "${DATA_ROOT}" \
-    --output "${OUTPUT_MANIFEST}" \
-    --output-dir "${OUTPUT_DIR}"
+    --joint-manifest "${JOINT_MANIFEST}" \
+    --taxonomy "${TAXONOMY}" \
+    --output-manifest "${OUTPUT_MANIFEST}" \
+    --pov-batch-size "${POV_BATCH_SIZE}" \
+    --graph-model "${GRAPH_MODEL}" \
+    --format "${FORMAT}"
 
 # ----------------------------------------------------------------------
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo "=============================================================="
-    echo "[DONE] Joint manifest creation completed successfully"
+    echo "[DONE] Embedding completed successfully"
     echo "=============================================================="
     echo " Output manifest: ${OUTPUT_MANIFEST}"
-    echo " Graphs copied to: ${OUTPUT_DIR}/graphs"
-    echo " Textured POVs copied to: ${OUTPUT_DIR}/povs/tex"
-    echo " Segmented POVs copied to: ${OUTPUT_DIR}/povs/seg"
     echo "=============================================================="
     
-    # Submit next job: Embed POVs and graphs
+    # Submit next job: Create ControlNet manifest
     echo ""
-    echo "[INFO] Submitting next job: Embed POVs and graphs..."
+    echo "[INFO] Submitting next job: Create ControlNet manifest..."
     # Use PROJECT_ROOT that's already defined in this script
-    NEXT_SCRIPT="${PROJECT_ROOT}/ImgiNav/data_preparation/hpc_scripts/run_embed_from_joint_manifest.sh"
+    NEXT_SCRIPT="${PROJECT_ROOT}/ImgiNav/data_preparation/hpc_scripts/run_create_controlnet_manifest_new_layouts.sh"
     if [ -f "${NEXT_SCRIPT}" ]; then
         bsub < "${NEXT_SCRIPT}"
         echo "[INFO] Next job submitted successfully"
@@ -121,7 +126,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     fi
 else
     echo "=============================================================="
-    echo "[ERROR] Joint manifest creation failed with exit code: ${EXIT_CODE}"
+    echo "[ERROR] Embedding failed with exit code: ${EXIT_CODE}"
     echo "=============================================================="
     exit $EXIT_CODE
 fi
