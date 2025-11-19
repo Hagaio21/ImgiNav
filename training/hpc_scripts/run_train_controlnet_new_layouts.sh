@@ -9,6 +9,8 @@
 #BSUB -q gpuv100
 
 export MKL_INTERFACE_LAYER=LP64
+# PyTorch memory management to avoid fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 set -euo pipefail
 
 # ----------------------------------------------------------------------

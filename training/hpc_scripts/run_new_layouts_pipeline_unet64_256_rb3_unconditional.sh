@@ -39,6 +39,8 @@ fi
 module load cuda/11.8
 module load cudnn/v8.6.0.163-prod-cuda-11.X
 export MKL_INTERFACE_LAYER=LP64
+# PyTorch memory management to avoid fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # =============================================================================
 # CONDA ENV
