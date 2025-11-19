@@ -328,13 +328,16 @@ def create_controlnet_dataset(
     
     pov_count = (layouts_df["pov_path"] != "").sum()
     graph_count = (layouts_df["graph_path"] != "").sum()
+    unique_graphs = layouts_df[layouts_df["graph_path"] != ""]["graph_path"].nunique()
     print(f"  Found {pov_count} POV paths")
-    print(f"  Found {graph_count} graph paths")
+    print(f"  Found {graph_count} graph paths ({unique_graphs} unique graph files)")
     
-    # Debug: show a few examples of missing graphs
-    if graph_count == 0 and needs_graph.any():
+    # Debug: show a few examples of missing graphs if none found
+    if graph_count == 0:
         print(f"\n  [DEBUG] Checking why graphs weren't found...")
-        sample_rows = layouts_df[needs_graph].head(3)
+        # Check unique layouts (not all expanded POV rows)
+        unique_layouts = layouts_df.drop_duplicates(subset=["layout_path", "scene_id", "type", "room_id"])
+        sample_rows = unique_layouts.head(3)
         for idx, row in sample_rows.iterrows():
             layout_path = Path(row["layout_path"])
             layout_dir = layout_path.parent
@@ -352,7 +355,8 @@ def create_controlnet_dataset(
                 print(f"    Expected graph: {expected_graph}")
                 print(f"    Exists: {expected_graph.exists()}")
                 if layout_dir.exists():
-                    print(f"    Files in layout dir: {list(layout_dir.glob('*.json'))[:5]}")
+                    json_files = list(layout_dir.glob('*.json'))
+                    print(f"    Files in layout dir: {[f.name for f in json_files[:5]]}")
             else:
                 scene_root = layout_dir.parent if layout_dir.name == "layouts" else layout_dir
                 expected_graph = scene_root / f"{scene_id}_scene_graph.json"
@@ -360,7 +364,8 @@ def create_controlnet_dataset(
                 print(f"    Expected graph: {expected_graph}")
                 print(f"    Exists: {expected_graph.exists()}")
                 if scene_root.exists():
-                    print(f"    Files in scene root: {list(scene_root.glob('*_scene_graph.json'))[:5]}")
+                    json_files = list(scene_root.glob('*_scene_graph.json'))
+                    print(f"    Scene graph files: {[f.name for f in json_files[:5]]}")
     
     # Step 3: Embed POVs
     print(f"\n{'='*60}")
