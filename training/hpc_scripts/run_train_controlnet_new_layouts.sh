@@ -1,11 +1,12 @@
 #!/bin/bash
-#BSUB -J controlnet_manifest
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/controlnet_manifest_new_layouts.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs/controlnet_manifest_new_layouts.%J.err
-#BSUB -n 4
-#BSUB -R "rusage[mem=8000]"
-#BSUB -W 02:00
-#BSUB -q hpc
+#BSUB -J train_controlnet_new_layouts
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_controlnet_new_layouts.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_controlnet_new_layouts.%J.err
+#BSUB -n 8
+#BSUB -R "rusage[mem=16000]"
+#BSUB -gpu "num=1"
+#BSUB -W 48:00
+#BSUB -q gpuv100
 
 export MKL_INTERFACE_LAYER=LP64
 set -euo pipefail
@@ -13,7 +14,7 @@ set -euo pipefail
 # ----------------------------------------------------------------------
 # Create Log Directory
 # ----------------------------------------------------------------------
-LOG_DIR="/work3/s233249/ImgiNav/ImgiNav/data_preparation/hpc_scripts/logs"
+LOG_DIR="/work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs"
 mkdir -p "${LOG_DIR}"
 
 # --- Log that the script has started ---
@@ -27,48 +28,38 @@ echo "[INFO] Setting up paths..."
 
 # --- Base Project Paths ---
 PROJECT_ROOT="/work3/s233249/ImgiNav"
-SCRIPT_DIR="${PROJECT_ROOT}/ImgiNav/data_preparation"
-SCRIPT_PATH="${SCRIPT_DIR}/create_controlnet_manifest_from_joint.py"
+SCRIPT_DIR="${PROJECT_ROOT}/ImgiNav/training"
+SCRIPT_PATH="${SCRIPT_DIR}/train_controlnet.py"
+CONFIG_PATH="${PROJECT_ROOT}/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts.yaml"
 # Store for use in job chaining
 export PROJECT_ROOT
 
-# --- Input/Output Paths ---
-JOINT_MANIFEST="/work3/s233249/ImgiNav/datasets/joint_manifest_with_embeddings.csv"
-LAYOUTS_LATENT_MANIFEST="/work3/s233249/ImgiNav/datasets/layouts_cleaned_with_latents.csv"
-OUTPUT_MANIFEST="/work3/s233249/ImgiNav/datasets/controlnet_training_manifest_new_layouts.csv"
-
-# --- Parameters ---
-# IMPORTANT: Scenes are NEVER skipped - they are always included
-# "zero" uses zero POV embedding for scenes (recommended)
-# "empty" uses empty string (dataset must handle)
-HANDLE_SCENES="zero"  # Options: zero (recommended), empty
-
 # --- Check that required files exist ---
 echo "[INFO] Checking for required files..."
-if [ ! -f "${JOINT_MANIFEST}" ]; then
-    echo "[ERROR] Joint manifest not found: ${JOINT_MANIFEST}"
-    exit 1
-fi
-if [ ! -f "${LAYOUTS_LATENT_MANIFEST}" ]; then
-    echo "[ERROR] Layouts latent manifest not found: ${LAYOUTS_LATENT_MANIFEST}"
-    exit 1
-fi
 if [ ! -f "${SCRIPT_PATH}" ]; then
-    echo "[ERROR] Python script not found: ${SCRIPT_PATH}"
+    echo "[ERROR] Training script not found: ${SCRIPT_PATH}"
+    exit 1
+fi
+if [ ! -f "${CONFIG_PATH}" ]; then
+    echo "[ERROR] Config file not found: ${CONFIG_PATH}"
     exit 1
 fi
 echo "[INFO] All required files found."
 
 # ----------------------------------------------------------------------
+# Modules
+# ----------------------------------------------------------------------
+module load cuda/11.8
+module load cudnn/v8.6.0.163-prod-cuda-11.X
+
+# ----------------------------------------------------------------------
 # Job Start
 # ----------------------------------------------------------------------
 echo "=============================================================="
-echo " Creating ControlNet Training Manifest"
+echo " Training ControlNet Model"
 echo "=============================================================="
-echo " Joint Manifest:        ${JOINT_MANIFEST}"
-echo " Layouts Latent:        ${LAYOUTS_LATENT_MANIFEST}"
-echo " Output Manifest:       ${OUTPUT_MANIFEST}"
-echo " Handle Scenes w/o POV: ${HANDLE_SCENES}"
+echo " Config: ${CONFIG_PATH}"
+echo " Script: ${SCRIPT_PATH}"
 echo "=============================================================="
 
 # ----------------------------------------------------------------------
@@ -92,37 +83,25 @@ echo ""
 # ----------------------------------------------------------------------
 # Run script
 # ----------------------------------------------------------------------
-echo "[INFO] Starting Python script..."
+echo "[INFO] Starting ControlNet training..."
+cd "${PROJECT_ROOT}/ImgiNav"
 # Use python -u for unbuffered output
 python -u "${SCRIPT_PATH}" \
-    --joint-manifest "${JOINT_MANIFEST}" \
-    --layouts-latent-manifest "${LAYOUTS_LATENT_MANIFEST}" \
-    --output "${OUTPUT_MANIFEST}" \
-    --handle-scenes-without-pov "${HANDLE_SCENES}"
+    --config "${CONFIG_PATH}"
 
 # ----------------------------------------------------------------------
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo "=============================================================="
-    echo "[DONE] ControlNet manifest creation completed successfully"
+    echo "[DONE] ControlNet training completed successfully"
     echo "=============================================================="
-    echo " Output manifest: ${OUTPUT_MANIFEST}"
+    echo " Config: ${CONFIG_PATH}"
     echo "=============================================================="
-    
-    # Submit next job: Train ControlNet
     echo ""
-    echo "[INFO] Submitting next job: Train ControlNet..."
-    # Use PROJECT_ROOT that's already defined in this script
-    NEXT_SCRIPT="${PROJECT_ROOT}/ImgiNav/training/hpc_scripts/run_train_controlnet_new_layouts.sh"
-    if [ -f "${NEXT_SCRIPT}" ]; then
-        bsub < "${NEXT_SCRIPT}"
-        echo "[INFO] Next job submitted successfully"
-    else
-        echo "[WARN] Next job script not found: ${NEXT_SCRIPT}"
-    fi
+    echo "[INFO] ControlNet training pipeline complete!"
 else
     echo "=============================================================="
-    echo "[ERROR] ControlNet manifest creation failed with exit code: ${EXIT_CODE}"
+    echo "[ERROR] ControlNet training failed with exit code: ${EXIT_CODE}"
     echo "=============================================================="
     exit $EXIT_CODE
 fi
