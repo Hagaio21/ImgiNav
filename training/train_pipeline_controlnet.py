@@ -85,9 +85,9 @@ def update_controlnet_config_manifest(controlnet_config_path, manifest_path):
         'pov_emb': 'pov_embedding_path'    # POV embeddings
     }
     
-    # Save updated config
+    # Save updated config (preserve all sections)
     with open(controlnet_config_path, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True, width=1000)
     
     print(f"Updated manifest path:")
     print(f"  Old: {old_manifest}")

@@ -577,11 +577,8 @@ def main():
         print(f"  Best validation loss so far: {best_val_loss:.6f}")
     
     # Build optimizer (only for trainable parameters - the adapter)
-    trainable_params_list = [p for p in controlnet.parameters() if p.requires_grad]
-    optimizer = build_optimizer(
-        trainable_params_list,
-        config["training"]
-    )
+    # build_optimizer expects (model, config) where model has parameter_groups() method
+    optimizer = build_optimizer(controlnet, config)
     
     if should_resume and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
