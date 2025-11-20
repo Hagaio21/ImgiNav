@@ -481,58 +481,41 @@ def main():
     diffusion_model = DiffusionModel.load_checkpoint(
         diffusion_checkpoint,
         map_location="cpu"
-            )
+    )
     
-    # Skip GPU checks - they might be causing the issue
-    # Just try to move the model directly and handle errors
+    # Don't check CUDA availability or create device_obj until we actually need it
+    # This avoids initializing CUDA context too early
     if device.startswith("cuda"):
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available. Cannot use GPU device.")
+        # Wait a moment in case GPU is still releasing from previous job
+        print("Waiting 10 seconds before accessing GPU...")
+        time.sleep(10)
     
-    # Create device_obj only when we need it (for GPU)
+    # Create device_obj only when we actually need to move model to GPU
     device_obj = to_device(device)
     
-    # Wait before first attempt - GPU might be busy from previous training run
-    if device.startswith("cuda"):
-        print("Waiting 30 seconds for GPU to recover from previous run...")
-        time.sleep(30)
-    
-    # Try to move model to device with retries
+    # Try to move model to device
     print(f"Moving model to {device}...")
-    max_retries = 20
-    retry_delay = 15  # Start with longer delay
-    
-    for attempt in range(max_retries):
-        try:
-            diffusion_model = diffusion_model.to(device_obj)
-            print(f"✓ Model successfully moved to {device}")
-            break  # Success, exit retry loop
-        except RuntimeError as e:
-            error_str = str(e)
-            if "CUDA" in error_str or "cuda" in error_str.lower():
-                if attempt < max_retries - 1:
-                    print(f"Attempt {attempt + 1}/{max_retries} failed: {error_str[:150]}")
-                    print(f"Waiting {retry_delay} seconds before retry...")
-                    time.sleep(retry_delay)
-                    # Increase delay for next retry (up to 60 seconds)
-                    retry_delay = min(retry_delay + 10, 60)
-                else:
-                    # Final attempt failed - GPU context is stuck
-                    print(f"\n{'='*60}")
-                    print(f"ERROR: GPU is stuck in busy state after {max_retries} attempts")
-                    print(f"{'='*60}")
-                    print("The GPU CUDA context is stuck from a previous job.")
-                    print("This is a software/driver issue, not hardware failure.")
-                    print("\nThe GPU needs to be reset. Options:")
-                    print("1. Wait 5-10 minutes and try again (driver may auto-recover)")
-                    print("2. Contact HPC admin to reset the GPU")
-                    print("3. Use --device cpu to train on CPU (much slower)")
-                    print("4. Try a different GPU node")
-                    print(f"\nError: {error_str}")
-                    print(f"{'='*60}\n")
-                    raise RuntimeError(f"GPU stuck in busy state: {error_str}")
-            else:
-                raise
+    try:
+        diffusion_model = diffusion_model.to(device_obj)
+        print(f"✓ Model successfully moved to {device}")
+    except RuntimeError as e:
+        error_str = str(e)
+        if "CUDA" in error_str or "cuda" in error_str.lower():
+            print(f"\n{'='*60}")
+            print("ERROR: GPU is busy/unavailable")
+            print(f"{'='*60}")
+            print(f"Error: {error_str}")
+            print("\nThe GPU appears to be busy. This can happen if:")
+            print("1. A previous job on this GPU node didn't clean up properly")
+            print("2. The GPU needs time to release resources")
+            print("\nSolutions:")
+            print("1. Wait 5-10 minutes and resubmit")
+            print("2. Request a different GPU node") 
+            print("3. Use --device cpu to train on CPU")
+            print(f"{'='*60}\n")
+            raise RuntimeError(f"GPU unavailable: {error_str}")
+        else:
+            raise
     
     diffusion_model.eval()
     
