@@ -40,9 +40,11 @@ training:
   num_workers: 4
   shuffle: true
   epochs: 100
-  learning_rate: 1.0e-05
+  learning_rate: 0.0001  # Increased LR for faster training (10x from 0.00001)
   optimizer: AdamW
   weight_decay: 0.01
+  scheduler:
+    type: cosine  # Cosine annealing: smoothly reduces LR from initial to 0 over epochs
   save_interval: 10
   eval_interval: 5
   sample_interval: 5
