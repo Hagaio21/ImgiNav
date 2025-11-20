@@ -22,6 +22,7 @@ import yaml
 import argparse
 import subprocess
 import pandas as pd
+import time
 from pathlib import Path
 from tqdm import tqdm
 from PIL import Image
@@ -449,6 +450,14 @@ def embed_controlnet_dataset(
         print(f"\n{'='*60}")
         print("Dataset embedding completed successfully!")
         print(f"{'='*60}\n")
+        
+        # Clear GPU memory after embedding to free up resources for training
+        if torch.cuda.is_available():
+            print("Clearing GPU memory after embedding...")
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            print("✓ GPU memory cleared")
+        
         return True
         
     except Exception as e:
@@ -613,6 +622,20 @@ def main():
     else:
         print("WARNING: Embedded manifest not found. Training will use original manifest.")
         print("This may cause errors if embeddings are required.")
+    
+    # Clear GPU memory and wait a moment before training to ensure GPU is ready
+    if not args.skip_training:
+        if torch.cuda.is_available():
+            print(f"\n{'='*60}")
+            print("Preparing for training phase...")
+            print(f"{'='*60}")
+            print("Clearing GPU memory and waiting for GPU to be ready...")
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            print("Waiting 3 seconds for GPU to stabilize...")
+            time.sleep(3)
+            print("✓ GPU ready for training")
+            print(f"{'='*60}\n")
     
     # Step 3: Train ControlNet (unless skipped)
     if not args.skip_training:

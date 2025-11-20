@@ -18,6 +18,7 @@ from tqdm import tqdm
 import math
 import yaml
 from PIL import Image
+import time
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -479,10 +480,67 @@ def main():
     diffusion_model = DiffusionModel.load_checkpoint(
         diffusion_checkpoint,
         map_location="cpu"
-    )
-    # Then move to target device
+            )
+    
+    # Check GPU availability before moving
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available. Cannot use GPU device.")
+        
+        # Try to clear GPU cache and synchronize
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            print("GPU cache cleared and synchronized")
+        except Exception as e:
+            print(f"Warning: Could not clear GPU cache: {e}")
+        
+        # Check if we can allocate a small tensor on GPU
+        try:
+            test_tensor = torch.zeros(1).to(device_obj)
+            del test_tensor
+            torch.cuda.empty_cache()
+            print("GPU availability confirmed")
+        except Exception as e:
+            print(f"Warning: GPU may be busy: {e}")
+            print("Attempting to move model anyway...")
+    
+    # Then move to target device with error handling and retry
     print(f"Moving model to {device}...")
-    diffusion_model = diffusion_model.to(device_obj)
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            diffusion_model = diffusion_model.to(device_obj)
+            break  # Success, exit retry loop
+        except RuntimeError as e:
+            if "CUDA" in str(e) or "cuda" in str(e).lower():
+                if attempt < max_retries - 1:
+                    print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+                    print(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                    # Try to clear cache again
+                    if device.startswith("cuda"):
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                else:
+                    # Final attempt failed
+                    print(f"\n{'='*60}")
+                    print(f"ERROR: Failed to move model to GPU after {max_retries} attempts")
+                    print(f"{'='*60}")
+                    print(f"Error: {e}")
+                    print("\nPossible solutions:")
+                    print("1. Wait a few moments and try again (GPU may be busy)")
+                    print("2. Check if other processes are using the GPU: nvidia-smi")
+                    print("3. Try using CPU instead: --device cpu")
+                    print("4. Set CUDA_LAUNCH_BLOCKING=1 for better error messages")
+                    print("5. Kill other processes using the GPU")
+                    print(f"{'='*60}\n")
+                    raise
+            else:
+                raise
+    
     diffusion_model.eval()
     
     # Freeze the base UNet
