@@ -36,7 +36,6 @@ from training.utils import (
     load_config,
     get_device,
 )
-from training.train_controlnet import main as train_controlnet_main
 from data_preparation.create_embeddings import (
     create_layout_embeddings_from_manifest,
     load_resnet_model,
@@ -474,13 +473,30 @@ def train_controlnet(controlnet_config_path):
     print(f"{'='*60}\n")
     
     try:
-        # Call the training script directly
-        train_controlnet_main(argparse.Namespace(
-            config=str(controlnet_config_path),
-            device=None,
-            no_resume=False
-        ))
+        # Get absolute paths
+        base_dir = Path(__file__).parent.parent
+        controlnet_config_abs = Path(controlnet_config_path).resolve()
+        
+        # Run as subprocess (train_controlnet.py uses argparse.parse_args())
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m", "training.train_controlnet",
+                "--config", str(controlnet_config_abs)
+            ],
+            check=True,
+            cwd=base_dir
+        )
+        print(f"\n{'='*60}")
+        print("ControlNet training completed successfully!")
+        print(f"{'='*60}\n")
         return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"\n{'='*60}")
+        print(f"ERROR: ControlNet training failed with exit code {e.returncode}")
+        print(f"{'='*60}\n")
+        return False
     except Exception as e:
         print(f"\n{'='*60}")
         print(f"ERROR: ControlNet training failed: {e}")
