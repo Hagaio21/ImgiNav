@@ -17,7 +17,6 @@ dataset:
   filters:
     is_empty:
     - false
-    whiteness_ratio__lt: 0.95
   return_path: false
 
 autoencoder:

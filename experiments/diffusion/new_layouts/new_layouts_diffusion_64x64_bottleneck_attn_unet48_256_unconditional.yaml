@@ -10,7 +10,6 @@ dataset:
   filters:
     is_empty:
     - false
-    whiteness_ratio__lt: 0.95
   return_path: false
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt

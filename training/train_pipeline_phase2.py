@@ -34,103 +34,6 @@ from training.train import main as train_ae_main
 from training.train_diffusion import main as train_diffusion_main
 
 
-def analyze_whiteness(input_manifest_path, output_manifest_path=None, white_threshold=0.9, workers=8, overwrite=False):
-    """
-    Analyze whiteness of images in manifest and add whiteness_ratio column.
-    
-    Args:
-        input_manifest_path: Path to input manifest CSV
-        output_manifest_path: Path to output manifest CSV (if None, overwrites input)
-        white_threshold: Pixel value threshold for "white" in [0, 1] range
-        workers: Number of parallel workers
-        overwrite: Whether to overwrite existing whiteness_ratio column
-        
-    Returns:
-        Path to manifest with whiteness_ratio column, or None if failed
-    """
-    print(f"\n{'='*60}")
-    print("PHASE 0: Analyzing Image Whiteness")
-    print(f"{'='*60}")
-    
-    import subprocess
-    
-    try:
-        base_dir = Path(__file__).parent.parent
-        whiteness_script = base_dir / "data_preparation" / "add_whiteness_to_manifest.py"
-        input_manifest_abs = Path(input_manifest_path).resolve()
-        
-        if not input_manifest_abs.exists():
-            print(f"WARNING: Input manifest not found: {input_manifest_abs}")
-            print("Skipping whiteness analysis.")
-            return input_manifest_abs
-        
-        # Determine output path
-        if output_manifest_path is None:
-            output_manifest_abs = input_manifest_abs
-        else:
-            output_manifest_abs = Path(output_manifest_path).resolve()
-            output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Check if whiteness_ratio already exists
-        if output_manifest_abs.exists():
-            df_check = pd.read_csv(output_manifest_abs, nrows=1)
-            if "whiteness_ratio" in df_check.columns and not overwrite:
-                print(f"whiteness_ratio column already exists in {output_manifest_abs}")
-                print("Skipping whiteness analysis. Use --overwrite-whiteness to recompute.")
-                return output_manifest_abs
-        
-        print(f"Input manifest: {input_manifest_abs}")
-        print(f"Output manifest: {output_manifest_abs}")
-        print(f"White threshold: {white_threshold} (~{int(white_threshold * 255)}/255)")
-        print(f"{'='*60}\n")
-        
-        # Build command
-        cmd = [
-            sys.executable,
-            str(whiteness_script),
-            "--manifest", str(input_manifest_abs),
-            "--layout-column", "layout_path",
-            "--white-threshold", str(white_threshold),
-            "--workers", str(workers)
-        ]
-        
-        if output_manifest_path is not None:
-            cmd.extend(["--output", str(output_manifest_abs)])
-        
-        if overwrite:
-            cmd.append("--overwrite")
-        
-        # Run whiteness analysis
-        result = subprocess.run(
-            cmd,
-            check=True,
-            cwd=base_dir
-        )
-        
-        print(f"\n{'='*60}")
-        print("Whiteness analysis completed successfully!")
-        print(f"{'='*60}")
-        print(f"Manifest with whiteness_ratio: {output_manifest_abs}")
-        print(f"{'='*60}\n")
-        
-        return output_manifest_abs
-        
-    except subprocess.CalledProcessError as e:
-        print(f"\n{'='*60}")
-        print(f"WARNING: Whiteness analysis failed with exit code {e.returncode}")
-        print(f"{'='*60}")
-        print("Continuing with original manifest...")
-        print(f"{'='*60}\n")
-        return input_manifest_abs
-    except Exception as e:
-        print(f"\n{'='*60}")
-        print(f"WARNING: Whiteness analysis failed: {e}")
-        print(f"{'='*60}")
-        print("Continuing with original manifest...")
-        print(f"{'='*60}\n")
-        return input_manifest_abs
-
-
 def update_diffusion_config_manifest(diffusion_config_path, manifest_path):
     """
     Update diffusion config to use the embedded manifest.
@@ -352,7 +255,7 @@ def train_autoencoder(ae_config_path):
         return None
 
 
-def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, output_manifest_path, batch_size=32, num_workers=8, diffusion_config_path=None, should_analyze_whiteness=False, whiteness_threshold=0.9, overwrite_whiteness=False):
+def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, output_manifest_path, batch_size=32, num_workers=8, diffusion_config_path=None):
     """
     Embed dataset using the trained autoencoder.
     
@@ -363,10 +266,7 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         output_manifest_path: Path to output manifest (with latent_path column)
         batch_size: Batch size for encoding
         num_workers: Number of workers for data loading
-        diffusion_config_path: Optional path to diffusion config (to get filters for whiteness, etc.)
-        should_analyze_whiteness: Whether to analyze whiteness before embedding
-        whiteness_threshold: Pixel value threshold for "white" in [0, 1] range
-        overwrite_whiteness: Whether to overwrite existing whiteness_ratio column
+        diffusion_config_path: Optional path to diffusion config (to get filters, etc.)
         
     Returns:
         True if embedding succeeded, False otherwise
@@ -379,33 +279,6 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
     print(f"Output manifest: {output_manifest_path}")
     print(f"{'='*60}\n")
     
-    # Step 2.0: Analyze whiteness if requested (before embedding)
-    working_manifest_path = input_manifest_path
-    if should_analyze_whiteness:
-        working_manifest = Path(input_manifest_path)
-        if working_manifest.exists():
-            print(f"\n{'='*60}")
-            print("Analyzing image whiteness before embedding...")
-            print(f"{'='*60}")
-            
-            # Create manifest with whiteness in embeddings directory
-            output_manifest_abs = Path(output_manifest_path).resolve()
-            whiteness_manifest = output_manifest_abs.parent / "manifest_with_whiteness.csv"
-            
-            whiteness_manifest = analyze_whiteness(
-                input_manifest_path=str(working_manifest),
-                output_manifest_path=str(whiteness_manifest),
-                white_threshold=whiteness_threshold,
-                workers=8,
-                overwrite=overwrite_whiteness
-            )
-            
-            # Use manifest with whiteness for embedding
-            if whiteness_manifest.exists():
-                working_manifest_path = str(whiteness_manifest)
-                print(f"Using manifest with whiteness_ratio: {working_manifest_path}")
-            print(f"{'='*60}\n")
-    
     import subprocess
     
     try:
@@ -414,8 +287,7 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
         embed_script = base_dir / "data_preparation" / "create_embeddings.py"
         ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
         ae_config_abs = Path(ae_config_path).resolve()
-        # Use working_manifest_path (may have been updated to whiteness manifest)
-        input_manifest_abs = Path(working_manifest_path).resolve()
+        input_manifest_abs = Path(input_manifest_path).resolve()
         output_manifest_abs = Path(output_manifest_path).resolve()
         
         # Ensure output directory exists
@@ -443,7 +315,7 @@ def embed_dataset(ae_checkpoint_path, ae_config_path, input_manifest_path, outpu
             "--device", "cuda"
         ]
         
-        # Add diffusion config if provided (for filters like whiteness_ratio__lt)
+        # Add diffusion config if provided (for filters)
         if diffusion_config_abs and diffusion_config_abs.exists():
             cmd.extend(["--diffusion-config", str(diffusion_config_abs)])
         
@@ -544,22 +416,6 @@ def main():
         "--ae-checkpoint",
         type=Path,
         help="Path to existing autoencoder checkpoint (if --skip-ae)"
-    )
-    parser.add_argument(
-        "--analyze-whiteness",
-        action="store_true",
-        help="Analyze image whiteness and add whiteness_ratio column to manifest"
-    )
-    parser.add_argument(
-        "--whiteness-threshold",
-        type=float,
-        default=0.9,
-        help="Pixel value threshold for 'white' in [0, 1] range (default: 0.9 = ~230/255)"
-    )
-    parser.add_argument(
-        "--overwrite-whiteness",
-        action="store_true",
-        help="Overwrite existing whiteness_ratio column if it exists"
     )
     
     args = parser.parse_args()
@@ -682,10 +538,7 @@ def main():
                 str(output_manifest),
                 batch_size=32,
                 num_workers=8,
-                diffusion_config_path=args.diffusion_config,  # Pass diffusion config to get filters
-                should_analyze_whiteness=args.analyze_whiteness,  # Analyze whiteness during embedding
-                whiteness_threshold=args.whiteness_threshold,
-                overwrite_whiteness=args.overwrite_whiteness
+                diffusion_config_path=args.diffusion_config  # Pass diffusion config to get filters
             )
             if success:
                 embedded_manifest = output_manifest

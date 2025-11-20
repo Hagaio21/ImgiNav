@@ -10,7 +10,6 @@ dataset:
   filters:
     is_empty:
     - false
-    whiteness_ratio__lt: 0.95
   return_path: false
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt
@@ -45,7 +44,7 @@ training:
   seed: 42
   train_split: 0.8
   split_seed: 42
-  batch_size: 80
+  batch_size: 32
   num_workers: 8
   shuffle: true
   epochs: 500
@@ -55,7 +54,7 @@ training:
   save_interval: 99999
   eval_interval: 5
   sample_interval: 5
-  use_amp: false
+  use_amp: true
   use_weighted_sampling: true
   weight_column: type
   max_grad_norm: 1.0

@@ -174,7 +174,7 @@ def create_layout_embeddings_from_manifest(
     filters = {"is_empty": [False]}
     
     # Try to load filters from config
-    # Priority: 1) diffusion config filters (for whiteness filtering), 2) autoencoder config filters, 3) default
+    # Priority: 1) diffusion config filters, 2) autoencoder config filters, 3) default
     if diffusion_config_path:
         try:
             from training.utils import load_config
@@ -949,7 +949,7 @@ def main():
     parser.add_argument(
         "--diffusion-config",
         default=None,
-        help="Path to diffusion config YAML (optional, used to get filters for whiteness filtering during embedding)"
+        help="Path to diffusion config YAML (optional, used to get filters during embedding)"
     )
     parser.add_argument(
         "--manifest-out",

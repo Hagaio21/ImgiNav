@@ -62,20 +62,38 @@ class ManifestDataset(BaseComponent, Dataset):
         for key, value in filters.items():
             if "__lt" in key:
                 col = key.replace("__lt", "")
+                if col not in df.columns:
+                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
+                    continue
                 df = df[df[col] < value]
             elif "__gt" in key:
                 col = key.replace("__gt", "")
+                if col not in df.columns:
+                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
+                    continue
                 df = df[df[col] > value]
             elif "__le" in key:
                 col = key.replace("__le", "")
+                if col not in df.columns:
+                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
+                    continue
                 df = df[df[col] <= value]
             elif "__ge" in key:
                 col = key.replace("__ge", "")
+                if col not in df.columns:
+                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
+                    continue
                 df = df[df[col] >= value]
             elif "__ne" in key:
                 col = key.replace("__ne", "")
+                if col not in df.columns:
+                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
+                    continue
                 df = df[df[col] != value]
             else:
+                if key not in df.columns:
+                    print(f"[WARNING] Filter column '{key}' not found in manifest (filter skipped)")
+                    continue
                 if isinstance(value, (list, tuple, set)):
                     df = df[df[key].isin(value)]
                 else:
