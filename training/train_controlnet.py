@@ -461,12 +461,13 @@ def main():
         device = get_device(config)
     print(f"Using device: {device}")
     
-    # Build dataset
+    # Build dataset (don't touch GPU yet)
     dataset_config = config["dataset"]
     dataset = build_dataset(config)
     train_dataset, val_dataset = split_dataset(dataset, config["training"])
     
-    device_obj = to_device(device)
+    # Don't create device_obj yet - wait until we actually need to use GPU
+    # This avoids initializing CUDA context too early
     
     # Load pretrained diffusion model
     diffusion_config = config.get("diffusion", {})
@@ -488,10 +489,18 @@ def main():
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available. Cannot use GPU device.")
     
-    # Try to move model to device with retries (no pre-checks)
+    # Create device_obj only when we need it (for GPU)
+    device_obj = to_device(device)
+    
+    # Wait before first attempt - GPU might be busy from previous training run
+    if device.startswith("cuda"):
+        print("Waiting 30 seconds for GPU to recover from previous run...")
+        time.sleep(30)
+    
+    # Try to move model to device with retries
     print(f"Moving model to {device}...")
-    max_retries = 10
-    retry_delay = 3  # seconds
+    max_retries = 20
+    retry_delay = 15  # Start with longer delay
     
     for attempt in range(max_retries):
         try:
@@ -505,25 +514,23 @@ def main():
                     print(f"Attempt {attempt + 1}/{max_retries} failed: {error_str[:150]}")
                     print(f"Waiting {retry_delay} seconds before retry...")
                     time.sleep(retry_delay)
-                    # Don't try to clear cache or synchronize - just wait and retry
-                    retry_delay = min(retry_delay + 1, 10)  # Gradually increase delay
+                    # Increase delay for next retry (up to 60 seconds)
+                    retry_delay = min(retry_delay + 10, 60)
                 else:
-                    # Final attempt failed
+                    # Final attempt failed - GPU context is stuck
                     print(f"\n{'='*60}")
-                    print(f"ERROR: Failed to move model to GPU after {max_retries} attempts")
+                    print(f"ERROR: GPU is stuck in busy state after {max_retries} attempts")
                     print(f"{'='*60}")
-                    print(f"Error: {error_str}")
-                    print("\nThe GPU appears to be in a busy or error state.")
-                    print("This can happen if:")
-                    print("1. A previous process left the GPU in a bad state")
-                    print("2. The GPU needs to be reset")
-                    print("3. There's a CUDA context issue")
-                    print("\nTry:")
-                    print("1. Wait a few minutes and try again")
-                    print("2. Use --device cpu to train on CPU (slower but works)")
-                    print("3. Check if GPU needs to be reset: nvidia-smi")
+                    print("The GPU CUDA context is stuck from a previous job.")
+                    print("This is a software/driver issue, not hardware failure.")
+                    print("\nThe GPU needs to be reset. Options:")
+                    print("1. Wait 5-10 minutes and try again (driver may auto-recover)")
+                    print("2. Contact HPC admin to reset the GPU")
+                    print("3. Use --device cpu to train on CPU (much slower)")
+                    print("4. Try a different GPU node")
+                    print(f"\nError: {error_str}")
                     print(f"{'='*60}\n")
-                    raise
+                    raise RuntimeError(f"GPU stuck in busy state: {error_str}")
             else:
                 raise
     
@@ -734,8 +741,25 @@ def main():
     print("Training completed!")
     print(f"Best validation loss: {best_val_loss:.6f}")
     print(f"Checkpoints saved to: {output_dir}")
+    
+    # Clean up GPU resources before exiting
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        except:
+            pass  # Ignore errors during cleanup
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Ensure GPU is cleaned up even if training crashes
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            except:
+                pass  # Ignore errors during cleanup
 

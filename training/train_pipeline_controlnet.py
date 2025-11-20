@@ -654,23 +654,15 @@ def main():
     else:
         print("Skipping embedding step (--skip-embedding flag set)")
     
-    # Always clean up GPU before training (even if embedding was skipped)
-    # This ensures GPU is ready even if embedding was done in a previous run
-    if not args.skip_training and torch.cuda.is_available():
+    # Wait a bit before training to give GPU time to recover from previous job
+    # Don't try any GPU operations here - they might fail if GPU is in error state
+    if not args.skip_training:
         print(f"\n{'='*60}")
-        print("Preparing GPU for training phase...")
+        print("Preparing for training phase...")
         print(f"{'='*60}")
-        print("Clearing GPU memory and ensuring GPU is ready...")
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-        try:
-            torch.cuda.synchronize()
-        except:
-            pass  # Ignore sync errors
-        print("Waiting 5 seconds for GPU to stabilize...")
-        time.sleep(5)
-        print("✓ GPU ready for training")
+        print("Waiting 10 seconds for GPU to stabilize from previous job...")
+        time.sleep(10)
+        print("✓ Proceeding to training")
         print(f"{'='*60}\n")
     
     # Step 2: Update config with embedded manifest
