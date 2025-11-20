@@ -325,21 +325,16 @@ def embed_controlnet_dataset(
         if not Path(taxonomy_path).is_absolute():
             taxonomy_path = Path(__file__).parent.parent / taxonomy_path
         
-        # Filter rows that have graph_json_path
+        # Filter rows that have graph_text_path
         graph_rows = [
             row for row in rows
-            if row.get("graph_json_path")
+            if row.get("graph_text_path")
         ]
         
         graph_emb_mapping = {}
         
         if graph_rows:
-            from common.taxonomy import Taxonomy
-            from data_preparation.utils.text_utils import graph2text
             from sentence_transformers import SentenceTransformer
-            
-            print(f"Loading taxonomy from {taxonomy_path}")
-            taxonomy = Taxonomy(taxonomy_path)
             
             print("Loading SentenceTransformer model...")
             embedder = load_sentence_transformer_model("all-MiniLM-L6-v2")
@@ -348,17 +343,23 @@ def embed_controlnet_dataset(
             skipped = 0
             
             for row in tqdm(graph_rows, desc="Embedding graphs"):
-                graph_path = row.get("graph_json_path", "")
-                if not graph_path:
+                graph_text_path = row.get("graph_text_path", "")
+                if not graph_text_path:
                     skipped += 1
                     continue
                 
                 try:
-                    # Convert graph to text
-                    text = graph2text(graph_path, taxonomy)
+                    # Read text file directly (no need to convert from JSON)
+                    text_path = Path(graph_text_path)
+                    if not text_path.exists():
+                        print(f"Warning: Text file not found: {text_path}")
+                        skipped += 1
+                        continue
+                    
+                    text = text_path.read_text(encoding="utf-8")
                     
                     if not text:
-                        print(f"Warning: Empty text for {graph_path}")
+                        print(f"Warning: Empty text for {text_path}")
                         skipped += 1
                         continue
                     
@@ -366,17 +367,17 @@ def embed_controlnet_dataset(
                     embedding = embedder.encode(text, normalize_embeddings=True)
                     
                     # Save embedding
-                    graph_filename = Path(graph_path).name
-                    emb_filename = graph_filename.replace(".json", ".pt")
+                    graph_filename = Path(graph_text_path).name
+                    emb_filename = graph_filename.replace(".txt", ".pt")
                     emb_path = graph_embeddings_dir / emb_filename
                     
                     emb_path.parent.mkdir(parents=True, exist_ok=True)
                     torch.save(torch.from_numpy(embedding), emb_path)
-                    graph_emb_mapping[graph_path] = str(emb_path.resolve())
+                    graph_emb_mapping[graph_text_path] = str(emb_path.resolve())
                     processed += 1
                     
                 except Exception as e:
-                    print(f"Error processing {graph_path}: {e}")
+                    print(f"Error processing {graph_text_path}: {e}")
                     skipped += 1
             
             print(f"✓ Embedded {processed}/{len(graph_rows)} graphs (skipped {skipped})")
@@ -426,10 +427,10 @@ def embed_controlnet_dataset(
             else:
                 output_row["pov_embedding_path"] = ""
             
-            # Add graph embedding path
-            graph_json_path = row.get("graph_json_path", "")
-            if graph_json_path:
-                output_row["graph_embedding_path"] = graph_emb_mapping.get(graph_json_path, "")
+            # Add graph embedding path (use graph_text_path for embedding)
+            graph_text_path = row.get("graph_text_path", "")
+            if graph_text_path:
+                output_row["graph_embedding_path"] = graph_emb_mapping.get(graph_text_path, "")
             else:
                 output_row["graph_embedding_path"] = ""
             
