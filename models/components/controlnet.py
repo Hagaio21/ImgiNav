@@ -68,9 +68,23 @@ class ControlNet(BaseComponent):
         t_emb = self.base_unet.time_mlp(t.float())
         skips = []
         
+        # Debug: log control feature magnitudes (only in training, periodically)
+        debug_control_features = getattr(self, '_debug_control_features', False)
+        if debug_control_features and self.training and torch.rand(1).item() < 0.01:  # Log 1% of batches
+            for i, ctrl_feat in enumerate(ctrl_feats):
+                ctrl_mag = ctrl_feat.abs().mean().item()
+                print(f"[ControlNet Debug] Level {i}: ctrl_feat_magnitude={ctrl_mag:.6f}")
+        
         for i, down in enumerate(self.base_unet.downs):
             x_t, skip = down(x_t, t_emb)
             if i < len(ctrl_feats) and i < len(self.fusion_layers):
+                # Debug: log skip vs control feature magnitudes
+                if debug_control_features and self.training and torch.rand(1).item() < 0.01:
+                    skip_mag = skip.abs().mean().item()
+                    ctrl_mag = ctrl_feats[i].abs().mean().item()
+                    ratio = ctrl_mag / (skip_mag + 1e-8)
+                    print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag:.6f}, ctrl_mag={ctrl_mag:.6f}, ratio={ratio:.6f}")
+                
                 # Use fusion layer to combine skip and control features
                 skip = self.fusion_layers[i](skip, ctrl_feats[i])
             skips.append(skip)

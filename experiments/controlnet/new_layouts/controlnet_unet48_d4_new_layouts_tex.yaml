@@ -39,7 +39,10 @@ controlnet:
     base_channels: 48  # Matches UNet base_channels
     depth: 4            # Matches UNet depth
     pov_is_spatial: false
-  fuse_mode: add  # Fusion mode: add, concat, or cross_attn
+  fuse_mode: scaled_add  # Fusion mode: scaled_add learns per-channel scale (better than simple add)
+
+# Optional: enable debug logging for control feature magnitudes
+debug_control_features: false  # Set to true to log control feature magnitudes during training
 
 training:
   seed: 42
@@ -49,7 +52,7 @@ training:
   num_workers: 4
   shuffle: true
   epochs: 100
-  learning_rate: 0.0001
+  learning_rate: 0.00001  # Reduced LR for more stable ControlNet training
   optimizer: AdamW
   weight_decay: 0.01
   save_interval: 10

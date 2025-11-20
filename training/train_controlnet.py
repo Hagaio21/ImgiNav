@@ -525,6 +525,11 @@ def main():
     
     print("✓ ControlNet created and base_unet frozen")
     
+    # Enable debug logging for control features (optional, can be disabled)
+    controlnet._debug_control_features = config.get("debug_control_features", False)
+    if controlnet._debug_control_features:
+        print("  Debug logging enabled for control features")
+    
     # Count parameters
     trainable_params = sum(p.numel() for p in controlnet.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in controlnet.parameters())
