@@ -229,14 +229,22 @@ def embed_controlnet_dataset(
             layout_emb_df = pd.read_csv(layout_output_manifest)
             layout_emb_mapping = dict(zip(layout_emb_df["layout_path"], layout_emb_df["latent_path"]))
             
-            # Clean up autoencoder from GPU - move encoder back to CPU first
+            # Clean up autoencoder from GPU - ensure all CUDA operations complete first
             print("Cleaning up autoencoder from GPU...")
             if torch.cuda.is_available():
+                # Synchronize all CUDA operations to ensure they're complete
+                torch.cuda.synchronize()
                 # Move encoder back to CPU before deleting
                 autoencoder.encoder = autoencoder.encoder.cpu()
+                # Synchronize again after moving to CPU
+                torch.cuda.synchronize()
             del autoencoder
+            # Force garbage collection
+            import gc
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
         else:
             layout_emb_mapping = {}
         
@@ -646,29 +654,31 @@ def main():
     else:
         print("Skipping embedding step (--skip-embedding flag set)")
     
+    # Always clean up GPU before training (even if embedding was skipped)
+    # This ensures GPU is ready even if embedding was done in a previous run
+    if not args.skip_training and torch.cuda.is_available():
+        print(f"\n{'='*60}")
+        print("Preparing GPU for training phase...")
+        print(f"{'='*60}")
+        print("Clearing GPU memory and ensuring GPU is ready...")
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.synchronize()
+        except:
+            pass  # Ignore sync errors
+        print("Waiting 5 seconds for GPU to stabilize...")
+        time.sleep(5)
+        print("✓ GPU ready for training")
+        print(f"{'='*60}\n")
+    
     # Step 2: Update config with embedded manifest
     if output_manifest.exists():
         update_controlnet_config_manifest(args.config, str(output_manifest))
     else:
         print("WARNING: Embedded manifest not found. Training will use original manifest.")
         print("This may cause errors if embeddings are required.")
-    
-    # Clear GPU memory and wait a moment before training to ensure GPU is ready
-    if not args.skip_training:
-        if torch.cuda.is_available():
-            print(f"\n{'='*60}")
-            print("Preparing for training phase...")
-            print(f"{'='*60}")
-            print("Clearing GPU memory and waiting for GPU to be ready...")
-            torch.cuda.empty_cache()
-            try:
-                torch.cuda.synchronize()
-            except:
-                pass  # Ignore sync errors
-            print("Waiting 5 seconds for GPU to stabilize...")
-            time.sleep(5)
-            print("✓ GPU ready for training")
-            print(f"{'='*60}\n")
     
     # Step 3: Train ControlNet (unless skipped)
     if not args.skip_training:
