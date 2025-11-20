@@ -320,7 +320,7 @@ def embed_controlnet_dataset(
         print("Step 3/3: Embedding graphs")
         print(f"{'='*60}")
         
-        # Get taxonomy path
+        # Get taxonomy path (not needed for text files, but kept for compatibility)
         taxonomy_path = config.get("dataset", {}).get("taxonomy", "config/taxonomy.json")
         if not Path(taxonomy_path).is_absolute():
             taxonomy_path = Path(__file__).parent.parent / taxonomy_path

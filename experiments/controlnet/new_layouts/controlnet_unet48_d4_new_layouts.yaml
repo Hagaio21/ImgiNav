@@ -15,14 +15,21 @@ latent_clamp_min: -6.0
 latent_clamp_max: 6.0
 
 dataset:
-  manifest: /work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv
+  # Input manifest (will be replaced with embedded manifest by pipeline)
+  manifest: /work3/s233249/ImgiNav/datasets/controlnet/manifest_tex.csv
+  # Outputs will be updated by pipeline to use:
+  #   latent: latent_path
+  #   text_emb: graph_embedding_path
+  #   pov_emb: pov_embedding_path
   outputs:
-    latent: layout_embedding_path
+    latent: latent_path
     text_emb: graph_embedding_path
     pov_emb: pov_embedding_path
   filters:
     is_empty: [false]
   return_path: false
+  # Taxonomy path for graph text conversion (if needed)
+  taxonomy: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
 
 controlnet:
   adapter:

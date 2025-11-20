@@ -239,12 +239,22 @@ class ManifestDataset(BaseComponent, Dataset):
                 # This is used for scenes that don't have POV embeddings
                 return torch.zeros(512, dtype=torch.float32)
             
-            # Try to convert string to number if it's numeric (for numeric room_ids as strings)
-            if val.replace('.', '').replace('-', '').isdigit():
-                # Convert to int (long) for room_id values to maintain dtype consistency
-                return torch.tensor(int(float(val)), dtype=torch.long)
-            # Otherwise treat as file path
+            # Check if it's a file path first (before numeric conversion)
+            # This is important for ControlNet where "0" might be a path to zero embedding file
             p = Path(val)
+            
+            # If it looks like a file path (has extension or is absolute), treat as path
+            if p.suffix or p.is_absolute() or "/" in val or "\\" in val:
+                # Treat as file path - continue to file loading logic below
+                pass
+            else:
+                # Try to convert string to number if it's numeric (for numeric room_ids as strings)
+                # Only do this if it doesn't look like a file path
+                if val.replace('.', '').replace('-', '').isdigit():
+                    # Convert to int (long) for room_id values to maintain dtype consistency
+                    return torch.tensor(int(float(val)), dtype=torch.long)
+            
+            # Treat as file path
             # All paths in manifest should be absolute
             # If relative, resolve relative to manifest directory (for backward compatibility)
             if not p.is_absolute():
