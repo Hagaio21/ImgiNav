@@ -3,9 +3,9 @@ experiment:
   phase: controlnet_new_layouts
   save_path: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts
 
-# PLACEHOLDER: Update with actual checkpoint path after diffusion training completes
+# Diffusion checkpoint (pretrained UNet will be frozen)
 diffusion:
-  checkpoint: PLACEHOLDER_PATH_TO_DIFFUSION_CHECKPOINT  # Update: /work3/s233249/ImgiNav/experiments/diffusion/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet48_256_unconditional/checkpoints/new_layouts_diffusion_64x64_bottleneck_attn_unet48_256_unconditional_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/diffusion/new_layouts/new_layouts_diffusion_64x64_bottleneck_attn_unet48_256_unconditional/checkpoints/new_layouts_diffusion_64x64_bottleneck_attn_unet48_256_unconditional_checkpoint_best.pt
 
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt
