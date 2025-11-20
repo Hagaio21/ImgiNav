@@ -81,18 +81,8 @@ class SimpleAdapter(BaseControlAdapter):
                 p = pp(pov_emb).unsqueeze(-1).unsqueeze(-1)  # [B, ch, 1, 1]
             
             # Combine text and POV features
-            combined = t + p
-            
-            # Normalize control features to prevent them from overwhelming skip connections
-            # Use RMS normalization: scale to have std ~ 0.1 (learnable scale will adjust)
-            # Compute std over spatial dimensions (H, W) and batch, keep channel dimension
-            if combined.dim() == 4:  # [B, C, H, W] or [B, C, 1, 1]
-                std = combined.std(dim=(0, 2, 3), keepdim=True) + 1e-8
-            else:
-                std = combined.std(dim=0, keepdim=True) + 1e-8
-            combined = combined / std * 0.1
-            
-            feats.append(combined)
+            # No normalization - let scaled_add fusion learn the appropriate scale
+            feats.append(t + p)
         return feats
 
 
@@ -156,14 +146,7 @@ class MLPAdapter(BaseControlAdapter):
                 p = pp(pov_emb).unsqueeze(-1).unsqueeze(-1)
             
             combined = t + p
-            
-            # Normalize control features to prevent them from overwhelming skip connections
-            if combined.dim() == 4:
-                std = combined.std(dim=(0, 2, 3), keepdim=True) + 1e-8
-            else:
-                std = combined.std(dim=0, keepdim=True) + 1e-8
-            combined = combined / std * 0.1
-            
+            # No normalization - let scaled_add fusion learn the appropriate scale
             feats.append(self.combine_activation(combined))
         return feats
 
@@ -228,13 +211,6 @@ class DeepAdapter(BaseControlAdapter):
                 p = pp(pov_emb).unsqueeze(-1).unsqueeze(-1)
             
             combined = t + p
-            
-            # Normalize control features to prevent them from overwhelming skip connections
-            if combined.dim() == 4:
-                std = combined.std(dim=(0, 2, 3), keepdim=True) + 1e-8
-            else:
-                std = combined.std(dim=0, keepdim=True) + 1e-8
-            combined = combined / std * 0.1
-            
+            # No normalization - let scaled_add fusion learn the appropriate scale
             feats.append(combined)
         return feats
