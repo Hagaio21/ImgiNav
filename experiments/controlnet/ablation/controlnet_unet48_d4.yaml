@@ -14,9 +14,9 @@ autoencoder:
 dataset:
   manifest: /work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv
   outputs:
-    latent: layout_embedding
-    text_emb: graph_embedding
-    pov_emb: pov_embedding
+    latent: layout_embedding_path
+    text_emb: graph_embedding_path
+    pov_emb: pov_embedding_path
   filters:
     is_empty: [false]
   return_path: false
@@ -29,8 +29,7 @@ controlnet:
     base_channels: 48  # Matches UNet base_channels
     depth: 4            # Matches UNet depth
     pov_is_spatial: false
-  fusion:
-    type: add
+  fuse_mode: add
 
 training:
   seed: 42

@@ -21,9 +21,9 @@ autoencoder:
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv"  # Will be created by create_controlnet_manifest.py
   outputs:
-    latent: "layout_embedding"      # Column with layout latent paths (.pt files)
-    text_emb: "graph_embedding"      # Column with graph embedding paths (.pt files)
-    pov_emb: "pov_embedding"        # Column with POV embedding paths (.pt files)
+    latent: "layout_embedding_path"      # Column with layout latent paths (.pt files)
+    text_emb: "graph_embedding_path"      # Column with graph embedding paths (.pt files)
+    pov_emb: "pov_embedding_path"        # Column with POV embedding paths (.pt files)
   filters:
     is_empty: [false]
   return_path: false
@@ -38,8 +38,7 @@ controlnet:
     base_channels: 128  # Will match UNet base_channels from diffusion checkpoint
     depth: 4             # Will match UNet depth from diffusion checkpoint
     pov_is_spatial: false  # Set to true if POV embeddings are spatial [B, C, H, W]
-  fusion:
-    type: "add"  # Options: "add", "concat", "cross_attn"
+  fuse_mode: "add"  # Fusion mode: "add", "concat", or "cross_attn"
 
 # Training config
 # ControlNet training is typically faster than full diffusion training

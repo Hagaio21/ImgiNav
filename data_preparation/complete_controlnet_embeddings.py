@@ -64,9 +64,10 @@ def check_embedding_exists(embedding_path: str) -> bool:
         return False
 
 
-def identify_missing_embeddings(manifest_rows: List[Dict]) -> Dict[str, Set[str]]:
+def identify_missing_embeddings(manifest_rows: List[Dict], manifest_dir: Path) -> Dict[str, Set[str]]:
     """
-    Identify which embeddings are missing.
+    Identify which embeddings need to be created.
+    Simple approach: if source file exists, create embedding.
     Returns dict with keys: 'pov', 'graph', 'layout' and sets of paths that need embedding.
     """
     missing = {
@@ -75,27 +76,47 @@ def identify_missing_embeddings(manifest_rows: List[Dict]) -> Dict[str, Set[str]
         'layout': set()
     }
     
+    pov_count = 0
+    graph_count = 0
+    layout_count = 0
+    
     for row in manifest_rows:
-        # Check POV embeddings
-        pov_path = row.get("pov_path", "")
-        pov_emb_path = row.get("pov_embedding_path", "")
-        if pov_path and pov_path != "0" and Path(pov_path).exists():
-            if not check_embedding_exists(pov_emb_path):
-                missing['pov'].add(pov_path)
+        # POV: if pov_path is not "0" and file exists, create embedding
+        pov_path = row.get("pov_path", "").strip()
+        if pov_path and pov_path != "0":
+            pov_path_obj = Path(pov_path)
+            # Handle relative paths
+            if not pov_path_obj.is_absolute():
+                pov_path_obj = manifest_dir / pov_path_obj
+            if pov_path_obj.exists():
+                missing['pov'].add(str(pov_path_obj.resolve()))
+                pov_count += 1
         
-        # Check graph embeddings
-        graph_json_path = row.get("graph_json_path", "")
-        graph_emb_path = row.get("graph_embedding_path", "")
-        if graph_json_path and Path(graph_json_path).exists():
-            if not check_embedding_exists(graph_emb_path):
-                missing['graph'].add(graph_json_path)
+        # Graph: if graph_json_path exists, create embedding
+        graph_json_path = row.get("graph_json_path", "").strip()
+        if graph_json_path:
+            graph_path_obj = Path(graph_json_path)
+            # Handle relative paths
+            if not graph_path_obj.is_absolute():
+                graph_path_obj = manifest_dir / graph_path_obj
+            if graph_path_obj.exists():
+                missing['graph'].add(str(graph_path_obj.resolve()))
+                graph_count += 1
         
-        # Check layout embeddings
-        layout_path = row.get("layout_path", "")
-        layout_emb_path = row.get("layout_embedding_path", "")
-        if layout_path and Path(layout_path).exists():
-            if not check_embedding_exists(layout_emb_path):
-                missing['layout'].add(layout_path)
+        # Layout: if layout_path exists, create embedding
+        layout_path = row.get("layout_path", "").strip()
+        if layout_path:
+            layout_path_obj = Path(layout_path)
+            # Handle relative paths
+            if not layout_path_obj.is_absolute():
+                layout_path_obj = manifest_dir / layout_path_obj
+            if layout_path_obj.exists():
+                missing['layout'].add(str(layout_path_obj.resolve()))
+                layout_count += 1
+    
+    print(f"  Found {pov_count} rows with POV paths (non-zero)")
+    print(f"  Found {graph_count} rows with graph paths")
+    print(f"  Found {layout_count} rows with layout paths")
     
     return missing
 
@@ -310,7 +331,8 @@ def update_manifest_with_embeddings(
     manifest_rows: List[Dict],
     pov_mapping: Dict[str, str],
     graph_mapping: Dict[str, str],
-    layout_mapping: Dict[str, str]
+    layout_mapping: Dict[str, str],
+    manifest_dir: Path
 ) -> List[Dict]:
     """Update manifest rows with embedding paths."""
     updated_rows = []
@@ -318,33 +340,51 @@ def update_manifest_with_embeddings(
     for row in manifest_rows:
         updated_row = row.copy()
         
-        # Update POV embedding
-        pov_path = row.get("pov_path", "")
+        # Update POV embedding - resolve path to match mapping keys
+        pov_path = row.get("pov_path", "").strip()
         if pov_path and pov_path != "0":
-            if pov_path in pov_mapping:
-                updated_row["pov_embedding_path"] = pov_mapping[pov_path]
-            elif not check_embedding_exists(row.get("pov_embedding_path", "")):
-                updated_row["pov_embedding_path"] = ""
+            pov_path_resolved = Path(pov_path)
+            if not pov_path_resolved.is_absolute():
+                pov_path_resolved = manifest_dir / pov_path_resolved
+            pov_path_key = str(pov_path_resolved.resolve())
+            
+            if pov_path_key in pov_mapping:
+                updated_row["pov_embedding_path"] = pov_mapping[pov_path_key]
+            else:
+                # Keep existing if present, otherwise empty
+                updated_row["pov_embedding_path"] = row.get("pov_embedding_path", "")
         else:
             updated_row["pov_embedding_path"] = ""
         
-        # Update graph embedding
-        graph_json_path = row.get("graph_json_path", "")
+        # Update graph embedding - resolve path to match mapping keys
+        graph_json_path = row.get("graph_json_path", "").strip()
         if graph_json_path:
-            if graph_json_path in graph_mapping:
-                updated_row["graph_embedding_path"] = graph_mapping[graph_json_path]
-            elif not check_embedding_exists(row.get("graph_embedding_path", "")):
-                updated_row["graph_embedding_path"] = ""
+            graph_path_resolved = Path(graph_json_path)
+            if not graph_path_resolved.is_absolute():
+                graph_path_resolved = manifest_dir / graph_path_resolved
+            graph_path_key = str(graph_path_resolved.resolve())
+            
+            if graph_path_key in graph_mapping:
+                updated_row["graph_embedding_path"] = graph_mapping[graph_path_key]
+            else:
+                # Keep existing if present, otherwise empty
+                updated_row["graph_embedding_path"] = row.get("graph_embedding_path", "")
         else:
             updated_row["graph_embedding_path"] = ""
         
-        # Update layout embedding
-        layout_path = row.get("layout_path", "")
+        # Update layout embedding - resolve path to match mapping keys
+        layout_path = row.get("layout_path", "").strip()
         if layout_path:
-            if layout_path in layout_mapping:
-                updated_row["layout_embedding_path"] = layout_mapping[layout_path]
-            elif not check_embedding_exists(row.get("layout_embedding_path", "")):
-                updated_row["layout_embedding_path"] = ""
+            layout_path_resolved = Path(layout_path)
+            if not layout_path_resolved.is_absolute():
+                layout_path_resolved = manifest_dir / layout_path_resolved
+            layout_path_key = str(layout_path_resolved.resolve())
+            
+            if layout_path_key in layout_mapping:
+                updated_row["layout_embedding_path"] = layout_mapping[layout_path_key]
+            else:
+                # Keep existing if present, otherwise empty
+                updated_row["layout_embedding_path"] = row.get("layout_embedding_path", "")
         else:
             updated_row["layout_embedding_path"] = ""
         
@@ -429,21 +469,23 @@ def main():
     
     # Read manifest
     print(f"Reading manifest: {args.manifest}")
-    manifest_rows = read_manifest(args.manifest)
+    manifest_path = Path(args.manifest)
+    manifest_dir = manifest_path.parent
+    manifest_rows = read_manifest(manifest_path)
     print(f"  Found {len(manifest_rows)} data points")
     
-    # Identify missing embeddings
-    print("\nIdentifying missing embeddings...")
-    missing = identify_missing_embeddings(manifest_rows)
+    # Identify items that need embeddings
+    print("\nIdentifying items that need embeddings...")
+    missing = identify_missing_embeddings(manifest_rows, manifest_dir)
     
     total_missing = sum(len(paths) for paths in missing.values())
-    print(f"  Missing POV embeddings: {len(missing['pov'])}")
-    print(f"  Missing graph embeddings: {len(missing['graph'])}")
-    print(f"  Missing layout embeddings: {len(missing['layout'])}")
-    print(f"  Total missing: {total_missing}")
+    print(f"  POVs to embed: {len(missing['pov'])}")
+    print(f"  Graphs to embed: {len(missing['graph'])}")
+    print(f"  Layouts to embed: {len(missing['layout'])}")
+    print(f"  Total items to process: {total_missing}")
     
     if total_missing == 0:
-        print("\n✓ All embeddings are complete!")
+        print("\n✓ No items found that need embeddings!")
         # Still write output manifest (may have path updates)
         output_dir = args.output.parent
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -497,7 +539,8 @@ def main():
         manifest_rows,
         pov_mapping,
         graph_mapping,
-        layout_mapping
+        layout_mapping,
+        manifest_dir
     )
     
     # Write output manifest

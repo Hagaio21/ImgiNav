@@ -16,23 +16,23 @@ scheduler:
 # Dataset: ControlNet requires layout latents + POV + graph embeddings
 dataset:
   manifest: "/work3/s233249/ImgiNav/datasets/controlnet_training_manifest.csv"
-  # Manifest should have columns:
-  # - latent_path: Path to layout latent embeddings (.npy or .pt)
-  # - pov_embedding_path: Path to POV embeddings (.pt or .npy)
-  # - graph_embedding_path: Path to graph embeddings (.pt or .npy)
+  outputs:
+    latent: "layout_embedding_path"      # Column with layout latent paths (.pt files)
+    text_emb: "graph_embedding_path"      # Column with graph embedding paths (.pt files)
+    pov_emb: "pov_embedding_path"        # Column with POV embedding paths (.pt files)
+  filters:
+    is_empty: [false]
+  return_path: false
 
 # ControlNet adapter config
 # The adapter converts POV and graph embeddings to control features
-adapter:
-  type: "SimpleAdapter"  # Options: "SimpleAdapter", "MLPAdapter", "DeepAdapter"
-  text_dim: 384  # Graph embedding dimension (all-MiniLM-L6-v2 outputs 384)
-  pov_dim: 512   # POV embedding dimension (ResNet18 outputs 512)
-  # Note: base_channels and depth are estimated from SD UNet (typically 320, 4)
-
-# ControlNet fusion config
 controlnet:
-  fusion:
-    type: "add"  # Options: "add", "concat", "cross_attn"
+  adapter:
+    type: "SimpleAdapter"  # Options: "SimpleAdapter", "MLPAdapter", "DeepAdapter"
+    text_dim: 384  # Graph embedding dimension (all-MiniLM-L6-v2 outputs 384)
+    pov_dim: 512   # POV embedding dimension (ResNet18 outputs 512)
+    # Note: base_channels and depth are estimated from SD UNet (typically 320, 4)
+  fuse_mode: "add"  # Fusion mode: "add", "concat", or "cross_attn"
 
 # Training config
 training:
