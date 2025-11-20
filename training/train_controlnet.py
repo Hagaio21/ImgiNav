@@ -474,10 +474,14 @@ def main():
         raise ValueError("ControlNet training requires a pretrained diffusion model checkpoint. Set 'diffusion.checkpoint' in config.")
     
     print(f"\nLoading pretrained diffusion model from: {diffusion_checkpoint}")
+    # Load to CPU first to avoid CUDA errors if GPU is busy
+    print("Loading checkpoint to CPU first...")
     diffusion_model = DiffusionModel.load_checkpoint(
         diffusion_checkpoint,
-        map_location=device_obj
+        map_location="cpu"
     )
+    # Then move to target device
+    print(f"Moving model to {device}...")
     diffusion_model = diffusion_model.to(device_obj)
     diffusion_model.eval()
     
