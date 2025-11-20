@@ -24,6 +24,9 @@ import subprocess
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
+from PIL import Image
+import torchvision.transforms as T
+from itertools import islice
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -247,9 +250,6 @@ def embed_controlnet_dataset(
                 T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
             ])
             
-            from PIL import Image
-            import torchvision.transforms as T
-            
             def process_pov_item(row):
                 pov_path = row.get("pov_path", "")
                 if not pov_path or not Path(pov_path).exists():
@@ -266,7 +266,6 @@ def embed_controlnet_dataset(
                     return model(imgs_tensor)
             
             # Process in batches
-            from itertools import islice
             def batched(iterable, n):
                 it = iter(iterable)
                 while True:
