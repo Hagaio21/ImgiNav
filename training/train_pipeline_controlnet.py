@@ -228,6 +228,15 @@ def embed_controlnet_dataset(
             # Read layout embeddings mapping
             layout_emb_df = pd.read_csv(layout_output_manifest)
             layout_emb_mapping = dict(zip(layout_emb_df["layout_path"], layout_emb_df["latent_path"]))
+            
+            # Clean up autoencoder from GPU - move encoder back to CPU first
+            print("Cleaning up autoencoder from GPU...")
+            if torch.cuda.is_available():
+                # Move encoder back to CPU before deleting
+                autoencoder.encoder = autoencoder.encoder.cpu()
+            del autoencoder
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         else:
             layout_emb_mapping = {}
         
@@ -311,6 +320,12 @@ def embed_controlnet_dataset(
                     processed += 1
             
             print(f"✓ Embedded {processed}/{len(pov_rows)} POV images")
+            
+            # Clean up ResNet model from GPU
+            print("Cleaning up ResNet model from GPU...")
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Step 3: Embed graphs
         print(f"\n{'='*60}")
@@ -378,6 +393,12 @@ def embed_controlnet_dataset(
                     skipped += 1
             
             print(f"✓ Embedded {processed}/{len(graph_rows)} graphs (skipped {skipped})")
+            
+            # Clean up sentence transformer (if on GPU)
+            print("Cleaning up sentence transformer...")
+            del embedder
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Step 4: Create zero embeddings for scenes (pov_path == "0")
         print(f"\n{'='*60}")
@@ -451,12 +472,21 @@ def embed_controlnet_dataset(
         print("Dataset embedding completed successfully!")
         print(f"{'='*60}\n")
         
-        # Clear GPU memory after embedding to free up resources for training
+        # Final GPU cleanup - ensure all models and tensors are freed
         if torch.cuda.is_available():
-            print("Clearing GPU memory after embedding...")
+            print("Performing final GPU cleanup...")
+            # Force garbage collection
+            import gc
+            gc.collect()
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            print("✓ GPU memory cleared")
+            # Wait longer for cleanup to complete - GPU may need time to release resources
+            print("Waiting 5 seconds for GPU to fully release resources...")
+            time.sleep(5)
+            try:
+                torch.cuda.synchronize()
+            except:
+                pass  # Ignore sync errors if GPU is already clean
+            print("✓ GPU memory fully cleared")
         
         return True
         
@@ -631,9 +661,12 @@ def main():
             print(f"{'='*60}")
             print("Clearing GPU memory and waiting for GPU to be ready...")
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            print("Waiting 3 seconds for GPU to stabilize...")
-            time.sleep(3)
+            try:
+                torch.cuda.synchronize()
+            except:
+                pass  # Ignore sync errors
+            print("Waiting 5 seconds for GPU to stabilize...")
+            time.sleep(5)
             print("✓ GPU ready for training")
             print(f"{'='*60}\n")
     

@@ -487,15 +487,20 @@ def main():
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available. Cannot use GPU device.")
         
-        # Try to clear GPU cache and synchronize
+        # Try to clear GPU cache and synchronize (with error handling)
         try:
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            print("GPU cache cleared and synchronized")
+            try:
+                torch.cuda.synchronize()
+                print("GPU cache cleared and synchronized")
+            except RuntimeError as sync_err:
+                # GPU might be in error state, just clear cache
+                print(f"Warning: Could not synchronize GPU (may be busy): {sync_err}")
+                print("Continuing with cache clear only...")
         except Exception as e:
             print(f"Warning: Could not clear GPU cache: {e}")
         
-        # Check if we can allocate a small tensor on GPU
+        # Check if we can allocate a small tensor on GPU (with error handling)
         try:
             test_tensor = torch.zeros(1).to(device_obj)
             del test_tensor
@@ -503,39 +508,53 @@ def main():
             print("GPU availability confirmed")
         except Exception as e:
             print(f"Warning: GPU may be busy: {e}")
-            print("Attempting to move model anyway...")
+            print("Will attempt to move model with retries...")
     
     # Then move to target device with error handling and retry
     print(f"Moving model to {device}...")
-    max_retries = 3
-    retry_delay = 2  # seconds
+    max_retries = 5
+    retry_delay = 5  # seconds - longer delay to give GPU time to recover
     
     for attempt in range(max_retries):
         try:
             diffusion_model = diffusion_model.to(device_obj)
+            print(f"✓ Model successfully moved to {device}")
             break  # Success, exit retry loop
-        except RuntimeError as e:
-            if "CUDA" in str(e) or "cuda" in str(e).lower():
+        except (RuntimeError, torch.cuda.Error) as e:
+            error_str = str(e)
+            if "CUDA" in error_str or "cuda" in error_str.lower() or isinstance(e, torch.cuda.Error):
                 if attempt < max_retries - 1:
-                    print(f"Attempt {attempt + 1}/{max_retries} failed: {e}")
+                    print(f"Attempt {attempt + 1}/{max_retries} failed: {error_str}")
                     print(f"Waiting {retry_delay} seconds before retry...")
                     time.sleep(retry_delay)
-                    # Try to clear cache again
+                    
+                    # Try to clear cache again (with error handling)
                     if device.startswith("cuda"):
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
+                        try:
+                            torch.cuda.empty_cache()
+                            # Don't synchronize if GPU is in error state
+                            try:
+                                torch.cuda.synchronize()
+                            except:
+                                pass  # Ignore sync errors
+                        except:
+                            pass  # Ignore cache clear errors
+                    
+                    # Increase delay for next retry
+                    retry_delay = min(retry_delay + 2, 10)
                 else:
                     # Final attempt failed
                     print(f"\n{'='*60}")
                     print(f"ERROR: Failed to move model to GPU after {max_retries} attempts")
                     print(f"{'='*60}")
-                    print(f"Error: {e}")
+                    print(f"Error: {error_str}")
                     print("\nPossible solutions:")
                     print("1. Wait a few moments and try again (GPU may be busy)")
                     print("2. Check if other processes are using the GPU: nvidia-smi")
                     print("3. Try using CPU instead: --device cpu")
                     print("4. Set CUDA_LAUNCH_BLOCKING=1 for better error messages")
                     print("5. Kill other processes using the GPU")
+                    print("6. Restart the training script (embedding may have left GPU in bad state)")
                     print(f"{'='*60}\n")
                     raise
             else:
