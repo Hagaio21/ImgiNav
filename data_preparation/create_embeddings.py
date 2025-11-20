@@ -62,7 +62,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from models.autoencoder import Autoencoder
 from models.datasets.datasets import ManifestDataset
 from training.utils import load_config, build_dataset
-from utils.text_utils import graph2text
+from data_preparation.utils.text_utils import graph2text
 from common.taxonomy import Taxonomy
 from common.file_io import read_manifest, create_manifest
 

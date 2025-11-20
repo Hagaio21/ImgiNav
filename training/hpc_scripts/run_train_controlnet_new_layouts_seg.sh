@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J train_controlnet_new_layouts
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_controlnet_new_layouts.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_controlnet_new_layouts.%J.err
+#BSUB -J train_controlnet_new_layouts_seg
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_controlnet_new_layouts_seg.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_controlnet_new_layouts_seg.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
@@ -32,7 +32,7 @@ echo "[INFO] Setting up paths..."
 PROJECT_ROOT="/work3/s233249/ImgiNav"
 SCRIPT_DIR="${PROJECT_ROOT}/ImgiNav/training"
 SCRIPT_PATH="${SCRIPT_DIR}/train_pipeline_controlnet.py"
-CONFIG_PATH="${PROJECT_ROOT}/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_tex.yaml"
+CONFIG_PATH="${PROJECT_ROOT}/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg.yaml"
 # Store for use in job chaining
 export PROJECT_ROOT
 
@@ -58,7 +58,7 @@ module load cudnn/v8.6.0.163-prod-cuda-11.X
 # Job Start
 # ----------------------------------------------------------------------
 echo "=============================================================="
-echo " ControlNet Training Pipeline (TEX)"
+echo " ControlNet Training Pipeline (SEG)"
 echo "=============================================================="
 echo " Config: ${CONFIG_PATH}"
 echo " Script: ${SCRIPT_PATH}"

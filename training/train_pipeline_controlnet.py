@@ -39,6 +39,7 @@ from data_preparation.create_embeddings import (
     load_resnet_model,
     load_sentence_transformer_model,
 )
+from data_preparation.utils.text_utils import graph2text
 from models.autoencoder import Autoencoder
 from common.file_io import read_manifest, create_manifest
 from common.taxonomy import Taxonomy
