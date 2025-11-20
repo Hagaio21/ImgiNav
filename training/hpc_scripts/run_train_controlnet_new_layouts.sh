@@ -31,7 +31,7 @@ echo "[INFO] Setting up paths..."
 # --- Base Project Paths ---
 PROJECT_ROOT="/work3/s233249/ImgiNav"
 SCRIPT_DIR="${PROJECT_ROOT}/ImgiNav/training"
-SCRIPT_PATH="${SCRIPT_DIR}/train_controlnet.py"
+SCRIPT_PATH="${SCRIPT_DIR}/train_pipeline_controlnet.py"
 CONFIG_PATH="${PROJECT_ROOT}/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts.yaml"
 # Store for use in job chaining
 export PROJECT_ROOT
@@ -58,10 +58,11 @@ module load cudnn/v8.6.0.163-prod-cuda-11.X
 # Job Start
 # ----------------------------------------------------------------------
 echo "=============================================================="
-echo " Training ControlNet Model"
+echo " ControlNet Training Pipeline"
 echo "=============================================================="
 echo " Config: ${CONFIG_PATH}"
 echo " Script: ${SCRIPT_PATH}"
+echo " (This will embed dataset before training)"
 echo "=============================================================="
 
 # ----------------------------------------------------------------------
@@ -85,11 +86,13 @@ echo ""
 # ----------------------------------------------------------------------
 # Run script
 # ----------------------------------------------------------------------
-echo "[INFO] Starting ControlNet training..."
+echo "[INFO] Starting ControlNet training pipeline..."
 cd "${PROJECT_ROOT}/ImgiNav"
 # Use python -u for unbuffered output
 python -u "${SCRIPT_PATH}" \
-    --config "${CONFIG_PATH}"
+    --config "${CONFIG_PATH}" \
+    --batch-size 32 \
+    --num-workers 8
 
 # ----------------------------------------------------------------------
 EXIT_CODE=$?
