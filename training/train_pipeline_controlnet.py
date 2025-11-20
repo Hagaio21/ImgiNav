@@ -148,30 +148,23 @@ def embed_controlnet_dataset(
         print()
         
         # Get autoencoder checkpoint from config
-        # ControlNet config should reference a diffusion model, which has an autoencoder
-        diffusion_config = config.get("diffusion", {})
-        diffusion_checkpoint = diffusion_config.get("checkpoint")
+        # Load autoencoder separately (diffusion model doesn't store full autoencoder)
+        autoencoder_config = config.get("autoencoder", {})
+        autoencoder_checkpoint = autoencoder_config.get("checkpoint")
         
-        if not diffusion_checkpoint:
-            raise ValueError("ControlNet config must specify 'diffusion.checkpoint' for autoencoder")
+        if not autoencoder_checkpoint:
+            raise ValueError("ControlNet config must specify 'autoencoder.checkpoint' for layout embeddings")
         
-        # Load diffusion model to get autoencoder
-        print(f"Loading diffusion model from: {diffusion_checkpoint}")
-        from models.diffusion import DiffusionModel
-        diffusion_model = DiffusionModel.load_checkpoint(
-            diffusion_checkpoint,
+        # Load autoencoder directly
+        print(f"Loading autoencoder from: {autoencoder_checkpoint}")
+        autoencoder = Autoencoder.load_checkpoint(
+            autoencoder_checkpoint,
             map_location="cpu"  # Load to CPU first, will move to GPU when needed
         )
-        
-        # Get autoencoder from diffusion model
-        if not hasattr(diffusion_model, 'autoencoder'):
-            raise ValueError("Diffusion model must have an autoencoder attribute")
-        
-        autoencoder = diffusion_model.autoencoder
         autoencoder.eval()
         
         # Get autoencoder config path (try to find it from checkpoint path)
-        checkpoint_path = Path(diffusion_checkpoint)
+        checkpoint_path = Path(autoencoder_checkpoint)
         possible_configs = [
             checkpoint_path.parent / f"{checkpoint_path.stem.replace('_checkpoint_best', '').replace('_checkpoint_latest', '')}.yaml",
             checkpoint_path.parent.parent / "experiment_config.yaml",
