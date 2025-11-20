@@ -14,7 +14,7 @@ This script:
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
 from tqdm import tqdm
@@ -25,33 +25,23 @@ sys.path.append(str(Path(__file__).parent.parent))
 from common.file_io import read_manifest, create_manifest
 
 
-def find_copied_file(original_path: Path, dataset_dir: Path, 
-                     subdir: str, filename_pattern: str = None) -> Path:
+def find_copied_file(dataset_dir: Path, subdir: str, filename: str) -> Optional[Path]:
     """
     Find a copied file in the controlnet dataset structure.
     
     Args:
-        original_path: Original file path (for reference)
         dataset_dir: Base dataset directory
         subdir: Subdirectory in controlnet (e.g., "graphs/jsons", "layouts", "povs/tex")
-        filename_pattern: Expected filename pattern (if None, uses original filename)
+        filename: Expected filename
     
     Returns:
         Path to copied file, or None if not found
     """
     controlnet_dir = dataset_dir / "controlnet" / subdir
+    file_path = controlnet_dir / filename
     
-    if filename_pattern:
-        # Look for file matching pattern
-        for file_path in controlnet_dir.glob(filename_pattern):
-            if file_path.is_file():
-                return file_path
-    else:
-        # Use original filename
-        filename = original_path.name
-        file_path = controlnet_dir / filename
-        if file_path.exists():
-            return file_path
+    if file_path.exists() and file_path.is_file():
+        return file_path
     
     return None
 
@@ -98,8 +88,8 @@ def build_file_mappings(dataset_dir: Path, layouts_manifest: Path,
         else:
             filename = f"{scene_id}_{room_id}_room_layout.png"
         
-        copied_path = find_copied_file(Path(layout_path_str), dataset_dir, "layouts", filename)
-        if copied_path and copied_path.exists():
+        copied_path = find_copied_file(dataset_dir, "layouts", filename)
+        if copied_path:
             key = (scene_id, room_id, layout_type)
             layout_mapping[key] = str(copied_path)
     
@@ -131,10 +121,10 @@ def build_file_mappings(dataset_dir: Path, layouts_manifest: Path,
             json_filename = f"{scene_id}_{room_id}_room_graph.json"
             text_filename = f"{scene_id}_{room_id}_room_graph.txt"
         
-        json_path = find_copied_file(Path(graph_path_str), dataset_dir, "graphs/jsons", json_filename)
-        text_path = find_copied_file(Path(graph_path_str), dataset_dir, "graphs/text", text_filename)
+        json_path = find_copied_file(dataset_dir, "graphs/jsons", json_filename)
+        text_path = find_copied_file(dataset_dir, "graphs/text", text_filename)
         
-        if json_path and json_path.exists() and text_path and text_path.exists():
+        if json_path and text_path:
             key = (scene_id, room_id, graph_type)
             graph_mapping[key] = (str(json_path), str(text_path))
     
@@ -154,16 +144,16 @@ def build_file_mappings(dataset_dir: Path, layouts_manifest: Path,
         if str(is_empty) in ("1", "true", "True"):
             continue
         
-        # Find copied POV file
+        # Find copied POV file (uses original filename)
         pov_filename = Path(pov_path_str).name
         if pov_type == "tex":
-            copied_path = find_copied_file(Path(pov_path_str), dataset_dir, "povs/tex", pov_filename)
+            copied_path = find_copied_file(dataset_dir, "povs/tex", pov_filename)
         elif pov_type == "seg":
-            copied_path = find_copied_file(Path(pov_path_str), dataset_dir, "povs/seg", pov_filename)
+            copied_path = find_copied_file(dataset_dir, "povs/seg", pov_filename)
         else:
             continue
         
-        if copied_path and copied_path.exists():
+        if copied_path:
             key = (scene_id, room_id, pov_type)
             pov_mapping[key] = str(copied_path)
     
