@@ -131,7 +131,11 @@ def embed_controlnet_dataset(
         exp_config = config.get("experiment", {})
         exp_name = exp_config.get("name", "controlnet")
         save_path = Path(exp_config.get("save_path", "experiments/controlnet"))
-        experiment_dir = save_path / exp_name
+        # If save_path already ends with exp_name, use it directly; otherwise append exp_name
+        if save_path.name == exp_name:
+            experiment_dir = save_path
+        else:
+            experiment_dir = save_path / exp_name
         experiment_dir.mkdir(parents=True, exist_ok=True)
         
         # Create embedding directories
@@ -548,7 +552,11 @@ def main():
     exp_config = config.get("experiment", {})
     exp_name = exp_config.get("name", "controlnet")
     save_path = Path(exp_config.get("save_path", "experiments/controlnet"))
-    experiment_dir = save_path / exp_name
+    # If save_path already ends with exp_name, use it directly; otherwise append exp_name
+    if save_path.name == exp_name:
+        experiment_dir = save_path
+    else:
+        experiment_dir = save_path / exp_name
     experiment_dir.mkdir(parents=True, exist_ok=True)
     
     # Get input manifest from config

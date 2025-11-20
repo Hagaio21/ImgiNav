@@ -10,7 +10,7 @@ autoencoder:
 latent_clamp_min: -6.0
 latent_clamp_max: 6.0
 dataset:
-  manifest: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet128_d4_new_layouts_seg/controlnet_unet128_d4_new_layouts_seg/manifest_with_embeddings.csv
+  manifest: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet128_d4_new_layouts_seg/manifest_with_embeddings.csv
   outputs:
     latent: latent_path
     text_emb: graph_embedding_path
