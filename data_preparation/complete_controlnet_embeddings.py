@@ -67,7 +67,8 @@ def check_embedding_exists(embedding_path: str) -> bool:
 def identify_missing_embeddings(manifest_rows: List[Dict], manifest_dir: Path) -> Dict[str, Set[str]]:
     """
     Identify which embeddings need to be created.
-    Simple approach: if source file exists, create embedding.
+    - POVs: No duplicates expected, but we still deduplicate to avoid creating same embedding twice
+    - Graphs/Layouts: Can have duplicates (multiple POVs share same graph/layout), so deduplicate
     Returns dict with keys: 'pov', 'graph', 'layout' and sets of paths that need embedding.
     """
     missing = {
@@ -79,44 +80,73 @@ def identify_missing_embeddings(manifest_rows: List[Dict], manifest_dir: Path) -
     pov_count = 0
     graph_count = 0
     layout_count = 0
+    pov_not_found = 0
+    graph_not_found = 0
+    layout_not_found = 0
     
     for row in manifest_rows:
         # POV: if pov_path is not "0" and file exists, create embedding
+        # Note: No duplicates expected, but we deduplicate anyway to avoid creating same file twice
         pov_path = row.get("pov_path", "").strip()
         if pov_path and pov_path != "0":
+            pov_count += 1
             pov_path_obj = Path(pov_path)
             # Handle relative paths
             if not pov_path_obj.is_absolute():
                 pov_path_obj = manifest_dir / pov_path_obj
+            pov_path_resolved = str(pov_path_obj.resolve())
             if pov_path_obj.exists():
-                missing['pov'].add(str(pov_path_obj.resolve()))
-                pov_count += 1
+                missing['pov'].add(pov_path_resolved)
+            else:
+                pov_not_found += 1
+                if pov_not_found <= 5:  # Only print first few warnings
+                    print(f"Warning: POV file not found: {pov_path_obj}")
         
-        # Graph: if graph_json_path exists, create embedding
+        # Graph: if graph_json_path exists, create embedding (deduplicate - multiple POVs can share same graph)
         graph_json_path = row.get("graph_json_path", "").strip()
         if graph_json_path:
+            graph_count += 1
             graph_path_obj = Path(graph_json_path)
             # Handle relative paths
             if not graph_path_obj.is_absolute():
                 graph_path_obj = manifest_dir / graph_path_obj
+            graph_path_resolved = str(graph_path_obj.resolve())
             if graph_path_obj.exists():
-                missing['graph'].add(str(graph_path_obj.resolve()))
-                graph_count += 1
+                missing['graph'].add(graph_path_resolved)
+            else:
+                graph_not_found += 1
+                if graph_not_found <= 5:  # Only print first few warnings
+                    print(f"Warning: Graph file not found: {graph_path_obj}")
         
-        # Layout: if layout_path exists, create embedding
+        # Layout: if layout_path exists, create embedding (deduplicate - multiple POVs can share same layout)
         layout_path = row.get("layout_path", "").strip()
         if layout_path:
+            layout_count += 1
             layout_path_obj = Path(layout_path)
             # Handle relative paths
             if not layout_path_obj.is_absolute():
                 layout_path_obj = manifest_dir / layout_path_obj
+            layout_path_resolved = str(layout_path_obj.resolve())
             if layout_path_obj.exists():
-                missing['layout'].add(str(layout_path_obj.resolve()))
-                layout_count += 1
+                missing['layout'].add(layout_path_resolved)
+            else:
+                layout_not_found += 1
+                if layout_not_found <= 5:  # Only print first few warnings
+                    print(f"Warning: Layout file not found: {layout_path_obj}")
     
     print(f"  Found {pov_count} rows with POV paths (non-zero)")
     print(f"  Found {graph_count} rows with graph paths")
     print(f"  Found {layout_count} rows with layout paths")
+    print(f"\n  Unique POV files to embed: {len(missing['pov'])} (from {pov_count} rows, {pov_not_found} files not found)")
+    print(f"  Unique graph files to embed: {len(missing['graph'])} (from {graph_count} rows, {graph_not_found} files not found)")
+    print(f"  Unique layout files to embed: {len(missing['layout'])} (from {layout_count} rows, {layout_not_found} files not found)")
+    
+    if pov_not_found > 0:
+        print(f"\n  ⚠ WARNING: {pov_not_found} POV files were not found! Check paths.")
+    if graph_not_found > 0:
+        print(f"  ⚠ WARNING: {graph_not_found} graph files were not found! Check paths.")
+    if layout_not_found > 0:
+        print(f"  ⚠ WARNING: {layout_not_found} layout files were not found! Check paths.")
     
     return missing
 
@@ -334,7 +364,11 @@ def update_manifest_with_embeddings(
     layout_mapping: Dict[str, str],
     manifest_dir: Path
 ) -> List[Dict]:
-    """Update manifest rows with embedding paths."""
+    """
+    Update manifest rows with embedding paths.
+    - POV: If pov_path is "0", set embedding path to empty string
+    - Graph/Layout: Always update if mapping exists
+    """
     updated_rows = []
     
     for row in manifest_rows:
@@ -351,9 +385,10 @@ def update_manifest_with_embeddings(
             if pov_path_key in pov_mapping:
                 updated_row["pov_embedding_path"] = pov_mapping[pov_path_key]
             else:
-                # Keep existing if present, otherwise empty
-                updated_row["pov_embedding_path"] = row.get("pov_embedding_path", "")
+                # File not found or embedding not created - leave empty
+                updated_row["pov_embedding_path"] = ""
         else:
+            # POV is "0" (scene) - set embedding path to empty string
             updated_row["pov_embedding_path"] = ""
         
         # Update graph embedding - resolve path to match mapping keys
@@ -367,8 +402,8 @@ def update_manifest_with_embeddings(
             if graph_path_key in graph_mapping:
                 updated_row["graph_embedding_path"] = graph_mapping[graph_path_key]
             else:
-                # Keep existing if present, otherwise empty
-                updated_row["graph_embedding_path"] = row.get("graph_embedding_path", "")
+                # File not found or embedding not created - leave empty
+                updated_row["graph_embedding_path"] = ""
         else:
             updated_row["graph_embedding_path"] = ""
         
@@ -383,8 +418,8 @@ def update_manifest_with_embeddings(
             if layout_path_key in layout_mapping:
                 updated_row["layout_embedding_path"] = layout_mapping[layout_path_key]
             else:
-                # Keep existing if present, otherwise empty
-                updated_row["layout_embedding_path"] = row.get("layout_embedding_path", "")
+                # File not found or embedding not created - leave empty
+                updated_row["layout_embedding_path"] = ""
         else:
             updated_row["layout_embedding_path"] = ""
         
