@@ -10,7 +10,7 @@ autoencoder:
 latent_clamp_min: -6.0
 latent_clamp_max: 6.0
 dataset:
-  manifest: /work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv
+  manifest: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet128_d4_new_layouts_seg/manifest_with_embeddings.csv
   outputs:
     latent: latent_path
     text_emb: graph_embedding_path
@@ -22,19 +22,16 @@ dataset:
   taxonomy: /work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json
 controlnet:
   adapter:
-    type: DeepAdapter  # Bigger adapter with multiple layers
+    type: DeepAdapter
     text_dim: 384
     pov_dim: 512
-    base_channels: 128  # Matches UNet base_channels
-    depth: 4            # Matches UNet depth
+    base_channels: 128
+    depth: 4
     pov_is_spatial: false
-    num_layers: 4       # 4 layers per level (bigger than default 3)
+    num_layers: 4
     norm_groups: 8
-  fuse_mode: scaled_add  # Fusion mode: scaled_add learns per-channel scale
-
-# Optional: enable debug logging for control feature magnitudes
-debug_control_features: false  # Set to true to log control feature magnitudes during training
-
+  fuse_mode: scaled_add
+debug_control_features: false
 training:
   seed: 42
   train_split: 0.8
@@ -43,7 +40,7 @@ training:
   num_workers: 4
   shuffle: true
   epochs: 100
-  learning_rate: 0.00001  # Reduced LR for more stable ControlNet training
+  learning_rate: 1.0e-05
   optimizer: AdamW
   weight_decay: 0.01
   save_interval: 10
@@ -56,4 +53,3 @@ training:
     key: pred_noise
     target: noise
     weight: 1.0
-
