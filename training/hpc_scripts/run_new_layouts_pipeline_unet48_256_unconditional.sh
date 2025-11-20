@@ -71,7 +71,7 @@ echo "=========================================="
 echo ""
 echo "Pipeline Overview:"
 echo "  1. Train VAE (or use existing checkpoint if found)"
-echo "  2. Embed dataset using VAE (analyze whiteness + filter during embedding)"
+echo "  2. Embed dataset using VAE (filter during embedding)"
 echo "  3. Train diffusion model (UNet48, base_channels=48, 256×256) UNCONDITIONAL (cfg_dropout_rate=1.0)"
 echo "  4. Uses cleaned layouts manifest: /work3/s233249/ImgiNav/datasets/layouts_cleaned.csv"
 echo "=========================================="
@@ -84,12 +84,11 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   exit 1
 fi
 
-# Run pipeline with whiteness analysis
+# Run pipeline
 # Pipeline will automatically detect if VAE checkpoint exists and skip training if found
 python "${PYTHON_SCRIPT}" \
   --ae-config "${AE_CONFIG}" \
-  --diffusion-config "${DIFFUSION_CONFIG}" \
-  --analyze-whiteness
+  --diffusion-config "${DIFFUSION_CONFIG}"
 
 EXIT_CODE=$?
 
