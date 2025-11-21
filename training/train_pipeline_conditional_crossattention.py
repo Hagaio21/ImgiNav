@@ -23,6 +23,7 @@ import yaml
 import argparse
 import pandas as pd
 import subprocess
+import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
@@ -355,6 +356,42 @@ def calculate_and_update_scale_factor(diffusion_config_path, embedded_manifest_p
         return None
 
 
+class NumpySafeLoader(yaml.SafeLoader):
+    """Custom YAML loader that handles numpy scalar types."""
+    pass
+
+
+def numpy_scalar_constructor(loader, node):
+    """Convert numpy scalar tags to Python native types."""
+    # For python/object/apply tags, the node contains a sequence with the function and args
+    # numpy.core.multiarray.scalar is called with the value as argument
+    try:
+        # Construct the sequence which contains [numpy.core.multiarray.scalar, value]
+        sequence = loader.construct_sequence(node)
+        if len(sequence) >= 2:
+            # The value is the second element (first is the function/class)
+            value = sequence[1]
+            # Convert numpy types to Python native types
+            if isinstance(value, (np.integer, np.floating, np.ndarray)):
+                return value.item() if hasattr(value, 'item') else float(value)
+            return value
+        return sequence[0] if sequence else None
+    except Exception:
+        # Fallback: try to construct as sequence and take first value
+        try:
+            sequence = loader.construct_sequence(node)
+            return sequence[0] if sequence else None
+        except Exception:
+            return None
+
+
+# Register the constructor for numpy scalar types
+NumpySafeLoader.add_constructor(
+    'tag:yaml.org,2002:python/object/apply:numpy.core.multiarray.scalar',
+    numpy_scalar_constructor
+)
+
+
 def update_diffusion_config(
     diffusion_config_path,
     ae_checkpoint_path,
@@ -374,8 +411,15 @@ def update_diffusion_config(
     print("PHASE 4: Updating Diffusion Config")
     print(f"{'='*60}")
     
-    with open(diffusion_config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    # Try loading with custom loader first, fallback to FullLoader if it fails
+    try:
+        with open(diffusion_config_path, 'r') as f:
+            config = yaml.load(f, Loader=NumpySafeLoader)
+    except (yaml.constructor.ConstructorError, yaml.YAMLError) as e:
+        # If custom loader fails (e.g., other numpy types), try FullLoader
+        print(f"Warning: Custom loader failed, trying FullLoader: {e}")
+        with open(diffusion_config_path, 'r') as f:
+            config = yaml.load(f, Loader=yaml.FullLoader)
     
     # Update autoencoder checkpoint
     if 'autoencoder' not in config:
