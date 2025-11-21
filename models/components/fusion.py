@@ -191,7 +191,10 @@ class ScaledAddFusion(BaseFusion):
             raise ValueError("ScaledAddFusion requires 'channels' parameter")
         
         # Learnable scale factor per channel
-        self.scale = nn.Parameter(torch.ones(1, channels, 1, 1))
+        # Initialize to a small positive value to ensure control features have initial influence
+        # This helps when control features are small in magnitude
+        init_scale = self._init_kwargs.get("init_scale", 0.1)
+        self.scale = nn.Parameter(torch.ones(1, channels, 1, 1) * init_scale)
     
     def forward(self, skip, ctrl_feat):
         return skip + self.scale * ctrl_feat

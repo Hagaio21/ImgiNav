@@ -38,7 +38,11 @@ controlnet:
     base_channels: 128  # Will match UNet base_channels from diffusion checkpoint
     depth: 4             # Will match UNet depth from diffusion checkpoint
     pov_is_spatial: false  # Set to true if POV embeddings are spatial [B, C, H, W]
-  fuse_mode: "add"  # Fusion mode: "add", "concat", or "cross_attn"
+  fusion:
+    type: scaled_add
+    init_scale: 0.5  # Initialize scale to 0.5 instead of 1.0 to give control features more initial influence
+
+debug_control_features: true  # Enable debug logging for control feature magnitudes during training
 
 # Training config
 # ControlNet training is typically faster than full diffusion training

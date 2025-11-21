@@ -30,8 +30,11 @@ controlnet:
     pov_is_spatial: false
     num_layers: 4
     norm_groups: 8
-  fuse_mode: scaled_add
-debug_control_features: false
+  fusion:
+    type: scaled_add
+    init_scale: 0.5  # Initialize scale to 0.5 instead of 1.0 to give control features more initial influence
+
+debug_control_features: true  # Enable debug logging for control feature magnitudes during training
 training:
   seed: 42
   train_split: 0.8

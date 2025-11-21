@@ -32,7 +32,11 @@ controlnet:
     text_dim: 384  # Graph embedding dimension (all-MiniLM-L6-v2 outputs 384)
     pov_dim: 512   # POV embedding dimension (ResNet18 outputs 512)
     # Note: base_channels and depth are estimated from SD UNet (typically 320, 4)
-  fuse_mode: "add"  # Fusion mode: "add", "concat", or "cross_attn"
+  fusion:
+    type: scaled_add
+    init_scale: 0.5  # Initialize scale to 0.5 instead of 1.0 to give control features more initial influence
+
+debug_control_features: true  # Enable debug logging for control feature magnitudes during training
 
 # Training config
 training:

@@ -28,10 +28,12 @@ controlnet:
     base_channels: 48
     depth: 4
     pov_is_spatial: false
-  fuse_mode: scaled_add  # Fusion mode: scaled_add learns per-channel scale (better than simple add)
+  fusion:
+    type: scaled_add
+    init_scale: 0.5  # Initialize scale to 0.5 instead of 1.0 to give control features more initial influence
 
 # Optional: enable debug logging for control feature magnitudes
-debug_control_features: false  # Set to true to log control feature magnitudes during training
+debug_control_features: true  # Set to true to log control feature magnitudes during training
 
 training:
   seed: 42
