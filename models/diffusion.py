@@ -195,7 +195,7 @@ class DiffusionModel(BaseModel):
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
-    def forward(self, x0_or_latents, t, cond=None, noise=None):
+    def forward(self, x0_or_latents, t, cond=None, noise=None, controlnet_signal=None):
         """
         Forward diffusion training step.
         
@@ -204,6 +204,7 @@ class DiffusionModel(BaseModel):
             t: Timestep tensor
             cond: Optional conditioning
             noise: Optional noise tensor
+            controlnet_signal: Optional ControlNet signal tensor [B, C_ctrl, H_ctrl, W_ctrl] for cross-attention
         """
         # Encode image to latents if encoder is available, otherwise assume input is already latents
         if self._has_encoder:
@@ -266,7 +267,7 @@ class DiffusionModel(BaseModel):
         noisy_latents, noise_used = result
 
         # predict noise using live UNet (EMA UNet only used at sampling time)
-        pred_noise = self.unet(noisy_latents, t, cond)
+        pred_noise = self.unet(noisy_latents, t, cond, controlnet_signal=controlnet_signal)
         
 
         device_obj = noisy_latents.device
@@ -289,7 +290,7 @@ class DiffusionModel(BaseModel):
     # Sampling
     # ------------------------------------------------------------------
     def sample(self, batch_size=1, latent_shape=None, cond=None, num_steps=50, 
-               method="ddim", eta=0.0, device=None, return_history=False, verbose=False, guidance_scale=1.0):
+               method="ddim", eta=0.0, device=None, return_history=False, verbose=False, guidance_scale=1.0, controlnet_signal=None):
  
         if device is None:
             device = next(self.parameters()).device
@@ -339,14 +340,14 @@ class DiffusionModel(BaseModel):
                 # Classifier-Free Guidance (CFG)
                 if guidance_scale > 1.0 and cond is not None:
                     # Run UNet with condition (conditional prediction)
-                    cond_pred = unet(latents, t_batch, cond)
+                    cond_pred = unet(latents, t_batch, cond, controlnet_signal=controlnet_signal)
                     # Run UNet without condition (unconditional prediction)
-                    uncond_pred = unet(latents, t_batch, None)
+                    uncond_pred = unet(latents, t_batch, None, controlnet_signal=controlnet_signal)
                     # Combine: pred = uncond + scale * (cond - uncond)
                     pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
                 else:
                     # No CFG: use conditional or unconditional prediction directly
-                    pred_noise = unet(latents, t_batch, cond)
+                    pred_noise = unet(latents, t_batch, cond, controlnet_signal=controlnet_signal)
             
             # DDIM step
             if method == "ddim":

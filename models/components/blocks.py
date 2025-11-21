@@ -150,18 +150,21 @@ class UpBlock(nn.Module):
 
 class SelfAttentionBlock(nn.Module):
     """
-    Self-attention block for UNet.
+    Self-attention block for UNet with optional cross-attention support for ControlNet signals.
     Applies self-attention to capture long-range spatial dependencies.
+    Can optionally use cross-attention with ControlNet signals as keys/values.
     
     Args:
         channels: Number of input/output channels
         num_heads: Number of attention heads (default: channels // 32, min 1)
         norm_groups: Number of groups for GroupNorm (default: 8)
+        enable_cross_attention: If True, enables cross-attention with ControlNet signals (default: False)
     """
-    def __init__(self, channels, num_heads=None, norm_groups=8):
+    def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False):
         super().__init__()
         self.channels = channels
         self.norm_groups = _compute_num_groups(channels, norm_groups)
+        self.enable_cross_attention = enable_cross_attention
         
         # Ensure num_heads divides channels evenly
         if num_heads is None:
@@ -173,18 +176,35 @@ class SelfAttentionBlock(nn.Module):
                 num_heads = _compute_num_heads(channels, target_heads_per_32=1)
         self.num_heads = num_heads
         
-        # GroupNorm + SiLU + QKV projection
+        # GroupNorm + SiLU + Q projection (always needed)
         self.norm = nn.GroupNorm(self.norm_groups, channels)
         self.act = nn.SiLU()
         
-        # Multi-head attention: Q, K, V projections
-        self.qkv = nn.Conv2d(channels, channels * 3, 1)
+        # Query projection (always needed)
+        self.q_proj = nn.Conv2d(channels, channels, 1)
+        
+        if enable_cross_attention:
+            # For cross-attention: separate K, V projections for ControlNet signals
+            # ControlNet signals may have different channel dimensions, so we use adaptive projections
+            # We'll project controlnet signals to match channels if needed
+            self.k_proj = nn.Conv2d(channels, channels, 1)  # Will be applied to control signals
+            self.v_proj = nn.Conv2d(channels, channels, 1)  # Will be applied to control signals
+            # Note: If controlnet signals have different channels, we'll create projection on first use
+            # This is stored as a module attribute but initialized lazily
+            self._ctrl_proj = None
+            self._ctrl_proj_channels = None
+        else:
+            # For self-attention: QKV projection
+            self.qkv = nn.Conv2d(channels, channels * 3, 1)
+        
         self.proj = nn.Conv2d(channels, channels, 1)
         
-    def forward(self, x):
+    def forward(self, x, controlnet_signal=None):
         """
         Args:
             x: Input tensor [B, C, H, W]
+            controlnet_signal: Optional ControlNet signal tensor [B, C_ctrl, H_ctrl, W_ctrl]
+                             If provided and cross-attention is enabled, uses it for K, V
         
         Returns:
             Output tensor [B, C, H, W]
@@ -194,9 +214,38 @@ class SelfAttentionBlock(nn.Module):
         # Normalize and activate
         h = self.act(self.norm(x))
         
-        # Compute Q, K, V
-        qkv = self.qkv(h)  # [B, 3*C, H, W]
-        q, k, v = qkv.chunk(3, dim=1)  # Each: [B, C, H, W]
+        # Compute Query from input
+        q = self.q_proj(h)  # [B, C, H, W]
+        
+        if self.enable_cross_attention and controlnet_signal is not None:
+            # Cross-attention: Q from input, K and V from ControlNet signal
+            # Ensure controlnet_signal has the same spatial dimensions (or can be interpolated)
+            if controlnet_signal.shape[2:] != (H, W):
+                # Interpolate controlnet signal to match spatial dimensions
+                controlnet_signal = F.interpolate(
+                    controlnet_signal, size=(H, W), mode='bilinear', align_corners=False
+                )
+            
+            # Ensure channel match - if different, use 1x1 conv to project
+            if controlnet_signal.shape[1] != C:
+                # Project controlnet signal to match channels
+                ctrl_in_channels = controlnet_signal.shape[1]
+                if self._ctrl_proj is None or self._ctrl_proj_channels != ctrl_in_channels:
+                    # Create or recreate projection with the correct input channels
+                    self._ctrl_proj = nn.Conv2d(ctrl_in_channels, C, 1).to(controlnet_signal.device)
+                    self._ctrl_proj_channels = ctrl_in_channels
+                    # Register as a submodule so it's saved/loaded properly
+                    # Use a unique name to avoid conflicts
+                    self.add_module('ctrl_proj', self._ctrl_proj)
+                controlnet_signal = self._ctrl_proj(controlnet_signal)
+            
+            # Compute K, V from controlnet signal
+            k = self.k_proj(controlnet_signal)  # [B, C, H, W]
+            v = self.v_proj(controlnet_signal)  # [B, C, H, W]
+        else:
+            # Self-attention: Q, K, V all from input
+            qkv = self.qkv(h)  # [B, 3*C, H, W]
+            q, k, v = qkv.chunk(3, dim=1)  # Each: [B, C, H, W]
         
         # Reshape for multi-head attention: [B, C, H, W] -> [B, num_heads, C//num_heads, H*W]
         head_dim = C // self.num_heads
@@ -260,13 +309,18 @@ class ResidualBlockWithAttention(nn.Module):
         # Optional self-attention
         self.use_attention = use_attention
         if use_attention:
-            self.attention = SelfAttentionBlock(out_ch, num_heads=attention_heads, norm_groups=norm_groups)
+            # Check if cross-attention should be enabled (can be set via config)
+            enable_cross_attention = getattr(self, '_enable_cross_attention', False)
+            self.attention = SelfAttentionBlock(
+                out_ch, num_heads=attention_heads, norm_groups=norm_groups,
+                enable_cross_attention=enable_cross_attention
+            )
         else:
             self.attention = None
 
         self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def forward(self, x, t_emb, cond_emb=None):
+    def forward(self, x, t_emb, cond_emb=None, controlnet_signal=None):
         h = self.act(self.norm1(x))
         h = self.conv1(h)
         h = self.dropout1(h)
@@ -284,7 +338,7 @@ class ResidualBlockWithAttention(nn.Module):
         
         # Apply attention if enabled
         if self.use_attention:
-            h = self.attention(h)
+            h = self.attention(h, controlnet_signal=controlnet_signal)
 
         return h + self.skip(x)
 
@@ -292,7 +346,7 @@ class ResidualBlockWithAttention(nn.Module):
 class DownBlockWithAttention(nn.Module):
     """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, 
-                 use_attention=False, attention_heads=None, cond_dim=0):
+                 use_attention=False, attention_heads=None, cond_dim=0, enable_cross_attention=False):
         super().__init__()
         self.res_blocks = nn.ModuleList([
             ResidualBlockWithAttention(
@@ -301,11 +355,16 @@ class DownBlockWithAttention(nn.Module):
             )
             for i in range(num_res_blocks)
         ])
+        # Set cross-attention flag on attention blocks
+        if enable_cross_attention:
+            for res_block in self.res_blocks:
+                if hasattr(res_block, 'attention') and res_block.attention is not None:
+                    res_block.attention.enable_cross_attention = True
         self.downsample = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
 
-    def forward(self, x, t_emb, cond_emb=None):
+    def forward(self, x, t_emb, cond_emb=None, controlnet_signal=None):
         for res in self.res_blocks:
-            x = res(x, t_emb, cond_emb)
+            x = res(x, t_emb, cond_emb, controlnet_signal=controlnet_signal)
         skip = x
         x = self.downsample(x)
         return x, skip
@@ -314,7 +373,7 @@ class DownBlockWithAttention(nn.Module):
 class UpBlockWithAttention(nn.Module):
     """UpBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0,
-                 use_attention=False, attention_heads=None, cond_dim=0):
+                 use_attention=False, attention_heads=None, cond_dim=0, enable_cross_attention=False):
         super().__init__()
         self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
         self.res_blocks = nn.ModuleList([
@@ -324,10 +383,15 @@ class UpBlockWithAttention(nn.Module):
             )
             for i in range(num_res_blocks)
         ])
+        # Set cross-attention flag on attention blocks
+        if enable_cross_attention:
+            for res_block in self.res_blocks:
+                if hasattr(res_block, 'attention') and res_block.attention is not None:
+                    res_block.attention.enable_cross_attention = True
 
-    def forward(self, x, skip, t_emb, cond_emb=None):
+    def forward(self, x, skip, t_emb, cond_emb=None, controlnet_signal=None):
         x = self.upsample(x)
         x = torch.cat([x, skip], dim=1)
         for res in self.res_blocks:
-            x = res(x, t_emb, cond_emb)
+            x = res(x, t_emb, cond_emb, controlnet_signal=controlnet_signal)
         return x

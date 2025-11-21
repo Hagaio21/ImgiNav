@@ -173,6 +173,7 @@ class UnetWithAttention(BaseComponent):
         use_attention = self._init_kwargs.get("use_attention", True)
         attention_heads = self._init_kwargs.get("attention_heads", None)
         attention_at = self._init_kwargs.get("attention_at", ["bottleneck", "downs", "ups"])
+        enable_cross_attention = self._init_kwargs.get("enable_cross_attention", False)
         
         if not isinstance(attention_at, list):
             attention_at = [attention_at] if attention_at else []
@@ -202,7 +203,8 @@ class UnetWithAttention(BaseComponent):
             if use_attn_downs:
                 self.downs.append(DownBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
-                    use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim
+                    use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim,
+                    enable_cross_attention=enable_cross_attention
                 ))
             else:
                 self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout, cond_dim))
@@ -212,10 +214,14 @@ class UnetWithAttention(BaseComponent):
         # Bottleneck with optional attention
         use_attn_bottleneck = use_attention and "bottleneck" in attention_at
         if use_attn_bottleneck:
-            self.bottleneck = ResidualBlockWithAttention(
+            bottleneck = ResidualBlockWithAttention(
                 prev_ch, prev_ch, time_dim, norm_groups, dropout,
                 use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim
             )
+            # Set cross-attention flag if enabled
+            if enable_cross_attention and hasattr(bottleneck, 'attention') and bottleneck.attention is not None:
+                bottleneck.attention.enable_cross_attention = True
+            self.bottleneck = bottleneck
         else:
             self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups, dropout, cond_dim)
 
@@ -226,7 +232,8 @@ class UnetWithAttention(BaseComponent):
             if use_attn_ups:
                 self.ups.append(UpBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
-                    use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim
+                    use_attention=True, attention_heads=attention_heads, cond_dim=cond_dim,
+                    enable_cross_attention=enable_cross_attention
                 ))
             else:
                 self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout, cond_dim))
@@ -234,14 +241,15 @@ class UnetWithAttention(BaseComponent):
 
         self.final = nn.Conv2d(prev_ch, out_ch, 1)
 
-    def forward(self, x_t, t, cond=None):
+    def forward(self, x_t, t, cond=None, controlnet_signal=None):
         """
-        Forward pass with optional conditioning.
+        Forward pass with optional conditioning and ControlNet signals.
         
         Args:
             x_t: Noisy latents [B, C, H, W]
             t: Timesteps [B]
             cond: Optional condition IDs [B] where 0=ROOM, 1=SCENE. If None, no conditioning is used (CFG dropout).
+            controlnet_signal: Optional ControlNet signal tensor [B, C_ctrl, H_ctrl, W_ctrl] for cross-attention
         
         Returns:
             Predicted noise [B, C, H, W]
@@ -256,13 +264,23 @@ class UnetWithAttention(BaseComponent):
         skips = []
 
         for down in self.downs:
-            x_t, skip = down(x_t, t_emb, cond_emb)
+            if isinstance(down, DownBlockWithAttention):
+                x_t, skip = down(x_t, t_emb, cond_emb, controlnet_signal=controlnet_signal)
+            else:
+                x_t, skip = down(x_t, t_emb, cond_emb)
             skips.append(skip)
 
-        x_t = self.bottleneck(x_t, t_emb, cond_emb)
+        # Pass controlnet_signal to bottleneck if it's a ResidualBlockWithAttention
+        if isinstance(self.bottleneck, ResidualBlockWithAttention):
+            x_t = self.bottleneck(x_t, t_emb, cond_emb, controlnet_signal=controlnet_signal)
+        else:
+            x_t = self.bottleneck(x_t, t_emb, cond_emb)
 
         for up, skip in zip(self.ups, reversed(skips)):
-            x_t = up(x_t, skip, t_emb, cond_emb)
+            if isinstance(up, UpBlockWithAttention):
+                x_t = up(x_t, skip, t_emb, cond_emb, controlnet_signal=controlnet_signal)
+            else:
+                x_t = up(x_t, skip, t_emb, cond_emb)
 
         return self.final(x_t)
     
@@ -346,6 +364,7 @@ class UnetWithAttention(BaseComponent):
             "use_attention": self._init_kwargs.get("use_attention", True),
             "attention_heads": self._init_kwargs.get("attention_heads", None),
             "attention_at": self._init_kwargs.get("attention_at", ["bottleneck", "downs", "ups"]),
+            "enable_cross_attention": self._init_kwargs.get("enable_cross_attention", False),
             "cond_dim": self._init_kwargs.get("cond_dim", 0),
             "num_cond_classes": self._init_kwargs.get("num_cond_classes", 0),
         })
