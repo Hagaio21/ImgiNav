@@ -181,19 +181,25 @@ def embed_controlnet_dataset_with_vae(
         df = pd.read_csv(input_manifest_abs, low_memory=False)
         
         # Create temporary manifest with just layout paths for embedding
+        # The ControlNet manifest should have layout_path column
         temp_manifest = output_manifest_abs.parent / "temp_layouts_for_embedding.csv"
         layout_rows = []
         for _, row in df.iterrows():
             # Try to find layout_path in various possible column names
             layout_path = row.get("layout_path") or row.get("rgb_path") or row.get("image_path")
             if layout_path and pd.notna(layout_path) and layout_path != "":
+                # Ensure absolute path
+                if not Path(layout_path).is_absolute():
+                    manifest_dir = input_manifest_abs.parent
+                    layout_path = str((manifest_dir / layout_path).resolve())
                 layout_rows.append({"layout_path": layout_path})
         
         if not layout_rows:
-            raise ValueError("No layout paths found in input manifest!")
+            raise ValueError("No layout paths found in input manifest! Check for 'layout_path', 'rgb_path', or 'image_path' columns.")
         
         temp_df = pd.DataFrame(layout_rows)
         temp_df.to_csv(temp_manifest, index=False)
+        print(f"Created temporary manifest with {len(layout_rows)} layout paths")
         
         # Embed layouts using VAE
         temp_output_manifest = output_manifest_abs.parent / "temp_embedded_latents.csv"
@@ -203,9 +209,9 @@ def embed_controlnet_dataset_with_vae(
             str(embed_script),
             "--type", "layout",
             "--manifest", str(temp_manifest),
-            "--output", str(output_manifest_abs.parent),
-            "--output-manifest", str(temp_output_manifest),
-            "--output-latent-dir", str(latents_dir),
+            "--output", str(output_manifest_abs.parent),  # Required: output directory
+            "--output-manifest", str(temp_output_manifest),  # Actual manifest path
+            "--output-latent-dir", str(latents_dir),  # Save latents in experiment folder
             "--autoencoder-config", str(ae_config_abs),
             "--autoencoder-checkpoint", str(ae_checkpoint_abs),
             "--batch-size", str(batch_size),
@@ -213,11 +219,24 @@ def embed_controlnet_dataset_with_vae(
             "--device", "cuda"
         ]
         
+        print(f"Running embedding command...")
         result = subprocess.run(cmd, check=True, cwd=base_dir)
         
         # Read embedded latents manifest
+        if not temp_output_manifest.exists():
+            raise FileNotFoundError(f"Embedded manifest not created: {temp_output_manifest}")
+        
         embedded_df = pd.read_csv(temp_output_manifest, low_memory=False)
-        latent_mapping = dict(zip(embedded_df["layout_path"], embedded_df["latent_path"]))
+        
+        # Create mapping: use absolute paths for matching
+        latent_mapping = {}
+        for _, emb_row in embedded_df.iterrows():
+            emb_layout_path = emb_row.get("layout_path", "")
+            emb_latent_path = emb_row.get("latent_path", "")
+            if emb_layout_path and emb_latent_path:
+                # Normalize paths for matching
+                emb_layout_abs = str(Path(emb_layout_path).resolve())
+                latent_mapping[emb_layout_abs] = emb_latent_path
         
         # Merge with original ControlNet manifest
         output_rows = []
@@ -226,8 +245,23 @@ def embed_controlnet_dataset_with_vae(
             
             # Add latent_path from VAE embedding
             layout_path = row.get("layout_path") or row.get("rgb_path") or row.get("image_path")
-            if layout_path and layout_path in latent_mapping:
-                output_row["latent_path"] = latent_mapping[layout_path]
+            if layout_path and pd.notna(layout_path) and layout_path != "":
+                # Normalize path for matching
+                if not Path(layout_path).is_absolute():
+                    manifest_dir = input_manifest_abs.parent
+                    layout_path_abs = str((manifest_dir / layout_path).resolve())
+                else:
+                    layout_path_abs = str(Path(layout_path).resolve())
+                
+                if layout_path_abs in latent_mapping:
+                    output_row["latent_path"] = latent_mapping[layout_path_abs]
+                else:
+                    # Try direct match as fallback
+                    if layout_path in latent_mapping:
+                        output_row["latent_path"] = latent_mapping[layout_path]
+                    else:
+                        output_row["latent_path"] = ""
+                        print(f"Warning: No latent found for layout_path: {layout_path}")
             else:
                 output_row["latent_path"] = ""
             
