@@ -5,12 +5,13 @@ experiment:
   epochs_target: 300
 
 dataset:
-  # Point to manifest with embeddings (should have graph_embedding_path and pov_embedding_path columns)
+  # Using ControlNet dataset manifest (already has embeddings prepared)
+  # This manifest contains graph_embedding_path and pov_embedding_path columns
   manifest: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg/manifest_with_embeddings.csv
   outputs:
     latent: latent_path
-    text_emb: graph_embedding_path  # Graph/text embeddings
-    pov_emb: pov_embedding_path     # POV embeddings
+    text_emb: graph_embedding_path  # Graph/text embeddings (384-dim from all-MiniLM-L6-v2)
+    pov_emb: pov_embedding_path     # POV embeddings (512-dim from ResNet18)
   filters:
     is_empty:
     - false
