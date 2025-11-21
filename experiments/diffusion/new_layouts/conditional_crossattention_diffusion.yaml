@@ -18,7 +18,7 @@ dataset:
   return_path: false
 
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_64x64_structural_256/new_layouts_VAE_64x64_structural_256_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256/new_layouts_VAE_32x32_structural_256_checkpoint_best.pt
   frozen: true
 
 # CRITICAL: Fixes the "Neon Blob" issue.
@@ -34,7 +34,7 @@ embedding_projection:
   text_dim: 384          # Graph embedding dimension (all-MiniLM-L6-v2)
   pov_dim: 512          # POV embedding dimension (ResNet18)
   output_channels: 48    # Matches UNet base_channels (reduced for memory)
-  spatial_size: [32, 32] # Smaller initial size to reduce memory (will be interpolated to match UNet resolution)
+  spatial_size: [16, 16] # Smaller initial size for 32x32 latents (will be interpolated to match UNet resolution)
   combine_method: concat_proj  # Options: "add", "concat", "concat_proj"
 
 unet:
@@ -43,8 +43,10 @@ unet:
   out_channels: 4
   
   # SMALLER MODEL FOR CROSS-ATTENTION AT ALL LEVELS
+  # With 32x32 latents, depth=4 gives: 32→16→8→4 (bottleneck at 4x4)
+  # For better memory efficiency, we can use depth=3: 32→16→8 (bottleneck at 8x8)
   base_channels: 48       # Reduced from 96 to allow cross-attention everywhere
-  depth: 4                # Standard depth (Bottleneck at 8x8 resolution)
+  depth: 3                # Reduced depth for 32x32 latents (Bottleneck at 8x8 resolution)
   num_res_blocks: 2
   
   time_dim: 256
@@ -55,9 +57,9 @@ unet:
   use_attention: true
   attention_heads: 4      # Reduced from 8 to save memory
   attention_at:
-    - bottleneck          # Cross-attention at 8x8 (global context)
-    - downs               # Cross-attention at 32x32 and 16x16 (hierarchical conditioning)
-    - ups                 # Cross-attention at 16x16 and 32x32 (refinement)
+    - bottleneck          # Cross-attention at 8x8 (global context) - with 32x32 latents, depth=3
+    - downs               # Cross-attention at 16x16 (hierarchical conditioning) - only one down level with depth=3
+    - ups                 # Cross-attention at 16x16 (refinement) - only one up level with depth=3
   
   # Enable cross-attention for embedding conditioning
   enable_cross_attention: true
@@ -72,7 +74,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 16          # Can use larger batch with smaller model
+  batch_size: 32          # Can use larger batch with 32x32 latents (much smaller attention matrices)
   num_workers: 8
   shuffle: true
   epochs: 300
