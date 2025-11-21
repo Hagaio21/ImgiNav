@@ -10,7 +10,7 @@ autoencoder:
 latent_clamp_min: -6.0
 latent_clamp_max: 6.0
 dataset:
-  manifest: /work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv
+  manifest: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg/manifest_with_embeddings.csv
   outputs:
     latent: latent_path
     text_emb: graph_embedding_path
@@ -30,11 +30,8 @@ controlnet:
     pov_is_spatial: false
   fusion:
     type: scaled_add
-    init_scale: 0.5  # Initialize scale to 0.5 instead of 1.0 to give control features more initial influence
-
-# Optional: enable debug logging for control feature magnitudes
-debug_control_features: true  # Set to true to log control feature magnitudes during training
-
+    init_scale: 0.5
+debug_control_features: true
 training:
   seed: 42
   train_split: 0.8
@@ -43,11 +40,11 @@ training:
   num_workers: 4
   shuffle: true
   epochs: 100
-  learning_rate: 0.0001  # Increased LR for faster training (10x from 0.00001)
+  learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
   scheduler:
-    type: cosine  # Cosine annealing: smoothly reduces LR from initial to 0 over epochs
+    type: cosine
   save_interval: 10
   eval_interval: 5
   sample_interval: 5
