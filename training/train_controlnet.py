@@ -107,14 +107,22 @@ def train_epoch(model, controlnet, dataloader, scheduler, loss_fn, optimizer, de
                 # ControlNet replaces UNet in the forward pass
                 pred_noise = controlnet(noisy_latents, t, text_emb, pov_emb)
                 
-                # SNR-weighted loss: w = snr / (1 + snr) where snr = alpha_bar / (1 - alpha_bar)
-                alpha_bars = model.scheduler.alpha_bars.to(device_obj)
-                alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
-                snr = alpha_bar / (1 - alpha_bar + 1e-8)  # Signal-to-noise ratio
-                w = snr / (1 + snr)  # SNR weighting
+                # Prepare preds and targets dicts for loss function
+                # This respects the configured loss function (e.g., MSELoss, SNRWeightedNoiseLoss, etc.)
+                preds = {
+                    "pred_noise": pred_noise,
+                    "scheduler": model.scheduler,
+                    "timesteps": t,
+                    "noisy_latent": noisy_latents,
+                }
+                targets = {
+                    "noise": noise,
+                    "latent": latents,
+                }
                 
-                # Compute weighted MSE loss
-                loss = ((pred_noise - noise).pow(2) * w).mean()
+                # Use configured loss function instead of manual SNR weighting
+                # This allows proper loss configuration and prevents zeroing out at high noise levels
+                loss, logs = loss_fn(preds, targets)
             
             scaler.scale(loss).backward()
             if max_grad_norm is not None:
@@ -126,13 +134,20 @@ def train_epoch(model, controlnet, dataloader, scheduler, loss_fn, optimizer, de
             # ControlNet replaces UNet in the forward pass
             pred_noise = controlnet(noisy_latents, t, text_emb, pov_emb)
             
-            # SNR-weighted loss
-            alpha_bars = model.scheduler.alpha_bars.to(device_obj)
-            alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)
-            snr = alpha_bar / (1 - alpha_bar + 1e-8)
-            w = snr / (1 + snr)
+            # Prepare preds and targets dicts for loss function
+            preds = {
+                "pred_noise": pred_noise,
+                "scheduler": model.scheduler,
+                "timesteps": t,
+                "noisy_latent": noisy_latents,
+            }
+            targets = {
+                "noise": noise,
+                "latent": latents,
+            }
             
-            loss = ((pred_noise - noise).pow(2) * w).mean()
+            # Use configured loss function instead of manual SNR weighting
+            loss, logs = loss_fn(preds, targets)
             
             loss.backward()
             if max_grad_norm is not None:
@@ -180,21 +195,37 @@ def eval_epoch(model, controlnet, dataloader, scheduler, loss_fn, device, use_am
                 with torch.cuda.amp.autocast():
                     pred_noise = controlnet(noisy_latents, t, text_emb, pov_emb)
                     
-                    alpha_bars = model.scheduler.alpha_bars.to(device_obj)
-                    alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)
-                    snr = alpha_bar / (1 - alpha_bar + 1e-8)
-                    w = snr / (1 + snr)
+                    # Prepare preds and targets dicts for loss function
+                    preds = {
+                        "pred_noise": pred_noise,
+                        "scheduler": model.scheduler,
+                        "timesteps": t,
+                        "noisy_latent": noisy_latents,
+                    }
+                    targets = {
+                        "noise": noise,
+                        "latent": latents,
+                    }
                     
-                    loss = ((pred_noise - noise).pow(2) * w).mean()
+                    # Use configured loss function instead of manual SNR weighting
+                    loss, logs = loss_fn(preds, targets)
             else:
                 pred_noise = controlnet(noisy_latents, t, text_emb, pov_emb)
                 
-                alpha_bars = model.scheduler.alpha_bars.to(device_obj)
-                alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)
-                snr = alpha_bar / (1 - alpha_bar + 1e-8)
-                w = snr / (1 + snr)
+                # Prepare preds and targets dicts for loss function
+                preds = {
+                    "pred_noise": pred_noise,
+                    "scheduler": model.scheduler,
+                    "timesteps": t,
+                    "noisy_latent": noisy_latents,
+                }
+                targets = {
+                    "noise": noise,
+                    "latent": latents,
+                }
                 
-                loss = ((pred_noise - noise).pow(2) * w).mean()
+                # Use configured loss function instead of manual SNR weighting
+                loss, logs = loss_fn(preds, targets)
             
             total_loss += loss.item()
             total_samples += latents.shape[0]
@@ -205,7 +236,7 @@ def eval_epoch(model, controlnet, dataloader, scheduler, loss_fn, device, use_am
     return avg_loss, {"mse_loss": avg_loss}
 
 
-def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None):
+def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None, latent_clamp_min=-6.0, latent_clamp_max=6.0):
     """Generate and save sample images using ControlNet, with target vs generated comparison.
     
     Saves:
@@ -303,7 +334,7 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
                 
                 # Predict x0 and update
                 pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
-                pred_x0 = torch.clamp(pred_x0, -10.0, 10.0)
+                pred_x0 = torch.clamp(pred_x0, latent_clamp_min, latent_clamp_max)
                 
                 latents = alpha_bar_prev.sqrt() * pred_x0 + (1 - alpha_bar_prev).sqrt() * pred_noise
             
@@ -499,36 +530,73 @@ def main():
     # Don't check CUDA availability or create device_obj until we actually need it
     # This avoids initializing CUDA context too early
     if device.startswith("cuda"):
-        # Wait a moment in case GPU is still releasing from previous job
-        print("Waiting 10 seconds before accessing GPU...")
-        time.sleep(10)
-    
-    # Create device_obj only when we actually need to move model to GPU
-    device_obj = to_device(device)
-    
-    # Try to move model to device
-    print(f"Moving model to {device}...")
-    try:
+        # Check GPU availability and wait if needed
+        import subprocess
+        try:
+            result = subprocess.run(['nvidia-smi', '--query-gpu=index,utilization.gpu,memory.used,memory.total', '--format=csv,noheader'], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                print("GPU Status:")
+                print(result.stdout)
+        except:
+            pass  # nvidia-smi not available, continue anyway
+        
+        # Wait and retry mechanism for GPU access
+        max_retries = 3
+        retry_delay = 15  # seconds
+        device_obj = None
+        
+        for attempt in range(max_retries):
+            if attempt > 0:
+                print(f"Retry attempt {attempt}/{max_retries-1} after {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                print("Waiting 10 seconds before accessing GPU...")
+                time.sleep(10)
+            
+            try:
+                # Create device_obj only when we actually need to move model to GPU
+                device_obj = to_device(device)
+                
+                # Try to move model to device
+                print(f"Moving model to {device}...")
+                diffusion_model = diffusion_model.to(device_obj)
+                print(f"✓ Model successfully moved to {device}")
+                break  # Success, exit retry loop
+            except RuntimeError as e:
+                error_str = str(e)
+                if "CUDA" in error_str or "cuda" in error_str.lower():
+                    if attempt < max_retries - 1:
+                        print(f"GPU access failed (attempt {attempt+1}/{max_retries}): {error_str}")
+                        print(f"Retrying in {retry_delay} seconds...")
+                        continue
+                    else:
+                        # Final attempt failed
+                        print(f"\n{'='*60}")
+                        print("ERROR: GPU is busy/unavailable after retries")
+                        print(f"{'='*60}")
+                        print(f"Error: {error_str}")
+                        print("\nThe GPU appears to be busy. This can happen if:")
+                        print("1. A previous job on this GPU node didn't clean up properly")
+                        print("2. The GPU needs time to release resources")
+                        print("3. Another process is using the GPU")
+                        print("\nSolutions:")
+                        print("1. Wait 5-10 minutes and resubmit")
+                        print("2. Request a different GPU node") 
+                        print("3. Use --device cpu to train on CPU (slow but works)")
+                        print("4. Check GPU status: nvidia-smi")
+                        print(f"{'='*60}\n")
+                        raise RuntimeError(f"GPU unavailable after {max_retries} attempts: {error_str}")
+                else:
+                    raise
+        else:
+            # This shouldn't happen, but just in case
+            raise RuntimeError("Failed to move model to device after retries")
+    else:
+        # CPU device, no retry needed
+        device_obj = to_device(device)
         diffusion_model = diffusion_model.to(device_obj)
         print(f"✓ Model successfully moved to {device}")
-    except RuntimeError as e:
-        error_str = str(e)
-        if "CUDA" in error_str or "cuda" in error_str.lower():
-            print(f"\n{'='*60}")
-            print("ERROR: GPU is busy/unavailable")
-            print(f"{'='*60}")
-            print(f"Error: {error_str}")
-            print("\nThe GPU appears to be busy. This can happen if:")
-            print("1. A previous job on this GPU node didn't clean up properly")
-            print("2. The GPU needs time to release resources")
-            print("\nSolutions:")
-            print("1. Wait 5-10 minutes and resubmit")
-            print("2. Request a different GPU node") 
-            print("3. Use --device cpu to train on CPU")
-            print(f"{'='*60}\n")
-            raise RuntimeError(f"GPU unavailable: {error_str}")
-        else:
-            raise
     
     diffusion_model.eval()
     
@@ -705,9 +773,13 @@ def main():
         
         # Save samples
         if (epoch % sample_interval == 0 or epoch == epochs) and val_loader:
+            # Get latent clamping values from config (default to -6.0, 6.0)
+            latent_clamp_min = config.get("latent_clamp_min", -6.0)
+            latent_clamp_max = config.get("latent_clamp_max", 6.0)
             save_samples(
                 diffusion_model, controlnet, val_loader, device_obj,
-                output_dir, epoch, sample_batch_size=4, exp_name=exp_name
+                output_dir, epoch, sample_batch_size=4, exp_name=exp_name,
+                latent_clamp_min=latent_clamp_min, latent_clamp_max=latent_clamp_max
             )
         
         # Save checkpoint

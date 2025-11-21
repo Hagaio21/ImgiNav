@@ -32,7 +32,7 @@ controlnet:
     norm_groups: 8
   fusion:
     type: scaled_add
-    init_scale: 0.5  # Initialize scale to 0.5 instead of 1.0 to give control features more initial influence
+    init_scale: 0.0  # Zero Convolution initialization: start at 0.0 so control features have no initial effect
 
 debug_control_features: true  # Enable debug logging for control feature magnitudes during training
 training:

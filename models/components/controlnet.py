@@ -89,12 +89,26 @@ class ControlNet(BaseComponent):
                             ctrl_feat, size=(skip_h, skip_w), mode='bilinear', align_corners=False
                         )
                 
+                # Normalize control features to be a consistent fraction of skip connection magnitude
+                # This prevents Level 3 from dominating and ensures all levels contribute proportionally
+                # Target ratio: ~0.15-0.25 (15-25% of skip magnitude)
+                target_ratio = 0.2  # 20% of skip magnitude
+                skip_mag = skip.abs().mean(dim=(2, 3), keepdim=True)  # [B, C, 1, 1]
+                ctrl_mag = ctrl_feat.abs().mean(dim=(2, 3), keepdim=True)  # [B, C, 1, 1]
+                
+                # Scale control features to target ratio relative to skip connections
+                # Avoid division by zero and prevent extreme scaling
+                scale_factor = (target_ratio * skip_mag) / (ctrl_mag + 1e-8)
+                scale_factor = torch.clamp(scale_factor, 0.01, 10.0)  # Limit scaling to reasonable range
+                ctrl_feat = ctrl_feat * scale_factor
+                
                 # Debug: log skip vs control feature magnitudes
                 if debug_control_features and self.training and torch.rand(1).item() < 0.01:
-                    skip_mag = skip.abs().mean().item()
-                    ctrl_mag = ctrl_feat.abs().mean().item()
-                    ratio = ctrl_mag / (skip_mag + 1e-8)
-                    print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag:.6f}, ctrl_mag={ctrl_mag:.6f}, ratio={ratio:.6f}, skip_shape={skip.shape}, ctrl_shape={ctrl_feat.shape}")
+                    skip_mag_val = skip.abs().mean().item()
+                    ctrl_mag_val = ctrl_feat.abs().mean().item()
+                    ratio = ctrl_mag_val / (skip_mag_val + 1e-8)
+                    scale_val = scale_factor.mean().item()
+                    print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag_val:.6f}, ctrl_mag={ctrl_mag_val:.6f}, ratio={ratio:.6f}, scale={scale_val:.4f}, skip_shape={skip.shape}, ctrl_shape={ctrl_feat.shape}")
                 
                 # Use fusion layer to combine skip and control features
                 skip = self.fusion_layers[i](skip, ctrl_feat)
