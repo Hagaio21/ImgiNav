@@ -236,7 +236,7 @@ def eval_epoch(model, controlnet, dataloader, scheduler, loss_fn, device, use_am
     return avg_loss, {"mse_loss": avg_loss}
 
 
-def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None, latent_clamp_min=-6.0, latent_clamp_max=6.0):
+def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sample_batch_size=4, exp_name=None, latent_clamp_min=-6.0, latent_clamp_max=6.0, use_amp=False):
     """Generate and save sample images using ControlNet, with target vs generated comparison.
     
     Saves:
@@ -323,7 +323,12 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
                 t_batch = t.expand(batch_size)
                 
                 # Predict noise using ControlNet
-                pred_noise = controlnet(latents, t_batch, text_emb, pov_emb)
+                # Use autocast if AMP is enabled to handle dtype mismatches (embeddings in float32, model in float16)
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        pred_noise = controlnet(latents, t_batch, text_emb, pov_emb)
+                else:
+                    pred_noise = controlnet(latents, t_batch, text_emb, pov_emb)
                 
                 # DDIM step
                 alpha_bar_t = alpha_bars[t].view(-1, 1, 1, 1)
@@ -837,7 +842,8 @@ def main():
             save_samples(
                 diffusion_model, controlnet, val_loader, device_obj,
                 output_dir, epoch, sample_batch_size=4, exp_name=exp_name,
-                latent_clamp_min=latent_clamp_min, latent_clamp_max=latent_clamp_max
+                latent_clamp_min=latent_clamp_min, latent_clamp_max=latent_clamp_max,
+                use_amp=use_amp
             )
         
         # Save checkpoint
