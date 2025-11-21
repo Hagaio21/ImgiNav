@@ -137,6 +137,11 @@ class DiffusionModel(BaseModel):
             raise ValueError(f"Unknown scheduler: {sched_type}")
         self.scheduler = SCHEDULER_REGISTRY[sched_type].from_config(sched_cfg)
         
+        # Latent scaling factor (for VAE latent normalization)
+        # Default: 1.0 (no scaling) - should be set to 1.0 / std(latents) if latents have non-unit variance
+        # This normalizes VAE latents to unit variance for the diffusion scheduler
+        self.scale_factor = self._init_kwargs.get("scale_factor", 1.0)
+        
         # Write model statistics if save_path is available
         self._write_model_statistics()
 
@@ -214,6 +219,11 @@ class DiffusionModel(BaseModel):
             else:
                 raise ValueError(f"Encoder output must contain 'latent' or 'mu'/'logvar'. Got: {list(encoder_out.keys())}")
             
+            # Scale latents before adding noise (if scale_factor != 1.0)
+            # This normalizes VAE latents to unit variance for the diffusion scheduler
+            if self.scale_factor != 1.0:
+                latents = latents * self.scale_factor
+            
             if noise is None:
                 noise = self.scheduler.randn_like(latents)
             elif noise.shape != latents.shape:
@@ -241,6 +251,11 @@ class DiffusionModel(BaseModel):
                     raise ValueError(f"Latent dict must contain 'latent' or 'mu'. Got: {list(x0_or_latents.keys())}")
             else:
                 latents = x0_or_latents  # Direct tensor
+            
+            # Scale latents before adding noise (if scale_factor != 1.0)
+            # This normalizes VAE latents to unit variance for the diffusion scheduler
+            if self.scale_factor != 1.0:
+                latents = latents * self.scale_factor
             
             if noise is None:
                 noise = self.scheduler.randn_like(latents)
@@ -410,6 +425,12 @@ class DiffusionModel(BaseModel):
         clamp_min = getattr(self, '_latent_clamp_min', -6.0)
         clamp_max = getattr(self, '_latent_clamp_max', 6.0)
         latents_clamped = torch.clamp(latents, clamp_min, clamp_max)
+        
+        # Unscale latents after sampling (reverse the scaling applied during training)
+        # This converts back from unit-variance space to VAE latent space
+        if self.scale_factor != 1.0:
+            latents_clamped = latents_clamped / self.scale_factor
+        
         result = {"latent": latents_clamped}
         
         # Decode to RGB if decoder is available
@@ -467,6 +488,9 @@ class DiffusionModel(BaseModel):
             cfg["autoencoder"] = self.autoencoder.to_config()
         else:
             cfg["decoder"] = self.decoder.to_config()
+        # Include scale_factor if it's not the default
+        if hasattr(self, 'scale_factor') and self.scale_factor != 1.0:
+            cfg["scale_factor"] = self.scale_factor
         return cfg
 
     # ------------------------------------------------------------------

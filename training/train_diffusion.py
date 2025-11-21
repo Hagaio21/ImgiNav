@@ -37,6 +37,76 @@ from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
 
 
+def calculate_scale_factor_from_dataset(dataset, num_samples=100, seed=42):
+    """
+    Calculate scale_factor from dataset latents.
+    
+    Samples random latents from the dataset and calculates their global standard deviation.
+    Returns scale_factor = 1.0 / std to normalize latents to unit variance.
+    
+    Args:
+        dataset: Dataset with 'latent' key in samples
+        num_samples: Number of random samples to use (default: 100)
+        seed: Random seed for reproducibility
+    
+    Returns:
+        float: scale_factor (1.0 / std)
+    """
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    
+    # Sample random indices
+    dataset_size = len(dataset)
+    num_samples = min(num_samples, dataset_size)
+    sampled_indices = random.sample(range(dataset_size), num_samples)
+    
+    print(f"Calculating scale_factor from {num_samples} random latents...")
+    
+    all_latent_values = []
+    loaded_count = 0
+    
+    for idx in tqdm(sampled_indices, desc="Loading latents"):
+        try:
+            sample = dataset[idx]
+            latents = sample.get("latent")
+            if latents is None:
+                continue
+            
+            # Convert to numpy and flatten
+            if isinstance(latents, torch.Tensor):
+                latent_np = latents.cpu().numpy()
+            else:
+                latent_np = np.array(latents)
+            
+            # Flatten to 1D array
+            latent_flat = latent_np.flatten()
+            all_latent_values.append(latent_flat)
+            loaded_count += 1
+        except Exception as e:
+            print(f"Warning: Failed to load sample {idx}: {e}")
+            continue
+    
+    if loaded_count == 0:
+        raise RuntimeError("Failed to load any latents from dataset")
+    
+    # Concatenate all latents and calculate global statistics
+    all_latents = np.concatenate(all_latent_values)
+    
+    mean = np.mean(all_latents)
+    std = np.std(all_latents)
+    
+    # Calculate scale factor (1.0 / std to normalize to unit variance)
+    scale_factor = 1.0 / std if std > 0 else 1.0
+    
+    print(f"  Loaded {loaded_count} latents")
+    print(f"  Mean: {mean:.6f}, Std: {std:.6f}")
+    print(f"  Calculated scale_factor: {scale_factor:.6f}")
+    
+    return scale_factor
+
+
 def compute_loss(
     model, batch, latents, t, noise, cond, loss_fn, 
     use_amp=False, device_obj=None, needs_decoding=False
@@ -592,6 +662,43 @@ def main():
     
     device_obj = to_device(device)
     
+    # Calculate scale_factor if not provided in config
+    # Check both diffusion section and top-level config
+    diffusion_cfg = config.get("diffusion", {})
+    if not diffusion_cfg:
+        diffusion_cfg = {}
+    
+    scale_factor = diffusion_cfg.get("scale_factor") or config.get("scale_factor")
+    
+    if scale_factor is None:
+        print("\n" + "="*60)
+        print("scale_factor not found in config - calculating automatically from dataset")
+        print("="*60)
+        try:
+            scale_factor = calculate_scale_factor_from_dataset(
+                train_dataset,
+                num_samples=config.get("training", {}).get("scale_factor_samples", 100),
+                seed=config.get("training", {}).get("seed", 42)
+            )
+            # Add to config for model building
+            if "diffusion" in config:
+                config["diffusion"]["scale_factor"] = scale_factor
+            else:
+                config["scale_factor"] = scale_factor
+            print(f"  Auto-calculated scale_factor: {scale_factor:.6f}")
+            print("  (Add this to your config to avoid recalculating)")
+            print("="*60 + "\n")
+        except Exception as e:
+            print(f"Warning: Failed to calculate scale_factor automatically: {e}")
+            print("  Using default scale_factor=1.0 (no scaling)")
+            scale_factor = 1.0
+            if "diffusion" in config:
+                config["diffusion"]["scale_factor"] = scale_factor
+            else:
+                config["scale_factor"] = scale_factor
+    else:
+        print(f"\nUsing scale_factor from config: {scale_factor}")
+    
     # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
     
@@ -658,6 +765,10 @@ def main():
                 "unet": config.get("unet", {}),
                 "scheduler": config.get("scheduler", {})
             }
+        
+        # Add scale_factor if it was calculated or provided
+        if scale_factor is not None:
+            diffusion_cfg["scale_factor"] = scale_factor
         
         if "type" in diffusion_cfg:
             diffusion_cfg = {k: v for k, v in diffusion_cfg.items() if k != "type"}
