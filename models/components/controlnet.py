@@ -96,10 +96,15 @@ class ControlNet(BaseComponent):
                     ratio = ctrl_mag_val / (skip_mag_val + 1e-8)
                     # Get fusion scale if it's ScaledAddFusion
                     fusion_scale_str = "N/A"
-                    if hasattr(self.fusion_layers[i], 'scale'):
-                        fusion_scale = self.fusion_layers[i].scale.mean().item()
-                        fusion_scale_str = f"{fusion_scale:.4f}"
-                    print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag_val:.6f}, ctrl_mag={ctrl_mag_val:.6f}, ratio={ratio:.6f}, fusion_scale={fusion_scale_str}, skip_shape={skip.shape}, ctrl_shape={ctrl_feat.shape}")
+                    effective_ctrl_mag = ctrl_mag_val
+                    try:
+                        if hasattr(self.fusion_layers[i], 'scale'):
+                            fusion_scale = self.fusion_layers[i].scale.mean().item()
+                            fusion_scale_str = f"{fusion_scale:.6f}"
+                            effective_ctrl_mag = ctrl_mag_val * fusion_scale
+                    except Exception:
+                        pass
+                    print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag_val:.6f}, ctrl_mag={ctrl_mag_val:.6f}, ratio={ratio:.6f}, fusion_scale={fusion_scale_str}, effective_ctrl_mag={effective_ctrl_mag:.6f}, skip_shape={skip.shape}, ctrl_shape={ctrl_feat.shape}")
                 
                 # Use fusion layer to combine skip and control features
                 # The ScaledAddFusion layer has a learnable scale parameter (initialized to 0.0 for Zero Convolution)
