@@ -8,6 +8,7 @@ from models.autoencoder import Autoencoder
 from models.decoder import Decoder
 from models.components.unet import Unet, DualUNet, UnetWithAttention  # DualUNet for backward compatibility
 from models.components.scheduler import SCHEDULER_REGISTRY
+from models.components.embedding_projection import EmbeddingToSpatial
 
 
 class DiffusionModel(BaseModel):
@@ -142,6 +143,16 @@ class DiffusionModel(BaseModel):
         # This normalizes VAE latents to unit variance for the diffusion scheduler
         self.scale_factor = self._init_kwargs.get("scale_factor", 1.0)
         
+        # Embedding projection for cross-attention (optional)
+        embedding_proj_cfg = self._init_kwargs.get("embedding_projection", None)
+        if embedding_proj_cfg:
+            # Get output_channels from UNet base_channels if not specified
+            if "output_channels" not in embedding_proj_cfg:
+                embedding_proj_cfg["output_channels"] = unet_cfg.get("base_channels", 96)
+            self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
+        else:
+            self.embedding_proj = None
+        
         # Write model statistics if save_path is available
         self._write_model_statistics()
 
@@ -195,7 +206,7 @@ class DiffusionModel(BaseModel):
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
-    def forward(self, x0_or_latents, t, cond=None, noise=None, controlnet_signal=None):
+    def forward(self, x0_or_latents, t, cond=None, noise=None, controlnet_signal=None, text_emb=None, pov_emb=None):
         """
         Forward diffusion training step.
         
@@ -205,7 +216,15 @@ class DiffusionModel(BaseModel):
             cond: Optional conditioning
             noise: Optional noise tensor
             controlnet_signal: Optional ControlNet signal tensor [B, C_ctrl, H_ctrl, W_ctrl] for cross-attention
+            text_emb: Optional text/graph embeddings [B, text_dim] - will be converted to spatial features if embedding_proj is set
+            pov_emb: Optional POV embeddings [B, pov_dim] - will be converted to spatial features if embedding_proj is set
         """
+        # Convert embeddings to spatial features if embedding projection is available
+        if self.embedding_proj is not None and text_emb is not None and pov_emb is not None:
+            if controlnet_signal is None:
+                # Use embedding projection to create spatial features
+                controlnet_signal = self.embedding_proj(text_emb, pov_emb)
+            # If both are provided, prefer explicit controlnet_signal (user override)
         # Encode image to latents if encoder is available, otherwise assume input is already latents
         if self._has_encoder:
             # x0 is images, encode them
@@ -290,7 +309,8 @@ class DiffusionModel(BaseModel):
     # Sampling
     # ------------------------------------------------------------------
     def sample(self, batch_size=1, latent_shape=None, cond=None, num_steps=50, 
-               method="ddim", eta=0.0, device=None, return_history=False, verbose=False, guidance_scale=1.0, controlnet_signal=None):
+               method="ddim", eta=0.0, device=None, return_history=False, verbose=False, guidance_scale=1.0, 
+               controlnet_signal=None, text_emb=None, pov_emb=None):
  
         if device is None:
             device = next(self.parameters()).device
@@ -321,6 +341,12 @@ class DiffusionModel(BaseModel):
             timesteps = torch.arange(self.scheduler.num_steps - 1, -1, -1, device=device).long()
         
         history = [] if return_history else None
+        
+        # Convert embeddings to spatial features if embedding projection is available
+        if self.embedding_proj is not None and text_emb is not None and pov_emb is not None:
+            if controlnet_signal is None:
+                # Use embedding projection to create spatial features
+                controlnet_signal = self.embedding_proj(text_emb, pov_emb)
         
         # Sampling loop
         for i, t in enumerate(timesteps):
@@ -492,6 +518,9 @@ class DiffusionModel(BaseModel):
         # Include scale_factor if it's not the default
         if hasattr(self, 'scale_factor') and self.scale_factor != 1.0:
             cfg["scale_factor"] = self.scale_factor
+        # Include embedding projection if it exists
+        if hasattr(self, 'embedding_proj') and self.embedding_proj is not None:
+            cfg["embedding_projection"] = self.embedding_proj.to_config()
         return cfg
 
     # ------------------------------------------------------------------

@@ -142,8 +142,20 @@ def compute_loss(
     Returns:
         (total_loss, logs_dict)
     """
+    # Extract embeddings if available (for cross-attention conditioning)
+    text_emb = batch.get("text_emb", None)
+    pov_emb = batch.get("pov_emb", None)
+    
+    # Ensure embeddings are 1D (flatten if needed)
+    if text_emb is not None:
+        if text_emb.dim() > 1:
+            text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+    if pov_emb is not None:
+        if pov_emb.dim() > 1:
+            pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+    
     # Forward pass through model
-    outputs = model(latents, t, cond=cond, noise=noise)
+    outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
     
     # Prepare preds dict for loss computation
     # All loss components will receive this dict, but only use the keys they need
