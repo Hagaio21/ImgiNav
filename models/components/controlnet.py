@@ -62,6 +62,20 @@ class ControlNet(BaseComponent):
             fusion_cls(channels=base_channels * (2 ** i), **fusion_config)
             for i in range(depth)
         ])
+        
+        # Verify init_scale is working for ScaledAddFusion
+        if fusion_type == "scaled_add" and "init_scale" in fusion_config:
+            expected_init_scale = fusion_config["init_scale"]
+            print(f"[ControlNet Init] Verifying init_scale={expected_init_scale} for ScaledAddFusion layers:")
+            for i, fusion_layer in enumerate(self.fusion_layers):
+                if hasattr(fusion_layer, 'scale'):
+                    actual_init_scale = fusion_layer.scale.mean().item()
+                    if abs(actual_init_scale - expected_init_scale) > 1e-6:
+                        print(f"  WARNING: Level {i} scale={actual_init_scale:.6f}, expected={expected_init_scale:.6f}")
+                    else:
+                        print(f"  ✓ Level {i} scale={actual_init_scale:.6f} (correct)")
+                else:
+                    print(f"  ERROR: Level {i} fusion layer does not have 'scale' attribute!")
 
     def forward(self, x_t, t, text_emb, pov_emb):
         ctrl_feats = self.adapter(text_emb, pov_emb)

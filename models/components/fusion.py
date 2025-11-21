@@ -195,6 +195,14 @@ class ScaledAddFusion(BaseFusion):
         # This helps when control features are small in magnitude
         init_scale = self._init_kwargs.get("init_scale", 0.1)
         self.scale = nn.Parameter(torch.ones(1, channels, 1, 1) * init_scale)
+        
+        # Debug: verify initialization
+        if init_scale == 0.0:
+            actual_scale = self.scale.mean().item()
+            if abs(actual_scale) > 1e-6:
+                print(f"[ScaledAddFusion Warning] init_scale=0.0 requested but actual scale={actual_scale:.6f}")
+            else:
+                print(f"[ScaledAddFusion] Zero Convolution initialization confirmed: scale={actual_scale:.6f} (channels={channels})")
     
     def forward(self, skip, ctrl_feat):
         return skip + self.scale * ctrl_feat
