@@ -191,18 +191,15 @@ class ScaledAddFusion(BaseFusion):
             raise ValueError("ScaledAddFusion requires 'channels' parameter")
         
         # Learnable scale factor per channel
-        # Initialize to a small positive value to ensure control features have initial influence
-        # This helps when control features are small in magnitude
-        init_scale = self._init_kwargs.get("init_scale", 0.1)
-        self.scale = nn.Parameter(torch.ones(1, channels, 1, 1) * init_scale)
+        # FORCE Zero Convolution initialization (ControlNet best practice)
+        # Always initialize to 0.0 to ensure control features have no initial effect
+        # This allows the base model to work unchanged at the start of training
+        # The scale will learn from zero during training
+        self.scale = nn.Parameter(torch.zeros(1, channels, 1, 1))  # Explicitly initialize to zero
         
-        # Debug: verify initialization
-        if init_scale == 0.0:
-            actual_scale = self.scale.mean().item()
-            if abs(actual_scale) > 1e-6:
-                print(f"[ScaledAddFusion Warning] init_scale=0.0 requested but actual scale={actual_scale:.6f}")
-            else:
-                print(f"[ScaledAddFusion] Zero Convolution initialization confirmed: scale={actual_scale:.6f} (channels={channels})")
+        # Force zero initialization - ensure it's actually zero (ignore config init_scale for ControlNet)
+        with torch.no_grad():
+            self.scale.zero_()
     
     def forward(self, skip, ctrl_feat):
         return skip + self.scale * ctrl_feat

@@ -68,14 +68,29 @@ class ControlNet(BaseComponent):
             expected_init_scale = fusion_config["init_scale"]
             print(f"[ControlNet Init] Verifying init_scale={expected_init_scale} for ScaledAddFusion layers:")
             for i, fusion_layer in enumerate(self.fusion_layers):
+                # Try multiple ways to access the scale parameter
+                actual_init_scale = None
                 if hasattr(fusion_layer, 'scale'):
                     actual_init_scale = fusion_layer.scale.mean().item()
+                elif 'scale' in fusion_layer.state_dict():
+                    actual_init_scale = fusion_layer.state_dict()['scale'].mean().item()
+                else:
+                    # Try to get it from named_parameters
+                    for name, param in fusion_layer.named_parameters():
+                        if name == 'scale':
+                            actual_init_scale = param.mean().item()
+                            break
+                
+                if actual_init_scale is not None:
                     if abs(actual_init_scale - expected_init_scale) > 1e-6:
                         print(f"  WARNING: Level {i} scale={actual_init_scale:.6f}, expected={expected_init_scale:.6f}")
                     else:
                         print(f"  ✓ Level {i} scale={actual_init_scale:.6f} (correct)")
                 else:
-                    print(f"  ERROR: Level {i} fusion layer does not have 'scale' attribute!")
+                    print(f"  ERROR: Level {i} fusion layer does not have 'scale' attribute! Type: {type(fusion_layer)}")
+                    # Print all attributes for debugging
+                    print(f"    Available attributes: {[attr for attr in dir(fusion_layer) if not attr.startswith('_')]}")
+                    print(f"    State dict keys: {list(fusion_layer.state_dict().keys())}")
 
     def forward(self, x_t, t, text_emb, pov_emb):
         ctrl_feats = self.adapter(text_emb, pov_emb)
@@ -111,12 +126,21 @@ class ControlNet(BaseComponent):
                     # Get fusion scale if it's ScaledAddFusion
                     fusion_scale_str = "N/A"
                     effective_ctrl_mag = ctrl_mag_val
+                    fusion_layer = self.fusion_layers[i]
                     try:
-                        if hasattr(self.fusion_layers[i], 'scale'):
-                            fusion_scale = self.fusion_layers[i].scale.mean().item()
+                        # Check if it's ScaledAddFusion by class name or by checking for scale attribute
+                        if hasattr(fusion_layer, 'scale'):
+                            fusion_scale = fusion_layer.scale.mean().item()
                             fusion_scale_str = f"{fusion_scale:.6f}"
                             effective_ctrl_mag = ctrl_mag_val * fusion_scale
-                    except Exception:
+                        elif 'ScaledAddFusion' in str(type(fusion_layer)):
+                            # Try to access scale via getattr or state_dict
+                            if 'scale' in fusion_layer.state_dict():
+                                fusion_scale = fusion_layer.state_dict()['scale'].mean().item()
+                                fusion_scale_str = f"{fusion_scale:.6f}"
+                                effective_ctrl_mag = ctrl_mag_val * fusion_scale
+                    except Exception as e:
+                        # Silently fail - fusion_scale_str will remain "N/A"
                         pass
                     print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag_val:.6f}, ctrl_mag={ctrl_mag_val:.6f}, ratio={ratio:.6f}, fusion_scale={fusion_scale_str}, effective_ctrl_mag={effective_ctrl_mag:.6f}, skip_shape={skip.shape}, ctrl_shape={ctrl_feat.shape}")
                 
