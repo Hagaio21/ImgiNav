@@ -607,11 +607,11 @@ def main():
     print("✓ Diffusion model loaded and base UNet frozen")
     
     # Build ControlNet
-    controlnet_config = config.get("controlnet", {})
+    original_controlnet_config = config.get("controlnet", {})
     unet_config = diffusion_model.unet.to_config()
     
     # Get adapter config
-    adapter_config = controlnet_config.get("adapter", {})
+    adapter_config = original_controlnet_config.get("adapter", {})
     if not adapter_config:
         # Default adapter config
         base_channels = unet_config.get("base_channels", 64)
@@ -623,11 +623,22 @@ def main():
             "depth": depth
         }
     
+    # Get fusion config (support both old fuse_mode and new fusion dict)
+    fusion_cfg = original_controlnet_config.get("fusion", {})
+    if not fusion_cfg and "fuse_mode" in original_controlnet_config:
+        # Backward compatibility: convert fuse_mode to fusion dict
+        fusion_cfg = {"type": original_controlnet_config["fuse_mode"]}
+    
+    # Build the controlnet config dict
     controlnet_config = {
         "base_unet": unet_config,
         "adapter": adapter_config,
-        "fuse_mode": controlnet_config.get("fuse_mode", "add")
     }
+    # Add fusion config if it exists, otherwise add fuse_mode for backward compatibility
+    if fusion_cfg:
+        controlnet_config["fusion"] = fusion_cfg
+    elif "fuse_mode" in original_controlnet_config:
+        controlnet_config["fuse_mode"] = original_controlnet_config["fuse_mode"]
     
     # Create ControlNet
     controlnet = ControlNet.from_config(controlnet_config)
@@ -646,8 +657,13 @@ def main():
     
     # Verify Zero Convolution initialization before training starts
     print("\nVerifying Zero Convolution initialization (fusion scales must be 0.0)...")
-    fusion_cfg = config.get("controlnet", {}).get("fusion", {})
-    fusion_type = fusion_cfg.get("type", config.get("controlnet", {}).get("fuse_mode", "add"))
+    # Get fusion type from the fusion_cfg we extracted, or from original config
+    if fusion_cfg and "type" in fusion_cfg:
+        fusion_type = fusion_cfg["type"]
+    elif "fuse_mode" in original_controlnet_config:
+        fusion_type = original_controlnet_config["fuse_mode"]
+    else:
+        fusion_type = "add"  # default
     
     if fusion_type == "scaled_add":
         all_zero = True
