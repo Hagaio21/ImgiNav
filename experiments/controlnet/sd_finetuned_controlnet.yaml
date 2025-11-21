@@ -40,12 +40,12 @@ debug_control_features: true  # Enable debug logging for control feature magnitu
 
 # Training config
 training:
-  seed: 42
+  seed: 123
   batch_size: 16  # Smaller batch size for SD UNet (larger model)
   num_workers: 4
   shuffle: true
   epochs: 100
-  learning_rate: 0.0001
+  learning_rate: 0.00001  # Lowered from 1e-4 to 1e-5 to prevent gradient explosion with Zero Convolution
   optimizer: AdamW
   weight_decay: 0.01
   
@@ -58,5 +58,5 @@ training:
   use_amp: true
   
   # Gradient clipping for stability
-  max_grad_norm: 1.0
+  max_grad_norm: 0.5  # Tightened from 1.0 to 0.5 for more aggressive gradient clipping
 

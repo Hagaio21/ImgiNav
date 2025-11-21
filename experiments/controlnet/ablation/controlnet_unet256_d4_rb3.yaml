@@ -36,14 +36,14 @@ controlnet:
 debug_control_features: true  # Enable debug logging for control feature magnitudes during training
 
 training:
-  seed: 42
+  seed: 123
   train_split: 0.8
-  split_seed: 42
+  split_seed: 123
   batch_size: 24  # Reduced batch size for larger model
   num_workers: 4
   shuffle: true
   epochs: 100
-  learning_rate: 0.00008  # Slightly lower LR for larger model
+  learning_rate: 0.00001  # Lowered from 8e-5 to 1e-5 to prevent gradient explosion with Zero Convolution
   optimizer: AdamW
   weight_decay: 0.01
   save_interval: 10

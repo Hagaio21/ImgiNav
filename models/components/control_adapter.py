@@ -31,7 +31,7 @@ class BaseControlAdapter(BaseComponent):
 
 
 class SimpleAdapter(BaseControlAdapter):
-    """Simple adapter: basic linear/conv projections."""
+    """Simple adapter: basic linear/conv projections with normalization to prevent feature explosion."""
     
     def _build(self):
         text_dim = self._init_kwargs.get("text_dim", 768)
@@ -39,8 +39,10 @@ class SimpleAdapter(BaseControlAdapter):
         base_channels = self._init_kwargs.get("base_channels", 64)
         depth = self._init_kwargs.get("depth", 4)
         pov_is_spatial = self._init_kwargs.get("pov_is_spatial", True)
+        use_normalization = self._init_kwargs.get("use_normalization", True)  # Default to True for stability
         
         self.pov_is_spatial = pov_is_spatial
+        self.use_normalization = use_normalization
         
         # Text projection: Linear layers with non-linearity
         self.text_proj = nn.ModuleList([
@@ -69,10 +71,27 @@ class SimpleAdapter(BaseControlAdapter):
                 )
                 for i in range(depth)
             ])
+        
+        # Add normalization layers to prevent feature magnitude explosion
+        # Use LayerNorm for 1x1 features (global context) and GroupNorm for spatial features
+        if use_normalization:
+            self.norms = nn.ModuleList([])
+            for i in range(depth):
+                ch = base_channels * (2 ** i)
+                # For 1x1 features (non-spatial), use LayerNorm-like normalization
+                # For spatial features, use GroupNorm
+                if not pov_is_spatial:
+                    # LayerNorm works on channel dimension for 1x1 features
+                    self.norms.append(nn.LayerNorm(ch))
+                else:
+                    # GroupNorm for spatial features
+                    self.norms.append(nn.GroupNorm(min(32, ch), ch))
+        else:
+            self.norms = None
     
     def forward(self, text_emb, pov_emb):
         feats = []
-        for tp, pp in zip(self.text_proj, self.pov_proj):
+        for i, (tp, pp) in enumerate(zip(self.text_proj, self.pov_proj)):
             t = tp(text_emb).unsqueeze(-1).unsqueeze(-1)  # [B, ch, 1, 1]
             
             if self.pov_is_spatial:
@@ -81,8 +100,23 @@ class SimpleAdapter(BaseControlAdapter):
                 p = pp(pov_emb).unsqueeze(-1).unsqueeze(-1)  # [B, ch, 1, 1]
             
             # Combine text and POV features
-            # No normalization - let scaled_add fusion learn the appropriate scale
-            feats.append(t + p)
+            combined = t + p
+            
+            # Apply normalization to prevent feature magnitude explosion
+            # This is critical when starting from Zero Convolution (init_scale=0.0)
+            # to prevent gradients from exploding as the scale learns from zero
+            if self.use_normalization and self.norms is not None:
+                if combined.shape[2] == 1 and combined.shape[3] == 1:
+                    # For 1x1 features: reshape to [B, C] for LayerNorm, then reshape back
+                    B, C = combined.shape[0], combined.shape[1]
+                    combined = combined.view(B, C)
+                    combined = self.norms[i](combined)
+                    combined = combined.view(B, C, 1, 1)
+                else:
+                    # For spatial features: use GroupNorm directly
+                    combined = self.norms[i](combined)
+            
+            feats.append(combined)
         return feats
 
 
