@@ -30,7 +30,7 @@ controlnet:
     pov_is_spatial: false
   fusion:
     type: scaled_add
-    init_scale: 0.5
+    init_scale: 0.0  # Zero Convolution initialization: start at 0.0 so control features have no initial effect
 debug_control_features: true
 training:
   seed: 42
