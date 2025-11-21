@@ -48,7 +48,7 @@ def find_ae_checkpoint(ae_config):
         ae_config: Autoencoder config dictionary
         
     Returns:
-        Path to best checkpoint, or None if not found
+        Path to best checkpoint (absolute), or None if not found
     """
     exp_name = ae_config.get("experiment", {}).get("name", "unnamed")
     save_path = ae_config.get("experiment", {}).get("save_path")
@@ -58,18 +58,32 @@ def find_ae_checkpoint(ae_config):
     else:
         save_path = Path(save_path)
     
+    # Resolve to absolute path
+    save_path = save_path.resolve()
+    
     # Check for best checkpoint
     best_checkpoint = save_path / f"{exp_name}_checkpoint_best.pt"
     
     if best_checkpoint.exists():
-        return best_checkpoint
+        return best_checkpoint.resolve()
     
     # Also check in checkpoints subdirectory
     checkpoint_dir = save_path / "checkpoints"
     best_checkpoint = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
     
     if best_checkpoint.exists():
-        return best_checkpoint
+        return best_checkpoint.resolve()
+    
+    # Also check for latest checkpoint as fallback
+    latest_checkpoint = save_path / f"{exp_name}_checkpoint_latest.pt"
+    if latest_checkpoint.exists():
+        print(f"Warning: Best checkpoint not found, using latest: {latest_checkpoint}")
+        return latest_checkpoint.resolve()
+    
+    latest_checkpoint = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
+    if latest_checkpoint.exists():
+        print(f"Warning: Best checkpoint not found, using latest: {latest_checkpoint}")
+        return latest_checkpoint.resolve()
     
     return None
 
@@ -628,7 +642,21 @@ def main():
     else:
         ae_checkpoint = find_ae_checkpoint(ae_config)
         if ae_checkpoint is None:
-            print("ERROR: --skip-ae specified but no checkpoint found")
+            exp_name = ae_config.get("experiment", {}).get("name", "unnamed")
+            save_path = Path(ae_config.get("experiment", {}).get("save_path", "outputs")).resolve()
+            error_msg = (
+                f"\n{'='*60}\n"
+                f"ERROR: --skip-ae specified but no checkpoint found\n"
+                f"  Experiment name: {exp_name}\n"
+                f"  Save path: {save_path}\n"
+                f"  Expected locations:\n"
+                f"    - {save_path / f'{exp_name}_checkpoint_best.pt'}\n"
+                f"    - {save_path / 'checkpoints' / f'{exp_name}_checkpoint_best.pt'}\n"
+                f"    - {save_path / f'{exp_name}_checkpoint_latest.pt'}\n"
+                f"    - {save_path / 'checkpoints' / f'{exp_name}_checkpoint_latest.pt'}\n"
+                f"{'='*60}\n"
+            )
+            print(error_msg)
             sys.exit(1)
         print(f"Using existing VAE checkpoint: {ae_checkpoint}")
     
