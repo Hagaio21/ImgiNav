@@ -34,7 +34,7 @@ embedding_projection:
   text_dim: 384          # Graph embedding dimension (all-MiniLM-L6-v2)
   pov_dim: 512          # POV embedding dimension (ResNet18)
   output_channels: 96   # Matches UNet base_channels
-  spatial_size: [64, 64] # Will be interpolated to match UNet resolution
+  spatial_size: [32, 32] # Smaller initial size to reduce memory (will be interpolated to match UNet resolution)
   combine_method: concat_proj  # Options: "add", "concat", "concat_proj"
 
 unet:
@@ -55,9 +55,9 @@ unet:
   use_attention: true
   attention_heads: 8      
   attention_at:
-    - bottleneck          # Applies attention at 8x8
-    - downs               # Applies attention at 16x16 and 32x32
-    - ups                 # Applies attention at 16x16 and 32x32
+    - bottleneck          # Applies attention at 8x8 (lowest memory)
+    - ups                 # Applies attention at 16x16 and 32x32 (after downsampling)
+    # Note: Removed "downs" to reduce memory usage (first down block is at 64x64 which is too large)
   
   # Enable cross-attention for embedding conditioning
   enable_cross_attention: true
@@ -70,9 +70,9 @@ scheduler:
   num_steps: 1000         # Your code hardcodes betas 1e-4 to 0.02 for this
 
 training:
-  seed: 42
+  seed: 4242
   train_split: 0.8
-  batch_size: 64          # Try 64. If OOM, reduce to 48.
+  batch_size: 16          # Reduced to avoid OOM with cross-attention (attention matrices are large)
   num_workers: 8
   shuffle: true
   epochs: 300
@@ -86,6 +86,10 @@ training:
   
   use_amp: true
   max_grad_norm: 0.5
+  # Note: If still OOM, consider:
+  # - Further reducing batch_size to 8
+  # - Removing attention from "downs" (only use at bottleneck and ups)
+  # - Using gradient checkpointing
   
   scheduler:
     type: cosine          # This refers to the Learning Rate scheduler, not Noise scheduler
