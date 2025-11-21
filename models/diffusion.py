@@ -581,6 +581,15 @@ class DiffusionModel(BaseModel):
                 # The scheduler buffers will be rebuilt to match the new num_steps
                 if "scheduler" in config:
                     merged_config["scheduler"] = config["scheduler"]
+                
+                # IMPORTANT: Preserve scale_factor from user config if provided
+                # This allows adding scale_factor to existing checkpoints
+                if "scale_factor" in config:
+                    merged_config["scale_factor"] = config["scale_factor"]
+                elif "scale_factor" in saved_config:
+                    # Use saved scale_factor if user didn't provide one
+                    merged_config["scale_factor"] = saved_config["scale_factor"]
+                
                 model_config = merged_config
             else:
                 # No user config - use saved config as-is
@@ -588,7 +597,13 @@ class DiffusionModel(BaseModel):
         else:
             # No decoder state in checkpoint (shouldn't happen for diffusion checkpoints)
             # Use provided config or saved config
-            model_config = config if config is not None else saved_config
+            if config is not None:
+                model_config = config.copy()
+                # Preserve scale_factor from saved config if user config doesn't have it
+                if "scale_factor" not in model_config and saved_config and "scale_factor" in saved_config:
+                    model_config["scale_factor"] = saved_config["scale_factor"]
+            else:
+                model_config = saved_config
         
         # Build model from config
         model = cls.from_config(model_config) if model_config else cls()

@@ -252,22 +252,65 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
     
     device_obj = to_device(device)
     
+    # Get dataset to access paths and filter by type
+    dataset = val_loader.dataset
+    
+    # Find 2 rooms and 2 scenes from the validation dataset
+    room_indices = []
+    scene_indices = []
+    
+    # Check if dataset has 'type' column
+    if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
+        for idx in range(len(dataset)):
+            row = dataset.df.iloc[idx]
+            sample_type = str(row.get('type', '')).lower().strip()
+            if sample_type == 'room' and len(room_indices) < 2:
+                room_indices.append(idx)
+            elif sample_type == 'scene' and len(scene_indices) < 2:
+                scene_indices.append(idx)
+            if len(room_indices) >= 2 and len(scene_indices) >= 2:
+                break
+    else:
+        # Fallback: use first 4 samples if type column not available
+        room_indices = list(range(min(2, len(dataset))))
+        scene_indices = list(range(min(2, len(dataset))))
+    
+    # Combine indices: 2 rooms + 2 scenes = 4 total
+    selected_indices = room_indices + scene_indices
+    batch_size = len(selected_indices)
+    
+    if batch_size < 4:
+        print(f"  Warning: Could only find {len(room_indices)} rooms and {len(scene_indices)} scenes. Using available samples.")
+    
+    if batch_size == 0:
+        print("  Warning: No samples found in validation dataset")
+        return
+    
     # Get a batch for sampling
     try:
-        batch_iter = iter(val_loader)
-        batch = next(batch_iter)
+        # Load selected samples from dataset
+        batch_data = {}
+        batch_indices = []
+        
+        for idx in selected_indices:
+            sample = dataset[idx]
+            for key, value in sample.items():
+                if key not in batch_data:
+                    batch_data[key] = []
+                batch_data[key].append(value)
+            batch_indices.append(idx)
+        
+        # Convert lists to tensors
+        batch = {}
+        for key, values in batch_data.items():
+            if isinstance(values[0], torch.Tensor):
+                batch[key] = torch.stack(values)
+            else:
+                batch[key] = values
+        
         batch = move_batch_to_device(batch, device_obj, non_blocking=False)
         
-        # Limit batch size
-        batch_size = min(sample_batch_size, batch["latent"].shape[0])
-        batch = {k: v[:batch_size] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-        
-        # Get dataset to access paths
-        dataset = val_loader.dataset
-        # For validation, dataloader is typically sequential, so we can track which samples we're using
-        # We'll use a simple approach: get the first batch_size samples
-        # In practice, validation should be deterministic, so this should work
-        batch_indices = list(range(batch_size))
+        print(f"  Selected {len(room_indices)} rooms and {len(scene_indices)} scenes for sampling")
         
         text_emb = batch.get("text_emb")
         pov_emb = batch.get("pov_emb")
@@ -467,27 +510,26 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
         print(f"  Saved generated latents to {data_dir / f'{epoch_prefix}_generated.pt'}")
         
         # Create side-by-side comparison: target (left) | generated (right)
-        grid_n = int(math.sqrt(batch_size))
-        if grid_n * grid_n < batch_size:
-            grid_n += 1
+        # Arrange as 2x2 grid: 2 rooms on top row, 2 scenes on bottom row
+        grid_n = 2  # 2x2 grid for 2 rooms + 2 scenes
         
-        # Create target grid (n×n)
+        # Create target grid (2×2)
         if target_rgb is not None:
             target_grid = make_grid(target_rgb, nrow=grid_n, padding=2, normalize=False)
-            # Create generated grid (n×n)
+            # Create generated grid (2×2)
             generated_grid = make_grid(generated_rgb, nrow=grid_n, padding=2, normalize=False)
             # Concatenate horizontally (side by side)
             combined_grid = torch.cat([target_grid, generated_grid], dim=2)  # Concatenate along width
             
-            # Save combined comparison: n×n target | n×n generated (side by side)
+            # Save combined comparison: 2×2 target | 2×2 generated (side by side)
             comparison_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_comparison.png" if exp_name else f"epoch_{epoch:03d}_comparison.png")
             save_image(combined_grid, comparison_path, normalize=False)
-            print(f"  Saved target vs generated comparison to {comparison_path}")
+            print(f"  Saved target vs generated comparison (2 rooms, 2 scenes) to {comparison_path}")
         
         # Also save generated samples only (for quick viewing)
         samples_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_samples.png" if exp_name else f"epoch_{epoch:03d}_samples.png")
         save_image(generated_rgb, samples_path, nrow=grid_n, normalize=False)
-        print(f"  Saved generated samples to {samples_path}")
+        print(f"  Saved generated samples (2 rooms, 2 scenes) to {samples_path}")
     
     except StopIteration:
         return
@@ -536,18 +578,81 @@ def main():
     # Don't create device_obj yet - wait until we actually need to use GPU
     # This avoids initializing CUDA context too early
     
-    # Load pretrained diffusion model
+    # Calculate scale_factor from dataset if not provided in config
+    # This allows using scale_factor with existing checkpoints
     diffusion_config = config.get("diffusion", {})
+    scale_factor = diffusion_config.get("scale_factor") or config.get("scale_factor")
+    
+    if scale_factor is None:
+        print("\n" + "="*60)
+        print("scale_factor not found in config - calculating automatically from dataset")
+        print("="*60)
+        try:
+            # Import the calculation function from train_diffusion
+            from training.train_diffusion import calculate_scale_factor_from_dataset
+            scale_factor = calculate_scale_factor_from_dataset(
+                train_dataset,
+                num_samples=config.get("training", {}).get("scale_factor_samples", 100),
+                seed=config.get("training", {}).get("seed", 42)
+            )
+            # Add to config for later use
+            if "diffusion" in config:
+                config["diffusion"]["scale_factor"] = scale_factor
+            else:
+                config["scale_factor"] = scale_factor
+            print(f"  Auto-calculated scale_factor: {scale_factor:.6f}")
+            print("  (Add this to your config to avoid recalculating)")
+            print("="*60 + "\n")
+        except Exception as e:
+            print(f"Warning: Failed to calculate scale_factor automatically: {e}")
+            print("  Using default scale_factor=1.0 (no scaling)")
+            scale_factor = 1.0
+            if "diffusion" in config:
+                config["diffusion"]["scale_factor"] = scale_factor
+            else:
+                config["scale_factor"] = scale_factor
+    else:
+        print(f"\nUsing scale_factor from config: {scale_factor}")
+    
+    # Load pretrained diffusion model
     diffusion_checkpoint = diffusion_config.get("checkpoint")
     if not diffusion_checkpoint:
         raise ValueError("ControlNet training requires a pretrained diffusion model checkpoint. Set 'diffusion.checkpoint' in config.")
     
     print(f"\nLoading pretrained diffusion model from: {diffusion_checkpoint}")
+    
+    # Check if checkpoint has scale_factor in its saved config
+    try:
+        checkpoint_payload = torch.load(diffusion_checkpoint, map_location="cpu")
+        saved_config = checkpoint_payload.get("config", {})
+        saved_scale_factor = saved_config.get("scale_factor")
+        
+        if saved_scale_factor is not None:
+            print(f"  Checkpoint has scale_factor: {saved_scale_factor:.6f}")
+            if abs(saved_scale_factor - scale_factor) > 0.01:  # Allow small floating point differences
+                print(f"  WARNING: Calculated scale_factor ({scale_factor:.6f}) differs from checkpoint scale_factor ({saved_scale_factor:.6f})")
+                print(f"  Using checkpoint scale_factor to maintain consistency with training")
+                scale_factor = saved_scale_factor
+        else:
+            print(f"  Checkpoint does not have scale_factor (trained without scaling)")
+            print(f"  Adding calculated scale_factor ({scale_factor:.6f}) to model config")
+            print(f"  NOTE: This checkpoint was trained without scaling, but ControlNet will use scaling")
+    except Exception as e:
+        print(f"  Warning: Could not check checkpoint config: {e}")
+        print(f"  Proceeding with calculated scale_factor: {scale_factor:.6f}")
+    
     # Load to CPU first to avoid CUDA errors if GPU is busy
     print("Loading checkpoint to CPU first...")
+    
+    # Prepare config to pass to load_checkpoint (with scale_factor)
+    load_config = {}
+    if scale_factor is not None:
+        load_config["scale_factor"] = scale_factor
+    
     diffusion_model = DiffusionModel.load_checkpoint(
         diffusion_checkpoint,
-        map_location="cpu"
+        map_location="cpu",
+        config=load_config if load_config else None
     )
     
     # Don't check CUDA availability or create device_obj until we actually need it
