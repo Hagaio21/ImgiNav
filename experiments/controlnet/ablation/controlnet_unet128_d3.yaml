@@ -30,7 +30,10 @@ controlnet:
     depth: 3             # Matches UNet depth
     pov_is_spatial: false
   fusion:
-    type: add
+    type: scaled_add
+    init_scale: 0.5  # Initialize scale to 0.5 instead of 1.0 to give control features more initial influence
+
+debug_control_features: true  # Enable debug logging for control feature magnitudes during training
 
 training:
   seed: 42
