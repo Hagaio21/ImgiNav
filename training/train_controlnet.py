@@ -644,6 +644,48 @@ def main():
     
     print("✓ ControlNet created and base_unet frozen")
     
+    # Verify Zero Convolution initialization before training starts
+    print("\nVerifying Zero Convolution initialization (fusion scales must be 0.0)...")
+    fusion_cfg = config.get("controlnet", {}).get("fusion", {})
+    fusion_type = fusion_cfg.get("type", config.get("controlnet", {}).get("fuse_mode", "add"))
+    
+    if fusion_type == "scaled_add":
+        all_zero = True
+        for i, fusion_layer in enumerate(controlnet.fusion_layers):
+            # Try multiple ways to access the scale parameter
+            actual_scale = None
+            if hasattr(fusion_layer, 'scale'):
+                actual_scale = fusion_layer.scale.mean().item()
+            elif 'scale' in fusion_layer.state_dict():
+                actual_scale = fusion_layer.state_dict()['scale'].mean().item()
+            else:
+                # Try to get it from named_parameters
+                for name, param in fusion_layer.named_parameters():
+                    if name == 'scale':
+                        actual_scale = param.mean().item()
+                        break
+            
+            if actual_scale is not None:
+                if abs(actual_scale) > 1e-6:
+                    print(f"  ERROR: Level {i} fusion scale={actual_scale:.6f}, expected 0.0 (Zero Convolution)")
+                    all_zero = False
+                else:
+                    print(f"  ✓ Level {i} fusion scale={actual_scale:.6f} (correct)")
+            else:
+                print(f"  ERROR: Level {i} fusion layer does not have 'scale' parameter!")
+                all_zero = False
+        
+        if not all_zero:
+            print("\n❌ Zero Convolution initialization failed! Fusion scales must be 0.0.")
+            print("   This is required for proper ControlNet training.")
+            print("   Exiting to prevent incorrect training.")
+            import sys
+            sys.exit(1)
+        else:
+            print("  ✓ All fusion scales initialized to 0.0 (Zero Convolution confirmed)")
+    else:
+        print(f"  Note: Fusion type is '{fusion_type}', skipping Zero Convolution check")
+    
     # Enable debug logging for control features (optional, can be disabled)
     controlnet._debug_control_features = config.get("debug_control_features", False)
     if controlnet._debug_control_features:
