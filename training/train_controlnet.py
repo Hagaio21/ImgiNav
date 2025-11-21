@@ -76,6 +76,19 @@ def train_epoch(model, controlnet, dataloader, scheduler, loss_fn, optimizer, de
         if text_emb is None or pov_emb is None:
             raise ValueError(f"Dataset must provide text and POV embeddings. Got keys: {list(batch.keys())}")
         
+        # Diagnostic: Check if embeddings are valid (not all zeros or constant)
+        if epoch == 1 and batch_idx == 0:
+            text_std = text_emb.std().item()
+            pov_std = pov_emb.std().item()
+            text_mean = text_emb.mean().item()
+            pov_mean = pov_emb.mean().item()
+            print(f"[ControlNet Diagnostic] text_emb: mean={text_mean:.4f}, std={text_std:.4f}, shape={text_emb.shape}")
+            print(f"[ControlNet Diagnostic] pov_emb: mean={pov_mean:.4f}, std={pov_std:.4f}, shape={pov_emb.shape}")
+            if text_std < 1e-6:
+                print(f"  WARNING: text_emb has very low std ({text_std:.6f}), embeddings may be constant!")
+            if pov_std < 1e-6:
+                print(f"  WARNING: pov_emb has very low std ({pov_std:.6f}), embeddings may be constant!")
+        
         # Sample random timesteps uniformly (SNR weighting will be applied in loss)
         num_steps = model.scheduler.num_steps
         t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)

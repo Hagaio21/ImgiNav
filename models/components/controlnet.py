@@ -78,15 +78,26 @@ class ControlNet(BaseComponent):
         for i, down in enumerate(self.base_unet.downs):
             x_t, skip = down(x_t, t_emb)
             if i < len(ctrl_feats) and i < len(self.fusion_layers):
+                # Expand control features to match skip connection spatial dimensions
+                # Control features are [B, ch, 1, 1] (from global context), need to expand to [B, ch, H, W]
+                ctrl_feat = ctrl_feats[i]
+                if ctrl_feat.shape[2] == 1 and ctrl_feat.shape[3] == 1:
+                    # Expand 1x1 features to match skip spatial dimensions using bilinear interpolation
+                    skip_h, skip_w = skip.shape[2], skip.shape[3]
+                    if skip_h > 1 or skip_w > 1:
+                        ctrl_feat = torch.nn.functional.interpolate(
+                            ctrl_feat, size=(skip_h, skip_w), mode='bilinear', align_corners=False
+                        )
+                
                 # Debug: log skip vs control feature magnitudes
                 if debug_control_features and self.training and torch.rand(1).item() < 0.01:
                     skip_mag = skip.abs().mean().item()
-                    ctrl_mag = ctrl_feats[i].abs().mean().item()
+                    ctrl_mag = ctrl_feat.abs().mean().item()
                     ratio = ctrl_mag / (skip_mag + 1e-8)
-                    print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag:.6f}, ctrl_mag={ctrl_mag:.6f}, ratio={ratio:.6f}")
+                    print(f"[ControlNet Debug] Level {i}: skip_mag={skip_mag:.6f}, ctrl_mag={ctrl_mag:.6f}, ratio={ratio:.6f}, skip_shape={skip.shape}, ctrl_shape={ctrl_feat.shape}")
                 
                 # Use fusion layer to combine skip and control features
-                skip = self.fusion_layers[i](skip, ctrl_feats[i])
+                skip = self.fusion_layers[i](skip, ctrl_feat)
             skips.append(skip)
         
         x_t = self.base_unet.bottleneck(x_t, t_emb)
