@@ -292,9 +292,9 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
                 print("  Warning: Decoder did not produce RGB output for targets")
                 target_rgb = None
         
-        # Generate samples using DDIM (faster for testing)
-        num_steps = 20  # Fewer steps for faster sampling
-        print(f"  Generating {batch_size} samples using ControlNet with DDIM ({num_steps} steps)...")
+        # Generate samples using DDPM (stochastic sampling)
+        num_steps = model.scheduler.num_steps  # Use full DDPM schedule
+        print(f"  Generating {batch_size} samples using ControlNet with DDPM ({num_steps} steps)...")
         
         # Use epoch-based seed for sampling to show diversity across epochs
         cpu_rng_state = torch.get_rng_state()
@@ -308,16 +308,16 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
             torch.cuda.manual_seed_all(sampling_seed)
         
         with torch.no_grad():
-            # Use model's sample method but we need to replace UNet with ControlNet
-            # For now, we'll do manual sampling
+            # Initialize with random noise
             latent_shape = batch["latent"].shape[1:]  # [C, H, W]
             latents = model.scheduler.randn_like(torch.zeros((batch_size, *latent_shape), device=device_obj))
             
-            # DDIM sampling schedule
-            step_size = model.scheduler.num_steps // num_steps
-            timesteps = torch.arange(0, model.scheduler.num_steps, step_size, device=device_obj).long()
+            # DDPM sampling: go from high noise (T-1) to low noise (0)
+            timesteps = torch.arange(model.scheduler.num_steps - 1, -1, -1, device=device_obj).long()
             
             alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+            alphas = model.scheduler.alphas.to(device_obj)
+            betas = model.scheduler.betas.to(device_obj)
             
             for i, t in enumerate(timesteps):
                 t_batch = t.expand(batch_size)
@@ -330,18 +330,36 @@ def save_samples(model, controlnet, val_loader, device, output_dir, epoch, sampl
                 else:
                     pred_noise = controlnet(latents, t_batch, text_emb, pov_emb)
                 
-                # DDIM step
+                # DDPM step (stochastic)
                 alpha_bar_t = alpha_bars[t].view(-1, 1, 1, 1)
-                if i > 0:
-                    alpha_bar_prev = alpha_bars[timesteps[i-1]].view(-1, 1, 1, 1)
+                beta_t = betas[t].view(-1, 1, 1, 1)
+                
+                if i < len(timesteps) - 1:
+                    # Not the last step: sample from posterior
+                    t_prev = timesteps[i + 1]
+                    alpha_bar_prev = alpha_bars[t_prev].view(-1, 1, 1, 1)
+                    alpha_t = alphas[t].view(-1, 1, 1, 1)
+                    
+                    # Predict x0
+                    pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                    pred_x0 = torch.clamp(pred_x0, latent_clamp_min, latent_clamp_max)
+                    
+                    # Sample from posterior q(x_{t-1} | x_t, x_0)
+                    # Posterior mean
+                    posterior_mean = (alpha_bar_prev.sqrt() * beta_t / (1 - alpha_bar_t)) * pred_x0 + \
+                                   (alpha_t.sqrt() * (1 - alpha_bar_prev) / (1 - alpha_bar_t)) * latents
+                    # Posterior variance
+                    posterior_var = beta_t * (1 - alpha_bar_prev) / (1 - alpha_bar_t)
+                    posterior_var = torch.clamp(posterior_var, min=1e-20)  # Prevent numerical issues
+                    
+                    # Sample noise for stochastic step
+                    noise_sample = model.scheduler.randn_like(latents)
+                    latents = posterior_mean + posterior_var.sqrt() * noise_sample
                 else:
-                    alpha_bar_prev = torch.tensor(1.0, device=device_obj, dtype=alpha_bar_t.dtype).view(-1, 1, 1, 1)
-                
-                # Predict x0 and update
-                pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
-                pred_x0 = torch.clamp(pred_x0, latent_clamp_min, latent_clamp_max)
-                
-                latents = alpha_bar_prev.sqrt() * pred_x0 + (1 - alpha_bar_prev).sqrt() * pred_noise
+                    # Last step: predict x0 directly
+                    pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                    pred_x0 = torch.clamp(pred_x0, latent_clamp_min, latent_clamp_max)
+                    latents = pred_x0
             
             # Decode generated latents to RGB
             decoded = model.decoder({"latent": latents})
