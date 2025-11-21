@@ -421,15 +421,46 @@ def update_diffusion_config(
         with open(diffusion_config_path, 'r') as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
     
+    # Validate checkpoint path exists
+    ae_checkpoint_resolved = Path(ae_checkpoint_path).resolve()
+    if not ae_checkpoint_resolved.exists():
+        error_msg = (
+            f"\n{'='*60}\n"
+            f"ERROR: Autoencoder checkpoint not found!\n"
+            f"  Expected path: {ae_checkpoint_resolved}\n"
+            f"  Original path: {ae_checkpoint_path}\n"
+            f"{'='*60}\n"
+            f"Please ensure:\n"
+            f"  1. Autoencoder training completed successfully\n"
+            f"  2. Checkpoint was saved to the expected location\n"
+            f"  3. If using --skip-ae, verify the checkpoint path is correct\n"
+        )
+        raise FileNotFoundError(error_msg)
+    
+    # Validate embedded manifest exists
+    embedded_manifest_resolved = Path(embedded_manifest_path).resolve()
+    if not embedded_manifest_resolved.exists():
+        error_msg = (
+            f"\n{'='*60}\n"
+            f"ERROR: Embedded manifest not found!\n"
+            f"  Expected path: {embedded_manifest_resolved}\n"
+            f"  Original path: {embedded_manifest_path}\n"
+            f"{'='*60}\n"
+            f"Please ensure:\n"
+            f"  1. Dataset embedding completed successfully\n"
+            f"  2. If using --skip-embedding, verify the manifest path is correct\n"
+        )
+        raise FileNotFoundError(error_msg)
+    
     # Update autoencoder checkpoint
     if 'autoencoder' not in config:
         config['autoencoder'] = {}
-    config['autoencoder']['checkpoint'] = str(Path(ae_checkpoint_path).resolve())
+    config['autoencoder']['checkpoint'] = str(ae_checkpoint_resolved)
     
     # Update dataset manifest
     if 'dataset' not in config:
         config['dataset'] = {}
-    config['dataset']['manifest'] = str(Path(embedded_manifest_path).resolve())
+    config['dataset']['manifest'] = str(embedded_manifest_resolved)
     config['dataset']['outputs'] = {
         'latent': 'latent_path',
         'text_emb': 'graph_embedding_path',
@@ -445,8 +476,8 @@ def update_diffusion_config(
         yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     
     print(f"Updated config:")
-    print(f"  - autoencoder.checkpoint: {ae_checkpoint_path}")
-    print(f"  - dataset.manifest: {embedded_manifest_path}")
+    print(f"  - autoencoder.checkpoint: {ae_checkpoint_resolved}")
+    print(f"  - dataset.manifest: {embedded_manifest_resolved}")
     print(f"  - dataset.outputs: latent, text_emb, pov_emb")
     if scale_factor:
         print(f"  - scale_factor: {scale_factor:.6f}")
