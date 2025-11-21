@@ -645,14 +645,14 @@ def main():
     print("Loading checkpoint to CPU first...")
     
     # Prepare config to pass to load_checkpoint (with scale_factor)
-    load_config = {}
+    checkpoint_config = {}
     if scale_factor is not None:
-        load_config["scale_factor"] = scale_factor
+        checkpoint_config["scale_factor"] = scale_factor
     
     diffusion_model = DiffusionModel.load_checkpoint(
         diffusion_checkpoint,
         map_location="cpu",
-        config=load_config if load_config else None
+        config=checkpoint_config if checkpoint_config else None
     )
     
     # Don't check CUDA availability or create device_obj until we actually need it
