@@ -261,11 +261,33 @@ class SelfAttentionBlock(nn.Module):
         # Scaled dot-product attention
         # Attention scores: [B, num_heads, H*W, H*W]
         scale = (head_dim ** -0.5)
-        attn = torch.matmul(q, k.transpose(-2, -1)) * scale
-        attn = F.softmax(attn, dim=-1)
         
-        # Apply attention to values: [B, num_heads, H*W, head_dim]
-        out = torch.matmul(attn, v)
+        # Use chunked attention for large sequences to reduce memory
+        # Chunk size: process in chunks to avoid large intermediate tensors
+        seq_len = H * W
+        chunk_size = 512  # Process 512 tokens at a time
+        
+        if seq_len > chunk_size:
+            # Chunked attention for memory efficiency
+            out_chunks = []
+            for i in range(0, seq_len, chunk_size):
+                end_idx = min(i + chunk_size, seq_len)
+                q_chunk = q[:, :, i:end_idx, :]  # [B, num_heads, chunk_len, head_dim]
+                
+                # Compute attention scores for this chunk
+                attn_chunk = torch.matmul(q_chunk, k.transpose(-2, -1)) * scale  # [B, num_heads, chunk_len, seq_len]
+                attn_chunk = F.softmax(attn_chunk, dim=-1)
+                
+                # Apply to values
+                out_chunk = torch.matmul(attn_chunk, v)  # [B, num_heads, chunk_len, head_dim]
+                out_chunks.append(out_chunk)
+            
+            out = torch.cat(out_chunks, dim=2)  # [B, num_heads, seq_len, head_dim]
+        else:
+            # Standard attention for small sequences
+            attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+            attn = F.softmax(attn, dim=-1)
+            out = torch.matmul(attn, v)
         
         # Reshape back: [B, num_heads, H*W, head_dim] -> [B, C, H, W]
         out = out.transpose(-2, -1).contiguous()  # [B, num_heads, head_dim, H*W]
