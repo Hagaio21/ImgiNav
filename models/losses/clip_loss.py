@@ -249,12 +249,19 @@ class CLIPLoss(LossComponent):
         # This is critical - if latent_proj doesn't have gradients, the loss won't flow back
         if not latent_proj.requires_grad:
             # This should not happen if latent_features has gradients
-            # But if it does, try to create a connected loss
-            if self.projections is not None:
-                proj_param = next(self.projections.parameters())
-                if proj_param.requires_grad:
-                    return (proj_param * 0.0).sum() * 0.0, {}
-            return torch.tensor(0.0, device=latent_proj.device, requires_grad=True), {}
+            # Check if projections are trainable
+            proj_has_grad = any(p.requires_grad for p in self.projections.parameters())
+            raise RuntimeError(
+                f"latent_proj does not require gradients! "
+                f"latent_features.requires_grad={latent_features.requires_grad}, "
+                f"projections.trainable={proj_has_grad}"
+            )
+        
+        # Verify projections are actually being used (check if they're part of the computation graph)
+        # This ensures the projections are the same instance as model.clip_projections
+        proj_param = next(self.projections.parameters())
+        if not proj_param.requires_grad:
+            raise RuntimeError("CLIP projection parameters do not require gradients! Check that projections are included in optimizer.")
         
         # Compute similarity matrix
         # latent_proj @ combined_emb.T -> [B, B]
@@ -262,6 +269,14 @@ class CLIPLoss(LossComponent):
         # but gradients will still flow through latent_proj
         B = latent_proj.shape[0]
         logits = latent_proj @ combined_emb.T / self.temperature  # [B, B]
+        
+        # Verify logits has gradients (it should, since latent_proj has gradients)
+        if not logits.requires_grad:
+            raise RuntimeError(
+                f"logits does not require gradients! "
+                f"latent_proj.requires_grad={latent_proj.requires_grad}, "
+                f"combined_emb.requires_grad={combined_emb.requires_grad}"
+            )
         
         # Labels: diagonal elements are positive pairs
         labels = torch.arange(B, device=logits.device, dtype=torch.long)
@@ -271,6 +286,14 @@ class CLIPLoss(LossComponent):
         loss_i2t = F.cross_entropy(logits, labels)
         loss_t2i = F.cross_entropy(logits.T, labels)
         loss = (loss_i2t + loss_t2i) / 2.0
+        
+        # Final verification: loss must have gradients
+        if not loss.requires_grad:
+            raise RuntimeError(
+                f"CLIP loss does not require gradients! "
+                f"loss_i2t.requires_grad={loss_i2t.requires_grad}, "
+                f"loss_t2i.requires_grad={loss_t2i.requires_grad}"
+            )
         
         return loss * self.weight, {
             f"clip_loss": loss.detach(),
