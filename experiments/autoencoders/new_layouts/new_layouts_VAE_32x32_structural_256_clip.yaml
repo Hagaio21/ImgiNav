@@ -11,9 +11,11 @@ experiment:
   save_path: "/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256_clip"
 
 dataset:
-  # Use ControlNet manifest which has layout_path, graph_embedding_path, pov_embedding_path
-  # You can use either manifest_seg.csv or manifest_tex.csv
-  manifest: "/work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv"
+  # Use manifest with POV and graph embeddings (created by run_embed_controlnet_dataset.sh without VAE)
+  # STEP 1: Run: bsub < training/hpc_scripts/run_embed_controlnet_dataset.sh
+  # This creates POV and graph embeddings WITHOUT needing VAE checkpoint
+  # Output goes to shared embeddings location
+  manifest: "/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
   outputs:
     rgb: "layout_path"  # Layout images for VAE training
     text_emb: "graph_embedding_path"  # Graph embeddings for CLIP loss

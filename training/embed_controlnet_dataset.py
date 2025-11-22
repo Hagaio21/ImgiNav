@@ -43,21 +43,22 @@ from common.file_io import read_manifest, create_manifest
 
 
 def embed_controlnet_dataset_with_vae(
-    ae_checkpoint_path,
-    ae_config_path,
-    input_manifest_path,
-    output_manifest_path,
+    ae_checkpoint_path=None,
+    ae_config_path=None,
+    input_manifest_path=None,
+    output_manifest_path=None,
     batch_size=32,
-    num_workers=8
+    num_workers=8,
+    create_layout_embeddings=True
 ):
     """
-    Embed ControlNet dataset from scratch: layouts, POVs, and graphs.
+    Embed ControlNet dataset: layouts (optional), POVs, and graphs.
     
     This function:
-    1. Embeds layouts using the VAE to create latent_path
+    1. (Optional) Embeds layouts using the VAE to create latent_path (if ae_checkpoint_path provided)
     2. Embeds POVs using ResNet18 to create pov_embedding_path
     3. Embeds graphs using SentenceTransformer to create graph_embedding_path
-    4. Creates a new manifest with all three: latent_path, graph_embedding_path, pov_embedding_path
+    4. Creates a new manifest with: latent_path (if created), graph_embedding_path, pov_embedding_path
     
     Args:
         ae_checkpoint_path: Path to VAE checkpoint
@@ -79,8 +80,6 @@ def embed_controlnet_dataset_with_vae(
     print(f"{'='*60}\n")
     
     try:
-        ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
-        ae_config_abs = Path(ae_config_path).resolve()
         input_manifest_abs = Path(input_manifest_path).resolve()
         output_manifest_abs = Path(output_manifest_path).resolve()
         
@@ -93,33 +92,33 @@ def embed_controlnet_dataset_with_vae(
         
         # Ensure output directory exists
         output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
-        latents_dir = output_manifest_abs.parent / "latents"
         pov_embeddings_dir = output_manifest_abs.parent / "embeddings" / "povs"
         graph_embeddings_dir = output_manifest_abs.parent / "embeddings" / "graphs"
         
-        latents_dir.mkdir(parents=True, exist_ok=True)
         pov_embeddings_dir.mkdir(parents=True, exist_ok=True)
         graph_embeddings_dir.mkdir(parents=True, exist_ok=True)
-        
-        print(f"Output directories:")
-        print(f"  Latents: {latents_dir}")
-        print(f"  POV embeddings: {pov_embeddings_dir}")
-        print(f"  Graph embeddings: {graph_embeddings_dir}")
-        print()
         
         # Read input manifest
         rows = read_manifest(input_manifest_abs)
         print(f"Loaded manifest with {len(rows)} samples")
         
-        # Step 1: Embed layouts using VAE
-        print(f"\n{'='*60}")
-        print("Step 1/3: Embedding layouts with VAE")
-        print(f"{'='*60}")
+        layout_emb_mapping = {}
         
-        # Load autoencoder
-        print(f"Loading autoencoder from: {ae_checkpoint_abs}")
-        autoencoder = Autoencoder.load_checkpoint(ae_checkpoint_abs, map_location="cpu")
-        autoencoder.eval()
+        # Step 1: Embed layouts using VAE (optional)
+        if ae_checkpoint_path and ae_config_path:
+            print(f"\n{'='*60}")
+            print("Step 1/3: Embedding layouts with VAE")
+            print(f"{'='*60}")
+            
+            ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
+            ae_config_abs = Path(ae_config_path).resolve()
+            latents_dir = output_manifest_abs.parent / "latents"
+            latents_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Load autoencoder
+            print(f"Loading autoencoder from: {ae_checkpoint_abs}")
+            autoencoder = Autoencoder.load_checkpoint(ae_checkpoint_abs, map_location="cpu")
+            autoencoder.eval()
         
         # Get autoencoder config path
         checkpoint_path = Path(ae_checkpoint_abs)
@@ -182,8 +181,9 @@ def embed_controlnet_dataset_with_vae(
                 torch.cuda.synchronize()
         
         # Step 2: Embed POVs using ResNet18
+        step_num = "2/2" if not ae_checkpoint_path else "2/3"
         print(f"\n{'='*60}")
-        print("Step 2/3: Embedding POVs with ResNet18")
+        print(f"Step {step_num}: Embedding POVs with ResNet18")
         print(f"{'='*60}")
         
         pov_rows = [
@@ -261,8 +261,9 @@ def embed_controlnet_dataset_with_vae(
                 torch.cuda.empty_cache()
         
         # Step 3: Embed graphs using SentenceTransformer
+        step_num = "2/2" if not ae_checkpoint_path else "3/3"
         print(f"\n{'='*60}")
-        print("Step 3/3: Embedding graphs with SentenceTransformer")
+        print(f"Step {step_num}: Embedding graphs with SentenceTransformer")
         print(f"{'='*60}")
         
         graph_rows = [
@@ -370,7 +371,9 @@ def embed_controlnet_dataset_with_vae(
         
         # Write final manifest
         output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = list(rows[0].keys()) + ["latent_path", "pov_embedding_path", "graph_embedding_path"]
+        fieldnames = list(rows[0].keys()) + ["pov_embedding_path", "graph_embedding_path"]
+        if layout_emb_mapping:
+            fieldnames.insert(-2, "latent_path")
         create_manifest(output_rows, output_manifest_abs, fieldnames)
         
         # Clean up temporary files
@@ -418,14 +421,16 @@ def main():
     parser.add_argument(
         "--ae-checkpoint",
         type=Path,
-        required=True,
-        help="Path to VAE checkpoint"
+        required=False,
+        default=None,
+        help="Path to VAE checkpoint (optional - if not provided, only POV and graph embeddings will be created)"
     )
     parser.add_argument(
         "--ae-config",
         type=Path,
-        required=True,
-        help="Path to VAE config YAML"
+        required=False,
+        default=None,
+        help="Path to VAE config YAML (optional - only needed if --ae-checkpoint is provided)"
     )
     parser.add_argument(
         "--input-manifest",
@@ -457,12 +462,24 @@ def main():
     print("="*60)
     print("ControlNet Dataset Embedding")
     print("="*60)
-    print(f"VAE checkpoint: {args.ae_checkpoint}")
-    print(f"VAE config: {args.ae_config}")
+    if args.ae_checkpoint:
+        print(f"VAE checkpoint: {args.ae_checkpoint}")
+        print(f"VAE config: {args.ae_config}")
+        print("Mode: Creating layouts + POVs + graphs embeddings")
+    else:
+        print("Mode: Creating POVs + graphs embeddings only (no VAE)")
     print(f"Input manifest: {args.input_manifest}")
     print(f"Output manifest: {args.output_manifest}")
     print("="*60)
     print()
+    
+    # Validate arguments
+    if args.ae_checkpoint and not args.ae_config:
+        print("ERROR: --ae-config is required when --ae-checkpoint is provided")
+        sys.exit(1)
+    if args.ae_config and not args.ae_checkpoint:
+        print("ERROR: --ae-checkpoint is required when --ae-config is provided")
+        sys.exit(1)
     
     success = embed_controlnet_dataset_with_vae(
         args.ae_checkpoint,
