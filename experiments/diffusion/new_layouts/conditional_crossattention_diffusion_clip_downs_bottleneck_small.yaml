@@ -6,10 +6,11 @@ experiment:
 
 dataset:
   # Using shared embeddings manifest (with recolored layouts)
-  # This manifest contains latent_path, graph_embedding_path, and pov_embedding_path
+  # This manifest contains latent_path columns organized by autoencoder
+  # Column name: latent_path_new_layouts_VAE_32x32_structural_256_clip (from non-spatial CLIP autoencoder)
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv
   outputs:
-    latent: latent_path  # VAE latents from non-spatial CLIP autoencoder
+    latent: latent_path_new_layouts_VAE_32x32_structural_256_clip  # VAE latents from non-spatial CLIP autoencoder
     text_emb: graph_embedding_path  # Graph/text embeddings (384-dim from all-MiniLM-L6-v2)
     pov_emb: pov_embedding_path     # POV embeddings (512-dim from ResNet18)
   filters:

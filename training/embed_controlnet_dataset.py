@@ -404,7 +404,7 @@ def embed_controlnet_dataset_with_vae(
             print(f"{'='*60}")
         
         # Determine latent column name for this autoencoder
-        # Find next available column: latent_path1, latent_path2, etc.
+        # Try to use a column name based on autoencoder name, or find next available
         latent_column_name = None
         if layout_emb_mapping:
             # Get existing columns from first row
@@ -413,30 +413,110 @@ def embed_controlnet_dataset_with_vae(
             # Find all existing latent_path columns
             latent_path_columns = [col for col in existing_columns if col.startswith("latent_path")]
             
-            if not latent_path_columns:
+            # Try to find existing column for this autoencoder by checking latent_ae columns
+            found_existing_column = None
+            if layout_emb_mapping_ae_name:
+                # Check if there's already a column for this autoencoder
+                for col in latent_path_columns:
+                    # Check corresponding latent_ae column
+                    if col == "latent_path":
+                        ae_col = "latent_ae_name"
+                    else:
+                        num = col.replace("latent_path", "")
+                        ae_col = f"latent_ae_{num}" if num else "latent_ae_name"
+                    
+                    # Check if this column exists and matches our autoencoder
+                    if ae_col in existing_columns:
+                        # Sample a row to check the autoencoder name
+                        sample_ae_name = rows[0].get(ae_col, "")
+                        if sample_ae_name == layout_emb_mapping_ae_name:
+                            found_existing_column = col
+                            break
+            
+            if found_existing_column:
+                # Use existing column for this autoencoder
+                latent_column_name = found_existing_column
+                print(f"[INFO] Using existing latent column '{latent_column_name}' for autoencoder '{layout_emb_mapping_ae_name}'")
+            elif not latent_path_columns:
                 # No existing latent columns, use latent_path (for backward compatibility)
                 latent_column_name = "latent_path"
             else:
-                # Find next available number
-                max_num = 0
-                for col in latent_path_columns:
-                    if col == "latent_path":
-                        max_num = max(max_num, 1)  # latent_path counts as 1
+                # Try to create a predictable column name based on autoencoder name
+                # Sanitize autoencoder name for use as column name
+                if layout_emb_mapping_ae_name:
+                    import re
+                    # Create column name from autoencoder name: replace special chars with underscore
+                    ae_name_sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', layout_emb_mapping_ae_name)
+                    # Remove multiple underscores
+                    ae_name_sanitized = re.sub(r'_+', '_', ae_name_sanitized).strip('_')
+                    # Limit length
+                    if len(ae_name_sanitized) > 30:
+                        ae_name_sanitized = ae_name_sanitized[:30]
+                    proposed_column = f"latent_path_{ae_name_sanitized}"
+                    
+                    # Check if proposed column already exists
+                    if proposed_column in existing_columns:
+                        # Column exists but might be for different autoencoder - check
+                        if f"latent_ae_{ae_name_sanitized}" in existing_columns:
+                            sample_ae_name = rows[0].get(f"latent_ae_{ae_name_sanitized}", "")
+                            if sample_ae_name == layout_emb_mapping_ae_name:
+                                latent_column_name = proposed_column
+                                print(f"[INFO] Using existing column '{latent_column_name}' for autoencoder '{layout_emb_mapping_ae_name}'")
+                            else:
+                                # Column exists but for different autoencoder, use numbered version
+                                max_num = 0
+                                for col in latent_path_columns:
+                                    if col == "latent_path":
+                                        max_num = max(max_num, 1)
+                                    else:
+                                        try:
+                                            num = int(col.replace("latent_path", "").replace(f"_{ae_name_sanitized}", ""))
+                                            max_num = max(max_num, num)
+                                        except ValueError:
+                                            pass
+                                latent_column_name = f"latent_path{max_num + 1}"
+                        else:
+                            # Column exists but no matching AE column, use numbered version
+                            max_num = 0
+                            for col in latent_path_columns:
+                                if col == "latent_path":
+                                    max_num = max(max_num, 1)
+                                else:
+                                    try:
+                                        num = int(col.replace("latent_path", ""))
+                                        max_num = max(max_num, num)
+                                    except ValueError:
+                                        pass
+                            latent_column_name = f"latent_path{max_num + 1}"
                     else:
-                        # Extract number from latent_path1, latent_path2, etc.
-                        try:
-                            num = int(col.replace("latent_path", ""))
-                            max_num = max(max_num, num)
-                        except ValueError:
-                            pass
-                
-                # Use next number
-                latent_column_name = f"latent_path{max_num + 1}"
+                        # Proposed column doesn't exist, use it
+                        latent_column_name = proposed_column
+                        print(f"[INFO] Creating new column '{latent_column_name}' for autoencoder '{layout_emb_mapping_ae_name}'")
+                else:
+                    # No autoencoder name, use numbered version
+                    max_num = 0
+                    for col in latent_path_columns:
+                        if col == "latent_path":
+                            max_num = max(max_num, 1)
+                        else:
+                            try:
+                                num = int(col.replace("latent_path", ""))
+                                max_num = max(max_num, num)
+                            except ValueError:
+                                pass
+                    latent_column_name = f"latent_path{max_num + 1}"
             
             # Also add autoencoder name column to track which AE created which latents
-            ae_name_column = f"latent_ae_{latent_column_name.replace('latent_path', '')}" if latent_column_name != "latent_path" else "latent_ae_1"
             if latent_column_name == "latent_path":
                 ae_name_column = "latent_ae_name"  # For backward compatibility with first column
+            elif latent_column_name.startswith("latent_path_"):
+                # Extract suffix from latent_path_{suffix}
+                suffix = latent_column_name.replace("latent_path_", "")
+                ae_name_column = f"latent_ae_{suffix}"
+            else:
+                # Numbered column: latent_path1 -> latent_ae_1
+                num = latent_column_name.replace("latent_path", "")
+                ae_name_column = f"latent_ae_{num}" if num else "latent_ae_1"
         
         output_rows = []
         for row in rows:
