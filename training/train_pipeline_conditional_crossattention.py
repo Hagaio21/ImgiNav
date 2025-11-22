@@ -101,7 +101,7 @@ def find_ae_checkpoint(ae_config):
 
 def train_autoencoder(ae_config_path):
     """
-    Train autoencoder using the training script.
+    Train autoencoder using the training script, or use existing checkpoint if available.
     
     Args:
         ae_config_path: Path to autoencoder config YAML
@@ -116,6 +116,20 @@ def train_autoencoder(ae_config_path):
     print(f"{'='*60}\n")
     
     try:
+        # First, check if best checkpoint already exists
+        ae_config = load_config(ae_config_path)
+        existing_checkpoint = find_ae_checkpoint(ae_config)
+        
+        if existing_checkpoint is not None:
+            print(f"Found existing best checkpoint: {existing_checkpoint}")
+            print("Skipping VAE training - using existing checkpoint")
+            print(f"{'='*60}\n")
+            return existing_checkpoint
+        
+        # No checkpoint found, proceed with training
+        print("No existing checkpoint found. Starting VAE training...")
+        print()
+        
         base_dir = Path(__file__).parent.parent
         ae_config_abs = Path(ae_config_path).resolve()
         train_script = base_dir / "training" / "train.py"
@@ -130,12 +144,11 @@ def train_autoencoder(ae_config_path):
         print("Autoencoder training completed successfully!")
         print(f"{'='*60}\n")
         
-        # Find the checkpoint
-        ae_config = load_config(ae_config_path)
+        # Find the checkpoint after training
         checkpoint_path = find_ae_checkpoint(ae_config)
         
         if checkpoint_path is None:
-            print("WARNING: Could not find autoencoder checkpoint!")
+            print("WARNING: Could not find autoencoder checkpoint after training!")
             return None
         
         print(f"Found autoencoder checkpoint: {checkpoint_path}")
