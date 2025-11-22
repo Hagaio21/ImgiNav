@@ -104,7 +104,7 @@ training:
         text_key: text_emb
         pov_key: pov_emb
         temperature: 0.07
-        weight: 0.1  # Start with small weight, can increase if needed
+        weight: 0.2  # Start with small weight, can increase if needed
         projection_dim: 256
         text_dim: 384
         pov_dim: 512
