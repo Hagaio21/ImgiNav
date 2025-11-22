@@ -55,7 +55,7 @@ unet:
   
   # CROSS-ATTENTION AT ALL LEVELS (core architecture feature)
   use_attention: true
-  attention_heads: 4      # Reduced from 8 to save memory
+  attention_heads: 2      # Reduced to 2 for 48 channels (24 head_dim) - matches ratio of large model better
   attention_at:
     - bottleneck          # Cross-attention at 8x8 (global context) - with 32x32 latents, depth=3
     - downs               # Cross-attention at 16x16 (hierarchical conditioning) - only one down level with depth=3

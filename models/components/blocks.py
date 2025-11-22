@@ -251,6 +251,13 @@ class SelfAttentionBlock(nn.Module):
             q, k, v = qkv.chunk(3, dim=1)  # Each: [B, C, H, W]
         
         # Reshape for multi-head attention: [B, C, H, W] -> [B, num_heads, C//num_heads, H*W]
+        # Ensure channels divide evenly by num_heads (should be guaranteed at init, but double-check)
+        if C % self.num_heads != 0:
+            raise ValueError(
+                f"Channels ({C}) must be divisible by num_heads ({self.num_heads}). "
+                f"This should have been caught at initialization. "
+                f"Model may have been modified incorrectly."
+            )
         head_dim = C // self.num_heads
         q = q.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
         k = k.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
@@ -268,26 +275,40 @@ class SelfAttentionBlock(nn.Module):
         # Use chunked attention for large sequences to reduce memory
         # Chunk size: process in chunks to avoid large intermediate tensors
         seq_len = H * W
-        # Reduce chunk size for better memory efficiency with cross-attention
-        # Smaller chunks = less memory per attention matrix
-        chunk_size = 256  # Reduced from 512 to 256 for better memory efficiency
+        # Dynamically adjust chunk size based on sequence length and batch size
+        # For smaller models or higher resolutions, use smaller chunks
+        # Formula: chunk_size should be small enough that chunk_len * seq_len fits in memory
+        # For batch_size=16, num_heads=4: chunk_size=128 gives ~8MB per chunk
+        # For batch_size=16, num_heads=8: chunk_size=128 gives ~16MB per chunk
+        if seq_len <= 64:
+            chunk_size = seq_len  # No chunking needed for very small sequences
+        elif seq_len <= 256:
+            chunk_size = 128  # Small chunks for medium sequences (16x16)
+        else:
+            chunk_size = 64   # Very small chunks for large sequences (32x32+)
         
         if seq_len > chunk_size:
             # Chunked attention for memory efficiency
             out_chunks = []
+            # Pre-compute k^T once to avoid repeated transpose operations
+            k_t = k.transpose(-2, -1)  # [B, num_heads, head_dim, seq_len]
             for i in range(0, seq_len, chunk_size):
                 end_idx = min(i + chunk_size, seq_len)
                 q_chunk = q[:, :, i:end_idx, :]  # [B, num_heads, chunk_len, head_dim]
                 
                 # Compute attention scores for this chunk
-                attn_chunk = torch.matmul(q_chunk, k.transpose(-2, -1)) * scale  # [B, num_heads, chunk_len, seq_len]
+                # attn_chunk: [B, num_heads, chunk_len, seq_len]
+                attn_chunk = torch.matmul(q_chunk, k_t) * scale
                 attn_chunk = F.softmax(attn_chunk, dim=-1)
                 
                 # Apply to values
                 out_chunk = torch.matmul(attn_chunk, v)  # [B, num_heads, chunk_len, head_dim]
                 out_chunks.append(out_chunk)
+                # Clear intermediate tensors to free memory
+                del attn_chunk, q_chunk, out_chunk
             
             out = torch.cat(out_chunks, dim=2)  # [B, num_heads, seq_len, head_dim]
+            del out_chunks, k_t  # Free memory
         else:
             # Standard attention for small sequences
             attn = torch.matmul(q, k.transpose(-2, -1)) * scale
