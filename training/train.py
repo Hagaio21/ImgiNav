@@ -129,6 +129,14 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
                     # Also initialize unknown
                     log_dict[f"MSE_{key}_unknown"] = 0.0
     
+    # Initialize scaler before loop if using AMP
+    scaler = None
+    if use_amp and device_obj.type == "cuda":
+        scaler = getattr(train_epoch, '_scaler', None)
+        if scaler is None:
+            scaler = create_grad_scaler(use_amp, device_obj)
+            train_epoch._scaler = scaler
+    
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch in pbar:
         # Move batch to device (non_blocking if using CUDA with pin_memory)
@@ -147,15 +155,21 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
                     elif "latent" in outputs:
                         all_latents.append(outputs["latent"].detach().cpu())
             
-            # Backward pass with gradient scaling (scaler created once before loop)
+            # Ensure loss is a tensor (exit autocast first)
+            if not isinstance(loss, torch.Tensor):
+                raise TypeError(f"Loss must be a tensor, got {type(loss)}: {loss}")
+            
+            # Backward pass with gradient scaling
             optimizer.zero_grad()
-            scaler = getattr(train_epoch, '_scaler', None)
-            if scaler is None:
-                scaler = create_grad_scaler(use_amp, device_obj)
-                train_epoch._scaler = scaler
             
             if scaler:
-                scaler.scale(loss).backward()
+                # Scale loss and backward - must be done in sequence
+                # Ensure loss is on the correct device
+                if loss.device != device_obj:
+                    loss = loss.to(device_obj)
+                scaled_loss = scaler.scale(loss)
+                scaled_loss.backward()
+                # Step optimizer with scaler (this will check for infs)
                 scaler.step(optimizer)
                 scaler.update()
             else:
