@@ -53,13 +53,12 @@ unet:
   norm_groups: 8          # Standard for 48 channels
   dropout: 0.1
   
-  # CROSS-ATTENTION AT ALL LEVELS (core architecture feature)
+  # CROSS-ATTENTION ONLY IN DOWN PATH (memory efficient)
+  # Only using cross-attention in downs reduces memory usage significantly
   use_attention: true
   attention_heads: 2      # Reduced to 2 for 48 channels (24 head_dim) - matches ratio of large model better
   attention_at:
-    - bottleneck          # Cross-attention at 8x8 (global context) - with 32x32 latents, depth=3
-    - downs               # Cross-attention at 16x16 (hierarchical conditioning) - only one down level with depth=3
-    - ups                 # Cross-attention at 16x16 (refinement) - only one up level with depth=3
+    - downs               # Cross-attention only in down path (hierarchical conditioning) - reduces memory
   
   # Enable cross-attention for embedding conditioning
   enable_cross_attention: true
@@ -74,7 +73,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 8           # Further reduced to avoid OOM with cross-attention at all levels
+  batch_size: 4           # Severely reduced to avoid OOM - small model has memory issues
   num_workers: 8
   shuffle: true
   epochs: 300
@@ -91,8 +90,8 @@ training:
   
   # Gradient accumulation: accumulate gradients over N steps before updating weights
   # Effective batch size = batch_size * gradient_accumulation_steps
-  # Example: batch_size=8, gradient_accumulation_steps=4 → effective batch size = 32
-  gradient_accumulation_steps: 4  # Accumulate over 4 steps (effective batch size = 8 * 4 = 32)
+  # Using 1 (no accumulation) to match large model and avoid memory buildup
+  gradient_accumulation_steps: 1  # No accumulation (same as large model)
   
   scheduler:
     type: cosine          # This refers to the Learning Rate scheduler, not Noise scheduler

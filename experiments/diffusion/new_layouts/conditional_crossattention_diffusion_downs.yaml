@@ -1,0 +1,80 @@
+experiment:
+  name: conditional_crossattention_diffusion_downs
+  phase: diffusion_training
+  save_path: /work3/s233249/ImgiNav/experiments/new_layouts/conditional_crossattention_diffusion_downs
+  epochs_target: 300
+
+dataset:
+  manifest: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg/manifest_with_embeddings.csv
+  outputs:
+    latent: latent_path
+    text_emb: graph_embedding_path
+    pov_emb: pov_embedding_path
+  filters:
+    is_empty:
+    - false
+  return_path: false
+
+autoencoder:
+  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256/new_layouts_VAE_32x32_structural_256_checkpoint_best.pt
+  frozen: true
+
+latent_clamp_min: -6.0
+latent_clamp_max: 6.0
+scale_factor: 5.5 
+
+embedding_projection:
+  type: EmbeddingToSpatial
+  text_dim: 384
+  pov_dim: 512
+  output_channels: 48
+  spatial_size: [16, 16]
+  combine_method: concat_proj
+
+unet:
+  type: UnetWithAttention
+  in_channels: 4
+  out_channels: 4
+  base_channels: 48
+  depth: 3
+  num_res_blocks: 2
+  time_dim: 256
+  norm_groups: 8
+  dropout: 0.1
+  use_attention: true
+  attention_heads: 2
+  attention_at:
+    - downs
+  enable_cross_attention: true
+  use_ema: false
+
+scheduler:
+  type: LinearScheduler
+  num_steps: 1000
+
+training:
+  seed: 4242
+  train_split: 0.8
+  batch_size: 4
+  num_workers: 8
+  shuffle: true
+  epochs: 300
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  save_interval: 20
+  eval_interval: 10
+  sample_interval: 10
+  use_amp: true
+  max_grad_norm: 0.5
+  gradient_accumulation_steps: 1
+  scheduler:
+    type: cosine
+  cfg_dropout_rate: 0.1
+  guidance_scale: 3.0
+  loss:
+    type: MSELoss
+    key: pred_noise
+    target: noise
+    weight: 1.0
+

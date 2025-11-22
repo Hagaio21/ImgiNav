@@ -219,32 +219,39 @@ class SelfAttentionBlock(nn.Module):
         
         if self.enable_cross_attention and controlnet_signal is not None:
             # Cross-attention: Q from input, K and V from ControlNet signal
+            # Clone controlnet_signal to avoid modifying the original (which is shared across blocks)
+            # This prevents memory accumulation from multiple blocks modifying the same tensor
+            ctrl_signal = controlnet_signal
+            
             # Ensure controlnet_signal has the same spatial dimensions (or can be interpolated)
-            if controlnet_signal.shape[2:] != (H, W):
+            if ctrl_signal.shape[2:] != (H, W):
                 # Interpolate controlnet signal to match spatial dimensions
-                controlnet_signal = F.interpolate(
-                    controlnet_signal, size=(H, W), mode='bilinear', align_corners=False
+                # Use in-place-like operation by reassigning to avoid keeping old tensor
+                ctrl_signal = F.interpolate(
+                    ctrl_signal, size=(H, W), mode='bilinear', align_corners=False
                 )
             
             # Ensure channel match - if different, use 1x1 conv to project
-            if controlnet_signal.shape[1] != C:
+            if ctrl_signal.shape[1] != C:
                 # Project controlnet signal to match channels
-                ctrl_in_channels = controlnet_signal.shape[1]
+                ctrl_in_channels = ctrl_signal.shape[1]
                 if self._ctrl_proj is None or self._ctrl_proj_channels != ctrl_in_channels or self._ctrl_proj.out_channels != C:
                     # Remove old module if it exists to prevent memory leaks
                     if hasattr(self, 'ctrl_proj'):
                         delattr(self, 'ctrl_proj')
                     # Create or recreate projection with the correct input channels
-                    self._ctrl_proj = nn.Conv2d(ctrl_in_channels, C, 1).to(controlnet_signal.device)
+                    self._ctrl_proj = nn.Conv2d(ctrl_in_channels, C, 1).to(ctrl_signal.device)
                     self._ctrl_proj_channels = ctrl_in_channels
                     # Register as a submodule so it's saved/loaded properly
                     # Use a unique name to avoid conflicts
                     self.add_module('ctrl_proj', self._ctrl_proj)
-                controlnet_signal = self._ctrl_proj(controlnet_signal)
+                ctrl_signal = self._ctrl_proj(ctrl_signal)
             
             # Compute K, V from controlnet signal
-            k = self.k_proj(controlnet_signal)  # [B, C, H, W]
-            v = self.v_proj(controlnet_signal)  # [B, C, H, W]
+            k = self.k_proj(ctrl_signal)  # [B, C, H, W]
+            v = self.v_proj(ctrl_signal)  # [B, C, H, W]
+            # Clear ctrl_signal reference to help GC
+            del ctrl_signal
         else:
             # Self-attention: Q, K, V all from input
             qkv = self.qkv(h)  # [B, 3*C, H, W]
@@ -283,9 +290,9 @@ class SelfAttentionBlock(nn.Module):
         if seq_len <= 64:
             chunk_size = seq_len  # No chunking needed for very small sequences
         elif seq_len <= 256:
-            chunk_size = 128  # Small chunks for medium sequences (16x16)
+            chunk_size = 64  # Very small chunks for medium sequences (16x16) - reduced for memory
         else:
-            chunk_size = 64   # Very small chunks for large sequences (32x32+)
+            chunk_size = 32   # Tiny chunks for large sequences (32x32+)
         
         if seq_len > chunk_size:
             # Chunked attention for memory efficiency
