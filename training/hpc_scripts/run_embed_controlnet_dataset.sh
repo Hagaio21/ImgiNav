@@ -126,10 +126,17 @@ fi
 echo "=========================================="
 echo "Embedding ControlNet Dataset"
 echo "=========================================="
+LAYOUT_ONLY=${LAYOUT_ONLY:-0}
 if [ -n "${AE_CHECKPOINT}" ]; then
-  echo "Mode: Creating layouts + POVs + graphs embeddings"
-  echo "VAE checkpoint: ${AE_CHECKPOINT}"
-  echo "VAE config: ${AE_CONFIG}"
+  if [ "${LAYOUT_ONLY}" = "1" ]; then
+    echo "Mode: Embedding layouts only (updating existing manifest)"
+    echo "VAE checkpoint: ${AE_CHECKPOINT}"
+    echo "VAE config: ${AE_CONFIG}"
+  else
+    echo "Mode: Creating layouts + POVs + graphs embeddings"
+    echo "VAE checkpoint: ${AE_CHECKPOINT}"
+    echo "VAE config: ${AE_CONFIG}"
+  fi
 else
   echo "Mode: Creating POVs + graphs embeddings only (STEP 1 - no VAE needed)"
 fi
@@ -152,14 +159,29 @@ echo ""
 echo "Running embedding script..."
 echo "=========================================="
 
+# Check if layout-only mode (update existing manifest with layouts)
+# Set LAYOUT_ONLY=1 in the script to enable this mode
+LAYOUT_ONLY=${LAYOUT_ONLY:-0}
+
 if [ -n "${AE_CHECKPOINT}" ]; then
-  python "${PYTHON_SCRIPT}" \
-    --ae-checkpoint "${AE_CHECKPOINT}" \
-    --ae-config "${AE_CONFIG}" \
-    --input-manifest "${CONTROLNET_MANIFEST}" \
-    --output-manifest "${OUTPUT_MANIFEST}" \
-    --batch-size 32 \
-    --num-workers 8
+  if [ "${LAYOUT_ONLY}" = "1" ]; then
+    python "${PYTHON_SCRIPT}" \
+      --ae-checkpoint "${AE_CHECKPOINT}" \
+      --ae-config "${AE_CONFIG}" \
+      --input-manifest "${OUTPUT_MANIFEST}" \
+      --output-manifest "${OUTPUT_MANIFEST}" \
+      --layout-only \
+      --batch-size 32 \
+      --num-workers 8
+  else
+    python "${PYTHON_SCRIPT}" \
+      --ae-checkpoint "${AE_CHECKPOINT}" \
+      --ae-config "${AE_CONFIG}" \
+      --input-manifest "${CONTROLNET_MANIFEST}" \
+      --output-manifest "${OUTPUT_MANIFEST}" \
+      --batch-size 32 \
+      --num-workers 8
+  fi
 else
   python "${PYTHON_SCRIPT}" \
     --input-manifest "${CONTROLNET_MANIFEST}" \
