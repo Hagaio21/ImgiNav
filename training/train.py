@@ -166,6 +166,27 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         
         loss, logs = loss_fn(outputs, batch)
         
+        # Debug: Check loss value and CLIP projections (first iteration only)
+        if epoch == 1 and total_samples == 0:
+            print(f"DEBUG: Loss value: {loss.item():.6f}, requires_grad: {loss.requires_grad}")
+            print(f"DEBUG: Loss logs: {list(logs.keys())}")
+            for k, v in logs.items():
+                if isinstance(v, torch.Tensor):
+                    print(f"DEBUG:   {k}: {v.item():.6f}")
+                else:
+                    print(f"DEBUG:   {k}: {v}")
+            # Check if CLIP loss has projections
+            from models.losses.base_loss import LOSS_REGISTRY
+            CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+            CLIPLossClass = LOSS_REGISTRY.get("CLIPLoss")
+            if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+                for sub_loss in loss_fn.losses:
+                    if CLIPLossClass and isinstance(sub_loss, CLIPLossClass):
+                        print(f"DEBUG: CLIP loss projections: {sub_loss.projections is not None}")
+                        if sub_loss.projections is not None:
+                            print(f"DEBUG: CLIP projections device: {next(sub_loss.projections.parameters()).device}")
+            print()
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -461,19 +482,31 @@ def main():
     print("Building loss function...")
     loss_fn = build_loss(config)
     
-    if hasattr(model, 'clip_projections') and model.clip_projections is not None:
-        from models.losses.base_loss import LOSS_REGISTRY
-        CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
-        CLIPLossClass = LOSS_REGISTRY.get("CLIPLoss")
-        if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-            for sub_loss in loss_fn.losses:
-                if CLIPLossClass and isinstance(sub_loss, CLIPLossClass):
-                    sub_loss.set_projections(model.clip_projections)
-                    if sub_loss.projections is not model.clip_projections:
-                        raise RuntimeError("CLIP loss projections are not the same instance as model.clip_projections!")
-                    proj_params = list(model.clip_projections.parameters())
-                    trainable_proj_params = [p for p in proj_params if p.requires_grad]
-                    print(f"  Connected CLIP projections from model to CLIP loss ({len(trainable_proj_params)}/{len(proj_params)} trainable)")
+    from models.losses.base_loss import LOSS_REGISTRY
+    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+    CLIPLossClass = LOSS_REGISTRY.get("CLIPLoss")
+    
+    if not hasattr(model, 'clip_projections') or model.clip_projections is None:
+        raise RuntimeError("Model does not have clip_projections! Check autoencoder config has clip_projection section.")
+    
+    if not isinstance(loss_fn, CompositeLossClass):
+        raise RuntimeError("Loss function is not CompositeLoss! Cannot connect CLIP projections.")
+    
+    clip_loss_found = False
+    for sub_loss in loss_fn.losses:
+        if isinstance(sub_loss, CLIPLossClass):
+            clip_loss_found = True
+            sub_loss.set_projections(model.clip_projections)
+            if sub_loss.projections is None:
+                raise RuntimeError("CLIP loss projections are None after set_projections!")
+            if sub_loss.projections is not model.clip_projections:
+                raise RuntimeError("CLIP loss projections are not the same instance as model.clip_projections!")
+            proj_params = list(model.clip_projections.parameters())
+            trainable_proj_params = [p for p in proj_params if p.requires_grad]
+            print(f"  ✓ Connected CLIP projections ({len(trainable_proj_params)}/{len(proj_params)} trainable)")
+    
+    if not clip_loss_found:
+        raise RuntimeError("CLIP loss not found in CompositeLoss! Check loss config has CLIPLoss component.")
     
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)

@@ -520,7 +520,9 @@ class LatentStructuralLossAE(LossComponent):
 class CompositeLoss(LossComponent):
     def _build(self):
         self.losses = nn.ModuleList()
-        for sub_cfg in self._init_kwargs.get("losses", []):
+        # Support both "losses" and "components" keys for backward compatibility
+        sub_losses = self._init_kwargs.get("losses", None) or self._init_kwargs.get("components", [])
+        for sub_cfg in sub_losses:
             loss_type = sub_cfg["type"]
             if loss_type not in LOSS_REGISTRY:
                 raise ValueError(f"Unknown loss type: {loss_type}")

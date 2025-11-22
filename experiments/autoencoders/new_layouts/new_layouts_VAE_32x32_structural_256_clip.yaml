@@ -84,7 +84,7 @@ training:
   
   loss:
     type: CompositeLoss
-    components:
+    losses:
       - type: MSELoss
         key: rgb
         target: rgb
