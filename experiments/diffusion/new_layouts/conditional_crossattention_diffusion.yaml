@@ -74,7 +74,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 32          # Can use larger batch with 32x32 latents (much smaller attention matrices)
+  batch_size: 16          # Reduced from 32 to avoid OOM with cross-attention at all levels
   num_workers: 8
   shuffle: true
   epochs: 300
