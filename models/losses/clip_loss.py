@@ -216,6 +216,7 @@ class CLIPLoss(LossComponent):
         
         # Compute similarity matrix
         # latent_proj @ combined_emb.T -> [B, B]
+        B = latent_proj.shape[0]
         logits = latent_proj @ combined_emb.T / self.temperature  # [B, B]
         
         # Labels: diagonal elements are positive pairs
