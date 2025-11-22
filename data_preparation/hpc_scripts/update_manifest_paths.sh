@@ -90,6 +90,19 @@ else
     echo "[WARN] Manifest not found: ${MANIFEST_TEX}"
 fi
 
+# Update shared embeddings manifest
+if [ -f "${SHARED_EMBEDDINGS_MANIFEST}" ]; then
+    echo ""
+    echo "[INFO] Updating ${SHARED_EMBEDDINGS_MANIFEST}..."
+    python "${SCRIPT_PATH}" \
+        --manifest "${SHARED_EMBEDDINGS_MANIFEST}" \
+        --old-path "${OLD_PATH}" \
+        --new-path "${NEW_PATH}" \
+        --backup
+else
+    echo "[WARN] Manifest not found: ${SHARED_EMBEDDINGS_MANIFEST}"
+fi
+
 echo ""
 echo "=============================================================="
 echo "✓ Manifest path update complete"
