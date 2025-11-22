@@ -33,6 +33,9 @@ class Autoencoder(BaseModel):
                 pov_dim=pov_dim,
                 latent_dim=latent_dim
             )
+            # Ensure projections are registered as a submodule (for parameter tracking)
+            # This is already done by assigning to self.clip_projections, but make it explicit
+            self.add_module('clip_projections', self.clip_projections)
             # Mark that we're using CLIP projections
             self._has_clip_projections = True
         else:

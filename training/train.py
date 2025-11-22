@@ -179,7 +179,16 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
                     if not has_trainable:
                         raise RuntimeError("No trainable parameters found in model!")
                     else:
-                        raise RuntimeError("Backward pass completed but no gradients found. Check computation graph.")
+                        # More detailed diagnostic
+                        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                        encoder_params = sum(p.numel() for p in model.encoder.parameters() if p.requires_grad) if hasattr(model, 'encoder') else 0
+                        decoder_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad) if hasattr(model, 'decoder') else 0
+                        clip_proj_params = sum(p.numel() for p in model.clip_projections.parameters() if p.requires_grad) if hasattr(model, 'clip_projections') and model.clip_projections is not None else 0
+                        raise RuntimeError(
+                            f"Backward pass completed but no gradients found. "
+                            f"Trainable params: {total_params} (encoder: {encoder_params}, decoder: {decoder_params}, clip_proj: {clip_proj_params}). "
+                            f"Check that loss is connected to model parameters and latent_features has requires_grad=True."
+                        )
                 
                 # Step optimizer with scaler (this will check for infs)
                 scaler.step(optimizer)

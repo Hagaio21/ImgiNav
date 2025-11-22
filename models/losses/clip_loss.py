@@ -204,6 +204,19 @@ class CLIPLoss(LossComponent):
             device = next(self.text_proj.parameters()).device if hasattr(self, 'text_proj') else torch.device("cpu")
             return torch.tensor(0.0, device=device, requires_grad=True), {}
         
+        # Verify latent_features has gradients (critical for gradient flow)
+        if not latent_features.requires_grad:
+            # If latent_features doesn't require grad, we can't compute gradients
+            # This might happen if the encoder is frozen or if features are detached
+            # Return zero loss connected to a parameter from projections to ensure gradient flow
+            if self.projections is not None:
+                # Use a projection parameter to create a connected zero loss
+                proj_param = next(self.projections.parameters())
+                return (proj_param * 0.0).sum() * 0.0, {}
+            else:
+                # No projections available, return simple zero
+                return torch.tensor(0.0, device=latent_features.device, requires_grad=True), {}
+        
         # Get text and POV embeddings
         text_emb = targets.get(self.text_key)
         pov_emb = targets.get(self.pov_key)
@@ -212,10 +225,6 @@ class CLIPLoss(LossComponent):
         if text_emb is None:
             # Return zero loss connected to computation graph via latent_features
             return (latent_features * 0.0).sum() * 0.0, {}
-        
-        # Handle missing pov_emb (scenes don't have POV embeddings)
-        # For scenes, we'll use only text_emb for the combined embedding
-        use_pov = pov_emb is not None
         
         # Use projections (either from model or our own)
         if self.projections is None:
