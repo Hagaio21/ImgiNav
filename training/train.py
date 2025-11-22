@@ -140,15 +140,23 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         # Move batch to device (non_blocking if using CUDA with pin_memory)
         batch = move_batch_to_device(batch, device_obj)
         
+        outputs = model(batch["rgb"])
+        
         # Debug: Check if embeddings are in batch (first iteration only)
         if epoch == 1 and total_samples == 0:
-            print(f"Batch keys: {list(batch.keys())}")
+            print(f"\nDEBUG: Batch keys: {list(batch.keys())}")
             if "text_emb" in batch:
-                print(f"text_emb shape: {batch['text_emb'].shape}, requires_grad: {batch['text_emb'].requires_grad}")
+                print(f"DEBUG: text_emb shape: {batch['text_emb'].shape}, requires_grad: {batch['text_emb'].requires_grad}")
+            else:
+                print(f"DEBUG: text_emb NOT in batch!")
             if "pov_emb" in batch:
-                print(f"pov_emb shape: {batch['pov_emb'].shape}, requires_grad: {batch['pov_emb'].requires_grad}")
-        
-        outputs = model(batch["rgb"])
+                print(f"DEBUG: pov_emb shape: {batch['pov_emb'].shape}, requires_grad: {batch['pov_emb'].requires_grad}")
+            else:
+                print(f"DEBUG: pov_emb NOT in batch!")
+            print(f"DEBUG: outputs keys: {list(outputs.keys())}")
+            if "latent_features" in outputs:
+                print(f"DEBUG: latent_features shape: {outputs['latent_features'].shape}, requires_grad: {outputs['latent_features'].requires_grad}")
+            print()
         
         if collect_latents and all_latents is not None:
             if "mu" in outputs:
