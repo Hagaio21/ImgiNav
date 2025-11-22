@@ -59,6 +59,12 @@ fi
 # Make script executable
 chmod +x "${ABLATION_SCRIPT}"
 
+# Verify the script is actually executable
+if [ ! -x "${ABLATION_SCRIPT}" ]; then
+    echo "ERROR: Ablation script is not executable: ${ABLATION_SCRIPT}" >&2
+    exit 1
+fi
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -109,6 +115,7 @@ for exp in "${SMALL_EXPERIMENTS[@]}"; do
     echo -n "  Submitting ${exp}... "
     
     # Submit job and capture job ID
+    # Use bash -c to ensure proper execution
     JOB_OUTPUT=$(bsub -J "ablation_${exp}" \
         -o "${BASE_DIR}/training/hpc_scripts/logs/ablation_${exp}.%J.out" \
         -e "${BASE_DIR}/training/hpc_scripts/logs/ablation_${exp}.%J.err" \
@@ -117,21 +124,29 @@ for exp in "${SMALL_EXPERIMENTS[@]}"; do
         -gpu "num=1" \
         -W 24:00 \
         -q gpuv100 \
-        "${ABLATION_SCRIPT}" "${exp}" "small" 2>&1)
+        bash "${ABLATION_SCRIPT}" "${exp}" "small" 2>&1)
     
-    if [ $? -eq 0 ]; then
+    BSUB_EXIT_CODE=$?
+    if [ $BSUB_EXIT_CODE -eq 0 ]; then
         # Extract job ID from bsub output (format: "Job <12345> is submitted to queue <gpuv100>")
-        JOB_ID=$(echo "${JOB_OUTPUT}" | grep -oP 'Job <\K[0-9]+(?=>)')
+        JOB_ID=$(echo "${JOB_OUTPUT}" | grep -oP 'Job <\K[0-9]+(?=>)' || echo "")
         if [ -n "${JOB_ID}" ]; then
             JOB_IDS+=("${JOB_ID}")
             echo "SUCCESS (Job ID: ${JOB_ID})"
             SUBMITTED_COUNT=$((SUBMITTED_COUNT + 1))
         else
-            echo "SUBMITTED (could not extract job ID)"
-            SUBMITTED_COUNT=$((SUBMITTED_COUNT + 1))
+            # Try alternative format or just check if output contains "submitted"
+            if echo "${JOB_OUTPUT}" | grep -qi "submitted"; then
+                echo "SUBMITTED (could not extract job ID from: ${JOB_OUTPUT})"
+                SUBMITTED_COUNT=$((SUBMITTED_COUNT + 1))
+            else
+                echo "FAILED - bsub output: ${JOB_OUTPUT}"
+                FAILED_COUNT=$((FAILED_COUNT + 1))
+            fi
         fi
     else
-        echo "FAILED"
+        echo "FAILED (bsub exit code: ${BSUB_EXIT_CODE})"
+        echo "bsub output: ${JOB_OUTPUT}"
         FAILED_COUNT=$((FAILED_COUNT + 1))
     fi
     
@@ -146,6 +161,7 @@ for exp in "${LARGE_EXPERIMENTS[@]}"; do
     echo -n "  Submitting ${exp}... "
     
     # Submit job and capture job ID
+    # Use bash -c to ensure proper execution
     JOB_OUTPUT=$(bsub -J "ablation_${exp}" \
         -o "${BASE_DIR}/training/hpc_scripts/logs/ablation_${exp}.%J.out" \
         -e "${BASE_DIR}/training/hpc_scripts/logs/ablation_${exp}.%J.err" \
@@ -154,21 +170,29 @@ for exp in "${LARGE_EXPERIMENTS[@]}"; do
         -gpu "num=1" \
         -W 24:00 \
         -q gpuv100 \
-        "${ABLATION_SCRIPT}" "${exp}" "large" 2>&1)
+        bash "${ABLATION_SCRIPT}" "${exp}" "large" 2>&1)
     
-    if [ $? -eq 0 ]; then
+    BSUB_EXIT_CODE=$?
+    if [ $BSUB_EXIT_CODE -eq 0 ]; then
         # Extract job ID from bsub output
-        JOB_ID=$(echo "${JOB_OUTPUT}" | grep -oP 'Job <\K[0-9]+(?=>)')
+        JOB_ID=$(echo "${JOB_OUTPUT}" | grep -oP 'Job <\K[0-9]+(?=>)' || echo "")
         if [ -n "${JOB_ID}" ]; then
             JOB_IDS+=("${JOB_ID}")
             echo "SUCCESS (Job ID: ${JOB_ID})"
             SUBMITTED_COUNT=$((SUBMITTED_COUNT + 1))
         else
-            echo "SUBMITTED (could not extract job ID)"
-            SUBMITTED_COUNT=$((SUBMITTED_COUNT + 1))
+            # Try alternative format or just check if output contains "submitted"
+            if echo "${JOB_OUTPUT}" | grep -qi "submitted"; then
+                echo "SUBMITTED (could not extract job ID from: ${JOB_OUTPUT})"
+                SUBMITTED_COUNT=$((SUBMITTED_COUNT + 1))
+            else
+                echo "FAILED - bsub output: ${JOB_OUTPUT}"
+                FAILED_COUNT=$((FAILED_COUNT + 1))
+            fi
         fi
     else
-        echo "FAILED"
+        echo "FAILED (bsub exit code: ${BSUB_EXIT_CODE})"
+        echo "bsub output: ${JOB_OUTPUT}"
         FAILED_COUNT=$((FAILED_COUNT + 1))
     fi
     

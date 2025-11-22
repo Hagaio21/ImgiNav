@@ -49,7 +49,7 @@ resubmit_job() {
   local attempt=$1
   local exit_code=$2
   
-  if [ $attempt -ge $MAX_RESUBMITS ]; then
+  if [ $attempt -gt $MAX_RESUBMITS ]; then
     echo "ERROR: Maximum resubmission attempts (${MAX_RESUBMITS}) reached. Giving up." >&2
     return 1
   fi
@@ -58,7 +58,6 @@ resubmit_job() {
   echo "=========================================="
   echo "Job failed (attempt ${attempt}/${MAX_RESUBMITS})"
   echo "Exit code: ${exit_code}"
-  echo "Detected GPU unavailability error."
   echo "Waiting ${RESUBMIT_DELAY} seconds before resubmitting..."
   echo "=========================================="
   
@@ -73,7 +72,7 @@ resubmit_job() {
   
   # Resubmit the same job using bsub
   cd "${SCRIPT_DIR}"
-  bsub -J "ablation_${EXPERIMENT_NAME}_retry${attempt}" \
+  RESUBMIT_OUTPUT=$(bsub -J "ablation_${EXPERIMENT_NAME}_retry${attempt}" \
     -o "${LOG_DIR}/ablation_${EXPERIMENT_NAME}_retry${attempt}.%J.out" \
     -e "${LOG_DIR}/ablation_${EXPERIMENT_NAME}_retry${attempt}.%J.err" \
     -n 8 \
@@ -81,10 +80,18 @@ resubmit_job() {
     -gpu "num=1" \
     -W 24:00 \
     -q gpuv100 \
-    "${ABLATION_SCRIPT}" "${EXPERIMENT_NAME}" "${MODEL_SIZE}" "${attempt}"
+    bash "${ABLATION_SCRIPT}" "${EXPERIMENT_NAME}" "${MODEL_SIZE}" "${attempt}" 2>&1)
   
-  echo "Job resubmitted successfully (attempt ${attempt})"
-  exit 0
+  RESUBMIT_EXIT=$?
+  if [ $RESUBMIT_EXIT -eq 0 ]; then
+    echo "Job resubmitted successfully (attempt ${attempt})"
+    echo "bsub output: ${RESUBMIT_OUTPUT}"
+    exit 0
+  else
+    echo "ERROR: Failed to resubmit job (bsub exit code: ${RESUBMIT_EXIT})" >&2
+    echo "bsub output: ${RESUBMIT_OUTPUT}" >&2
+    return 1
+  fi
 }
 
 

@@ -531,9 +531,9 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     cfg_info = f" with CFG scale={guidance_scale}" if guidance_scale > 1.0 else ""
     
     # ============================================================================
-    # Part 1: Generate 8x8 grid of unconditioned samples (64 samples)
+    # Part 1: Generate 4x4 grid of unconditioned samples (16 samples)
     # ============================================================================
-    print(f"  Generating 64 unconditioned samples (8x8 grid) using DDPM ({num_steps} steps){cfg_info}...")
+    print(f"  Generating 16 unconditioned samples (4x4 grid) using DDPM ({num_steps} steps){cfg_info}...")
     
     # Use epoch-based seed for sampling
     cpu_rng_state = torch.get_rng_state()
@@ -548,7 +548,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     with torch.no_grad():
         unconditioned_output = model.sample(
-            batch_size=64,
+            batch_size=16,
                     num_steps=num_steps,
                     method="ddpm",
                     eta=1.0,
@@ -575,16 +575,16 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
                 print("  Warning: Decoder did not produce RGB output for unconditioned samples")
                 unconditioned_rgb = None
     
-    # Save 8x8 unconditioned grid
+    # Save 4x4 unconditioned grid
     if unconditioned_rgb is not None:
         unconditioned_np = (unconditioned_rgb.cpu().numpy() * 255.0).astype(np.uint8)
         unconditioned_images = []
-        for i in range(64):
+        for i in range(16):
             img = Image.fromarray(unconditioned_np[i].transpose(1, 2, 0))
             unconditioned_images.append(img)
         
         img_size = unconditioned_images[0].size[0]
-        grid_n = 8  # 8x8 grid
+        grid_n = 4  # 4x4 grid
         unconditioned_grid = Image.new('RGB', (img_size * grid_n, img_size * grid_n))
         for idx, img in enumerate(unconditioned_images):
             row = idx // grid_n
@@ -592,9 +592,9 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             unconditioned_grid.paste(img, (col * img_size, row * img_size))
         
         epoch_prefix = f"{exp_name}_epoch_{epoch:03d}" if exp_name else f"epoch_{epoch:03d}"
-        unconditioned_path = samples_dir / f"{epoch_prefix}_unconditioned_8x8.png"
+        unconditioned_path = samples_dir / f"{epoch_prefix}_unconditioned_4x4.png"
         unconditioned_grid.save(unconditioned_path)
-        print(f"  Saved 64 unconditioned samples (8x8 grid) to {unconditioned_path}")
+        print(f"  Saved 16 unconditioned samples (4x4 grid) to {unconditioned_path}")
     
     # Remove old logic that processed all_samples - we now handle unconditioned separately
     all_samples = []
