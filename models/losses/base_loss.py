@@ -527,9 +527,18 @@ class CompositeLoss(LossComponent):
             self.losses.append(LOSS_REGISTRY[loss_type].from_config(sub_cfg))
 
     def forward(self, preds, targets):
-        total, logs = 0.0, {}
+        total = None
+        logs = {}
         for loss_fn in self.losses:
             loss, sublog = loss_fn(preds, targets)
-            total += loss
+            if total is None:
+                total = loss
+            else:
+                total = total + loss
             logs.update(sublog)
+        # Ensure total is a tensor (if all losses returned zero, create a zero tensor)
+        if total is None:
+            # No losses, return zero tensor on appropriate device
+            device = next(iter(preds.values())).device if preds else torch.device("cpu")
+            total = torch.tensor(0.0, device=device, requires_grad=True)
         return total, logs
