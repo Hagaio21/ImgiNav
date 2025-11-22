@@ -977,11 +977,22 @@ def main():
         write_flag(flags_file, "VAE_TRAINED", "true")
     
     # Step 2: Embed dataset
+    # First check for shared embedding (created by standalone embedding script)
+    SHARED_EMBEDDING_MANIFEST = Path("/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv")
+    
     saved_embedded_manifest = check_flag(flags_file, "EMBEDDED_MANIFEST")
     
     if saved_embedded_manifest and Path(saved_embedded_manifest).exists():
         print(f"Resuming: Found saved embedded manifest in flags: {saved_embedded_manifest}")
         embedded_manifest = Path(saved_embedded_manifest)
+    elif SHARED_EMBEDDING_MANIFEST.exists():
+        print(f"Found shared embedding manifest: {SHARED_EMBEDDING_MANIFEST}")
+        print("Using shared embedding - skipping embedding step")
+        embedded_manifest = SHARED_EMBEDDING_MANIFEST
+        write_flag(flags_file, "EMBEDDED_MANIFEST", str(embedded_manifest.resolve()))
+        write_flag(flags_file, "EMBEDDED", "true")
+        write_flag(flags_file, "USED_SHARED_EMBEDDING", "true")
+        print(f"Saved shared embedding manifest to flags: {embedded_manifest}")
     elif not args.skip_embedding:
         success = embed_controlnet_dataset_with_vae(
             ae_checkpoint,

@@ -18,6 +18,7 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_pipeline_conditional_crossattention.py
 AE_CONFIG="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256.yaml"
 DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/new_layouts/conditional_crossattention_diffusion_large.yaml"
 CONTROLNET_MANIFEST="/work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv"
+SHARED_EMBEDDING_MANIFEST="/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Ensure log directory exists
@@ -96,8 +97,21 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   exit 1
 fi
 
+# Check for shared embedding
+if [ -f "${SHARED_EMBEDDING_MANIFEST}" ]; then
+  echo ""
+  echo "=========================================="
+  echo "Found shared embedding manifest"
+  echo "=========================================="
+  echo "Using shared embedding: ${SHARED_EMBEDDING_MANIFEST}"
+  echo "Pipeline will skip embedding step and use shared embeddings"
+  echo "=========================================="
+  echo ""
+fi
+
 # Run pipeline
 # Pipeline will automatically detect if VAE checkpoint exists and skip training if found
+# Pipeline will also automatically use shared embedding if it exists
 python "${PYTHON_SCRIPT}" \
   --ae-config "${AE_CONFIG}" \
   --diffusion-config "${DIFFUSION_CONFIG}" \

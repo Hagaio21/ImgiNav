@@ -23,6 +23,7 @@ PYTHON_SCRIPT="${BASE_DIR}/training/train_pipeline_conditional_crossattention.py
 AE_CONFIG="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256.yaml"
 DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/new_layouts/${EXPERIMENT_NAME}.yaml"
 CONTROLNET_MANIFEST="/work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv"
+SHARED_EMBEDDING_MANIFEST="/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 SCRIPT_DIR="${BASE_DIR}/training/hpc_scripts"
 MAX_RESUBMITS=5  # Maximum number of auto-resubmissions
@@ -72,6 +73,7 @@ resubmit_job() {
   
   # Resubmit the same job using bsub
   cd "${SCRIPT_DIR}"
+  ABLATION_SCRIPT="${SCRIPT_DIR}/run_conditional_crossattention_pipeline_ablation.sh"
   RESUBMIT_OUTPUT=$(bsub -J "ablation_${EXPERIMENT_NAME}_retry${attempt}" \
     -o "${LOG_DIR}/ablation_${EXPERIMENT_NAME}_retry${attempt}.%J.out" \
     -e "${LOG_DIR}/ablation_${EXPERIMENT_NAME}_retry${attempt}.%J.err" \
@@ -140,6 +142,17 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   exit 1
 fi
 
+# Check for shared embedding
+if [ -f "${SHARED_EMBEDDING_MANIFEST}" ]; then
+  echo ""
+  echo "=========================================="
+  echo "Found shared embedding manifest"
+  echo "=========================================="
+  echo "Using shared embedding: ${SHARED_EMBEDDING_MANIFEST}"
+  echo "Pipeline will skip embedding step and use shared embeddings"
+  echo "=========================================="
+fi
+
 # Run pipeline
 echo ""
 echo "Pipeline attempt ${CURRENT_ATTEMPT}/${MAX_RESUBMITS}"
@@ -184,7 +197,11 @@ with open('${DIFFUSION_CONFIG}', 'r') as f:
 " 2>/dev/null || echo "")
   
   EMBEDDING_COMPLETED=0
-  if [ -n "${DIFFUSION_SAVE_PATH}" ] && [ -d "${DIFFUSION_SAVE_PATH}" ]; then
+  # Check if shared embedding exists (always safe to resubmit)
+  if [ -f "${SHARED_EMBEDDING_MANIFEST}" ]; then
+    EMBEDDING_COMPLETED=1
+    echo "✓ Shared embedding exists - embedding stage always completed"
+  elif [ -n "${DIFFUSION_SAVE_PATH}" ] && [ -d "${DIFFUSION_SAVE_PATH}" ]; then
     FLAGS_FILE="${DIFFUSION_SAVE_PATH}/flags.txt"
     if [ -f "${FLAGS_FILE}" ]; then
       # Check if EMBEDDED_MANIFEST flag exists (means embedding completed)
