@@ -10,6 +10,7 @@ class Autoencoder(BaseModel):
     def _build(self):
         encoder_cfg = self._init_kwargs.get("encoder", None)
         decoder_cfg = self._init_kwargs.get("decoder", None)
+        clip_projection_cfg = self._init_kwargs.get("clip_projection", None)
 
         if encoder_cfg is None or decoder_cfg is None:
             raise ValueError("Autoencoder requires both 'encoder' and 'decoder' configs.")
@@ -17,6 +18,25 @@ class Autoencoder(BaseModel):
         self.encoder = Encoder.from_config(encoder_cfg)
         self.decoder = Decoder.from_config(decoder_cfg)
         
+        # Optional CLIP projection layers (for joint embedding space training)
+        self.clip_projections = None
+        if clip_projection_cfg is not None:
+            from models.losses.clip_loss import CLIPProjections
+            # Create projection layers (these will be trainable)
+            projection_dim = clip_projection_cfg.get("projection_dim", 256)
+            text_dim = clip_projection_cfg.get("text_dim", 384)
+            pov_dim = clip_projection_cfg.get("pov_dim", 512)
+            latent_dim = clip_projection_cfg.get("latent_dim", None)
+            self.clip_projections = CLIPProjections(
+                projection_dim=projection_dim,
+                text_dim=text_dim,
+                pov_dim=pov_dim,
+                latent_dim=latent_dim
+            )
+            # Mark that we're using CLIP projections
+            self._has_clip_projections = True
+        else:
+            self._has_clip_projections = False
 
         if encoder_cfg.get("frozen", False):
             self.encoder.freeze()

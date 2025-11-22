@@ -52,13 +52,13 @@ class Encoder(BaseComponent):
         
         Returns:
             - Regular mode: {"latent": z}
-            - VAE mode: {"mu": mu, "logvar": logvar}
+            - VAE mode: {"mu": mu, "logvar": logvar, "latent_features": features}
         """
         if self.variational:
             features = self.feature_extractor(x)
             mu = self.mu_head(features)
             logvar = self.logvar_head(features)
-            return {"mu": mu, "logvar": logvar}
+            return {"mu": mu, "logvar": logvar, "latent_features": features}
         else:
             z = self.encoder(x)
             return {"latent": z}

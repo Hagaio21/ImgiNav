@@ -604,6 +604,18 @@ def main():
     print("Building loss function...")
     loss_fn = build_loss(config)
     
+    # Connect CLIP loss projections to model if using CLIP loss
+    if hasattr(model, 'clip_projections') and model.clip_projections is not None:
+        from models.losses.base_loss import LOSS_REGISTRY
+        CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
+        CLIPLossClass = LOSS_REGISTRY.get("CLIPLoss")
+        if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
+            for sub_loss in loss_fn.losses:
+                if CLIPLossClass and isinstance(sub_loss, CLIPLossClass):
+                    # Connect model's projections to CLIP loss
+                    sub_loss.set_projections(model.clip_projections)
+                    print("  Connected CLIP projections from model to CLIP loss")
+    
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)
     if should_resume:

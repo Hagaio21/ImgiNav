@@ -13,6 +13,7 @@ from .base_loss import (
 )
 from .semantic_loss import SemanticLoss
 from .diffusion_losses import SNRWeightedNoiseLoss, DiscriminatorLoss, LatentStructuralLoss
+from .clip_loss import CLIPLoss
 from .advanced_losses import (
     FrequencyDomainLoss,
     CharbonnierLoss,
@@ -37,6 +38,7 @@ __all__ = [
     "SNRWeightedNoiseLoss",
     "DiscriminatorLoss",
     "LatentStructuralLoss",
+    "CLIPLoss",
     "FrequencyDomainLoss",
     "CharbonnierLoss",
     "FeatureMatchingLoss",
