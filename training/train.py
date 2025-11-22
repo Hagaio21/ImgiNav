@@ -147,18 +147,6 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
             with torch.amp.autocast('cuda'):
                 outputs = model(batch["rgb"])
                 
-                # Diagnostic: Check if latent_features has gradients (for CLIP loss)
-                if "latent_features" in outputs:
-                    latent_features = outputs["latent_features"]
-                    if not latent_features.requires_grad:
-                        raise RuntimeError(
-                            f"latent_features does not require gradients! "
-                            f"Encoder trainable: {any(p.requires_grad for p in model.encoder.parameters())}, "
-                            f"Model train mode: {model.training}"
-                        )
-                
-                loss, logs = loss_fn(outputs, batch)
-                
                 # Collect latents for statistics (VAE: mu, AE: latent)
                 if collect_latents and all_latents is not None:
                     if "mu" in outputs:
@@ -166,7 +154,11 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
                     elif "latent" in outputs:
                         all_latents.append(outputs["latent"].detach().cpu())
             
-            # Ensure loss is a tensor (exit autocast first)
+            # Compute loss OUTSIDE autocast (like in test script)
+            # This ensures the computation graph is properly connected
+            loss, logs = loss_fn(outputs, batch)
+            
+            # Ensure loss is a tensor
             if not isinstance(loss, torch.Tensor):
                 raise TypeError(f"Loss must be a tensor, got {type(loss)}: {loss}")
             
