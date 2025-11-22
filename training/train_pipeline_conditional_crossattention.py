@@ -623,6 +623,18 @@ NumpySafeLoader.add_constructor(
 )
 
 
+class NumpyFullLoader(yaml.FullLoader):
+    """Custom YAML FullLoader that handles numpy scalar types."""
+    pass
+
+
+# Register the constructor for numpy scalar types in FullLoader too
+NumpyFullLoader.add_constructor(
+    'tag:yaml.org,2002:python/object/apply:numpy.core.multiarray.scalar',
+    numpy_scalar_constructor
+)
+
+
 def update_diffusion_config(
     diffusion_config_path,
     ae_checkpoint_path,
@@ -647,10 +659,10 @@ def update_diffusion_config(
         with open(diffusion_config_path, 'r') as f:
             config = yaml.load(f, Loader=NumpySafeLoader)
     except (yaml.constructor.ConstructorError, yaml.YAMLError) as e:
-        # If custom loader fails (e.g., other numpy types), try FullLoader
-        print(f"Warning: Custom loader failed, trying FullLoader: {e}")
+        # If custom loader fails (e.g., other numpy types), try FullLoader with numpy support
+        print(f"Warning: Custom loader failed, trying FullLoader with numpy support: {e}")
     with open(diffusion_config_path, 'r') as f:
-            config = yaml.load(f, Loader=yaml.FullLoader)
+            config = yaml.load(f, Loader=NumpyFullLoader)
     
     # Validate checkpoint path exists
     ae_checkpoint_resolved = Path(ae_checkpoint_path).resolve()
