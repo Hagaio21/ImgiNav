@@ -1,7 +1,7 @@
 experiment:
-  name: conditional_crossattention_diffusion
+  name: conditional_crossattention_diffusion_large
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/new_layouts/conditional_crossattention_diffusion
+  save_path: /work3/s233249/ImgiNav/experiments/new_layouts/conditional_crossattention_diffusion_large
   epochs_target: 300
 
 dataset:
@@ -33,7 +33,7 @@ embedding_projection:
   type: EmbeddingToSpatial
   text_dim: 384          # Graph embedding dimension (all-MiniLM-L6-v2)
   pov_dim: 512          # POV embedding dimension (ResNet18)
-  output_channels: 48    # Matches UNet base_channels (reduced for memory)
+  output_channels: 96    # Matches UNet base_channels (larger model)
   spatial_size: [16, 16] # Smaller initial size for 32x32 latents (will be interpolated to match UNet resolution)
   combine_method: concat_proj  # Options: "add", "concat", "concat_proj"
 
@@ -42,24 +42,23 @@ unet:
   in_channels: 4
   out_channels: 4
   
-  # SMALLER MODEL FOR CROSS-ATTENTION AT ALL LEVELS
+  # LARGER MODEL FOR CROSS-ATTENTION AT ALL LEVELS
   # With 32x32 latents, depth=4 gives: 32→16→8→4 (bottleneck at 4x4)
-  # For better memory efficiency, we can use depth=3: 32→16→8 (bottleneck at 8x8)
-  base_channels: 48       # Reduced from 96 to allow cross-attention everywhere
-  depth: 3                # Reduced depth for 32x32 latents (Bottleneck at 8x8 resolution)
-  num_res_blocks: 2
+  base_channels: 96       # Double the base channels for larger capacity
+  depth: 4                # Full depth for 32x32 latents (Bottleneck at 4x4 resolution)
+  num_res_blocks: 3       # More residual blocks per level
   
   time_dim: 256
-  norm_groups: 8          # Standard for 48 channels
+  norm_groups: 8          # Standard for 96 channels (divisible by 8)
   dropout: 0.1
   
   # CROSS-ATTENTION AT ALL LEVELS (core architecture feature)
   use_attention: true
-  attention_heads: 4      # Reduced from 8 to save memory
+  attention_heads: 8      # Double the attention heads for better capacity
   attention_at:
-    - bottleneck          # Cross-attention at 8x8 (global context) - with 32x32 latents, depth=3
-    - downs               # Cross-attention at 16x16 (hierarchical conditioning) - only one down level with depth=3
-    - ups                 # Cross-attention at 16x16 (refinement) - only one up level with depth=3
+    - bottleneck          # Cross-attention at 4x4 (global context) - with 32x32 latents, depth=4
+    - downs               # Cross-attention at 8x8 and 16x16 (hierarchical conditioning)
+    - ups                 # Cross-attention at 8x8 and 16x16 (refinement)
   
   # Enable cross-attention for embedding conditioning
   enable_cross_attention: true
@@ -74,7 +73,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 32          # Can use larger batch with 32x32 latents (much smaller attention matrices)
+  batch_size: 16          # Reduced batch size for larger model (more memory intensive)
   num_workers: 8
   shuffle: true
   epochs: 300

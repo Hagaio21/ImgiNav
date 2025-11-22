@@ -14,6 +14,7 @@ import math
 import numpy as np
 from PIL import Image
 import sys
+import json
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -109,7 +110,7 @@ def calculate_scale_factor_from_dataset(dataset, num_samples=100, seed=42):
 
 def compute_loss(
     model, batch, latents, t, noise, cond, loss_fn, 
-    use_amp=False, device_obj=None, needs_decoding=False
+    use_amp=False, device_obj=None, needs_decoding=False, cfg_dropout_rate=0.0
 ):
     """
     Compute loss using CompositeLoss from config.
@@ -153,6 +154,13 @@ def compute_loss(
     if pov_emb is not None:
         if pov_emb.dim() > 1:
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+    
+    # Apply CFG dropout for embeddings (randomly drop embeddings with cfg_dropout_rate probability)
+    # This teaches the model to work both with and without cross-attention conditioning
+    if cfg_dropout_rate > 0.0 and text_emb is not None and pov_emb is not None:
+        if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
+            text_emb = None  # Drop embeddings for CFG training
+            pov_emb = None
     
     # Forward pass through model
     outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
@@ -287,7 +295,7 @@ def train_epoch(
             with torch.amp.autocast('cuda'):
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, needs_decoding
+                    use_amp, device_obj, needs_decoding, cfg_dropout_rate
                 )
             
             optimizer.zero_grad()
@@ -315,7 +323,7 @@ def train_epoch(
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
-                use_amp, device_obj, needs_decoding
+                use_amp, device_obj, needs_decoding, cfg_dropout_rate
             )
             
             optimizer.zero_grad()
@@ -431,12 +439,12 @@ def eval_epoch(
                 with torch.amp.autocast('cuda'):
                     total_loss_val, logs = compute_loss(
                         model, batch, latents, t, noise, cond, loss_fn,
-                        use_amp, device_obj, needs_decoding
+                        use_amp, device_obj, needs_decoding, cfg_dropout_rate
                     )
             else:
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, needs_decoding
+                    use_amp, device_obj, needs_decoding, cfg_dropout_rate
                 )
             
             batch_size = latents.shape[0]
@@ -496,130 +504,359 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     all_samples = []
     cfg_info = f" with CFG scale={guidance_scale}" if guidance_scale > 1.0 else ""
     
+    # ============================================================================
+    # Part 1: Generate 8x8 grid of unconditioned samples (64 samples)
+    # ============================================================================
+    print(f"  Generating 64 unconditioned samples (8x8 grid) using DDPM ({num_steps} steps){cfg_info}...")
+    
+    # Use epoch-based seed for sampling
+    cpu_rng_state = torch.get_rng_state()
+    cuda_rng_states = None
+    if torch.cuda.is_available():
+        cuda_rng_states = torch.cuda.get_rng_state_all()
+    
+    sampling_seed = 42 + epoch
+    torch.manual_seed(sampling_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(sampling_seed)
+    
     with torch.no_grad():
-        if is_fully_unconditional:
-            # Fully unconditional training: only generate unconditioned samples
-            print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps) [fully unconditional model]...")
-            sample_output = model.sample(
-                batch_size=samples_per_type,
-                num_steps=num_steps,
-                method="ddpm",
-                eta=1.0,
-                cond=None,  # Always unconditioned
-                guidance_scale=1.0,
-                device=device_obj,
-                verbose=False
-            )
-            all_samples.append(sample_output)
+        unconditioned_output = model.sample(
+            batch_size=64,
+            num_steps=num_steps,
+            method="ddpm",
+            eta=1.0,
+            cond=None,
+            guidance_scale=guidance_scale if guidance_scale > 1.0 else 1.0,
+            text_emb=None,
+            pov_emb=None,
+            device=device_obj,
+            verbose=False
+        )
+        
+        # Decode unconditioned samples
+        if "rgb" in unconditioned_output:
+            unconditioned_rgb = unconditioned_output["rgb"]
+            if unconditioned_rgb.min() < 0:  # [-1, 1] range
+                unconditioned_rgb = (unconditioned_rgb + 1.0) / 2.0
+            unconditioned_rgb = torch.clamp(unconditioned_rgb, 0.0, 1.0)
         else:
-            # Conditional training: generate all types
-            # Generate unconditioned samples (if CFG is enabled, otherwise skip)
-            if supports_conditioning and guidance_scale > 1.0:
-                print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
-                sample_output = model.sample(
-                    batch_size=samples_per_type,
-                    num_steps=num_steps,
-                    method="ddpm",
-                    eta=1.0,
-                    cond=None,  # Unconditioned
-                    guidance_scale=guidance_scale,
-                    device=device_obj,
-                    verbose=False
-                )
-                all_samples.append(sample_output)
-            elif not supports_conditioning:
-                # If no conditioning support, generate unconditioned samples
-                print(f"  Generating {samples_per_type} unconditioned samples (4x4) using DDPM ({num_steps} steps)...")
-                sample_output = model.sample(
-                    batch_size=samples_per_type,
-                    num_steps=num_steps,
-                    method="ddpm",
-                    eta=1.0,
-                    cond=None,
-                    guidance_scale=1.0,
-                    device=device_obj,
-                    verbose=False
-                )
-                all_samples.append(sample_output)
-            
-            # Generate room samples (cond=0) - only if not fully unconditional
-            if supports_conditioning:
-                print(f"  Generating {samples_per_type} ROOM samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
-                cond_room = torch.zeros(samples_per_type, dtype=torch.long, device=device_obj)
-                sample_output = model.sample(
-                    batch_size=samples_per_type,
-                    num_steps=num_steps,
-                    method="ddpm",
-                    eta=1.0,
-                    cond=cond_room,
-                    guidance_scale=guidance_scale,
-                    device=device_obj,
-                    verbose=False
-                )
-                all_samples.append(sample_output)
-            
-            # Generate scene samples (cond=1) - only if not fully unconditional
-            if supports_conditioning:
-                print(f"  Generating {samples_per_type} SCENE samples (4x4) using DDPM ({num_steps} steps){cfg_info}...")
-                cond_scene = torch.ones(samples_per_type, dtype=torch.long, device=device_obj)
-                sample_output = model.sample(
-                    batch_size=samples_per_type,
-                    num_steps=num_steps,
-                    method="ddpm",
-                    eta=1.0,
-                    cond=cond_scene,
-                    guidance_scale=guidance_scale,
-                    device=device_obj,
-                    verbose=False
-                )
-                all_samples.append(sample_output)
+            decoded = model.decoder({"latent": unconditioned_output["latent"]})
+            if "rgb" in decoded:
+                unconditioned_rgb = (decoded["rgb"] + 1.0) / 2.0
+                unconditioned_rgb = torch.clamp(unconditioned_rgb, 0.0, 1.0)
+            else:
+                print("  Warning: Decoder did not produce RGB output for unconditioned samples")
+                unconditioned_rgb = None
     
-    # Process all samples: decode and convert to [0, 255]
-    processed_samples = []
-    for sample_output in all_samples:
-        if "rgb" in sample_output:
-            # Already decoded, in [0, 1] range
-            samples = sample_output["rgb"] * 255.0
+    # Save 8x8 unconditioned grid
+    if unconditioned_rgb is not None:
+        unconditioned_np = (unconditioned_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+        unconditioned_images = []
+        for i in range(64):
+            img = Image.fromarray(unconditioned_np[i].transpose(1, 2, 0))
+            unconditioned_images.append(img)
+        
+        img_size = unconditioned_images[0].size[0]
+        grid_n = 8  # 8x8 grid
+        unconditioned_grid = Image.new('RGB', (img_size * grid_n, img_size * grid_n))
+        for idx, img in enumerate(unconditioned_images):
+            row = idx // grid_n
+            col = idx % grid_n
+            unconditioned_grid.paste(img, (col * img_size, row * img_size))
+        
+        epoch_prefix = f"{exp_name}_epoch_{epoch:03d}" if exp_name else f"epoch_{epoch:03d}"
+        unconditioned_path = samples_dir / f"{epoch_prefix}_unconditioned_8x8.png"
+        unconditioned_grid.save(unconditioned_path)
+        print(f"  Saved 64 unconditioned samples (8x8 grid) to {unconditioned_path}")
+    
+    # Remove old logic that processed all_samples - we now handle unconditioned separately
+    all_samples = []
+    
+
+    # ============================================================================
+    # Part 2: Targets vs Generated comparison (4 rooms + 4 scenes)
+    # ============================================================================
+    # Get dataset to find rooms and scenes
+    dataset = val_loader.dataset
+    
+    # Find 4 rooms and 4 scenes from the validation dataset
+    room_indices = []
+    scene_indices = []
+    
+    # Check if dataset has 'type' column
+    if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
+        for idx in range(len(dataset)):
+            row = dataset.df.iloc[idx]
+            sample_type = str(row.get('type', '')).lower().strip()
+            if sample_type == 'room' and len(room_indices) < 4:
+                room_indices.append(idx)
+            elif sample_type == 'scene' and len(scene_indices) < 4:
+                scene_indices.append(idx)
+            if len(room_indices) >= 4 and len(scene_indices) >= 4:
+                break
+    else:
+        # Fallback: use first 8 samples if type column not available
+        room_indices = list(range(min(4, len(dataset))))
+        scene_indices = list(range(min(4, len(dataset))))
+    
+    # Combine indices: 4 rooms + 4 scenes = 8 total
+    selected_indices = room_indices + scene_indices
+    batch_size = len(selected_indices)
+    
+    if batch_size < 8:
+        print(f"  Warning: Could only find {len(room_indices)} rooms and {len(scene_indices)} scenes. Using available samples.")
+    
+    if batch_size == 0:
+        print("  Warning: No samples found in validation dataset for comparison")
+        return
+    
+    # Load selected samples from dataset
+    batch_data = {}
+    batch_indices = []
+    
+    for idx in selected_indices:
+        sample = dataset[idx]
+        for key, value in sample.items():
+            if key not in batch_data:
+                batch_data[key] = []
+            batch_data[key].append(value)
+        batch_indices.append(idx)
+    
+    # Convert lists to tensors
+    batch = {}
+    for key, values in batch_data.items():
+        if isinstance(values[0], torch.Tensor):
+            batch[key] = torch.stack(values)
         else:
-            # Decode from latents
-            outputs = model.decoder({"latent": sample_output["latent"]})
-            samples = outputs["rgb"]  # [-1, 1] range from tanh
-            samples = (samples + 1.0) / 2.0  # [-1, 1] -> [0, 1]
-            samples = samples * 255.0  # [0, 1] -> [0, 255]
-        processed_samples.append(samples)
+            batch[key] = values
     
-    # Concatenate all samples: [unconditioned, rooms, scenes]
-    all_samples_tensor = torch.cat(processed_samples, dim=0)  # [48, C, H, W] if all 3 types
+    batch = move_batch_to_device(batch, device_obj, non_blocking=False)
     
-    # Convert to numpy
-    samples_np = all_samples_tensor.cpu().numpy()
-    samples_np = np.clip(samples_np, 0, 255).astype(np.uint8)
+    print(f"  Selected {len(room_indices)} rooms and {len(scene_indices)} scenes for comparison")
     
-    # Create grid: 3 sections stacked vertically, each 4x4
-    # Total: 12 rows x 4 columns (if all 3 types) or 4 rows x 4 columns (if only 1 type)
-    num_sections = len(processed_samples)  # Number of types (1, 2, or 3)
-    num_rows_total = num_sections * grid_size  # Total rows: 12 if 3 types, 4 if 1 type
-    num_cols = grid_size  # 4 columns
+    # Extract embeddings and conditions
+    text_emb = batch.get("text_emb", None)
+    pov_emb = batch.get("pov_emb", None)
+    target_latents = batch.get("latent", None)
     
-    images = []
-    for i in range(all_samples_tensor.shape[0]):
-        img = samples_np[i].transpose(1, 2, 0)  # [C, H, W] -> [H, W, C]
-        images.append(Image.fromarray(img))
+    # Extract cond (room/scene type) if available
+    cond = None
+    type_labels = batch.get("type", None)
+    if type_labels is not None:
+        if isinstance(type_labels, (list, tuple)) and len(type_labels) > 0:
+            if isinstance(type_labels[0], str):
+                cond = torch.tensor(
+                    [0 if t.lower().strip() == "room" else 1 for t in type_labels],
+                    device=device_obj, dtype=torch.long
+                )
+            else:
+                cond = torch.tensor(type_labels, device=device_obj, dtype=torch.long)
+        elif isinstance(type_labels, torch.Tensor):
+            cond = type_labels.to(device_obj)
     
-    # Create grid image: stacked 4x4 grids
-    img_size = images[0].size[0]
-    grid_width = img_size * num_cols
-    grid_height = img_size * num_rows_total
-    grid_img = Image.new('RGB', (grid_width, grid_height))
+    # Ensure embeddings are 1D (flatten if needed)
+    if text_emb is not None:
+        if text_emb.dim() > 1:
+            text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+    if pov_emb is not None:
+        if pov_emb.dim() > 1:
+            pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
     
-    for idx, img in enumerate(images):
-        row = idx // num_cols
-        col = idx % num_cols
-        grid_img.paste(img, (col * img_size, row * img_size))
+    # Check if we have embeddings for cross-attention
+    has_embeddings = text_emb is not None and pov_emb is not None
     
-    grid_path = samples_dir / (f"{exp_name}_epoch_{epoch:03d}_samples.png" if exp_name else f"epoch_{epoch:03d}_samples.png")
-    grid_img.save(grid_path)
-    print(f"  Saved {all_samples_tensor.shape[0]} samples ({num_sections} types x {grid_size}x{grid_size} grids = {num_rows_total}x{num_cols} total grid) to {samples_dir}")
+    if not has_embeddings:
+        print("  Warning: Cannot generate conditioned samples without text_emb and pov_emb")
+        text_emb = None
+        pov_emb = None
+    
+    if target_latents is None:
+        print("  Warning: Cannot decode target latents - missing 'latent' in batch")
+        return
+    
+    # Decode target latents to RGB (for comparison)
+    print(f"  Decoding {batch_size} target layouts...")
+    with torch.no_grad():
+        target_decoded = model.decoder({"latent": target_latents})
+        if "rgb" in target_decoded:
+            target_rgb = (target_decoded["rgb"] + 1.0) / 2.0
+            target_rgb = torch.clamp(target_rgb, 0.0, 1.0)
+        else:
+            print("  Warning: Decoder did not produce RGB output for targets")
+            target_rgb = None
+    
+    # Generate conditioned samples using DDPM
+    print(f"  Generating {batch_size} conditioned samples using cross-attention diffusion with DDPM ({num_steps} steps){cfg_info}...")
+    
+    with torch.no_grad():
+        conditioned_output = model.sample(
+            batch_size=batch_size,
+            num_steps=num_steps,
+            method="ddpm",
+            eta=1.0,
+            cond=cond,
+            guidance_scale=guidance_scale,
+            text_emb=text_emb,
+            pov_emb=pov_emb,
+            device=device_obj,
+            verbose=False
+        )
+        
+        # Decode generated latents to RGB
+        if "rgb" in conditioned_output:
+            generated_rgb = conditioned_output["rgb"]
+            if generated_rgb.min() < 0:  # [-1, 1] range
+                generated_rgb = (generated_rgb + 1.0) / 2.0
+            generated_rgb = torch.clamp(generated_rgb, 0.0, 1.0)
+        else:
+            decoded = model.decoder({"latent": conditioned_output["latent"]})
+            if "rgb" in decoded:
+                generated_rgb = (decoded["rgb"] + 1.0) / 2.0
+                generated_rgb = torch.clamp(generated_rgb, 0.0, 1.0)
+            else:
+                print("  Warning: Decoder did not produce RGB output for generated samples")
+                generated_rgb = None
+    
+    # Create side-by-side comparison: target (left) | generated (right)
+    if target_rgb is not None and generated_rgb is not None:
+        # Convert to [0, 255] for PIL
+        target_np = (target_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+        generated_np = (generated_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+        
+        # Create images
+        target_images = []
+        generated_images = []
+        for i in range(batch_size):
+            target_img = Image.fromarray(target_np[i].transpose(1, 2, 0))
+            generated_img = Image.fromarray(generated_np[i].transpose(1, 2, 0))
+            target_images.append(target_img)
+            generated_images.append(generated_img)
+        
+        # Create side-by-side comparison
+        img_size = target_images[0].size[0]
+        grid_n = 4  # 4 columns (2 rows: 4 rooms on top, 4 scenes on bottom)
+        num_rows = (batch_size + grid_n - 1) // grid_n
+        
+        # Create target grid
+        target_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
+        for idx, img in enumerate(target_images):
+            row = idx // grid_n
+            col = idx % grid_n
+            target_grid.paste(img, (col * img_size, row * img_size))
+        
+        # Create generated grid
+        generated_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
+        for idx, img in enumerate(generated_images):
+            row = idx // grid_n
+            col = idx % grid_n
+            generated_grid.paste(img, (col * img_size, row * img_size))
+        
+        # Concatenate horizontally (side by side)
+        comparison_width = img_size * grid_n * 2
+        comparison_height = img_size * num_rows
+        comparison_img = Image.new('RGB', (comparison_width, comparison_height))
+        comparison_img.paste(target_grid, (0, 0))
+        comparison_img.paste(generated_grid, (img_size * grid_n, 0))
+        
+        # Save comparison
+        epoch_prefix = f"{exp_name}_epoch_{epoch:03d}" if exp_name else f"epoch_{epoch:03d}"
+        comparison_path = samples_dir / f"{epoch_prefix}_comparison.png"
+        comparison_img.save(comparison_path)
+        print(f"  Saved target vs generated comparison ({batch_size} samples: {len(room_indices)} rooms + {len(scene_indices)} scenes) to {comparison_path}")
+        
+        # Also save generated samples only
+        samples_path = samples_dir / f"{epoch_prefix}_samples.png"
+        generated_grid.save(samples_path)
+        print(f"  Saved generated samples ({batch_size} samples) to {samples_path}")
+        
+        # ============================================================================
+        # Part 3: Save individual images with conditions
+        # ============================================================================
+        # Create directory for individual samples with conditions
+        data_dir = output_dir / "sample_data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        images_dir = data_dir / f"{epoch_prefix}_images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get paths from dataset
+        graph_texts = []
+        layout_paths = []
+        pov_paths = []
+        
+        for i in range(batch_size):
+            idx = batch_indices[i] if i < len(batch_indices) else i
+            row = dataset.df.iloc[idx]
+            
+            # Get graph text path
+            graph_text_path = row.get("graph_text_path", "")
+            if graph_text_path and Path(graph_text_path).exists():
+                try:
+                    with open(graph_text_path, 'r') as f:
+                        graph_text = f.read()
+                    graph_texts.append(graph_text)
+                    # Save graph text
+                    text_file = images_dir / f"sample_{i:03d}_graph_text.txt"
+                    with open(text_file, 'w') as f:
+                        f.write(graph_text)
+                except Exception as e:
+                    print(f"  Warning: Could not read graph text from {graph_text_path}: {e}")
+                    graph_texts.append("")
+            else:
+                graph_texts.append("")
+            
+            # Get layout path (for reference)
+            layout_path = row.get("layout_path", "")
+            layout_paths.append(layout_path)
+            
+            # Get POV path
+            pov_path = row.get("pov_path", "")
+            pov_paths.append(pov_path)
+            
+            # Save POV image if available
+            if pov_path and Path(pov_path).exists():
+                try:
+                    pov_img = Image.open(pov_path)
+                    pov_img.save(images_dir / f"sample_{i:03d}_pov.png")
+                except Exception as e:
+                    print(f"  Warning: Could not save POV image from {pov_path}: {e}")
+        
+        # Save target and generated images individually
+        for i in range(batch_size):
+            target_img = target_images[i]
+            generated_img = generated_images[i]
+            target_img.save(images_dir / f"sample_{i:03d}_target.png")
+            generated_img.save(images_dir / f"sample_{i:03d}_generated.png")
+        
+        # Save conditioning embeddings
+        if text_emb is not None:
+            torch.save(text_emb.cpu(), images_dir / "text_embeddings.pt")
+        if pov_emb is not None:
+            torch.save(pov_emb.cpu(), images_dir / "pov_embeddings.pt")
+        if cond is not None:
+            torch.save(cond.cpu(), images_dir / "cond_types.pt")
+        
+        # Save metadata
+        metadata = {
+            "epoch": epoch,
+            "batch_size": batch_size,
+            "room_indices": room_indices,
+            "scene_indices": scene_indices,
+            "batch_indices": batch_indices,
+            "layout_paths": layout_paths,
+            "pov_paths": pov_paths,
+            "graph_texts": graph_texts,
+            "cond_types": cond.cpu().tolist() if cond is not None else None,
+            "has_text_emb": text_emb is not None,
+            "has_pov_emb": pov_emb is not None,
+            "guidance_scale": guidance_scale,
+            "cfg_dropout_rate": cfg_dropout_rate,
+        }
+        with open(images_dir / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        print(f"  Saved individual samples with conditions to {images_dir}")
 
 
 def main():

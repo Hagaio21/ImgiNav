@@ -364,11 +364,28 @@ class DiffusionModel(BaseModel):
                 unet.eval()
                 
                 # Classifier-Free Guidance (CFG)
-                if guidance_scale > 1.0 and cond is not None:
-                    # Run UNet with condition (conditional prediction)
+                # CFG can be applied to both cond (room/scene type) and embeddings (text_emb, pov_emb)
+                use_cfg = guidance_scale > 1.0
+                has_cond_cfg = use_cfg and cond is not None
+                has_emb_cfg = use_cfg and text_emb is not None and pov_emb is not None
+                
+                if has_cond_cfg or has_emb_cfg:
+                    # Run UNet with conditions (conditional prediction)
                     cond_pred = unet(latents, t_batch, cond, controlnet_signal=controlnet_signal)
-                    # Run UNet without condition (unconditional prediction)
-                    uncond_pred = unet(latents, t_batch, None, controlnet_signal=controlnet_signal)
+                    
+                    # Run UNet without conditions (unconditional prediction)
+                    # For embeddings CFG: pass None for text_emb and pov_emb
+                    # For cond CFG: pass None for cond
+                    uncond_controlnet_signal = None
+                    if has_emb_cfg:
+                        # Recompute controlnet_signal without embeddings (unconditional)
+                        uncond_controlnet_signal = None  # No embeddings = no controlnet signal
+                    else:
+                        # Keep same controlnet_signal if only cond CFG
+                        uncond_controlnet_signal = controlnet_signal
+                    
+                    uncond_pred = unet(latents, t_batch, None, controlnet_signal=uncond_controlnet_signal)
+                    
                     # Combine: pred = uncond + scale * (cond - uncond)
                     pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
                 else:
