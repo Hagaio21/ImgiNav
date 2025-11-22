@@ -90,9 +90,17 @@ class CLIPProjections(nn.Module):
         if self.latent_proj is None or self._latent_dim != latent_dim:
             self._init_latent_proj(latent_dim, latent_features.device)
         
-        # Flatten embeddings if needed
+        # Flatten embeddings if needed and ensure consistent dtype
         if text_emb.dim() > 2:
             text_emb = text_emb.flatten(start_dim=1)
+        if pov_emb is not None and pov_emb.dim() > 2:
+            pov_emb = pov_emb.flatten(start_dim=1)
+        
+        # Ensure embeddings match projection dtype (projections are float32)
+        text_emb = text_emb.to(dtype=next(self.text_proj.parameters()).dtype)
+        if pov_emb is not None:
+            pov_emb = pov_emb.to(dtype=next(self.pov_proj.parameters()).dtype)
+        latent_features = latent_features.to(dtype=next(self.latent_proj.parameters()).dtype)
         
         # Project to joint space
         latent_proj = self.latent_proj(latent_features)
