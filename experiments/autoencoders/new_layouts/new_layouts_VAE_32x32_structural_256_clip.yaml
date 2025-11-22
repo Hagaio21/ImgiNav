@@ -15,9 +15,11 @@ dataset:
   # STEP 1: Run: bsub < training/hpc_scripts/run_embed_controlnet_dataset.sh
   # This creates POV and graph embeddings WITHOUT needing VAE checkpoint
   # Output goes to shared embeddings location
+  # NOTE: This manifest uses RECOLORED layouts (layouts_recolored) - floor is light gray, wall is dark gray
+  # The embedding script automatically uses recolored layouts when available
   manifest: "/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
   outputs:
-    rgb: "layout_path"  # Layout images for VAE training
+    rgb: "layout_path"  # Layout images for VAE training (recolored: floor=light gray, wall=dark gray)
     text_emb: "graph_embedding_path"  # Graph embeddings for CLIP loss
     pov_emb: "pov_embedding_path"  # POV embeddings for CLIP loss
   filters:
