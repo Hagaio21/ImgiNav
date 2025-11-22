@@ -74,7 +74,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 16          # Reduced from 32 to avoid OOM with cross-attention at all levels
+  batch_size: 8           # Further reduced to avoid OOM with cross-attention at all levels
   num_workers: 8
   shuffle: true
   epochs: 300
@@ -91,8 +91,8 @@ training:
   
   # Gradient accumulation: accumulate gradients over N steps before updating weights
   # Effective batch size = batch_size * gradient_accumulation_steps
-  # Example: batch_size=16, gradient_accumulation_steps=2 → effective batch size = 32
-  gradient_accumulation_steps: 2  # Accumulate over 2 steps (effective batch size = 16 * 2 = 32)
+  # Example: batch_size=8, gradient_accumulation_steps=4 → effective batch size = 32
+  gradient_accumulation_steps: 4  # Accumulate over 4 steps (effective batch size = 8 * 4 = 32)
   
   scheduler:
     type: cosine          # This refers to the Learning Rate scheduler, not Noise scheduler

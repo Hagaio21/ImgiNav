@@ -265,7 +265,9 @@ class SelfAttentionBlock(nn.Module):
         # Use chunked attention for large sequences to reduce memory
         # Chunk size: process in chunks to avoid large intermediate tensors
         seq_len = H * W
-        chunk_size = 512  # Process 512 tokens at a time
+        # Reduce chunk size for better memory efficiency with cross-attention
+        # Smaller chunks = less memory per attention matrix
+        chunk_size = 256  # Reduced from 512 to 256 for better memory efficiency
         
         if seq_len > chunk_size:
             # Chunked attention for memory efficiency
