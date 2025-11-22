@@ -144,7 +144,7 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         
         # Forward pass with mixed precision
         if use_amp and device_obj.type == "cuda":
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(batch["rgb"])
                 loss, logs = loss_fn(outputs, batch)
                 
@@ -159,23 +159,29 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
             if not isinstance(loss, torch.Tensor):
                 raise TypeError(f"Loss must be a tensor, got {type(loss)}: {loss}")
             
+            # Verify loss requires gradients (should be true from computation graph)
+            if not loss.requires_grad:
+                raise RuntimeError(f"Loss does not require gradients. This indicates a problem with the computation graph.")
+            
             # Backward pass with gradient scaling
             optimizer.zero_grad()
             
             if scaler:
                 # Scale loss and backward - must be done in sequence
-                # Ensure loss is on the correct device and requires grad
-                if loss.device != device_obj:
-                    loss = loss.to(device_obj)
-                if not loss.requires_grad:
-                    loss = loss.requires_grad_(True)
-                
-                # Scale and backward
                 scaled_loss = scaler.scale(loss)
                 scaled_loss.backward()
                 
+                # Verify gradients were computed (diagnostic)
+                param_with_grad = next((p for p in model.parameters() if p.requires_grad and p.grad is not None), None)
+                if param_with_grad is None:
+                    # Check if any parameters require grad
+                    has_trainable = any(p.requires_grad for p in model.parameters())
+                    if not has_trainable:
+                        raise RuntimeError("No trainable parameters found in model!")
+                    else:
+                        raise RuntimeError("Backward pass completed but no gradients found. Check computation graph.")
+                
                 # Step optimizer with scaler (this will check for infs)
-                # The scaler must have recorded inf checks from backward()
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -243,7 +249,7 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False, collect_latent
             
             # Forward pass with mixed precision
             if use_amp and device_obj.type == "cuda":
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = model(batch["rgb"])
                     loss, logs = loss_fn(outputs, batch)
                     

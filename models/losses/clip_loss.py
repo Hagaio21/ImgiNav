@@ -72,7 +72,7 @@ class CLIPProjections(nn.Module):
         Args:
             latent_features: VAE features [B, C, H, W] or [B, D]
             text_emb: Text embeddings [B, text_dim]
-            pov_emb: POV embeddings [B, pov_dim]
+            pov_emb: POV embeddings [B, pov_dim] or None (for scenes)
             combine_method: How to combine text and POV ("add", "concat", "average")
         
         Returns:
@@ -93,26 +93,35 @@ class CLIPProjections(nn.Module):
         # Flatten embeddings if needed
         if text_emb.dim() > 2:
             text_emb = text_emb.flatten(start_dim=1)
-        if pov_emb.dim() > 2:
-            pov_emb = pov_emb.flatten(start_dim=1)
         
         # Project to joint space
         latent_proj = self.latent_proj(latent_features)
         text_proj = self.text_proj(text_emb)
-        pov_proj = self.pov_proj(pov_emb)
         
         # Normalize
         latent_proj = F.normalize(latent_proj, p=2, dim=1)
         text_proj = F.normalize(text_proj, p=2, dim=1)
-        pov_proj = F.normalize(pov_proj, p=2, dim=1)
         
-        # Combine text and POV
-        if combine_method == "add":
-            combined_emb = text_proj + pov_proj
-        elif combine_method == "average":
-            combined_emb = (text_proj + pov_proj) / 2.0
+        # Handle missing pov_emb (scenes don't have POV embeddings)
+        if pov_emb is None:
+            # For scenes, use only text_emb as the combined embedding
+            combined_emb = text_proj
         else:
-            combined_emb = (text_proj + pov_proj) / 2.0
+            # Flatten POV embedding if needed
+            if pov_emb.dim() > 2:
+                pov_emb = pov_emb.flatten(start_dim=1)
+            
+            # Project POV to joint space
+            pov_proj = self.pov_proj(pov_emb)
+            pov_proj = F.normalize(pov_proj, p=2, dim=1)
+            
+            # Combine text and POV
+            if combine_method == "add":
+                combined_emb = text_proj + pov_proj
+            elif combine_method == "average":
+                combined_emb = (text_proj + pov_proj) / 2.0
+            else:
+                combined_emb = (text_proj + pov_proj) / 2.0
         
         combined_emb = F.normalize(combined_emb, p=2, dim=1)
         
@@ -190,26 +199,35 @@ class CLIPLoss(LossComponent):
         # Get VAE latent features
         latent_features = preds.get(self.key)
         if latent_features is None:
-            # Return zero loss if features not available
-            device = next(self.text_proj.parameters()).device
+            # Return zero loss - but this should not happen in normal training
+            # If it does, we can't connect to computation graph, so return a simple zero
+            device = next(self.text_proj.parameters()).device if hasattr(self, 'text_proj') else torch.device("cpu")
             return torch.tensor(0.0, device=device, requires_grad=True), {}
         
         # Get text and POV embeddings
         text_emb = targets.get(self.text_key)
         pov_emb = targets.get(self.pov_key)
         
-        if text_emb is None or pov_emb is None:
-            # Return zero loss if embeddings not available
-            device = latent_features.device
-            return torch.tensor(0.0, device=device, requires_grad=True), {}
+        # Handle missing text_emb (should not happen, but handle gracefully)
+        if text_emb is None:
+            # Return zero loss connected to computation graph via latent_features
+            return (latent_features * 0.0).sum() * 0.0, {}
+        
+        # Handle missing pov_emb (scenes don't have POV embeddings)
+        # For scenes, we'll use only text_emb for the combined embedding
+        use_pov = pov_emb is not None
         
         # Use projections (either from model or our own)
         if self.projections is None:
-            # Return zero loss if projections not available
-            device = latent_features.device
-            return torch.tensor(0.0, device=device, requires_grad=True), {}
+            # Return zero loss connected to computation graph via latent_features
+            return (latent_features * 0.0).sum() * 0.0, {}
+        
+        # Note: text_emb and pov_emb are pre-computed and may be detached
+        # This is fine - the projections will still compute gradients for their parameters
+        # The key is that latent_features has gradients, which will flow through latent_proj
         
         # Project to joint embedding space
+        # If pov_emb is None (scenes), the projections will handle it by using only text_emb
         latent_proj, combined_emb = self.projections(
             latent_features, text_emb, pov_emb, combine_method=self.combine_method
         )

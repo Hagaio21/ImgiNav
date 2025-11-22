@@ -371,8 +371,8 @@ def create_grad_scaler(use_amp, device):
     
     device_obj = to_device(device)
     if device_obj.type == "cuda":
-        # Use torch.cuda.amp.GradScaler (more stable than torch.amp.GradScaler)
-        return torch.cuda.amp.GradScaler()
+        # Use new API: torch.amp.GradScaler('cuda')
+        return torch.amp.GradScaler('cuda')
     return None
 
 
