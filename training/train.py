@@ -144,7 +144,7 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         
         # Forward pass with mixed precision
         if use_amp and device_obj.type == "cuda":
-            with torch.amp.autocast('cuda'):
+            with torch.cuda.amp.autocast():
                 outputs = model(batch["rgb"])
                 loss, logs = loss_fn(outputs, batch)
                 
@@ -164,12 +164,18 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
             
             if scaler:
                 # Scale loss and backward - must be done in sequence
-                # Ensure loss is on the correct device
+                # Ensure loss is on the correct device and requires grad
                 if loss.device != device_obj:
                     loss = loss.to(device_obj)
+                if not loss.requires_grad:
+                    loss = loss.requires_grad_(True)
+                
+                # Scale and backward
                 scaled_loss = scaler.scale(loss)
                 scaled_loss.backward()
+                
                 # Step optimizer with scaler (this will check for infs)
+                # The scaler must have recorded inf checks from backward()
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -209,20 +215,6 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
     
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
-    
-    # Ensure all expected class keys are present (defensive check)
-    # This handles edge cases where initialization might have been skipped
-    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-        for sub_loss in loss_fn.losses:
-            if ClassWeightedMSELossClass and isinstance(sub_loss, ClassWeightedMSELossClass):
-                if hasattr(sub_loss, 'class_idx_to_name'):
-                    key = sub_loss.key if hasattr(sub_loss, 'key') else 'rgb'
-                    for class_name in sub_loss.class_idx_to_name.values():
-                        log_key = f"MSE_{key}_{class_name}"
-                        if log_key not in avg_logs:
-                            avg_logs[log_key] = 0.0
-                    if f"MSE_{key}_unknown" not in avg_logs:
-                        avg_logs[f"MSE_{key}_unknown"] = 0.0
     
     # Compute latent statistics if collected
     if collect_latents and all_latents and len(all_latents) > 0:
@@ -305,24 +297,6 @@ def eval_epoch(model, dataloader, loss_fn, device, use_amp=False, collect_latent
     avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
     
-    # Ensure all expected class keys are present (defensive check)
-    # This handles edge cases where initialization might have been skipped
-    from models.losses.base_loss import LOSS_REGISTRY
-    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
-    ClassWeightedMSELossClass = LOSS_REGISTRY.get("ClassWeightedMSELoss")
-    
-    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-        for sub_loss in loss_fn.losses:
-            if ClassWeightedMSELossClass and isinstance(sub_loss, ClassWeightedMSELossClass):
-                if hasattr(sub_loss, 'class_idx_to_name'):
-                    key = sub_loss.key if hasattr(sub_loss, 'key') else 'rgb'
-                    for class_name in sub_loss.class_idx_to_name.values():
-                        log_key = f"MSE_{key}_{class_name}"
-                        if log_key not in avg_logs:
-                            avg_logs[log_key] = 0.0
-                    if f"MSE_{key}_unknown" not in avg_logs:
-                        avg_logs[f"MSE_{key}_unknown"] = 0.0
-    
     # Compute latent statistics if collected
     if collect_latents and all_latents and len(all_latents) > 0:
         latent_stats = compute_latent_statistics(all_latents)
@@ -392,33 +366,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             grid_path = samples_dir / f"epoch_{epoch:03d}_comparison.png"
         save_image(combined_grid, grid_path, normalize=False)
     
-    # Save segmentation if available
-    if "segmentation" in outputs:
-        pred_seg = outputs["segmentation"]  # [B, C, H, W]
-        # Get predicted classes
-        pred_classes = torch.argmax(pred_seg, dim=1)  # [B, H, W]
-        
-        # Resize if needed
-        if pred_classes.shape[-1] != target_size:
-            pred_classes = F.interpolate(
-                pred_classes.unsqueeze(1).float(),
-                size=(target_size, target_size),
-                mode='nearest'
-            ).squeeze(1).long()
-        
-        # Normalize to [0, 1] for visualization (simple colormap)
-        max_class = pred_classes.max().float().clamp(min=1)
-        pred_classes_vis = (pred_classes.float() / max_class)
-        pred_classes_vis = pred_classes_vis.unsqueeze(1).repeat(1, 3, 1, 1)
-        
-        seg_grid = torch.stack([pred_classes_vis[i] for i in range(batch_size)])
-        # Include experiment name in filename if provided
-        if exp_name:
-            seg_path = samples_dir / f"{exp_name}_epoch_{epoch:03d}_segmentation.png"
-        else:
-            seg_path = samples_dir / f"epoch_{epoch:03d}_segmentation.png"
-        save_image(seg_grid, seg_path, nrow=grid_n, padding=2, normalize=False)
-    
     print(f"  Saved samples to {samples_dir}")
 
 
@@ -457,14 +404,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}")
     
-    # Get phase directory for shared metrics/samples (if phase is specified)
-    phase = config.get("experiment", {}).get("phase", None)
-    phase_dir = None
-    if phase:
-        # Phase folder: outputs/phase_name (shared across all experiments in phase)
-        phase_dir = Path("outputs") / phase
-        phase_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Phase directory: {phase_dir} (for shared metrics/samples)")
     
     # Check for checkpoint to resume from
     # Priority: 1) --checkpoint argument, 2) latest checkpoint in output_dir
@@ -572,46 +511,10 @@ def main():
         else:
             train_dataset = dataset
     
-    # Auto-generate weight stats if needed
-    weights_stats_path = None
-    use_weighted_sampling = config["training"].get("use_weighted_sampling", False)
-    if use_weighted_sampling:
-        weight_column = config["training"].get("column", None)
-        if weight_column:
-            # Get manifest path from dataset config
-            manifest_path = Path(config["dataset"]["manifest"])
-            
-            # Get filters from dataset config to apply before computing weights
-            # This ensures weights are computed on the same filtered dataset used for training
-            dataset_filters = config["dataset"].get("filters", None)
-            
-            # Ensure weight stats exist (will generate if needed)
-            from training.utils import ensure_weight_stats_exist
-            weights_stats_path = ensure_weight_stats_exist(
-                manifest_path=manifest_path,
-                column_name=weight_column,
-                output_dir=output_dir,
-                rare_threshold_percentile=config["training"].get("rare_threshold_percentile", 10.0),
-                min_samples_threshold=config["training"].get("min_samples_threshold", 50),
-                weighting_method=config["training"].get("weighting_method", "inverse_frequency"),
-                max_weight=config["training"].get("max_weight", None),
-                min_weight=config["training"].get("min_weight", 1.0),
-                filters=dataset_filters  # Apply same filters as dataset
-            )
-    
     train_loader = train_dataset.make_dataloader(
         batch_size=config["training"]["batch_size"],
         shuffle=config["training"].get("shuffle", True),
-        num_workers=config["training"].get("num_workers", 4),
-        use_weighted_sampling=use_weighted_sampling,
-        weight_column=config["training"].get("column", None),
-        weights_stats_path=weights_stats_path,
-        use_grouped_weights=config["training"].get("use_grouped_weights", False),
-        group_rare_classes=config["training"].get("group_rare_classes", False),
-        class_grouping_path=config["training"].get("class_grouping_path", None),
-        max_weight=config["training"].get("max_weight", None),
-        exclude_extremely_rare=config["training"].get("exclude_extremely_rare", False),
-        min_samples_threshold=config["training"].get("min_samples_threshold", 50)
+        num_workers=config["training"].get("num_workers", 4)
     )
     print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
@@ -679,146 +582,6 @@ def main():
     
     checkpoint_files = []
     epochs_without_improvement = 0
-    
-    # Also save metrics to phase folder if phase is specified (for analysis)
-    phase_metrics_path = None
-    if phase_dir:
-        phase_metrics_path = phase_dir / f"{exp_name}_metrics.csv"
-    
-    def extract_normalizer_stats(model):
-        """Extract normalizer parameters from encoder and decoder if they exist (for backward compatibility)."""
-        stats = {}
-        if hasattr(model.encoder, 'latent_normalizer') and model.encoder.latent_normalizer is not None:
-            enc_norm = model.encoder.latent_normalizer
-            shift_enc = enc_norm.shift.data.detach().cpu()
-            scale_enc = torch.exp(enc_norm.log_scale.data.detach().cpu().clamp(min=-10, max=10))
-            # Compute mean/std across channels and spatial dimensions
-            stats['enc_shift_mean'] = float(shift_enc.mean().item())
-            stats['enc_shift_std'] = float(shift_enc.std().item())
-            stats['enc_scale_mean'] = float(scale_enc.mean().item())
-            stats['enc_scale_std'] = float(scale_enc.std().item())
-            # Per-channel values (stored as JSON string for CSV compatibility)
-            stats['enc_shift_per_ch'] = json.dumps(shift_enc.squeeze().tolist())
-            stats['enc_scale_per_ch'] = json.dumps(scale_enc.squeeze().tolist())
-        
-        if hasattr(model.decoder, 'latent_denormalizer') and model.decoder.latent_denormalizer is not None:
-            dec_norm = model.decoder.latent_denormalizer
-            shift_dec = dec_norm.shift.data.detach().cpu()
-            scale_dec = torch.exp(dec_norm.log_scale.data.detach().cpu().clamp(min=-10, max=10))
-            # Compute mean/std across channels and spatial dimensions
-            stats['dec_shift_mean'] = float(shift_dec.mean().item())
-            stats['dec_shift_std'] = float(shift_dec.std().item())
-            stats['dec_scale_mean'] = float(scale_dec.mean().item())
-            stats['dec_scale_std'] = float(scale_dec.std().item())
-            # Per-channel values (stored as JSON string for CSV compatibility)
-            stats['dec_shift_per_ch'] = json.dumps(shift_dec.squeeze().tolist())
-            stats['dec_scale_per_ch'] = json.dumps(scale_dec.squeeze().tolist())
-            
-            # Compute differences (should converge to zero)
-            if 'enc_shift_mean' in stats:
-                stats['shift_diff_mean'] = abs(stats['enc_shift_mean'] - stats['dec_shift_mean'])
-                stats['scale_diff_mean'] = abs(stats['enc_scale_mean'] - stats['dec_scale_mean'])
-        
-        return stats
-    
-    def _plot_normalizer_convergence(df, output_dir, exp_name):
-        """Plot normalizer parameter convergence from training history."""
-        sns.set_style("darkgrid")
-        # Check if normalizer columns exist
-        required_cols = ['enc_shift_mean', 'enc_scale_mean', 'dec_shift_mean', 'dec_scale_mean']
-        if not all(col in df.columns for col in required_cols):
-            return  # No normalizer data to plot
-        
-        epochs = df['epoch'].values
-        
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle(f'Normalizer Parameter Convergence - {exp_name}', fontsize=16, fontweight='bold')
-        
-        # Plot 1: Shift convergence (mean values) - ENCODER and DECODER together
-        ax = axes[0, 0]
-        ax.plot(epochs, df['enc_shift_mean'], label='Encoder shift', linewidth=2, marker='o', markersize=3, alpha=0.8, color='blue')
-        ax.plot(epochs, df['dec_shift_mean'], label='Decoder shift', linewidth=2, marker='s', markersize=3, alpha=0.8, color='red')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Shift (mean)')
-        ax.set_title('Shift Parameter: Encoder vs Decoder (should converge)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Plot 2: Scale convergence (mean values) - ENCODER and DECODER together
-        ax = axes[0, 1]
-        ax.plot(epochs, df['enc_scale_mean'], label='Encoder scale', linewidth=2, marker='o', markersize=3, alpha=0.8, color='green')
-        ax.plot(epochs, df['dec_scale_mean'], label='Decoder scale', linewidth=2, marker='s', markersize=3, alpha=0.8, color='orange')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Scale (mean)')
-        ax.set_title('Scale Parameter: Encoder vs Decoder (should converge)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Plot 3: Difference convergence (should go to zero)
-        ax = axes[1, 0]
-        if 'shift_diff_mean' in df.columns:
-            ax.plot(epochs, df['shift_diff_mean'], label='Shift difference', linewidth=2, color='red', marker='o', markersize=3)
-        if 'scale_diff_mean' in df.columns:
-            ax.plot(epochs, df['scale_diff_mean'], label='Scale difference', linewidth=2, color='blue', marker='s', markersize=3)
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Absolute Difference')
-        ax.set_title('Parameter Difference (should → 0)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        if len(df) > 1 and df['shift_diff_mean'].max() > 0:
-            ax.set_yscale('log')  # Log scale to see convergence better
-        
-        # Plot 4: Actual latent statistics (mean and std should be ~0 and ~1)
-        ax = axes[1, 1]
-        
-        # Check for latent statistics from standardization loss first (more accurate)
-        if 'train_LatentStd_MeanVal' in df.columns:
-            ax.plot(epochs, df['train_LatentStd_MeanVal'], label='Latent mean (train)', linewidth=2, color='purple', marker='o', markersize=3)
-            if 'val_LatentStd_MeanVal' in df.columns:
-                ax.plot(epochs, df['val_LatentStd_MeanVal'], label='Latent mean (val)', linewidth=2, color='purple', marker='o', markersize=3, linestyle='--', alpha=0.7)
-            ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Target: 0')
-            
-            ax2 = ax.twinx()
-            ax2.plot(epochs, df['train_LatentStd_StdVal'], label='Latent std (train)', linewidth=2, color='brown', marker='s', markersize=3)
-            if 'val_LatentStd_StdVal' in df.columns:
-                ax2.plot(epochs, df['val_LatentStd_StdVal'], label='Latent std (val)', linewidth=2, color='brown', marker='s', markersize=3, linestyle='--', alpha=0.7)
-            ax2.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Target: 1')
-            ax2.set_ylabel('Latent Std', color='brown')
-            ax2.tick_params(axis='y', labelcolor='brown')
-            ax2.legend(loc='upper right')
-        elif 'latent_mean' in df.columns:
-            # Fallback to direct measurement if available
-            ax.plot(epochs, df['latent_mean'], label='Latent mean', linewidth=2, color='purple', marker='o', markersize=3)
-            ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Target: 0')
-            if 'latent_std' in df.columns:
-                ax2 = ax.twinx()
-                ax2.plot(epochs, df['latent_std'], label='Latent std', linewidth=2, color='brown', marker='s', markersize=3)
-                ax2.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Target: 1')
-                ax2.set_ylabel('Latent Std', color='brown')
-                ax2.tick_params(axis='y', labelcolor='brown')
-                ax2.legend(loc='upper right')
-        else:
-            # No latent statistics available
-            ax.text(0.5, 0.5, 'No latent statistics available', 
-                   ha='center', va='center', transform=ax.transAxes)
-            ax.set_title('Latent Statistics (not available)')
-        
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Latent Mean', color='purple')
-        ax.set_title('Actual Latent Statistics (should be ~0 mean, ~1 std)')
-        ax.tick_params(axis='y', labelcolor='purple')
-        if 'train_LatentStd_MeanVal' in df.columns or 'latent_mean' in df.columns:
-            ax.legend(loc='upper left')
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = output_dir / f'{exp_name}_normalizer_convergence.png'
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close()
-        print(f"  Saved normalizer convergence plot: {plot_path}")
     
     def _plot_latent_statistics(df, output_dir, exp_name):
         """Plot latent statistics from standardization loss."""
@@ -901,85 +664,6 @@ def main():
         plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
         plt.close()
         print(f"  Saved latent statistics plot: {plot_path}")
-    
-    def _plot_per_class_losses(df, output_dir, exp_name):
-        """Plot per-class MSE losses from ClassWeightedMSELoss with class colors."""
-        sns.set_style("darkgrid")
-        # Find all per-class loss columns (format: train_MSE_rgb_<class_name> or val_MSE_rgb_<class_name>)
-        per_class_cols = [col for col in df.columns if 'MSE_rgb_' in col and col != 'train_MSE_rgb' and col != 'val_MSE_rgb']
-        
-        if not per_class_cols:
-            return  # No per-class losses to plot
-        
-        # Extract class names and split train/val
-        train_cols = [col for col in per_class_cols if col.startswith('train_')]
-        val_cols = [col for col in per_class_cols if col.startswith('val_')]
-        
-        if not train_cols and not val_cols:
-            return
-        
-        # Load class colors from rgb_to_class.yaml
-        import yaml
-        from pathlib import Path
-        rgb_config_path = Path(__file__).parent.parent / "models" / "losses" / "rgb_to_class.yaml"
-        class_colors = {}
-        with open(rgb_config_path, "r") as f:
-            config = yaml.safe_load(f)
-            for name, entry in config.items():
-                rgb = entry["rgb"]
-                # Convert RGB [0-255] to matplotlib color [0-1]
-                class_colors[name] = tuple(c / 255.0 for c in rgb)
-        
-        epochs = df['epoch'].values
-        
-        # Get unique class names (remove train_/val_ prefix and MSE_rgb_ prefix)
-        class_names = set()
-        for col in train_cols + val_cols:
-            # Extract class name: train_MSE_rgb_bed -> bed
-            parts = col.split('_')
-            if len(parts) >= 4:
-                class_name = '_'.join(parts[3:])  # Handle multi-word class names
-                class_names.add(class_name)
-        
-        class_names = sorted(class_names)
-        
-        # Create a single plot with all classes (overlaid)
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        fig.suptitle(f'Per-Class MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
-        
-        # Plot each class with its RGB color
-        for class_name in class_names:
-            train_col = f'train_MSE_rgb_{class_name}'
-            val_col = f'val_MSE_rgb_{class_name}'
-            
-            # Get color for this class (default to gray if not found)
-            color = class_colors.get(class_name, (0.5, 0.5, 0.5))
-            
-            # Use slightly darker color for validation
-            val_color = tuple(max(0, c * 0.7) for c in color)
-            
-            label_name = class_name.replace("_", " ").title()
-            
-            if train_col in df.columns:
-                ax.plot(epochs, df[train_col], label=f'{label_name} (train)', 
-                       linewidth=2, marker='o', markersize=2, color=color, alpha=0.8)
-            if val_col in df.columns:
-                ax.plot(epochs, df[val_col], label=f'{label_name} (val)', 
-                       linewidth=2, marker='s', markersize=2, color=val_color, 
-                       linestyle='--', alpha=0.8)
-        
-        ax.set_xlabel('Epoch', fontsize=12)
-        ax.set_ylabel('MSE Loss', fontsize=12)
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = output_dir / f'{exp_name}_per_class_losses.png'
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close()
-        print(f"  Saved per-class losses plot: {plot_path}")
     
     def _plot_kld_loss(df, output_dir, exp_name):
         """Plot KLD (KL Divergence) loss from KLDLoss."""
@@ -1118,17 +802,6 @@ def main():
             **{f"train_{k}": (v if isinstance(v, str) else float(v)) for k, v in avg_logs.items()}
         }
         
-        # Extract normalizer statistics if available (for backward compatibility with old models)
-        # Note: This is only relevant if normalization layers are still present
-        norm_stats = extract_normalizer_stats(model)
-        if norm_stats:
-            epoch_log.update(norm_stats)
-            # Print normalizer convergence info
-            if 'shift_diff_mean' in norm_stats:
-                print(f"  Normalizer convergence:")
-                print(f"    Shift diff: {norm_stats['shift_diff_mean']:.6f} (enc: {norm_stats.get('enc_shift_mean', 0):.6f}, dec: {norm_stats.get('dec_shift_mean', 0):.6f})")
-                print(f"    Scale diff: {norm_stats['scale_diff_mean']:.6f} (enc: {norm_stats.get('enc_scale_mean', 0):.6f}, dec: {norm_stats.get('dec_scale_mean', 0):.6f})")
-        
         # Evaluation (run every epoch if validation set exists)
         if val_loader:
             val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp, collect_latents=is_vae)
@@ -1179,19 +852,12 @@ def main():
         # Save samples at specified interval (use validation set if available, else training set)
         if (epoch + 1) % sample_interval == 0:
             loader_to_use = val_loader if val_loader else train_loader
-            # Save samples to experiment folder
             save_samples(model, loader_to_use, device, output_dir, epoch + 1, sample_batch_size=32)
-            
-            # Also save smaller samples to phase folder if phase is specified (for analysis)
-            # Include experiment name in filename to avoid overwrites
-            if phase_dir:
-                save_samples(model, loader_to_use, device, phase_dir, epoch + 1, 
-                           sample_batch_size=8, exp_name=exp_name)
         
         training_history.append(epoch_log)
         
         # Save metrics CSV (overwrite with all epochs so far)
-        save_metrics_csv(training_history, metrics_csv_path, phase_metrics_path)
+        save_metrics_csv(training_history, metrics_csv_path)
         
         # Create DataFrame for plotting
         df = pd.DataFrame(training_history)
@@ -1199,15 +865,8 @@ def main():
         # Plot main loss curves (always plot if training loss exists)
         _plot_loss_curves(df, output_dir, exp_name)
         
-        # Plot normalizer convergence if available (overwrites same file each time)
-        if norm_stats:
-            _plot_normalizer_convergence(df, output_dir, exp_name)
-        
         # Plot latent statistics if available (from LatentStandardizationLoss)
         _plot_latent_statistics(df, output_dir, exp_name)
-        
-        # Plot per-class losses if available (from ClassWeightedMSELoss)
-        _plot_per_class_losses(df, output_dir, exp_name)
         
         # Plot KLD loss if available (from KLDLoss)
         _plot_kld_loss(df, output_dir, exp_name)
