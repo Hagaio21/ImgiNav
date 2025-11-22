@@ -18,7 +18,8 @@ dataset:
   return_path: false
 
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256/new_layouts_VAE_32x32_structural_256_checkpoint_best.pt
+  # Using CLIP-trained VAE for aligned embedding space
+  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256_clip/new_layouts_VAE_32x32_structural_256_clip_checkpoint_best.pt
   frozen: true
 
 # CRITICAL: Fixes the "Neon Blob" issue.
@@ -28,14 +29,13 @@ latent_clamp_max: 6.0
 # Use 5.5 based on typical KL-VAE statistics
 scale_factor: 5.5 
 
-# Embedding projection: converts 1D embeddings to spatial features for cross-attention
+# Embedding projection: uses CLIP projections from VAE to align embeddings with latents
+# This ensures spatial features (K, V) are in the same semantic space as VAE latents (Q)
 embedding_projection:
-  type: EmbeddingToSpatial
-  text_dim: 384          # Graph embedding dimension (all-MiniLM-L6-v2)
-  pov_dim: 512          # POV embedding dimension (ResNet18)
+  type: CLIPEmbeddingToSpatial  # Uses CLIP projections from VAE checkpoint
   output_channels: 96    # Matches UNet base_channels (larger model)
   spatial_size: [16, 16] # Smaller initial size for 32x32 latents (will be interpolated to match UNet resolution)
-  combine_method: concat_proj  # Options: "add", "concat", "concat_proj"
+  combine_method: average  # How to combine text and POV in CLIP joint space: "add" or "average"
 
 unet:
   type: UnetWithAttention

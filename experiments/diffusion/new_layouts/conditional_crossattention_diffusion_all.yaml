@@ -16,7 +16,8 @@ dataset:
   return_path: false
 
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256/new_layouts_VAE_32x32_structural_256_checkpoint_best.pt
+  # Using CLIP-trained VAE for aligned embedding space
+  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256_clip/new_layouts_VAE_32x32_structural_256_clip_checkpoint_best.pt
   frozen: true
 
 latent_clamp_min: -6.0
@@ -24,12 +25,10 @@ latent_clamp_max: 6.0
 scale_factor: 5.5 
 
 embedding_projection:
-  type: EmbeddingToSpatial
-  text_dim: 384
-  pov_dim: 512
+  type: CLIPEmbeddingToSpatial  # Uses CLIP projections from VAE checkpoint
   output_channels: 48
   spatial_size: [16, 16]
-  combine_method: concat_proj
+  combine_method: average  # How to combine text and POV in CLIP joint space
 
 unet:
   type: UnetWithAttention
