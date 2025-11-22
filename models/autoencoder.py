@@ -22,19 +22,12 @@ class Autoencoder(BaseModel):
         self.clip_projections = None
         if clip_projection_cfg is not None:
             from models.losses.clip_loss import CLIPProjections
-            # Create projection layers (these will be trainable)
-            projection_dim = clip_projection_cfg.get("projection_dim", 256)
-            text_dim = clip_projection_cfg.get("text_dim", 384)
-            pov_dim = clip_projection_cfg.get("pov_dim", 512)
-            latent_dim = clip_projection_cfg.get("latent_dim", None)
-            spatial_alignment = clip_projection_cfg.get("spatial_alignment", False)
-            self.clip_projections = CLIPProjections(
-                projection_dim=projection_dim,
-                text_dim=text_dim,
-                pov_dim=pov_dim,
-                latent_dim=latent_dim,
-                spatial_alignment=spatial_alignment
-            )
+            # Create projection layers - BaseComponent accepts **kwargs
+            if isinstance(clip_projection_cfg, dict):
+                self.clip_projections = CLIPProjections(**clip_projection_cfg)
+            else:
+                # If it's already an instance, use it directly
+                self.clip_projections = clip_projection_cfg
             # Ensure projections are registered as a submodule (for parameter tracking)
             # This is already done by assigning to self.clip_projections, but make it explicit
             self.add_module('clip_projections', self.clip_projections)
@@ -78,6 +71,9 @@ class Autoencoder(BaseModel):
         cfg = super().to_config()
         cfg["encoder"] = self.encoder.to_config()
         cfg["decoder"] = self.decoder.to_config()
+        # Include CLIP projection config if it exists (now uses BaseComponent.to_config())
+        if hasattr(self, 'clip_projections') and self.clip_projections is not None:
+            cfg["clip_projection"] = self.clip_projections.to_config()
         return cfg
     
     # -----------------------

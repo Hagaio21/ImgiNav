@@ -9,10 +9,11 @@ Creates a joint embedding space where:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from models.components.base_component import BaseComponent
 from .base_loss import LossComponent, register_loss
 
 
-class CLIPProjections(nn.Module):
+class CLIPProjections(BaseComponent):
     """
     Standalone CLIP projection layers that can be attached to a model.
     These project VAE features, text embeddings, and POV embeddings to a joint space.
@@ -21,45 +22,43 @@ class CLIPProjections(nn.Module):
     - Global mode (default): Pools spatial features to global, aligns global-to-global
     - Spatial mode: Preserves spatial structure, projects global conditions to spatial dimensions
     """
-    def __init__(self, projection_dim=256, text_dim=384, pov_dim=512, latent_dim=None, 
-                 spatial_alignment=False):
-        super().__init__()
-        self.projection_dim = projection_dim
-        self.text_dim = text_dim
-        self.pov_dim = pov_dim
-        self._latent_dim = latent_dim
-        self.spatial_alignment = spatial_alignment
+    def _build(self):
+        self.projection_dim = self._init_kwargs.get("projection_dim", 256)
+        self.text_dim = self._init_kwargs.get("text_dim", 384)
+        self.pov_dim = self._init_kwargs.get("pov_dim", 512)
+        self._latent_dim = self._init_kwargs.get("latent_dim", None)
+        self.spatial_alignment = self._init_kwargs.get("spatial_alignment", False)
         
         # Text embedding -> joint space
         self.text_proj = nn.Sequential(
-            nn.Linear(text_dim, projection_dim * 2),
-            nn.LayerNorm(projection_dim * 2),
+            nn.Linear(self.text_dim, self.projection_dim * 2),
+            nn.LayerNorm(self.projection_dim * 2),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(projection_dim * 2, projection_dim),
-            nn.LayerNorm(projection_dim)
+            nn.Linear(self.projection_dim * 2, self.projection_dim),
+            nn.LayerNorm(self.projection_dim)
         )
         
         # POV embedding -> joint space
         self.pov_proj = nn.Sequential(
-            nn.Linear(pov_dim, projection_dim * 2),
-            nn.LayerNorm(projection_dim * 2),
+            nn.Linear(self.pov_dim, self.projection_dim * 2),
+            nn.LayerNorm(self.projection_dim * 2),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(projection_dim * 2, projection_dim),
-            nn.LayerNorm(projection_dim)
+            nn.Linear(self.projection_dim * 2, self.projection_dim),
+            nn.LayerNorm(self.projection_dim)
         )
         
         # VAE latent features -> joint space (will be initialized dynamically)
         self.latent_proj = None
-        if latent_dim is not None:
-            self._init_latent_proj(latent_dim)
+        if self._latent_dim is not None:
+            self._init_latent_proj(self._latent_dim)
         
         # Spatial projection for global conditions (only used in spatial_alignment mode)
         # Projects global embeddings to spatial feature maps
         self.spatial_text_proj = None
         self.spatial_pov_proj = None
-        if spatial_alignment:
+        if self.spatial_alignment:
             # These will be initialized dynamically based on spatial dimensions
             self._spatial_h = None
             self._spatial_w = None
@@ -279,7 +278,7 @@ class CLIPLoss(LossComponent):
         self.spatial_alignment = spatial_alignment
         
         if not self.use_model_projections:
-            # Create our own projection layers
+            # Create our own projection layers - BaseComponent accepts **kwargs
             self.projections = CLIPProjections(
                 projection_dim=self.projection_dim,
                 text_dim=text_dim,
