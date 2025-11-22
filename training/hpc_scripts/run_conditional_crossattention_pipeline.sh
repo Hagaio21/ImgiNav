@@ -17,7 +17,7 @@ BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_pipeline_conditional_crossattention.py"
 AE_CONFIG="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256.yaml"
 DIFFUSION_CONFIG="${BASE_DIR}/experiments/diffusion/new_layouts/conditional_crossattention_diffusion.yaml"
-CONTROLNET_MANIFEST="/work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg/manifest_with_embeddings.csv"
+CONTROLNET_MANIFEST="${BASE_DIR}/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg/manifest_with_embeddings.csv"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Ensure log directory exists
@@ -31,11 +31,6 @@ fi
 
 if [ ! -f "${DIFFUSION_CONFIG}" ]; then
   echo "ERROR: Diffusion config file not found: ${DIFFUSION_CONFIG}" >&2
-  exit 1
-fi
-
-if [ ! -f "${CONTROLNET_MANIFEST}" ]; then
-  echo "ERROR: ControlNet manifest not found: ${CONTROLNET_MANIFEST}" >&2
   exit 1
 fi
 
@@ -126,4 +121,3 @@ else
   echo "=========================================="
   exit $EXIT_CODE
 fi
-
