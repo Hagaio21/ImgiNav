@@ -442,10 +442,34 @@ def embed_controlnet_dataset_with_vae(
         for row in rows:
             output_row = row.copy()
             
-            # Add/update layout latent path in appropriate column
+            # Update layout_path to use recolored version if it exists
             layout_path = row.get("layout_path", "")
+            if layout_path:
+                layout_path_obj = Path(layout_path)
+                # Only check for recolored if not already using recolored
+                if "layouts" in layout_path_obj.parts and "layouts_recolored" not in layout_path_obj.parts:
+                    # Check if recolored version exists
+                    parts = list(layout_path_obj.parts)
+                    try:
+                        layouts_idx = parts.index("layouts")
+                        parts[layouts_idx] = "layouts_recolored"
+                        recolored_path = Path(*parts)
+                        if recolored_path.exists():
+                            layout_path = str(recolored_path)
+                            output_row["layout_path"] = layout_path
+                    except ValueError:
+                        pass  # 'layouts' not in path, use original
+            
+            # Add/update layout latent path in appropriate column
+            # Note: layout_emb_mapping uses the recolored path (if it exists) as the key
             if layout_path and layout_emb_mapping and latent_column_name:
-                output_row[latent_column_name] = layout_emb_mapping.get(layout_path, "")
+                # Try both original and recolored paths in case mapping uses different key
+                latent_path = layout_emb_mapping.get(layout_path, "")
+                if not latent_path:
+                    # Fallback to original path from row
+                    original_path = row.get("layout_path", "")
+                    latent_path = layout_emb_mapping.get(original_path, "")
+                output_row[latent_column_name] = latent_path
                 # Add autoencoder name
                 if layout_emb_mapping_ae_name and 'ae_name_column' in locals():
                     output_row[ae_name_column] = layout_emb_mapping_ae_name

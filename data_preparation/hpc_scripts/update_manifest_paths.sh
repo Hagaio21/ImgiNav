@@ -27,6 +27,7 @@ SCRIPT_PATH="${BASE_DIR}/data_preparation/update_manifest_paths.py"
 # Manifests to update
 MANIFEST_SEG="/work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv"
 MANIFEST_TEX="/work3/s233249/ImgiNav/datasets/controlnet/manifest_tex.csv"
+SHARED_EMBEDDINGS_MANIFEST="/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
 
 # Paths
 OLD_PATH="/work3/s233249/ImgiNav/datasets/controlnet/layouts"
