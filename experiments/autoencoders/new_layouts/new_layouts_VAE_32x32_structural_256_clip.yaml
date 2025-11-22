@@ -62,7 +62,7 @@ autoencoder:
     projection_dim: 256  # Joint embedding space dimension
     text_dim: 384  # Graph embedding dimension (all-MiniLM-L6-v2)
     pov_dim: 512  # POV embedding dimension (ResNet18)
-    latent_dim: 384  # Encoder feature dimension: base_channels * 2^downsampling_steps = 48 * 2^3 = 384
+    latent_dim: 192  # Encoder feature dimension: base_channels * 2^(downsampling_steps-1) = 48 * 2^2 = 192
 
 training:
   seed: 42

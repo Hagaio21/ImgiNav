@@ -85,9 +85,9 @@ class CLIPProjections(nn.Module):
             else:
                 latent_features = latent_features.flatten(start_dim=1)
         
-        # Initialize projection if needed
+        # Initialize projection if needed (or re-initialize if dimension changed)
         latent_dim = latent_features.shape[1]
-        if self.latent_proj is None:
+        if self.latent_proj is None or self._latent_dim != latent_dim:
             self._init_latent_proj(latent_dim, latent_features.device)
         
         # Flatten embeddings if needed
