@@ -24,8 +24,12 @@ import argparse
 import pandas as pd
 import subprocess
 import numpy as np
+import time
 from pathlib import Path
 from tqdm import tqdm
+from PIL import Image
+import torchvision.transforms as T
+from itertools import islice
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -38,6 +42,13 @@ from training.utils import (
 from training.train import main as train_ae_main
 from training.train_diffusion import main as train_diffusion_main, calculate_scale_factor_from_dataset
 from models.datasets.datasets import ManifestDataset
+from models.autoencoder import Autoencoder
+from data_preparation.create_embeddings import (
+    create_layout_embeddings_from_manifest,
+    load_resnet_model,
+    load_sentence_transformer_model,
+)
+from common.file_io import read_manifest, create_manifest
 
 
 def find_ae_checkpoint(ae_config):
@@ -153,18 +164,19 @@ def embed_controlnet_dataset_with_vae(
     num_workers=8
 ):
     """
-    Embed ControlNet dataset with new VAE, preserving existing embeddings.
+    Embed ControlNet dataset from scratch: layouts, POVs, and graphs.
     
     This function:
-    1. Loads the ControlNet manifest (which has graph_embedding_path and pov_embedding_path)
-    2. Embeds layouts using the new VAE to create latent_path
-    3. Creates a new manifest with all three: latent_path, graph_embedding_path, pov_embedding_path
+    1. Embeds layouts using the VAE to create latent_path
+    2. Embeds POVs using ResNet18 to create pov_embedding_path
+    3. Embeds graphs using SentenceTransformer to create graph_embedding_path
+    4. Creates a new manifest with all three: latent_path, graph_embedding_path, pov_embedding_path
     
     Args:
         ae_checkpoint_path: Path to VAE checkpoint
         ae_config_path: Path to VAE config
-        input_manifest_path: Path to ControlNet manifest (with embeddings)
-        output_manifest_path: Path to output manifest (with latents + embeddings)
+        input_manifest_path: Path to ControlNet manifest (with layout_path, pov_path, graph_text_path)
+        output_manifest_path: Path to output manifest (with all embeddings)
         batch_size: Batch size for encoding
         num_workers: Number of workers
         
@@ -172,7 +184,7 @@ def embed_controlnet_dataset_with_vae(
         True if embedding succeeded, False otherwise
     """
     print(f"\n{'='*60}")
-    print("PHASE 2: Embedding ControlNet Dataset with 32x32 VAE")
+    print("PHASE 2: Embedding ControlNet Dataset (Layouts + POVs + Graphs)")
     print(f"{'='*60}")
     print(f"VAE checkpoint: {ae_checkpoint_path}")
     print(f"Input manifest: {input_manifest_path}")
@@ -180,8 +192,6 @@ def embed_controlnet_dataset_with_vae(
     print(f"{'='*60}\n")
     
     try:
-        base_dir = Path(__file__).parent.parent
-        embed_script = base_dir / "data_preparation" / "create_embeddings.py"
         ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
         ae_config_abs = Path(ae_config_path).resolve()
         input_manifest_abs = Path(input_manifest_path).resolve()
@@ -190,117 +200,311 @@ def embed_controlnet_dataset_with_vae(
         # Ensure output directory exists
         output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
         latents_dir = output_manifest_abs.parent / "latents"
+        pov_embeddings_dir = output_manifest_abs.parent / "embeddings" / "povs"
+        graph_embeddings_dir = output_manifest_abs.parent / "embeddings" / "graphs"
+        
         latents_dir.mkdir(parents=True, exist_ok=True)
+        pov_embeddings_dir.mkdir(parents=True, exist_ok=True)
+        graph_embeddings_dir.mkdir(parents=True, exist_ok=True)
         
-        # Read input manifest to get layout paths
-        df = pd.read_csv(input_manifest_abs, low_memory=False)
+        print(f"Output directories:")
+        print(f"  Latents: {latents_dir}")
+        print(f"  POV embeddings: {pov_embeddings_dir}")
+        print(f"  Graph embeddings: {graph_embeddings_dir}")
+        print()
         
-        # Create temporary manifest with just layout paths for embedding
-        # The ControlNet manifest should have layout_path column
-        temp_manifest = output_manifest_abs.parent / "temp_layouts_for_embedding.csv"
-        layout_rows = []
-        for _, row in df.iterrows():
-            # Try to find layout_path in various possible column names
-            layout_path = row.get("layout_path") or row.get("rgb_path") or row.get("image_path")
-            if layout_path and pd.notna(layout_path) and layout_path != "":
-                # Ensure absolute path
-                if not Path(layout_path).is_absolute():
-                    manifest_dir = input_manifest_abs.parent
-                    layout_path = str((manifest_dir / layout_path).resolve())
-                layout_rows.append({"layout_path": layout_path})
+        # Read input manifest
+        rows = read_manifest(input_manifest_abs)
+        print(f"Loaded manifest with {len(rows)} samples")
         
-        if not layout_rows:
-            raise ValueError("No layout paths found in input manifest! Check for 'layout_path', 'rgb_path', or 'image_path' columns.")
+        # Step 1: Embed layouts using VAE
+        print(f"\n{'='*60}")
+        print("Step 1/3: Embedding layouts with VAE")
+        print(f"{'='*60}")
         
-        temp_df = pd.DataFrame(layout_rows)
-        temp_df.to_csv(temp_manifest, index=False)
-        print(f"Created temporary manifest with {len(layout_rows)} layout paths")
+        # Load autoencoder
+        print(f"Loading autoencoder from: {ae_checkpoint_abs}")
+        autoencoder = Autoencoder.load_checkpoint(ae_checkpoint_abs, map_location="cpu")
+        autoencoder.eval()
         
-        # Embed layouts using VAE
-        temp_output_manifest = output_manifest_abs.parent / "temp_embedded_latents.csv"
+        # Get autoencoder config path
+        checkpoint_path = Path(ae_checkpoint_abs)
+        possible_configs = [
+            checkpoint_path.parent / f"{checkpoint_path.stem.replace('_checkpoint_best', '').replace('_checkpoint_latest', '')}.yaml",
+            checkpoint_path.parent.parent / "experiment_config.yaml",
+            ae_config_abs,
+        ]
+        autoencoder_config_path = None
+        for pc in possible_configs:
+            if pc.exists():
+                autoencoder_config_path = str(pc)
+                break
         
-        cmd = [
-            sys.executable,
-            str(embed_script),
-            "--type", "layout",
-            "--manifest", str(temp_manifest),
-            "--output", str(output_manifest_abs.parent),  # Required: output directory
-            "--output-manifest", str(temp_output_manifest),  # Actual manifest path
-            "--output-latent-dir", str(latents_dir),  # Save latents in experiment folder
-            "--autoencoder-config", str(ae_config_abs),
-            "--autoencoder-checkpoint", str(ae_checkpoint_abs),
-            "--batch-size", str(batch_size),
-            "--num-workers", str(num_workers),
-            "--device", "cuda"
+        if not autoencoder_config_path:
+            print("[WARNING] Could not find autoencoder config, using defaults for transform")
+        
+        # Create temporary manifest for layouts
+        layout_temp_manifest = output_manifest_abs.parent / "temp_layout_manifest.csv"
+        layout_output_manifest = output_manifest_abs.parent / "temp_layout_output_manifest.csv"
+        
+        layout_rows = [
+            {"layout_path": row.get("layout_path", ""), "is_empty": 0}
+            for row in rows
+            if row.get("layout_path")
         ]
         
-        print(f"Running embedding command...")
-        result = subprocess.run(cmd, check=True, cwd=base_dir)
-        
-        # Read embedded latents manifest
-        if not temp_output_manifest.exists():
-            raise FileNotFoundError(f"Embedded manifest not created: {temp_output_manifest}")
-        
-        embedded_df = pd.read_csv(temp_output_manifest, low_memory=False)
-        
-        # Create mapping: use absolute paths for matching
-        latent_mapping = {}
-        for _, emb_row in embedded_df.iterrows():
-            emb_layout_path = emb_row.get("layout_path", "")
-            emb_latent_path = emb_row.get("latent_path", "")
-            if emb_layout_path and emb_latent_path:
-                # Normalize paths for matching
-                emb_layout_abs = str(Path(emb_layout_path).resolve())
-                latent_mapping[emb_layout_abs] = emb_latent_path
-        
-        # Merge with original ControlNet manifest
-        output_rows = []
-        for _, row in df.iterrows():
-            output_row = row.to_dict()
+        layout_emb_mapping = {}
+        if layout_rows:
+            create_manifest(layout_rows, layout_temp_manifest, ["layout_path", "is_empty"])
             
-            # Add latent_path from VAE embedding
-            layout_path = row.get("layout_path") or row.get("rgb_path") or row.get("image_path")
-            if layout_path and pd.notna(layout_path) and layout_path != "":
-                # Normalize path for matching
-                if not Path(layout_path).is_absolute():
-                    manifest_dir = input_manifest_abs.parent
-                    layout_path_abs = str((manifest_dir / layout_path).resolve())
-                else:
-                    layout_path_abs = str(Path(layout_path).resolve())
+            create_layout_embeddings_from_manifest(
+                encoder=autoencoder.encoder,
+                manifest_path=layout_temp_manifest,
+                output_manifest_path=layout_output_manifest,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                overwrite=False,
+                device="cuda",
+                autoencoder_config_path=autoencoder_config_path,
+                output_latent_dir=str(latents_dir),
+                diffusion_config_path=None
+            )
+            
+            # Read layout embeddings mapping
+            layout_emb_df = pd.read_csv(layout_output_manifest)
+            layout_emb_mapping = dict(zip(layout_emb_df["layout_path"], layout_emb_df["latent_path"]))
+            
+            # Clean up autoencoder from GPU
+            print("Cleaning up autoencoder from GPU...")
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                autoencoder.encoder = autoencoder.encoder.cpu()
+                torch.cuda.synchronize()
+            del autoencoder
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        
+        # Step 2: Embed POVs using ResNet18
+        print(f"\n{'='*60}")
+        print("Step 2/3: Embedding POVs with ResNet18")
+        print(f"{'='*60}")
+        
+        pov_rows = [
+            row for row in rows
+            if row.get("pov_path") and row.get("pov_path") != "0"
+        ]
+        
+        pov_emb_mapping = {}
+        if pov_rows:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"Loading ResNet18 model on {device}...")
+            model = load_resnet_model(device)
+            transform = T.Compose([
+                T.Resize((512, 512)),
+                T.ToTensor(),
+                T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ])
+            
+            def process_pov_item(row):
+                pov_path = row.get("pov_path", "")
+                if not pov_path or not Path(pov_path).exists():
+                    return None, None
+                try:
+                    img = Image.open(pov_path).convert("RGB")
+                    return img, row
+                except Exception as e:
+                    print(f"Error reading {pov_path}: {e}")
+                    return None, None
+            
+            def encode_povs(imgs_tensor):
+                with torch.cuda.amp.autocast():
+                    return model(imgs_tensor)
+            
+            def batched(iterable, n):
+                it = iter(iterable)
+                while True:
+                    batch = list(islice(it, n))
+                    if not batch:
+                        break
+                    yield batch
+            
+            processed = 0
+            for batch_rows in tqdm(batched(pov_rows, batch_size), desc="Embedding POVs"):
+                batch_imgs = []
+                valid_rows = []
                 
-                if layout_path_abs in latent_mapping:
-                    output_row["latent_path"] = latent_mapping[layout_path_abs]
-                else:
-                    # Try direct match as fallback
-                    if layout_path in latent_mapping:
-                        output_row["latent_path"] = latent_mapping[layout_path]
-                    else:
-                        output_row["latent_path"] = ""
-                        print(f"Warning: No latent found for layout_path: {layout_path}")
+                for row in batch_rows:
+                    img, row_data = process_pov_item(row)
+                    if img is not None:
+                        batch_imgs.append(transform(img))
+                        valid_rows.append(row_data)
+                
+                if not valid_rows:
+                    continue
+                
+                imgs_tensor = torch.stack(batch_imgs).to(device)
+                with torch.no_grad():
+                    embeddings = encode_povs(imgs_tensor)
+                
+                for row_data, emb in zip(valid_rows, embeddings):
+                    pov_path = row_data["pov_path"]
+                    pov_filename = Path(pov_path).name
+                    emb_filename = pov_filename.replace(".png", ".pt")
+                    emb_path = pov_embeddings_dir / emb_filename
+                    
+                    emb_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(emb.cpu(), emb_path)
+                    pov_emb_mapping[pov_path] = str(emb_path.resolve())
+                    processed += 1
+            
+            print(f"✓ Embedded {processed}/{len(pov_rows)} POV images")
+            
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        # Step 3: Embed graphs using SentenceTransformer
+        print(f"\n{'='*60}")
+        print("Step 3/3: Embedding graphs with SentenceTransformer")
+        print(f"{'='*60}")
+        
+        graph_rows = [
+            row for row in rows
+            if row.get("graph_text_path")
+        ]
+        
+        graph_emb_mapping = {}
+        if graph_rows:
+            print("Loading SentenceTransformer model...")
+            embedder = load_sentence_transformer_model("all-MiniLM-L6-v2")
+            
+            processed = 0
+            skipped = 0
+            
+            for row in tqdm(graph_rows, desc="Embedding graphs"):
+                graph_text_path = row.get("graph_text_path", "")
+                if not graph_text_path:
+                    skipped += 1
+                    continue
+                
+                try:
+                    text_path = Path(graph_text_path)
+                    if not text_path.exists():
+                        print(f"Warning: Text file not found: {text_path}")
+                        skipped += 1
+                        continue
+                    
+                    text = text_path.read_text(encoding="utf-8")
+                    if not text:
+                        print(f"Warning: Empty text for {text_path}")
+                        skipped += 1
+                        continue
+                    
+                    embedding = embedder.encode(text, normalize_embeddings=True)
+                    
+                    graph_filename = Path(graph_text_path).name
+                    emb_filename = graph_filename.replace(".txt", ".pt")
+                    emb_path = graph_embeddings_dir / emb_filename
+                    
+                    emb_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(torch.from_numpy(embedding), emb_path)
+                    graph_emb_mapping[graph_text_path] = str(emb_path.resolve())
+                    processed += 1
+                    
+                except Exception as e:
+                    print(f"Error processing {graph_text_path}: {e}")
+                    skipped += 1
+            
+            print(f"✓ Embedded {processed}/{len(graph_rows)} graphs (skipped {skipped})")
+            
+            del embedder
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        # Step 4: Create zero embeddings for scenes (pov_path == "0")
+        print(f"\n{'='*60}")
+        print("Step 4/4: Creating zero embeddings for scenes")
+        print(f"{'='*60}")
+        
+        pov_emb_dim = 512  # ResNet18 output dimension
+        if pov_emb_mapping:
+            sample_emb_path = list(pov_emb_mapping.values())[0]
+            sample_emb = torch.load(sample_emb_path)
+            pov_emb_dim = sample_emb.shape[0] if sample_emb.dim() == 1 else sample_emb.numel()
+        
+        zero_emb_path = pov_embeddings_dir / "zero_embedding.pt"
+        zero_emb = torch.zeros(pov_emb_dim)
+        torch.save(zero_emb, zero_emb_path)
+        print(f"Created zero embedding: {zero_emb_path} (shape: {zero_emb.shape})")
+        
+        # Step 5: Create final manifest with all embeddings
+        print(f"\n{'='*60}")
+        print("Step 5/5: Creating final manifest")
+        print(f"{'='*60}")
+        
+        output_rows = []
+        for row in rows:
+            output_row = row.copy()
+            
+            # Add layout latent path
+            layout_path = row.get("layout_path", "")
+            if layout_path:
+                output_row["latent_path"] = layout_emb_mapping.get(layout_path, "")
             else:
                 output_row["latent_path"] = ""
             
-            # Preserve existing embeddings (graph_embedding_path, pov_embedding_path)
-            # These should already be in the row
+            # Add POV embedding path
+            pov_path = row.get("pov_path", "")
+            if pov_path and pov_path != "0":
+                output_row["pov_embedding_path"] = pov_emb_mapping.get(pov_path, "")
+            elif pov_path == "0":
+                output_row["pov_embedding_path"] = str(zero_emb_path.resolve())
+            else:
+                output_row["pov_embedding_path"] = ""
+            
+            # Add graph embedding path
+            graph_text_path = row.get("graph_text_path", "")
+            if graph_text_path:
+                output_row["graph_embedding_path"] = graph_emb_mapping.get(graph_text_path, "")
+            else:
+                output_row["graph_embedding_path"] = ""
             
             output_rows.append(output_row)
         
         # Write final manifest
-        output_df = pd.DataFrame(output_rows)
-        output_df.to_csv(output_manifest_abs, index=False)
+        output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = list(rows[0].keys()) + ["latent_path", "pov_embedding_path", "graph_embedding_path"]
+        create_manifest(output_rows, output_manifest_abs, fieldnames)
         
-        # Clean up temp files
-        for temp_file in [temp_manifest, temp_output_manifest]:
+        # Clean up temporary files
+        for temp_file in [layout_temp_manifest, layout_output_manifest]:
             if temp_file.exists():
                 temp_file.unlink()
         
         print(f"\n{'='*60}")
         print("Dataset embedding completed successfully!")
         print(f"Output manifest: {output_manifest_abs}")
-        print(f"  - latent_path: Added from 32x32 VAE")
-        print(f"  - graph_embedding_path: Preserved from ControlNet dataset")
-        print(f"  - pov_embedding_path: Preserved from ControlNet dataset")
+        print(f"  - latent_path: Created from 32x32 VAE")
+        print(f"  - graph_embedding_path: Created from SentenceTransformer")
+        print(f"  - pov_embedding_path: Created from ResNet18")
         print(f"{'='*60}\n")
+        
+        # Final GPU cleanup
+        if torch.cuda.is_available():
+            print("Performing final GPU cleanup...")
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            print("Waiting 5 seconds for GPU to fully release resources...")
+            time.sleep(5)
+            try:
+                torch.cuda.synchronize()
+            except:
+                pass
+            print("✓ GPU memory fully cleared")
         
         return True
         
@@ -432,7 +636,7 @@ def update_diffusion_config(
     except (yaml.constructor.ConstructorError, yaml.YAMLError) as e:
         # If custom loader fails (e.g., other numpy types), try FullLoader
         print(f"Warning: Custom loader failed, trying FullLoader: {e}")
-        with open(diffusion_config_path, 'r') as f:
+    with open(diffusion_config_path, 'r') as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
     
     # Validate checkpoint path exists
