@@ -202,7 +202,7 @@ def compute_loss(
 
 def train_epoch(
     model, dataloader, scheduler, loss_fn, 
-    optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False, cfg_dropout_rate=0.0
+    optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False, cfg_dropout_rate=0.0, gradient_accumulation_steps=1
 ):
     """Train for one epoch using CompositeLoss."""
     model.train()
@@ -291,14 +291,18 @@ def train_epoch(
                 cond = None  # Drop entire batch condition for CFG training
         
         # Compute loss
+        # Scale loss by 1/gradient_accumulation_steps to maintain effective learning rate
+        loss_scale = 1.0 / gradient_accumulation_steps
+        
         if use_amp and device_obj.type == "cuda":
             with torch.amp.autocast('cuda'):
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
                     use_amp, device_obj, needs_decoding, cfg_dropout_rate
                 )
+                # Scale loss for gradient accumulation
+                total_loss_val = total_loss_val * loss_scale
             
-            optimizer.zero_grad()
             scaler = getattr(train_epoch, '_scaler', None)
             if scaler is None:
                 scaler = create_grad_scaler(use_amp, device_obj)
@@ -306,38 +310,60 @@ def train_epoch(
             
             if scaler:
                 scaler.scale(total_loss_val).backward()
-                if max_grad_norm is not None:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-                scaler.step(optimizer)
-                scaler.update()
             else:
                 total_loss_val.backward()
-                if max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-                optimizer.step()
             
-            # Update EMA after optimizer step
-            if hasattr(model, 'update_ema'):
-                model.update_ema()
+            # Only step optimizer and zero gradients every gradient_accumulation_steps
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                if scaler:
+                    if max_grad_norm is not None:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    if max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                    optimizer.step()
+                
+                optimizer.zero_grad()
+                
+                # Update EMA after optimizer step
+                if hasattr(model, 'update_ema'):
+                    model.update_ema()
+            else:
+                # Still need to zero grad on first iteration if not already done
+                if batch_idx == 0:
+                    optimizer.zero_grad()
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
                 use_amp, device_obj, needs_decoding, cfg_dropout_rate
             )
+            # Scale loss for gradient accumulation
+            total_loss_val = total_loss_val * loss_scale
             
-            optimizer.zero_grad()
             total_loss_val.backward()
-            if max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-            optimizer.step()
             
-            # Update EMA after optimizer step
-            if hasattr(model, 'update_ema'):
-                model.update_ema()
+            # Only step optimizer and zero gradients every gradient_accumulation_steps
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                if max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                optimizer.step()
+                optimizer.zero_grad()
+                
+                # Update EMA after optimizer step
+                if hasattr(model, 'update_ema'):
+                    model.update_ema()
+            else:
+                # Still need to zero grad on first iteration if not already done
+                if batch_idx == 0:
+                    optimizer.zero_grad()
         
         batch_size = latents.shape[0]
-        loss_val = total_loss_val.detach().item()
+        # For logging, use unscaled loss (multiply back by accumulation_steps since we scaled it down)
+        # Note: total_loss_val was scaled by 1/gradient_accumulation_steps, so we multiply back
+        loss_val = total_loss_val.detach().item() * gradient_accumulation_steps
         total_loss += loss_val * batch_size
         total_samples += batch_size
         
@@ -439,12 +465,12 @@ def eval_epoch(
                 with torch.amp.autocast('cuda'):
                     total_loss_val, logs = compute_loss(
                         model, batch, latents, t, noise, cond, loss_fn,
-                        use_amp, device_obj, needs_decoding, cfg_dropout_rate
+                        use_amp, device_obj, needs_decoding, cfg_dropout_rate=0.0
                     )
             else:
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, needs_decoding, cfg_dropout_rate
+                    use_amp, device_obj, needs_decoding, cfg_dropout_rate=0.0
                 )
             
             batch_size = latents.shape[0]
@@ -523,16 +549,16 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     with torch.no_grad():
         unconditioned_output = model.sample(
             batch_size=64,
-            num_steps=num_steps,
-            method="ddpm",
-            eta=1.0,
-            cond=None,
+                    num_steps=num_steps,
+                    method="ddpm",
+                    eta=1.0,
+                    cond=None,
             guidance_scale=guidance_scale if guidance_scale > 1.0 else 1.0,
             text_emb=None,
             pov_emb=None,
-            device=device_obj,
-            verbose=False
-        )
+                    device=device_obj,
+                    verbose=False
+                )
         
         # Decode unconditioned samples
         if "rgb" in unconditioned_output:
@@ -692,16 +718,16 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     with torch.no_grad():
         conditioned_output = model.sample(
             batch_size=batch_size,
-            num_steps=num_steps,
-            method="ddpm",
-            eta=1.0,
+                    num_steps=num_steps,
+                    method="ddpm",
+                    eta=1.0,
             cond=cond,
-            guidance_scale=guidance_scale,
+                    guidance_scale=guidance_scale,
             text_emb=text_emb,
             pov_emb=pov_emb,
-            device=device_obj,
-            verbose=False
-        )
+                    device=device_obj,
+                    verbose=False
+                )
         
         # Decode generated latents to RGB
         if "rgb" in conditioned_output:
@@ -1236,11 +1262,13 @@ def main():
             cfg_dropout_rate = cfg_dropout_config
         
         guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
+        gradient_accumulation_steps = config.get("training", {}).get("gradient_accumulation_steps", 1)
         
         train_loss, train_logs = train_epoch(
             model, train_loader, scheduler, loss_fn,
             optimizer, device_obj, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm,
-            use_non_uniform_sampling=use_non_uniform_sampling, cfg_dropout_rate=cfg_dropout_rate
+            use_non_uniform_sampling=use_non_uniform_sampling, cfg_dropout_rate=cfg_dropout_rate,
+            gradient_accumulation_steps=gradient_accumulation_steps
         )
         
         # Print current CFG dropout rate if using schedule

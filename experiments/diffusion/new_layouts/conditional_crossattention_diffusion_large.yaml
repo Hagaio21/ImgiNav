@@ -88,6 +88,11 @@ training:
   use_amp: true
   max_grad_norm: 0.5
   
+  # Gradient accumulation: accumulate gradients over N steps before updating weights
+  # Effective batch size = batch_size * gradient_accumulation_steps
+  # Example: batch_size=16, gradient_accumulation_steps=1 → effective batch size = 16 (no accumulation needed for large model)
+  gradient_accumulation_steps: 1  # Large model already uses smaller batch size
+  
   scheduler:
     type: cosine          # This refers to the Learning Rate scheduler, not Noise scheduler
 
