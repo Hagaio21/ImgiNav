@@ -230,7 +230,10 @@ class SelfAttentionBlock(nn.Module):
             if controlnet_signal.shape[1] != C:
                 # Project controlnet signal to match channels
                 ctrl_in_channels = controlnet_signal.shape[1]
-                if self._ctrl_proj is None or self._ctrl_proj_channels != ctrl_in_channels:
+                if self._ctrl_proj is None or self._ctrl_proj_channels != ctrl_in_channels or self._ctrl_proj.out_channels != C:
+                    # Remove old module if it exists to prevent memory leaks
+                    if hasattr(self, 'ctrl_proj'):
+                        delattr(self, 'ctrl_proj')
                     # Create or recreate projection with the correct input channels
                     self._ctrl_proj = nn.Conv2d(ctrl_in_channels, C, 1).to(controlnet_signal.device)
                     self._ctrl_proj_channels = ctrl_in_channels
