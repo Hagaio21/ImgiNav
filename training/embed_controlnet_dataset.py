@@ -110,6 +110,8 @@ def embed_controlnet_dataset_with_vae(
         graph_embeddings_dir.mkdir(parents=True, exist_ok=True)
         
         layout_emb_mapping = {}
+        layout_emb_mapping_ae_name = None  # Store autoencoder name for this embedding
+        ae_exp_name = None  # Store autoencoder experiment name
         
         # Step 1: Embed layouts using VAE (optional)
         if ae_checkpoint_path and ae_config_path:
@@ -119,8 +121,32 @@ def embed_controlnet_dataset_with_vae(
             
             ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
             ae_config_abs = Path(ae_config_path).resolve()
-            latents_dir = output_manifest_abs.parent / "latents"
+            
+            # Extract autoencoder experiment name from config
+            import yaml
+            ae_exp_name = "unnamed"  # Will be set below
+            if ae_config_abs.exists():
+                try:
+                    with open(ae_config_abs, 'r') as f:
+                        ae_config_data = yaml.safe_load(f)
+                        ae_exp_name = ae_config_data.get("experiment", {}).get("name", "unnamed")
+                except Exception as e:
+                    print(f"[WARNING] Could not read autoencoder name from config: {e}")
+                    # Try to extract from checkpoint path as fallback
+                    checkpoint_path = Path(ae_checkpoint_abs)
+                    ae_exp_name = checkpoint_path.stem.replace("_checkpoint_best", "").replace("_checkpoint_latest", "").replace("_checkpoint", "")
+            else:
+                # Extract from checkpoint path
+                checkpoint_path = Path(ae_checkpoint_abs)
+                ae_exp_name = checkpoint_path.stem.replace("_checkpoint_best", "").replace("_checkpoint_latest", "").replace("_checkpoint", "")
+            
+            print(f"[INFO] Autoencoder experiment name: {ae_exp_name}")
+            
+            # Create latents directory organized by autoencoder: latents/{exp_name}/
+            latents_base_dir = output_manifest_abs.parent / "latents"
+            latents_dir = latents_base_dir / ae_exp_name
             latents_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[INFO] Latents will be saved to: {latents_dir}")
             
             # Load autoencoder
             print(f"Loading autoencoder from: {ae_checkpoint_abs}")
@@ -192,6 +218,10 @@ def embed_controlnet_dataset_with_vae(
                 # Read layout embeddings mapping
                 layout_emb_df = pd.read_csv(layout_output_manifest)
                 layout_emb_mapping = dict(zip(layout_emb_df["layout_path"], layout_emb_df["latent_path"]))
+                
+                # Store autoencoder name for manifest column naming
+                layout_emb_mapping_ae_name = ae_exp_name
+                print(f"[INFO] Created {len(layout_emb_mapping)} layout embeddings using autoencoder: {ae_exp_name}")
                 
                 # Clean up autoencoder from GPU
                 print("Cleaning up autoencoder from GPU...")
@@ -373,16 +403,58 @@ def embed_controlnet_dataset_with_vae(
             print("Step 5/5: Creating final manifest")
             print(f"{'='*60}")
         
+        # Determine latent column name for this autoencoder
+        # Find next available column: latent_path1, latent_path2, etc.
+        latent_column_name = None
+        if layout_emb_mapping:
+            # Get existing columns from first row
+            existing_columns = set(rows[0].keys()) if rows else set()
+            
+            # Find all existing latent_path columns
+            latent_path_columns = [col for col in existing_columns if col.startswith("latent_path")]
+            
+            if not latent_path_columns:
+                # No existing latent columns, use latent_path (for backward compatibility)
+                latent_column_name = "latent_path"
+            else:
+                # Find next available number
+                max_num = 0
+                for col in latent_path_columns:
+                    if col == "latent_path":
+                        max_num = max(max_num, 1)  # latent_path counts as 1
+                    else:
+                        # Extract number from latent_path1, latent_path2, etc.
+                        try:
+                            num = int(col.replace("latent_path", ""))
+                            max_num = max(max_num, num)
+                        except ValueError:
+                            pass
+                
+                # Use next number
+                latent_column_name = f"latent_path{max_num + 1}"
+            
+            # Also add autoencoder name column to track which AE created which latents
+            ae_name_column = f"latent_ae_{latent_column_name.replace('latent_path', '')}" if latent_column_name != "latent_path" else "latent_ae_1"
+            if latent_column_name == "latent_path":
+                ae_name_column = "latent_ae_name"  # For backward compatibility with first column
+        
         output_rows = []
         for row in rows:
             output_row = row.copy()
             
-            # Add/update layout latent path
+            # Add/update layout latent path in appropriate column
             layout_path = row.get("layout_path", "")
-            if layout_path:
-                output_row["latent_path"] = layout_emb_mapping.get(layout_path, "")
+            if layout_path and layout_emb_mapping and latent_column_name:
+                output_row[latent_column_name] = layout_emb_mapping.get(layout_path, "")
+                # Add autoencoder name
+                if layout_emb_mapping_ae_name and 'ae_name_column' in locals():
+                    output_row[ae_name_column] = layout_emb_mapping_ae_name
             else:
-                output_row["latent_path"] = row.get("latent_path", "")  # Preserve existing if no layout_path
+                # Preserve existing latent paths if no new embeddings created
+                if latent_column_name and latent_column_name in row:
+                    output_row[latent_column_name] = row.get(latent_column_name, "")
+                elif "latent_path" in row:
+                    output_row["latent_path"] = row.get("latent_path", "")
             
             # Add POV embedding path (only if not updating existing)
             if not update_existing_manifest:
@@ -408,16 +480,27 @@ def embed_controlnet_dataset_with_vae(
         
         # Write final manifest
         output_manifest_abs.parent.mkdir(parents=True, exist_ok=True)
-        # Get all fieldnames from first row, ensure latent_path is included
-        fieldnames = list(rows[0].keys())
-        if "latent_path" not in fieldnames:
+        # Get all fieldnames from first row
+        fieldnames = list(output_rows[0].keys()) if output_rows else list(rows[0].keys()) if rows else []
+        
+        # Ensure latent column is included
+        if layout_emb_mapping and latent_column_name:
+            if latent_column_name not in fieldnames:
+                fieldnames.append(latent_column_name)
+            # Add autoencoder name column
+            if 'ae_name_column' in locals() and ae_name_column not in fieldnames:
+                fieldnames.append(ae_name_column)
+        elif "latent_path" not in fieldnames:
+            # Fallback for backward compatibility
             fieldnames.append("latent_path")
+        
         if not update_existing_manifest:
             # Add POV and graph embedding paths if creating new manifest
             if "pov_embedding_path" not in fieldnames:
                 fieldnames.append("pov_embedding_path")
             if "graph_embedding_path" not in fieldnames:
                 fieldnames.append("graph_embedding_path")
+        
         create_manifest(output_rows, output_manifest_abs, fieldnames)
         
         # Clean up temporary files
@@ -430,7 +513,14 @@ def embed_controlnet_dataset_with_vae(
         print("Dataset embedding completed successfully!")
         print(f"Output manifest: {output_manifest_abs}")
         if layout_emb_mapping:
-            print(f"  - latent_path: Created from VAE")
+            if latent_column_name:
+                ae_name_display = layout_emb_mapping_ae_name if layout_emb_mapping_ae_name else "unknown"
+                print(f"  - {latent_column_name}: Created from VAE ({ae_name_display})")
+                if 'ae_name_column' in locals() and ae_name_column:
+                    print(f"  - {ae_name_column}: Autoencoder name column")
+            else:
+                ae_name_display = layout_emb_mapping_ae_name if layout_emb_mapping_ae_name else "unknown"
+                print(f"  - latent_path: Created from VAE ({ae_name_display})")
         if not update_existing_manifest:
             print(f"  - graph_embedding_path: Created from SentenceTransformer")
             print(f"  - pov_embedding_path: Created from ResNet18")
