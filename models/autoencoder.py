@@ -27,11 +27,13 @@ class Autoencoder(BaseModel):
             text_dim = clip_projection_cfg.get("text_dim", 384)
             pov_dim = clip_projection_cfg.get("pov_dim", 512)
             latent_dim = clip_projection_cfg.get("latent_dim", None)
+            spatial_alignment = clip_projection_cfg.get("spatial_alignment", False)
             self.clip_projections = CLIPProjections(
                 projection_dim=projection_dim,
                 text_dim=text_dim,
                 pov_dim=pov_dim,
-                latent_dim=latent_dim
+                latent_dim=latent_dim,
+                spatial_alignment=spatial_alignment
             )
             # Ensure projections are registered as a submodule (for parameter tracking)
             # This is already done by assigning to self.clip_projections, but make it explicit

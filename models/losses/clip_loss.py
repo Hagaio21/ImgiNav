@@ -16,13 +16,19 @@ class CLIPProjections(nn.Module):
     """
     Standalone CLIP projection layers that can be attached to a model.
     These project VAE features, text embeddings, and POV embeddings to a joint space.
+    
+    Supports both global and spatial alignment modes:
+    - Global mode (default): Pools spatial features to global, aligns global-to-global
+    - Spatial mode: Preserves spatial structure, projects global conditions to spatial dimensions
     """
-    def __init__(self, projection_dim=256, text_dim=384, pov_dim=512, latent_dim=None):
+    def __init__(self, projection_dim=256, text_dim=384, pov_dim=512, latent_dim=None, 
+                 spatial_alignment=False):
         super().__init__()
         self.projection_dim = projection_dim
         self.text_dim = text_dim
         self.pov_dim = pov_dim
         self._latent_dim = latent_dim
+        self.spatial_alignment = spatial_alignment
         
         # Text embedding -> joint space
         self.text_proj = nn.Sequential(
@@ -48,6 +54,15 @@ class CLIPProjections(nn.Module):
         self.latent_proj = None
         if latent_dim is not None:
             self._init_latent_proj(latent_dim)
+        
+        # Spatial projection for global conditions (only used in spatial_alignment mode)
+        # Projects global embeddings to spatial feature maps
+        self.spatial_text_proj = None
+        self.spatial_pov_proj = None
+        if spatial_alignment:
+            # These will be initialized dynamically based on spatial dimensions
+            self._spatial_h = None
+            self._spatial_w = None
     
     def _init_latent_proj(self, latent_dim, device=None):
         """Initialize latent projection."""
@@ -65,6 +80,37 @@ class CLIPProjections(nn.Module):
                 proj = proj.to(device)
             self.latent_proj = proj
     
+    def _init_spatial_projections(self, h, w, device=None):
+        """Initialize spatial projections for global conditions."""
+        if self._spatial_h == h and self._spatial_w == w and self.spatial_text_proj is not None:
+            return  # Already initialized
+        
+        self._spatial_h = h
+        self._spatial_w = w
+        spatial_elements = self.projection_dim * h * w
+        
+        # Project global text embedding to spatial [B, projection_dim, H, W]
+        self.spatial_text_proj = nn.Sequential(
+            nn.Linear(self.text_dim, spatial_elements * 2),
+            nn.LayerNorm(spatial_elements * 2),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(spatial_elements * 2, spatial_elements)
+        )
+        
+        # Project global POV embedding to spatial [B, projection_dim, H, W]
+        self.spatial_pov_proj = nn.Sequential(
+            nn.Linear(self.pov_dim, spatial_elements * 2),
+            nn.LayerNorm(spatial_elements * 2),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(spatial_elements * 2, spatial_elements)
+        )
+        
+        if device is not None:
+            self.spatial_text_proj = self.spatial_text_proj.to(device)
+            self.spatial_pov_proj = self.spatial_pov_proj.to(device)
+    
     def forward(self, latent_features, text_emb, pov_emb, combine_method="average"):
         """
         Project all embeddings to joint space.
@@ -76,8 +122,60 @@ class CLIPProjections(nn.Module):
             combine_method: How to combine text and POV ("add", "concat", "average")
         
         Returns:
-            (latent_proj, combined_emb) where both are [B, projection_dim]
+            Global mode: (latent_proj, combined_emb) where both are [B, projection_dim]
+            Spatial mode: (latent_proj, combined_emb) where both are [B, projection_dim, H, W]
         """
+        if self.spatial_alignment and latent_features.dim() == 4:
+            # Spatial alignment mode: preserve spatial structure
+            B, C, H, W = latent_features.shape
+            
+            # Initialize spatial projections if needed
+            self._init_spatial_projections(H, W, latent_features.device)
+            
+            # Project VAE features spatially: [B, C, H, W] -> [B, projection_dim, H, W]
+            # Use 1x1 conv to project channels
+            if self.latent_proj is None or self._latent_dim != C:
+                self._latent_dim = C
+                # Use Conv2d for spatial projection instead of Linear
+                self.latent_proj = nn.Sequential(
+                    nn.Conv2d(C, self.projection_dim * 2, 1),
+                    nn.GroupNorm(8, self.projection_dim * 2),
+                    nn.GELU(),
+                    nn.Dropout2d(0.1),
+                    nn.Conv2d(self.projection_dim * 2, self.projection_dim, 1),
+                    nn.GroupNorm(8, self.projection_dim)
+                ).to(latent_features.device)
+            
+            latent_proj = self.latent_proj(latent_features)  # [B, projection_dim, H, W]
+            latent_proj = F.normalize(latent_proj, p=2, dim=1)  # Normalize per spatial location
+            
+            # Project global conditions to spatial dimensions
+            text_emb_flat = text_emb.flatten(start_dim=1) if text_emb.dim() > 2 else text_emb
+            text_spatial_flat = self.spatial_text_proj(text_emb_flat)  # [B, projection_dim * H * W]
+            text_spatial = text_spatial_flat.view(B, self.projection_dim, H, W)
+            text_spatial = F.normalize(text_spatial, p=2, dim=1)
+            
+            if pov_emb is None:
+                combined_emb = text_spatial
+            else:
+                pov_emb_flat = pov_emb.flatten(start_dim=1) if pov_emb.dim() > 2 else pov_emb
+                pov_spatial_flat = self.spatial_pov_proj(pov_emb_flat)  # [B, projection_dim * H * W]
+                pov_spatial = pov_spatial_flat.view(B, self.projection_dim, H, W)
+                pov_spatial = F.normalize(pov_spatial, p=2, dim=1)
+                
+                # Combine text and POV spatially
+                if combine_method == "add":
+                    combined_emb = text_spatial + pov_spatial
+                elif combine_method == "average":
+                    combined_emb = (text_spatial + pov_spatial) / 2.0
+                else:
+                    combined_emb = (text_spatial + pov_spatial) / 2.0
+                
+                combined_emb = F.normalize(combined_emb, p=2, dim=1)
+            
+            return latent_proj, combined_emb
+        
+        # Global alignment mode (original behavior)
         # Flatten spatial dimensions if needed
         if latent_features.dim() > 2:
             if latent_features.dim() == 4:
@@ -156,6 +254,8 @@ class CLIPLoss(LossComponent):
         text_dim: Dimension of text embeddings (default: 384)
         pov_dim: Dimension of POV embeddings (default: 512)
         combine_method: How to combine text and POV embeddings: "add", "concat", "average" (default: "average")
+        spatial_alignment: If True, preserves spatial structure and aligns per-pixel (default: False)
+                          When True, projects global conditions to spatial dimensions for alignment
     """
     
     def _build(self):
@@ -171,10 +271,12 @@ class CLIPLoss(LossComponent):
         text_dim = self._init_kwargs.get("text_dim", 384)
         pov_dim = self._init_kwargs.get("pov_dim", 512)
         latent_dim = self._init_kwargs.get("latent_dim", None)
+        spatial_alignment = self._init_kwargs.get("spatial_alignment", False)
         
         # Check if projections are provided from model (attached to Autoencoder)
         # If not, create our own
         self.use_model_projections = self._init_kwargs.get("use_model_projections", False)
+        self.spatial_alignment = spatial_alignment
         
         if not self.use_model_projections:
             # Create our own projection layers
@@ -182,7 +284,8 @@ class CLIPLoss(LossComponent):
                 projection_dim=self.projection_dim,
                 text_dim=text_dim,
                 pov_dim=pov_dim,
-                latent_dim=latent_dim
+                latent_dim=latent_dim,
+                spatial_alignment=spatial_alignment
             )
         else:
             # Will use projections from model (set via set_projections method)
@@ -271,29 +374,87 @@ class CLIPLoss(LossComponent):
         if not proj_param.requires_grad:
             raise RuntimeError("CLIP projection parameters do not require gradients! Check that projections are included in optimizer.")
         
-        # Compute similarity matrix
-        # latent_proj @ combined_emb.T -> [B, B]
-        # Note: combined_emb may not have gradients (from detached text_emb/pov_emb),
-        # but gradients will still flow through latent_proj
-        B = latent_proj.shape[0]
-        logits = latent_proj @ combined_emb.T / self.temperature  # [B, B]
-        
-        # Verify logits has gradients (it should, since latent_proj has gradients)
-        if not logits.requires_grad:
-            raise RuntimeError(
-                f"logits does not require gradients! "
-                f"latent_proj.requires_grad={latent_proj.requires_grad}, "
-                f"combined_emb.requires_grad={combined_emb.requires_grad}"
-            )
-        
-        # Labels: diagonal elements are positive pairs
-        labels = torch.arange(B, device=logits.device, dtype=torch.long)
-        
-        # Symmetric loss: image-to-text and text-to-image
-        # Cross-entropy will compute gradients through logits, which flows through latent_proj
-        loss_i2t = F.cross_entropy(logits, labels)
-        loss_t2i = F.cross_entropy(logits.T, labels)
-        loss = (loss_i2t + loss_t2i) / 2.0
+        # Handle spatial vs global alignment
+        if self.spatial_alignment and latent_proj.dim() == 4:
+            # Spatial alignment: compute per-pixel alignment loss
+            # latent_proj: [B, projection_dim, H, W]
+            # combined_emb: [B, projection_dim, H, W]
+            B, C, H, W = latent_proj.shape
+            
+            # Flatten spatial dimensions: [B, projection_dim, H*W]
+            latent_flat = latent_proj.view(B, C, H * W)  # [B, C, H*W]
+            combined_flat = combined_emb.view(B, C, H * W)  # [B, C, H*W]
+            
+            # Transpose for matrix multiplication: [B, H*W, C]
+            latent_flat = latent_flat.transpose(1, 2)  # [B, H*W, C]
+            combined_flat = combined_flat.transpose(1, 2)  # [B, H*W, C]
+            
+            # Compute similarity matrix per spatial location
+            # For each spatial location, compute similarity across batch
+            # latent_flat: [B, H*W, C], combined_flat: [B, H*W, C]
+            # We want: for each spatial location, compute [B, B] similarity matrix
+            # Then average over spatial locations
+            
+            # Reshape to [B*H*W, C] for batch-wise similarity computation
+            latent_all = latent_flat.reshape(B * H * W, C)  # [B*H*W, C]
+            combined_all = combined_flat.reshape(B * H * W, C)  # [B*H*W, C]
+            
+            # Compute similarity: [B*H*W, B*H*W]
+            # But we want per-spatial-location: for each of H*W locations, compute [B, B] similarity
+            # So we need to group by spatial location
+            
+            # Alternative: compute per-pixel MSE/alignment and average
+            # This is simpler and still provides spatial alignment signal
+            per_pixel_loss = F.mse_loss(latent_flat, combined_flat, reduction='none')  # [B, H*W, C]
+            per_pixel_loss = per_pixel_loss.mean(dim=2)  # [B, H*W] - average over channels
+            loss = per_pixel_loss.mean()  # Average over batch and spatial dimensions
+            
+            # Also compute contrastive loss on global pooled features for stability
+            # Pool spatial features to global
+            latent_global = F.adaptive_avg_pool2d(latent_proj, 1).squeeze(-1).squeeze(-1)  # [B, C]
+            combined_global = F.adaptive_avg_pool2d(combined_emb, 1).squeeze(-1).squeeze(-1)  # [B, C]
+            
+            # Normalize
+            latent_global = F.normalize(latent_global, p=2, dim=1)
+            combined_global = F.normalize(combined_global, p=2, dim=1)
+            
+            # Contrastive loss on global features
+            logits = latent_global @ combined_global.T / self.temperature  # [B, B]
+            labels = torch.arange(B, device=logits.device, dtype=torch.long)
+            loss_i2t = F.cross_entropy(logits, labels)
+            loss_t2i = F.cross_entropy(logits.T, labels)
+            contrastive_loss = (loss_i2t + loss_t2i) / 2.0
+            
+            # Combine spatial alignment loss with contrastive loss
+            # Weight spatial loss more heavily since it's the main objective
+            loss = 0.7 * loss + 0.3 * contrastive_loss
+            
+            loss_i2t = loss_t2i = loss  # For logging
+        else:
+            # Global alignment (original behavior)
+            # Compute similarity matrix
+            # latent_proj @ combined_emb.T -> [B, B]
+            # Note: combined_emb may not have gradients (from detached text_emb/pov_emb),
+            # but gradients will still flow through latent_proj
+            B = latent_proj.shape[0]
+            logits = latent_proj @ combined_emb.T / self.temperature  # [B, B]
+            
+            # Verify logits has gradients (it should, since latent_proj has gradients)
+            if not logits.requires_grad:
+                raise RuntimeError(
+                    f"logits does not require gradients! "
+                    f"latent_proj.requires_grad={latent_proj.requires_grad}, "
+                    f"combined_emb.requires_grad={combined_emb.requires_grad}"
+                )
+            
+            # Labels: diagonal elements are positive pairs
+            labels = torch.arange(B, device=logits.device, dtype=torch.long)
+            
+            # Symmetric loss: image-to-text and text-to-image
+            # Cross-entropy will compute gradients through logits, which flows through latent_proj
+            loss_i2t = F.cross_entropy(logits, labels)
+            loss_t2i = F.cross_entropy(logits.T, labels)
+            loss = (loss_i2t + loss_t2i) / 2.0
         
         # Final verification: loss must have gradients
         if not loss.requires_grad:
