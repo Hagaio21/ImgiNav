@@ -25,6 +25,7 @@ import pandas as pd
 import subprocess
 import numpy as np
 import time
+from datetime import datetime
 from pathlib import Path
 from tqdm import tqdm
 from PIL import Image
@@ -635,6 +636,41 @@ NumpyFullLoader.add_constructor(
 )
 
 
+def read_flags(flags_file):
+    """Read pipeline flags from flags.txt file."""
+    flags = {}
+    if flags_file.exists():
+        with open(flags_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    flags[key.strip()] = value.strip()
+    return flags
+
+
+def write_flag(flags_file, key, value):
+    """Write a single flag to flags.txt file."""
+    flags = read_flags(flags_file)
+    flags[key] = value
+    
+    flags_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(flags_file, 'w') as f:
+        f.write("# Pipeline progress flags\n")
+        f.write("# Format: KEY=value\n")
+        f.write("# Auto-generated - do not edit manually\n\n")
+        for k, v in sorted(flags.items()):
+            f.write(f"{k}={v}\n")
+
+
+def check_flag(flags_file, key):
+    """Check if a flag is set and return its value, or None if not set."""
+    flags = read_flags(flags_file)
+    return flags.get(key, None)
+
+
 def update_diffusion_config(
     diffusion_config_path,
     ae_checkpoint_path,
@@ -885,13 +921,38 @@ def main():
     embeddings_dir.mkdir(parents=True, exist_ok=True)
     embedded_manifest = embeddings_dir / "manifest_with_latents_and_embeddings.csv"
     
+    # Pipeline flags file for resuming
+    flags_file = diffusion_save_path / "flags.txt"
+    
+    print(f"\n{'='*60}")
+    print("Pipeline Resume Check")
+    print(f"{'='*60}")
+    print(f"Flags file: {flags_file}")
+    if flags_file.exists():
+        flags = read_flags(flags_file)
+        print(f"Found {len(flags)} saved flags")
+        for key, value in sorted(flags.items()):
+            print(f"  {key}: {value}")
+    else:
+        print("No existing flags file - starting fresh pipeline")
+    print(f"{'='*60}\n")
+    
     # Step 1: Train VAE (or find existing)
     ae_checkpoint = None
-    if not args.skip_ae:
+    saved_ae_checkpoint = check_flag(flags_file, "VAE_CHECKPOINT")
+    
+    if saved_ae_checkpoint and Path(saved_ae_checkpoint).exists():
+        print(f"Resuming: Found saved VAE checkpoint in flags: {saved_ae_checkpoint}")
+        ae_checkpoint = Path(saved_ae_checkpoint)
+    elif not args.skip_ae:
         ae_checkpoint = train_autoencoder(args.ae_config)
         if ae_checkpoint is None:
             print("ERROR: VAE training failed or checkpoint not found")
             sys.exit(1)
+        # Save checkpoint to flags
+        write_flag(flags_file, "VAE_CHECKPOINT", str(ae_checkpoint.resolve()))
+        write_flag(flags_file, "VAE_TRAINED", "true")
+        print(f"Saved VAE checkpoint to flags: {ae_checkpoint}")
     else:
         ae_checkpoint = find_ae_checkpoint(ae_config)
         if ae_checkpoint is None:
@@ -912,9 +973,16 @@ def main():
             print(error_msg)
             sys.exit(1)
         print(f"Using existing VAE checkpoint: {ae_checkpoint}")
+        write_flag(flags_file, "VAE_CHECKPOINT", str(ae_checkpoint.resolve()))
+        write_flag(flags_file, "VAE_TRAINED", "true")
     
     # Step 2: Embed dataset
-    if not args.skip_embedding:
+    saved_embedded_manifest = check_flag(flags_file, "EMBEDDED_MANIFEST")
+    
+    if saved_embedded_manifest and Path(saved_embedded_manifest).exists():
+        print(f"Resuming: Found saved embedded manifest in flags: {saved_embedded_manifest}")
+        embedded_manifest = Path(saved_embedded_manifest)
+    elif not args.skip_embedding:
         success = embed_controlnet_dataset_with_vae(
             ae_checkpoint,
             args.ae_config,
@@ -926,32 +994,62 @@ def main():
         if not success:
             print("ERROR: Dataset embedding failed")
             sys.exit(1)
+        # Save embedded manifest to flags
+        write_flag(flags_file, "EMBEDDED_MANIFEST", str(embedded_manifest.resolve()))
+        write_flag(flags_file, "EMBEDDED", "true")
+        print(f"Saved embedded manifest to flags: {embedded_manifest}")
     else:
         if not embedded_manifest.exists():
             print(f"ERROR: --skip-embedding specified but embedded manifest not found: {embedded_manifest}")
             sys.exit(1)
         print(f"Using existing embedded manifest: {embedded_manifest}")
+        write_flag(flags_file, "EMBEDDED_MANIFEST", str(embedded_manifest.resolve()))
+        write_flag(flags_file, "EMBEDDED", "true")
     
     # Step 3: Calculate scale factor
-    scale_factor = calculate_and_update_scale_factor(
-        args.diffusion_config,
-        embedded_manifest
-    )
+    saved_scale_factor = check_flag(flags_file, "SCALE_FACTOR")
+    
+    if saved_scale_factor:
+        print(f"Resuming: Found saved scale factor in flags: {saved_scale_factor}")
+        scale_factor = float(saved_scale_factor)
+    else:
+        scale_factor = calculate_and_update_scale_factor(
+            args.diffusion_config,
+            embedded_manifest
+        )
+        if scale_factor is not None:
+            write_flag(flags_file, "SCALE_FACTOR", str(scale_factor))
+            write_flag(flags_file, "SCALE_FACTOR_CALCULATED", "true")
+            print(f"Saved scale factor to flags: {scale_factor}")
     
     # Step 4: Update diffusion config
-    update_diffusion_config(
-        args.diffusion_config,
-        ae_checkpoint,
-        embedded_manifest,
-        scale_factor
-    )
+    config_updated = check_flag(flags_file, "CONFIG_UPDATED")
+    
+    if not config_updated:
+        update_diffusion_config(
+            args.diffusion_config,
+            ae_checkpoint,
+            embedded_manifest,
+            scale_factor
+        )
+        write_flag(flags_file, "CONFIG_UPDATED", datetime.now().isoformat())
+        print(f"Saved config update timestamp to flags")
+    else:
+        print(f"Resuming: Config already updated (timestamp: {config_updated})")
     
     # Step 5: Train diffusion
-    if not args.skip_training:
+    diffusion_trained = check_flag(flags_file, "DIFFUSION_TRAINED")
+    
+    if diffusion_trained == "true":
+        print(f"Resuming: Diffusion training already marked as complete in flags")
+    elif not args.skip_training:
         success = train_diffusion(args.diffusion_config)
         if not success:
             print("ERROR: Diffusion training failed")
             sys.exit(1)
+        write_flag(flags_file, "DIFFUSION_TRAINED", "true")
+        write_flag(flags_file, "DIFFUSION_COMPLETED", datetime.now().isoformat())
+        print(f"Saved diffusion training completion to flags")
     else:
         print("Skipping diffusion training (--skip-training)")
     
@@ -962,6 +1060,7 @@ def main():
     print(f"Embedded manifest: {embedded_manifest}")
     print(f"Scale factor: {scale_factor:.6f if scale_factor else 'N/A'}")
     print(f"Diffusion config: {args.diffusion_config}")
+    print(f"Flags file: {flags_file}")
     print("="*60)
 
 
