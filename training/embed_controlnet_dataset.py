@@ -147,11 +147,31 @@ def embed_controlnet_dataset_with_vae(
             layout_temp_manifest = output_manifest_abs.parent / "temp_layout_manifest.csv"
             layout_output_manifest = output_manifest_abs.parent / "temp_layout_output_manifest.csv"
             
-            layout_rows = [
-                {"layout_path": row.get("layout_path", ""), "is_empty": 0}
-                for row in rows
-                if row.get("layout_path")
-            ]
+            # Replace layout_path with recolored version if it exists
+            layout_rows = []
+            for row in rows:
+                layout_path_str = row.get("layout_path", "")
+                if not layout_path_str:
+                    continue
+                
+                # Check if recolored version exists
+                layout_path = Path(layout_path_str)
+                if "layouts" in layout_path.parts:
+                    # Replace 'layouts' with 'layouts_recolored' in path
+                    parts = list(layout_path.parts)
+                    try:
+                        layouts_idx = parts.index("layouts")
+                        parts[layouts_idx] = "layouts_recolored"
+                        recolored_path = Path(*parts)
+                        if recolored_path.exists():
+                            layout_path_str = str(recolored_path)
+                    except ValueError:
+                        pass  # 'layouts' not in path, use original
+                
+                layout_rows.append({
+                    "layout_path": layout_path_str,
+                    "is_empty": 0
+                })
             
             if layout_rows:
                 create_manifest(layout_rows, layout_temp_manifest, ["layout_path", "is_empty"])
