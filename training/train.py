@@ -146,6 +146,17 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         if use_amp and device_obj.type == "cuda":
             with torch.amp.autocast('cuda'):
                 outputs = model(batch["rgb"])
+                
+                # Diagnostic: Check if latent_features has gradients (for CLIP loss)
+                if "latent_features" in outputs:
+                    latent_features = outputs["latent_features"]
+                    if not latent_features.requires_grad:
+                        raise RuntimeError(
+                            f"latent_features does not require gradients! "
+                            f"Encoder trainable: {any(p.requires_grad for p in model.encoder.parameters())}, "
+                            f"Model train mode: {model.training}"
+                        )
+                
                 loss, logs = loss_fn(outputs, batch)
                 
                 # Collect latents for statistics (VAE: mu, AE: latent)
@@ -528,7 +539,13 @@ def main():
                 if CLIPLossClass and isinstance(sub_loss, CLIPLossClass):
                     # Connect model's projections to CLIP loss
                     sub_loss.set_projections(model.clip_projections)
-                    print("  Connected CLIP projections from model to CLIP loss")
+                    # Verify they're the same instance
+                    if sub_loss.projections is not model.clip_projections:
+                        raise RuntimeError("CLIP loss projections are not the same instance as model.clip_projections!")
+                    # Verify projections have trainable parameters
+                    proj_params = list(model.clip_projections.parameters())
+                    trainable_proj_params = [p for p in proj_params if p.requires_grad]
+                    print(f"  Connected CLIP projections from model to CLIP loss ({len(trainable_proj_params)}/{len(proj_params)} trainable)")
     
     print("Building optimizer...")
     optimizer = build_optimizer(model, config)

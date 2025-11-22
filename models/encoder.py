@@ -13,6 +13,7 @@ class Encoder(BaseComponent):
         latent_ch = self._init_kwargs.get("latent_channels", 4)
         self.variational = self._init_kwargs.get("variational", False)
 
+        # Build feature extractor (shared between VAE and non-VAE modes)
         layers = []
         for _ in range(down_steps):
             layers += [
@@ -25,40 +26,40 @@ class Encoder(BaseComponent):
             ]
             in_ch = out_ch
             out_ch *= 2
-
+        
+        # Final feature extraction layer (before latent projection)
+        layers += [
+            nn.Conv2d(in_ch, in_ch, 3, padding=1),
+            nn.GroupNorm(norm_groups, in_ch),
+            act,
+        ]
+        self.feature_extractor = nn.Sequential(*layers)
+        
         if self.variational:
-            # VAE mode: output mu and logvar
-            layers += [
-                nn.Conv2d(in_ch, in_ch, 3, padding=1),
-                nn.GroupNorm(norm_groups, in_ch),
-                act,
-            ]
-            self.feature_extractor = nn.Sequential(*layers)
+            # VAE mode: output mu and logvar from features
             self.mu_head = nn.Conv2d(in_ch, latent_ch, 1)
             self.logvar_head = nn.Conv2d(in_ch, latent_ch, 1)
         else:
-            # Regular deterministic encoder
-            layers += [
-                nn.Conv2d(in_ch, in_ch, 3, padding=1),
-                nn.GroupNorm(norm_groups, in_ch),
-                act,
-                nn.Conv2d(in_ch, latent_ch, 1),
-            ]
-            self.encoder = nn.Sequential(*layers)
+            # Regular deterministic encoder: project features to latent
+            self.latent_proj = nn.Conv2d(in_ch, latent_ch, 1)
 
     def forward(self, x):
         """
         Forward pass. Always returns a dictionary.
         
         Returns:
-            - Regular mode: {"latent": z}
+            - Regular mode: {"latent": z, "latent_features": features}
             - VAE mode: {"mu": mu, "logvar": logvar, "latent_features": features}
         """
+        # Extract features (shared between VAE and non-VAE modes)
+        features = self.feature_extractor(x)
+        
         if self.variational:
-            features = self.feature_extractor(x)
+            # VAE mode: project features to mu and logvar
             mu = self.mu_head(features)
             logvar = self.logvar_head(features)
             return {"mu": mu, "logvar": logvar, "latent_features": features}
         else:
-            z = self.encoder(x)
-            return {"latent": z}
+            # Regular deterministic encoder: project features to latent
+            z = self.latent_proj(features)
+            return {"latent": z, "latent_features": features}

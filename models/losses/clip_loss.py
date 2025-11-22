@@ -208,14 +208,18 @@ class CLIPLoss(LossComponent):
         if not latent_features.requires_grad:
             # If latent_features doesn't require grad, we can't compute gradients
             # This might happen if the encoder is frozen or if features are detached
-            # Return zero loss connected to a parameter from projections to ensure gradient flow
+            # Try to create a connected loss using projection parameters
             if self.projections is not None:
                 # Use a projection parameter to create a connected zero loss
+                # This ensures gradients can flow to projection parameters
                 proj_param = next(self.projections.parameters())
-                return (proj_param * 0.0).sum() * 0.0, {}
-            else:
-                # No projections available, return simple zero
-                return torch.tensor(0.0, device=latent_features.device, requires_grad=True), {}
+                if proj_param.requires_grad:
+                    # Create zero loss connected to projection parameter
+                    zero_loss = (proj_param * 0.0).sum() * 0.0
+                    return zero_loss, {}
+            # If no projections or they don't require grad, return simple zero
+            # This will cause an error downstream, which is better than silent failure
+            return torch.tensor(0.0, device=latent_features.device, requires_grad=True), {}
         
         # Get text and POV embeddings
         text_emb = targets.get(self.text_key)
@@ -241,8 +245,21 @@ class CLIPLoss(LossComponent):
             latent_features, text_emb, pov_emb, combine_method=self.combine_method
         )
         
+        # Verify latent_proj has gradients (it should, since it comes from latent_features)
+        # This is critical - if latent_proj doesn't have gradients, the loss won't flow back
+        if not latent_proj.requires_grad:
+            # This should not happen if latent_features has gradients
+            # But if it does, try to create a connected loss
+            if self.projections is not None:
+                proj_param = next(self.projections.parameters())
+                if proj_param.requires_grad:
+                    return (proj_param * 0.0).sum() * 0.0, {}
+            return torch.tensor(0.0, device=latent_proj.device, requires_grad=True), {}
+        
         # Compute similarity matrix
         # latent_proj @ combined_emb.T -> [B, B]
+        # Note: combined_emb may not have gradients (from detached text_emb/pov_emb),
+        # but gradients will still flow through latent_proj
         B = latent_proj.shape[0]
         logits = latent_proj @ combined_emb.T / self.temperature  # [B, B]
         
@@ -250,6 +267,7 @@ class CLIPLoss(LossComponent):
         labels = torch.arange(B, device=logits.device, dtype=torch.long)
         
         # Symmetric loss: image-to-text and text-to-image
+        # Cross-entropy will compute gradients through logits, which flows through latent_proj
         loss_i2t = F.cross_entropy(logits, labels)
         loss_t2i = F.cross_entropy(logits.T, labels)
         loss = (loss_i2t + loss_t2i) / 2.0
