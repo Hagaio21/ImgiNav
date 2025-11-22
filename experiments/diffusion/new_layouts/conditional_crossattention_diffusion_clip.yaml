@@ -1,0 +1,113 @@
+experiment:
+  name: conditional_crossattention_diffusion_clip
+  phase: diffusion_training
+  save_path: /work3/s233249/ImgiNav/experiments/new_layouts/conditional_crossattention_diffusion_clip
+  epochs_target: 300
+
+dataset:
+  # Using ControlNet dataset manifest (already has embeddings prepared)
+  # This manifest contains graph_embedding_path and pov_embedding_path columns
+  manifest: /work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg/manifest_with_embeddings.csv
+  outputs:
+    latent: latent_path
+    text_emb: graph_embedding_path  # Graph/text embeddings (384-dim from all-MiniLM-L6-v2)
+    pov_emb: pov_embedding_path     # POV embeddings (512-dim from ResNet18)
+  filters:
+    is_empty:
+    - false
+  return_path: false
+
+autoencoder:
+  # IMPORTANT: Use the CLIP-trained VAE checkpoint
+  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256_clip/new_layouts_VAE_32x32_structural_256_clip_checkpoint_best.pt
+  frozen: true
+
+# CRITICAL: Fixes the "Neon Blob" issue.
+latent_clamp_min: -6.0
+latent_clamp_max: 6.0
+
+# Use 5.5 based on typical KL-VAE statistics
+scale_factor: 5.5 
+
+# Embedding projection: uses CLIP projections from VAE to align embeddings with latents
+# This ensures spatial features (K, V) are in the same semantic space as VAE latents (Q)
+embedding_projection:
+  type: CLIPEmbeddingToSpatial  # Uses CLIP projections from VAE checkpoint
+  output_channels: 48    # Matches UNet base_channels (reduced for memory)
+  spatial_size: [16, 16] # Smaller initial size for 32x32 latents (will be interpolated to match UNet resolution)
+  combine_method: average  # How to combine text and POV in CLIP joint space: "add" or "average"
+
+unet:
+  type: UnetWithAttention
+  in_channels: 4
+  out_channels: 4
+  
+  # SMALLER MODEL FOR CROSS-ATTENTION AT ALL LEVELS
+  # With 32x32 latents, depth=4 gives: 32→16→8→4 (bottleneck at 4x4)
+  # For better memory efficiency, we can use depth=3: 32→16→8 (bottleneck at 8x8)
+  base_channels: 48       # Reduced from 96 to allow cross-attention everywhere
+  depth: 3                # Reduced depth for 32x32 latents (Bottleneck at 8x8 resolution)
+  num_res_blocks: 2
+  
+  time_dim: 256
+  norm_groups: 8          # Standard for 48 channels
+  dropout: 0.1
+  
+  # CROSS-ATTENTION ONLY IN DOWN PATH (memory efficient)
+  # Only using cross-attention in downs reduces memory usage significantly
+  use_attention: true
+  attention_heads: 2      # Reduced to 2 for 48 channels (24 head_dim) - matches ratio of large model better
+  attention_at:
+    - downs               # Cross-attention only in down path (hierarchical conditioning) - reduces memory
+  
+  # Enable cross-attention for embedding conditioning
+  enable_cross_attention: true
+  
+  # DiffusionModel reads this key to enable/disable EMA wrapper
+  use_ema: false
+
+scheduler:
+  type: LinearScheduler   # Uses your existing class from scheduler.py
+  num_steps: 1000         # Your code hardcodes betas 1e-4 to 0.02 for this
+
+training:
+  seed: 4242
+  train_split: 0.8
+  batch_size: 4           # Severely reduced to avoid OOM - small model has memory issues
+  num_workers: 8
+  shuffle: true
+  epochs: 300
+  learning_rate: 0.0001   # Lower LR for stability
+  optimizer: AdamW
+  weight_decay: 0.01
+  
+  save_interval: 20
+  eval_interval: 10
+  sample_interval: 10
+  
+  use_amp: true
+  max_grad_norm: 0.5
+  
+  # Gradient accumulation: accumulate gradients over N steps before updating weights
+  # Effective batch size = batch_size * gradient_accumulation_steps
+  # Using 1 (no accumulation) to match large model and avoid memory buildup
+  gradient_accumulation_steps: 1  # No accumulation (same as large model)
+  
+  scheduler:
+    type: cosine          # This refers to the Learning Rate scheduler, not Noise scheduler
+
+  # Classifier-Free Guidance (CFG) for cross-attention conditioning
+  # cfg_dropout_rate: Probability of dropping embeddings during training (0.0 = no dropout, 1.0 = always drop)
+  # Can be a fixed value or a schedule dict
+  cfg_dropout_rate: 0.1   # Drop embeddings 10% of the time during training
+  
+  # guidance_scale: CFG scale for sampling (1.0 = no CFG, >1.0 = stronger conditioning)
+  # Higher values (e.g., 3.0-7.0) typically give better adherence to conditions
+  guidance_scale: 3.0     # Use CFG scale of 3.0 during sampling
+
+  loss:
+    type: MSELoss
+    key: pred_noise
+    target: noise
+    weight: 1.0
+

@@ -8,7 +8,7 @@ from models.autoencoder import Autoencoder
 from models.decoder import Decoder
 from models.components.unet import Unet, DualUNet, UnetWithAttention  # DualUNet for backward compatibility
 from models.components.scheduler import SCHEDULER_REGISTRY
-from models.components.embedding_projection import EmbeddingToSpatial
+from models.components.embedding_projection import EmbeddingToSpatial, CLIPEmbeddingToSpatial
 
 
 class DiffusionModel(BaseModel):
@@ -146,10 +146,36 @@ class DiffusionModel(BaseModel):
         # Embedding projection for cross-attention (optional)
         embedding_proj_cfg = self._init_kwargs.get("embedding_projection", None)
         if embedding_proj_cfg:
+            embedding_proj_type = embedding_proj_cfg.get("type", "EmbeddingToSpatial")
+            
             # Get output_channels from UNet base_channels if not specified
             if "output_channels" not in embedding_proj_cfg:
                 embedding_proj_cfg["output_channels"] = unet_cfg.get("base_channels", 96)
-            self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
+            
+            if embedding_proj_type == "CLIPEmbeddingToSpatial":
+                # CLIP-based projection: uses CLIP projections from VAE
+                # Try to get CLIP projections from VAE checkpoint
+                clip_projections = None
+                if ae_cfg and ae_cfg.get("checkpoint"):
+                    try:
+                        autoencoder = Autoencoder.load_checkpoint(ae_cfg.get("checkpoint"), map_location="cpu")
+                        if hasattr(autoencoder, 'clip_projections') and autoencoder.clip_projections is not None:
+                            clip_projections = autoencoder.clip_projections
+                            print("Loaded CLIP projections from VAE checkpoint for embedding projection")
+                    except Exception as e:
+                        print(f"Warning: Could not load CLIP projections from VAE: {e}")
+                        print("  Falling back to regular EmbeddingToSpatial")
+                        embedding_proj_type = "EmbeddingToSpatial"
+                
+                if clip_projections is not None:
+                    embedding_proj_cfg["clip_projections"] = clip_projections
+                    self.embedding_proj = CLIPEmbeddingToSpatial.from_config(embedding_proj_cfg)
+                else:
+                    # Fallback to regular projection if CLIP not available
+                    self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
+            else:
+                # Regular embedding projection
+                self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
         else:
             self.embedding_proj = None
         
@@ -537,7 +563,13 @@ class DiffusionModel(BaseModel):
             cfg["scale_factor"] = self.scale_factor
         # Include embedding projection if it exists
         if hasattr(self, 'embedding_proj') and self.embedding_proj is not None:
-            cfg["embedding_projection"] = self.embedding_proj.to_config()
+            embedding_cfg = self.embedding_proj.to_config()
+            # Add type if it's CLIPEmbeddingToSpatial
+            if isinstance(self.embedding_proj, CLIPEmbeddingToSpatial):
+                embedding_cfg["type"] = "CLIPEmbeddingToSpatial"
+            else:
+                embedding_cfg["type"] = "EmbeddingToSpatial"
+            cfg["embedding_projection"] = embedding_cfg
         return cfg
 
     # ------------------------------------------------------------------
