@@ -111,8 +111,6 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
     # Collect latents for statistics (if VAE and requested)
     all_latents = [] if collect_latents else None
     
-    # Initialize all expected class loss keys at the start of epoch
-    # This ensures all classes appear in logs even if they never appear in any batch
     from models.losses.base_loss import LOSS_REGISTRY
     CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
     ClassWeightedMSELossClass = LOSS_REGISTRY.get("ClassWeightedMSELoss")
@@ -142,79 +140,27 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         # Move batch to device (non_blocking if using CUDA with pin_memory)
         batch = move_batch_to_device(batch, device_obj)
         
-        # Forward pass with mixed precision
-        if use_amp and device_obj.type == "cuda":
-            with torch.amp.autocast('cuda'):
-                outputs = model(batch["rgb"])
-                
-                # Collect latents for statistics (VAE: mu, AE: latent)
-                if collect_latents and all_latents is not None:
-                    if "mu" in outputs:
-                        all_latents.append(outputs["mu"].detach().cpu())
-                    elif "latent" in outputs:
-                        all_latents.append(outputs["latent"].detach().cpu())
-            
-            # Compute loss OUTSIDE autocast (like in test script)
-            # This ensures the computation graph is properly connected
-            loss, logs = loss_fn(outputs, batch)
-            
-            # Ensure loss is a tensor
-            if not isinstance(loss, torch.Tensor):
-                raise TypeError(f"Loss must be a tensor, got {type(loss)}: {loss}")
-            
-            # Verify loss requires gradients (should be true from computation graph)
-            if not loss.requires_grad:
-                raise RuntimeError(f"Loss does not require gradients. This indicates a problem with the computation graph.")
-            
-            # Backward pass with gradient scaling
-            optimizer.zero_grad()
-            
-            if scaler:
-                # Scale loss and backward - must be done in sequence
-                scaled_loss = scaler.scale(loss)
-                scaled_loss.backward()
-                
-                # Verify gradients were computed (diagnostic)
-                param_with_grad = next((p for p in model.parameters() if p.requires_grad and p.grad is not None), None)
-                if param_with_grad is None:
-                    # Check if any parameters require grad
-                    has_trainable = any(p.requires_grad for p in model.parameters())
-                    if not has_trainable:
-                        raise RuntimeError("No trainable parameters found in model!")
-                    else:
-                        # More detailed diagnostic
-                        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-                        encoder_params = sum(p.numel() for p in model.encoder.parameters() if p.requires_grad) if hasattr(model, 'encoder') else 0
-                        decoder_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad) if hasattr(model, 'decoder') else 0
-                        clip_proj_params = sum(p.numel() for p in model.clip_projections.parameters() if p.requires_grad) if hasattr(model, 'clip_projections') and model.clip_projections is not None else 0
-                        raise RuntimeError(
-                            f"Backward pass completed but no gradients found. "
-                            f"Trainable params: {total_params} (encoder: {encoder_params}, decoder: {decoder_params}, clip_proj: {clip_proj_params}). "
-                            f"Check that loss is connected to model parameters and latent_features has requires_grad=True."
-                        )
-                
-                # Step optimizer with scaler (this will check for infs)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-        else:
-            # Forward pass
-            outputs = model(batch["rgb"])
-            loss, logs = loss_fn(outputs, batch)
-            
-            # Collect latents for statistics (VAE: mu, AE: latent)
-            if collect_latents and all_latents is not None:
-                if "mu" in outputs:
-                    all_latents.append(outputs["mu"].detach().cpu())
-                elif "latent" in outputs:
-                    all_latents.append(outputs["latent"].detach().cpu())
-            
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        # Debug: Check if embeddings are in batch (first iteration only)
+        if epoch == 1 and total_samples == 0:
+            print(f"Batch keys: {list(batch.keys())}")
+            if "text_emb" in batch:
+                print(f"text_emb shape: {batch['text_emb'].shape}, requires_grad: {batch['text_emb'].requires_grad}")
+            if "pov_emb" in batch:
+                print(f"pov_emb shape: {batch['pov_emb'].shape}, requires_grad: {batch['pov_emb'].requires_grad}")
+        
+        outputs = model(batch["rgb"])
+        
+        if collect_latents and all_latents is not None:
+            if "mu" in outputs:
+                all_latents.append(outputs["mu"].detach().cpu())
+            elif "latent" in outputs:
+                all_latents.append(outputs["latent"].detach().cpu())
+        
+        loss, logs = loss_fn(outputs, batch)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
         
         # Accumulate stats (detach before item() to avoid blocking)
         batch_size = batch["rgb"].shape[0]
@@ -335,31 +281,17 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         input_rgb = batch["rgb"]  # Already in [-1, 1] range (from dataset normalization)
         pred_rgb = outputs["rgb"]  # Output from tanh is in [-1, 1]
         
-        # Denormalize both from [-1, 1] to [0, 1] for visualization
-        # Both input and prediction are in [-1, 1], convert to [0, 1] for display
         input_rgb = (input_rgb + 1) / 2.0
         pred_rgb = (pred_rgb + 1) / 2.0
-        
-        # Don't clamp - preserve the actual output range
-        # Clamping can make images look faded if the model hasn't learned full range yet
         
         # Resize if needed
         if input_rgb.shape[-1] != target_size:
             input_rgb = F.interpolate(input_rgb, size=(target_size, target_size), mode='bilinear', align_corners=False)
             pred_rgb = F.interpolate(pred_rgb, size=(target_size, target_size), mode='bilinear', align_corners=False)
         
-        # Create two complete grids side by side: original (left) and reconstruction (right)
-        # Create original grid (n×n)
         orig_grid = make_grid(input_rgb, nrow=grid_n, padding=2, normalize=False)
-        # Create reconstruction grid (n×n)  
         recon_grid = make_grid(pred_rgb, nrow=grid_n, padding=2, normalize=False)
-        
-        # Concatenate horizontally (side by side)
-        # Both grids are (C, H, W), concatenate along width dimension
-        combined_grid = torch.cat([orig_grid, recon_grid], dim=2)  # Concatenate along width
-        
-        # Save combined grid: n×n original | n×n reconstruction (side by side)
-        # Include experiment name in filename if provided (for phase folder to avoid overwrites)
+        combined_grid = torch.cat([orig_grid, recon_grid], dim=2)
         if exp_name:
             grid_path = samples_dir / f"{exp_name}_epoch_{epoch:03d}_comparison.png"
         else:
@@ -521,7 +453,6 @@ def main():
     print("Building loss function...")
     loss_fn = build_loss(config)
     
-    # Connect CLIP loss projections to model if using CLIP loss
     if hasattr(model, 'clip_projections') and model.clip_projections is not None:
         from models.losses.base_loss import LOSS_REGISTRY
         CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
@@ -529,12 +460,9 @@ def main():
         if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
             for sub_loss in loss_fn.losses:
                 if CLIPLossClass and isinstance(sub_loss, CLIPLossClass):
-                    # Connect model's projections to CLIP loss
                     sub_loss.set_projections(model.clip_projections)
-                    # Verify they're the same instance
                     if sub_loss.projections is not model.clip_projections:
                         raise RuntimeError("CLIP loss projections are not the same instance as model.clip_projections!")
-                    # Verify projections have trainable parameters
                     proj_params = list(model.clip_projections.parameters())
                     trainable_proj_params = [p for p in proj_params if p.requires_grad]
                     print(f"  Connected CLIP projections from model to CLIP loss ({len(trainable_proj_params)}/{len(proj_params)} trainable)")
