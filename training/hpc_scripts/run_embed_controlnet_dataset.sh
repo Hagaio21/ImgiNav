@@ -15,7 +15,26 @@ set -euo pipefail
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/embed_controlnet_dataset.py"
-AE_CONFIG="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256.yaml"
+
+# Try CLIP-trained VAE first, fall back to regular VAE if not available
+AE_CONFIG_CLIP="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256_clip.yaml"
+AE_CONFIG_REGULAR="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256.yaml"
+
+# Check which VAE config exists (prefer CLIP-trained)
+if [ -f "${AE_CONFIG_CLIP}" ]; then
+  AE_CONFIG="${AE_CONFIG_CLIP}"
+  echo "Using CLIP-trained VAE config: ${AE_CONFIG}"
+else
+  AE_CONFIG="${AE_CONFIG_REGULAR}"
+  echo "Using regular VAE config: ${AE_CONFIG}"
+  if [ ! -f "${AE_CONFIG}" ]; then
+    echo "ERROR: Neither VAE config found:" >&2
+    echo "  CLIP: ${AE_CONFIG_CLIP}" >&2
+    echo "  Regular: ${AE_CONFIG_REGULAR}" >&2
+    exit 1
+  fi
+fi
+
 CONTROLNET_MANIFEST="/work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv"
 
 # Shared embedding location - all experiments will use this
@@ -105,6 +124,11 @@ echo "Embedding ControlNet Dataset"
 echo "=========================================="
 echo "VAE checkpoint: ${AE_CHECKPOINT}"
 echo "VAE config: ${AE_CONFIG}"
+if [ "${AE_CONFIG}" = "${AE_CONFIG_CLIP}" ]; then
+  echo "Using CLIP-trained VAE (joint embedding space)"
+else
+  echo "Using regular VAE"
+fi
 echo "Input manifest: ${CONTROLNET_MANIFEST}"
 echo "Output manifest: ${OUTPUT_MANIFEST}"
 echo "Working directory: ${BASE_DIR}"
