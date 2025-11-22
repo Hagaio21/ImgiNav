@@ -449,9 +449,7 @@ def embed_controlnet_dataset_with_vae(
                     ae_name_sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', layout_emb_mapping_ae_name)
                     # Remove multiple underscores
                     ae_name_sanitized = re.sub(r'_+', '_', ae_name_sanitized).strip('_')
-                    # Limit length
-                    if len(ae_name_sanitized) > 30:
-                        ae_name_sanitized = ae_name_sanitized[:30]
+                    # Use full name (no truncation) for predictability
                     proposed_column = f"latent_path_{ae_name_sanitized}"
                     
                     # Check if proposed column already exists
