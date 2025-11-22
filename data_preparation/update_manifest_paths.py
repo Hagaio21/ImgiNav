@@ -6,7 +6,12 @@ Replaces layout paths from 'layouts' to 'layouts_recolored' in manifest files.
 """
 
 import argparse
+import sys
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from common.file_io import read_manifest, create_manifest
 
 
