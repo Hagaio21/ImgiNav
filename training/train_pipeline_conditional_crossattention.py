@@ -607,25 +607,49 @@ def main():
     ae_config = load_config(args.ae_config)
     diffusion_config = load_config(args.diffusion_config)
     
-    # Get paths
+    # Get paths - resolve to absolute paths immediately
     ae_exp_name = ae_config.get("experiment", {}).get("name", "unnamed")
-    ae_save_path = Path(ae_config.get("experiment", {}).get("save_path", "outputs"))
+    ae_save_path_raw = ae_config.get("experiment", {}).get("save_path", "outputs")
+    ae_save_path = Path(ae_save_path_raw).resolve()
     
     diffusion_exp_name = diffusion_config.get("experiment", {}).get("name", "unnamed")
-    diffusion_save_path = Path(diffusion_config.get("experiment", {}).get("save_path", "outputs"))
+    diffusion_save_path_raw = diffusion_config.get("experiment", {}).get("save_path", "outputs")
+    diffusion_save_path = Path(diffusion_save_path_raw).resolve()
     
     # Get ControlNet manifest path
     if args.controlnet_manifest:
         controlnet_manifest = Path(args.controlnet_manifest).resolve()
     else:
         # Try to get from diffusion config
-        controlnet_manifest = Path(diffusion_config.get("dataset", {}).get("manifest", ""))
-        if not controlnet_manifest.exists():
-            # Default ControlNet manifest
-            controlnet_manifest = Path("/work3/s233249/ImgiNav/experiments/controlnet/new_layouts/controlnet_unet48_d4_new_layouts_seg/manifest_with_embeddings.csv")
+        manifest_path_str = diffusion_config.get("dataset", {}).get("manifest", "")
+        if manifest_path_str:
+            controlnet_manifest = Path(manifest_path_str)
+            # Resolve relative paths relative to config file location
+            if not controlnet_manifest.is_absolute():
+                config_dir = Path(args.diffusion_config).parent
+                controlnet_manifest = (config_dir / controlnet_manifest).resolve()
+            else:
+                controlnet_manifest = controlnet_manifest.resolve()
+        else:
+            controlnet_manifest = None
     
-    if not controlnet_manifest.exists():
-        raise FileNotFoundError(f"ControlNet manifest not found: {controlnet_manifest}")
+    # Validate manifest exists
+    if controlnet_manifest is None or not controlnet_manifest.exists():
+        error_msg = (
+            f"\n{'='*60}\n"
+            f"ERROR: ControlNet manifest not found\n"
+        )
+        if controlnet_manifest:
+            error_msg += f"  Path: {controlnet_manifest}\n"
+        else:
+            error_msg += (
+                f"  No manifest path provided.\n"
+                f"  Please provide one of:\n"
+                f"    1. --controlnet-manifest <path> argument\n"
+                f"    2. dataset.manifest in diffusion config\n"
+            )
+        error_msg += f"{'='*60}\n"
+        raise FileNotFoundError(error_msg)
     
     # Output manifest (with embedded latents + preserved embeddings)
     embeddings_dir = diffusion_save_path / "embeddings"
