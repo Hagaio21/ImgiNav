@@ -56,7 +56,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 2
+  batch_size: 16
   num_workers: 8
   shuffle: true
   epochs: 300
@@ -68,7 +68,7 @@ training:
   sample_interval: 10
   use_amp: true
   max_grad_norm: 0.5
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   scheduler:
     type: cosine
   cfg_dropout_rate: 0.1
