@@ -488,15 +488,12 @@ def eval_epoch(
     return avg_loss, avg_logs
 
 
-def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=64, exp_name=None, guidance_scale=1.0, cfg_dropout_rate=0.0):
+def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=16, exp_name=None, guidance_scale=1.0, cfg_dropout_rate=0.0):
     """Generate and save sample images.
     
-    If cfg_dropout_rate == 1.0 (fully unconditional training), only generates unconditioned samples.
-    Otherwise generates 3 types of samples, each in a 4x4 grid:
-    - Unconditioned: 16 samples (4x4 grid, cond=None)
-    - Rooms: 16 samples (4x4 grid, cond=0)
-    - Scenes: 16 samples (4x4 grid, cond=1)
-    Total: 48 samples arranged in a 12x4 grid (3 sections of 4x4 stacked vertically)
+    Generates:
+    - Unconditioned samples: 4x4 grid (16 samples)
+    - Targets vs Generated comparison: side-by-side comparison from validation batch
     """
     model.eval()
     samples_dir = output_dir / "samples"
@@ -511,27 +508,11 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         return
     
     num_steps = model.scheduler.num_steps
-    samples_per_type = 16  # 4x4 = 16 samples for each type
-    grid_size = 4  # 4x4 grid for each type
-    
-    # Check if model supports conditioning (room/scene)
-    supports_conditioning = hasattr(model.unet, 'cond_embedding') and model.unet.cond_embedding is not None
-    
-    # If cfg_dropout_rate == 1.0, model was trained fully unconditionally - only generate unconditioned samples
-    is_fully_unconditional = (cfg_dropout_rate >= 1.0)
-    
-    all_samples = []
     
     # ============================================================================
-    # Part 1: Generate 4x4 grid of unconditioned samples (16 samples)
+    # Part 1: Generate unconditioned samples (4x4 grid)
     # ============================================================================
     print(f"  Generating 16 unconditioned samples (4x4 grid) using DDPM ({num_steps} steps)...")
-    
-    # Use epoch-based seed for sampling
-    cpu_rng_state = torch.get_rng_state()
-    cuda_rng_states = None
-    if torch.cuda.is_available():
-        cuda_rng_states = torch.cuda.get_rng_state_all()
     
     sampling_seed = 42 + epoch
     torch.manual_seed(sampling_seed)
@@ -587,15 +568,11 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         unconditioned_path = samples_dir / f"{epoch_prefix}_unconditioned_4x4.png"
         unconditioned_grid.save(unconditioned_path)
         print(f"  Saved 16 unconditioned samples (4x4 grid) to {unconditioned_path}")
-    
-    # Remove old logic that processed all_samples - we now handle unconditioned separately
-    all_samples = []
-    
 
     # ============================================================================
     # Part 2: Targets vs Generated comparison (4 rooms + 4 scenes)
     # ============================================================================
-    # Get dataset to find rooms and scenes
+    # Get dataset to find rooms and scenes (different conditioning structures)
     dataset = val_loader.dataset
     
     # Find 4 rooms and 4 scenes from the validation dataset
@@ -631,15 +608,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     # Load selected samples from dataset
     batch_data = {}
-    batch_indices = []
-    
     for idx in selected_indices:
         sample = dataset[idx]
         for key, value in sample.items():
             if key not in batch_data:
                 batch_data[key] = []
             batch_data[key].append(value)
-        batch_indices.append(idx)
     
     # Convert lists to tensors
     batch = {}
@@ -658,7 +632,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     pov_emb = batch.get("pov_emb", None)
     target_latents = batch.get("latent", None)
     
-    # Extract cond (room/scene type) if available
+    # Extract cond if available
     cond = None
     type_labels = batch.get("type", None)
     if type_labels is not None:
@@ -676,18 +650,10 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # Ensure embeddings are 1D (flatten if needed)
     if text_emb is not None:
         if text_emb.dim() > 1:
-            text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+            text_emb = text_emb.flatten(start_dim=1)
     if pov_emb is not None:
         if pov_emb.dim() > 1:
-            pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
-    
-    # Check if we have embeddings for cross-attention
-    has_embeddings = text_emb is not None and pov_emb is not None
-    
-    if not has_embeddings:
-        print("  Warning: Cannot generate conditioned samples without text_emb and pov_emb")
-        text_emb = None
-        pov_emb = None
+            pov_emb = pov_emb.flatten(start_dim=1)
     
     if target_latents is None:
         print("  Warning: Cannot decode target latents - missing 'latent' in batch")
@@ -705,7 +671,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             target_rgb = None
     
     # Generate conditioned samples using DDPM
-    print(f"  Generating {batch_size} conditioned samples using cross-attention diffusion with DDPM ({num_steps} steps)...")
+    print(f"  Generating {batch_size} conditioned samples using DDPM ({num_steps} steps)...")
     
     with torch.no_grad():
         conditioned_output = model.sample(
@@ -753,7 +719,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         
         # Create side-by-side comparison
         img_size = target_images[0].size[0]
-        grid_n = 4  # 4 columns (2 rows: 4 rooms on top, 4 scenes on bottom)
+        grid_n = 4  # 4 columns
         num_rows = (batch_size + grid_n - 1) // grid_n
         
         # Create target grid
@@ -784,14 +750,13 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         print(f"  Saved target vs generated comparison ({batch_size} samples: {len(room_indices)} rooms + {len(scene_indices)} scenes) to {comparison_path}")
         
         # Also save generated samples only
-        samples_path = samples_dir / f"{epoch_prefix}_samples.png"
+        samples_path = samples_dir / f"{epoch_prefix}_generated.png"
         generated_grid.save(samples_path)
         print(f"  Saved generated samples ({batch_size} samples) to {samples_path}")
         
         # ============================================================================
-        # Part 3: Save individual images with conditions
+        # Part 3: Save individual samples with conditioning information
         # ============================================================================
-        # Create directory for individual samples with conditions
         data_dir = output_dir / "sample_data"
         data_dir.mkdir(parents=True, exist_ok=True)
         
@@ -804,7 +769,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         pov_paths = []
         
         for i in range(batch_size):
-            idx = batch_indices[i] if i < len(batch_indices) else i
+            idx = selected_indices[i] if i < len(selected_indices) else i
             row = dataset.df.iloc[idx]
             
             # Get graph text path
@@ -861,7 +826,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             "batch_size": batch_size,
             "room_indices": room_indices,
             "scene_indices": scene_indices,
-            "batch_indices": batch_indices,
+            "selected_indices": selected_indices,
             "layout_paths": layout_paths,
             "pov_paths": pov_paths,
             "graph_texts": graph_texts,
@@ -874,7 +839,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         with open(images_dir / "metadata.json", 'w') as f:
             json.dump(metadata, f, indent=2)
         
-        print(f"  Saved individual samples with conditions to {images_dir}")
+        print(f"  Saved individual samples with conditioning to {images_dir}")
 
 
 def main():
