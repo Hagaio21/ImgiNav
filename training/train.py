@@ -845,8 +845,12 @@ def main():
         print(f"  Saved loss curves plot: {plot_path}")
     
     def _plot_all_loss_components(df, output_dir, exp_name):
-        """Plot all loss components (MSE, CLIP, KLD, etc.) from CompositeLoss."""
+        """Plot all loss components (MSE, CLIP, KLD, etc.) from CompositeLoss as individual plots."""
         sns.set_style("darkgrid")
+        
+        # Create plots directory
+        plots_dir = output_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
         
         # Find all loss component columns (excluding total loss and special columns)
         exclude_patterns = ['loss', 'epoch', 'LatentStd_', 'KLD']  # We plot KLD separately
@@ -863,7 +867,7 @@ def main():
                 if any(pattern in loss_name for pattern in exclude_patterns):
                     continue
                 # Skip if it's a per-class MSE (we'll handle those separately)
-                if '_' in loss_name and loss_name.startswith('MSE_'):
+                if '_' in loss_name and loss_name.startswith('MSE_') and loss_name.count('_') > 1:
                     continue
                 if loss_name not in loss_components:
                     loss_components.append(loss_name)
@@ -873,46 +877,32 @@ def main():
         
         epochs = df['epoch'].values
         
-        # Create figure with subplots (arrange in grid)
-        n_components = len(loss_components)
-        n_cols = min(3, n_components)
-        n_rows = (n_components + n_cols - 1) // n_cols
-        
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
-        fig.suptitle(f'Loss Components - {exp_name}', fontsize=16, fontweight='bold')
-        
-        # Flatten axes if needed
-        if n_components == 1:
-            axes = [axes]
-        elif n_rows == 1:
-            axes = axes if isinstance(axes, list) else [axes]
-        else:
-            axes = axes.flatten()
-        
-        # Color palette for different components
-        colors = plt.cm.tab10(range(n_components))
-        
-        for idx, loss_name in enumerate(loss_components):
-            ax = axes[idx] if n_components > 1 else axes[0]
-            
+        # Plot each component individually
+        for loss_name in loss_components:
             train_col = f'train_{loss_name}'
             val_col = f'val_{loss_name}'
             
             has_train = train_col in df.columns
             has_val = val_col in df.columns
             
+            if not has_train and not has_val:
+                continue
+            
+            # Create individual figure for this component
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+            fig.suptitle(f'{loss_name} - {exp_name}', fontsize=16, fontweight='bold')
+            
             if has_train:
-                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=2, 
-                       color=colors[idx], alpha=0.8)
+                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=4, 
+                       color='blue', alpha=0.8)
             
             if has_val:
-                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=2, 
-                       color=colors[idx], alpha=0.8, linestyle='--')
+                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=4, 
+                       color='red', alpha=0.8, linestyle='--')
             
-            ax.set_xlabel('Epoch', fontsize=10)
-            ax.set_ylabel('Loss', fontsize=10)
-            ax.set_title(loss_name, fontsize=12, fontweight='bold')
-            ax.legend(fontsize=9)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('Loss', fontsize=12)
+            ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
             
             # Use log scale if values span multiple orders of magnitude
@@ -921,22 +911,25 @@ def main():
                 min_val = df[train_col].min()
                 if max_val > 0 and min_val > 0 and max_val / min_val > 10:
                     ax.set_yscale('log')
+            
+            plt.tight_layout()
+            
+            # Save individual plot
+            # Sanitize loss name for filename (replace special chars)
+            safe_name = loss_name.replace('/', '_').replace('\\', '_').replace(' ', '_')
+            plot_path = plots_dir / f'{exp_name}_{safe_name}.png'
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+            plt.close()
         
-        # Hide unused subplots
-        for idx in range(n_components, len(axes)):
-            axes[idx].set_visible(False)
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = output_dir / f'{exp_name}_loss_components.png'
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close()
-        print(f"  Saved loss components plot: {plot_path}")
+        print(f"  Saved {len(loss_components)} loss component plots to {plots_dir}")
     
     def _plot_mse_losses(df, output_dir, exp_name):
-        """Plot MSE losses (including ColorWeightedMSE and per-class MSE if available)."""
+        """Plot MSE losses (including ColorWeightedMSE and per-class MSE if available) as individual plots."""
         sns.set_style("darkgrid")
+        
+        # Create plots directory
+        plots_dir = output_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
         
         # Find all MSE-related columns
         mse_columns = [col for col in df.columns if 'MSE' in col and ('train_' in col or 'val_' in col)]
@@ -947,36 +940,64 @@ def main():
         epochs = df['epoch'].values
         
         # Separate into main MSE and per-class MSE
-        main_mse = [col for col in mse_columns if '_' not in col.replace('train_', '').replace('val_', '').replace('MSE_', '')]
+        main_mse = [col for col in mse_columns if col.replace('train_', '').replace('val_', '').count('_') <= 1]
         per_class_mse = [col for col in mse_columns if col not in main_mse]
         
-        # Plot main MSE losses
-        if main_mse:
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            fig.suptitle(f'MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
+        # Plot main MSE losses individually
+        for col in main_mse:
+            is_train = col.startswith('train_')
+            loss_name = col.replace('train_', '').replace('val_', '')
+            train_col = f'train_{loss_name}'
+            val_col = f'val_{loss_name}'
             
-            for col in main_mse:
-                is_train = col.startswith('train_')
-                label = col.replace('train_', '').replace('val_', '')
-                color = 'blue' if is_train else 'red'
-                linestyle = '-' if is_train else '--'
-                marker = 'o' if is_train else 's'
-                
-                ax.plot(epochs, df[col], label=label, linewidth=2, marker=marker, markersize=3, 
-                       color=color, alpha=0.8, linestyle=linestyle)
+            has_train = train_col in df.columns
+            has_val = val_col in df.columns
+            
+            if not has_train and not has_val:
+                continue
+            
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+            fig.suptitle(f'{loss_name} - {exp_name}', fontsize=16, fontweight='bold')
+            
+            if has_train:
+                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=4, 
+                       color='blue', alpha=0.8)
+            
+            if has_val:
+                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=4, 
+                       color='red', alpha=0.8, linestyle='--')
             
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel('MSE Loss', fontsize=12)
             ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
             
+            # Use log scale if values span multiple orders of magnitude
+            if has_train and len(df) > 1:
+                max_val = df[train_col].max()
+                min_val = df[train_col].min()
+                if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                    ax.set_yscale('log')
+            
             plt.tight_layout()
-            plot_path = output_dir / f'{exp_name}_mse_losses.png'
+            
+            # Sanitize loss name for filename
+            safe_name = loss_name.replace('/', '_').replace('\\', '_').replace(' ', '_')
+            plot_path = plots_dir / f'{exp_name}_{safe_name}.png'
             plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
             plt.close()
-            print(f"  Saved MSE losses plot: {plot_path}")
         
-        # Plot per-class MSE if available (e.g., from ClassWeightedMSELoss)
+        if main_mse:
+            # Count how many main MSE plots were actually saved
+            saved_count = 0
+            for col in main_mse:
+                loss_name = col.replace('train_', '').replace('val_', '')
+                if f'train_{loss_name}' in df.columns or f'val_{loss_name}' in df.columns:
+                    saved_count += 1
+            if saved_count > 0:
+                print(f"  Saved {saved_count} main MSE loss plots to {plots_dir}")
+        
+        # Plot per-class MSE individually if available (e.g., from ClassWeightedMSELoss)
         if per_class_mse:
             # Group by class
             classes = set()
@@ -986,50 +1007,49 @@ def main():
                     class_name = '_'.join(parts[2:])
                     classes.add(class_name)
             
-            if classes:
-                n_classes = len(classes)
-                n_cols = min(3, n_classes)
-                n_rows = (n_classes + n_cols - 1) // n_cols
+            for class_name in sorted(classes):
+                train_col = f'train_MSE_rgb_{class_name}'
+                val_col = f'val_MSE_rgb_{class_name}'
                 
-                fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
-                fig.suptitle(f'Per-Class MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
+                has_train = train_col in df.columns
+                has_val = val_col in df.columns
                 
-                if n_classes == 1:
-                    axes = [axes]
-                elif n_rows == 1:
-                    axes = axes if isinstance(axes, list) else [axes]
-                else:
-                    axes = axes.flatten()
+                if not has_train and not has_val:
+                    continue
                 
-                for idx, class_name in enumerate(sorted(classes)):
-                    ax = axes[idx]
-                    
-                    train_col = f'train_MSE_rgb_{class_name}'
-                    val_col = f'val_MSE_rgb_{class_name}'
-                    
-                    if train_col in df.columns:
-                        ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=2, 
-                               color='blue', alpha=0.8)
-                    
-                    if val_col in df.columns:
-                        ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=2, 
-                               color='red', alpha=0.8, linestyle='--')
-                    
-                    ax.set_xlabel('Epoch', fontsize=10)
-                    ax.set_ylabel('MSE Loss', fontsize=10)
-                    ax.set_title(f'{class_name}', fontsize=12, fontweight='bold')
-                    ax.legend(fontsize=9)
-                    ax.grid(True, alpha=0.3)
+                fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+                fig.suptitle(f'MSE RGB {class_name} - {exp_name}', fontsize=16, fontweight='bold')
                 
-                # Hide unused subplots
-                for idx in range(n_classes, len(axes)):
-                    axes[idx].set_visible(False)
+                if has_train:
+                    ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=4, 
+                           color='blue', alpha=0.8)
+                
+                if has_val:
+                    ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=4, 
+                           color='red', alpha=0.8, linestyle='--')
+                
+                ax.set_xlabel('Epoch', fontsize=12)
+                ax.set_ylabel('MSE Loss', fontsize=12)
+                ax.legend(fontsize=11)
+                ax.grid(True, alpha=0.3)
+                
+                # Use log scale if values span multiple orders of magnitude
+                if has_train and len(df) > 1:
+                    max_val = df[train_col].max()
+                    min_val = df[train_col].min()
+                    if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                        ax.set_yscale('log')
                 
                 plt.tight_layout()
-                plot_path = output_dir / f'{exp_name}_mse_per_class.png'
+                
+                # Sanitize class name for filename
+                safe_class = class_name.replace('/', '_').replace('\\', '_').replace(' ', '_')
+                plot_path = plots_dir / f'{exp_name}_MSE_rgb_{safe_class}.png'
                 plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
                 plt.close()
-                print(f"  Saved per-class MSE losses plot: {plot_path}")
+            
+            if classes:
+                print(f"  Saved {len(classes)} per-class MSE loss plots to {plots_dir}")
     
     # Check if model is VAE (variational encoder) to enable latent statistics collection
     is_vae = hasattr(model.encoder, 'variational') and model.encoder.variational
