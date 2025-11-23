@@ -199,6 +199,9 @@ class SelfAttentionBlock(nn.Module):
                 # Cross-attention: use conditioning signal for K, V
                 cond_signal = conditioning_signal
                 
+                # Ensure dtype matches input x (for mixed precision training)
+                cond_signal = cond_signal.to(dtype=x.dtype)
+                
                 if cond_signal.shape[2:] != (H, W):
                     cond_signal = F.interpolate(
                         cond_signal, size=(H, W), mode='bilinear', align_corners=False

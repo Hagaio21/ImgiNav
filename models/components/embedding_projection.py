@@ -111,6 +111,11 @@ class CLIPEmbeddingToSpatial(BaseComponent):
         
         combined_emb = F.normalize(combined_emb, p=2, dim=1)  # [B, 256] in joint space
         
+        # Ensure dtype matches spatial_proj parameters (for mixed precision training)
+        # combined_emb is float32 from frozen CLIP projections, but spatial_proj might be in float16 mode
+        spatial_proj_dtype = next(self.spatial_proj.parameters()).dtype
+        combined_emb = combined_emb.to(dtype=spatial_proj_dtype)
+        
         # Project from joint space to output_channels
         spatial_flat = self.spatial_proj(combined_emb)  # [B, output_channels]
         
