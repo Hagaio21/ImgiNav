@@ -2,8 +2,9 @@
 #BSUB -J embed_layouts_clip
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/run_embed_layouts_clip_autoencoder.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/run_embed_layouts_clip_autoencoder.%J.err
-#BSUB -n 1
-#BSUB -R "rusage[mem=16GB]"
+#BSUB -n 4
+#BSUB -R "rusage[mem=8GB]"
+#BSUB -R "span[hosts=1]"
 #BSUB -gpu "num=1:mode=exclusive_process"
 #BSUB -W 12:00
 #BSUB -q gpul40s
@@ -106,7 +107,7 @@ python "${PYTHON_SCRIPT}" \
     --ae-config "${AE_CONFIG}" \
     --input-manifest "${INPUT_MANIFEST}" \
     --output-manifest "${OUTPUT_MANIFEST}" \
-    --update-existing \
+    --layout-only \
     --batch-size 32 \
     --num-workers 8
 

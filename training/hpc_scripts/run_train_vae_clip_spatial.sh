@@ -2,11 +2,12 @@
 #BSUB -J train_vae_clip_spatial
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_vae_clip_spatial.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_vae_clip_spatial.%J.err
-#BSUB -n 8
-#BSUB -R "rusage[mem=16000]"
-#BSUB -gpu "num=1"
+#BSUB -n 4
+#BSUB -R "rusage[mem=16GB]"
+#BSUB -R "span[hosts=1]"
+#BSUB -gpu "num=1:mode=exclusive_process"
 #BSUB -W 24:00
-#BSUB -q gpuv100
+#BSUB -q gpul40s
 
 set -euo pipefail
 

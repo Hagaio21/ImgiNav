@@ -1,8 +1,9 @@
 #!/bin/bash
 #BSUB -J diff_clip_downs_bottleneck_small
-#BSUB -q gpu
-#BSUB -n 1
-#BSUB -R "rusage[mem=32GB]"
+#BSUB -q gpul40s
+#BSUB -n 4
+#BSUB -R "rusage[mem=8GB]"
+#BSUB -R "span[hosts=1]"
 #BSUB -gpu "num=1:mode=exclusive_process"
 #BSUB -W 48:00
 #BSUB -o logs/run_conditional_crossattention_diffusion_clip_downs_bottleneck_small_%J.out
