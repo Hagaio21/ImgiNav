@@ -11,7 +11,6 @@ This script creates embeddings that can be shared across all experiments:
 Usage:
     python training/embed_controlnet_dataset.py \
         --ae-checkpoint <vae_checkpoint> \
-        --ae-config <vae_config> \
         --input-manifest <input_manifest> \
         --output-manifest <output_manifest> \
         [--batch-size 32] [--num-workers 8]
@@ -44,7 +43,6 @@ from common.file_io import read_manifest, create_manifest
 
 def embed_controlnet_dataset_with_vae(
     ae_checkpoint_path=None,
-    ae_config_path=None,
     input_manifest_path=None,
     output_manifest_path=None,
     batch_size=32,
@@ -62,8 +60,7 @@ def embed_controlnet_dataset_with_vae(
     4. Creates a new manifest with: latent_path (if created), graph_embedding_path, pov_embedding_path
     
     Args:
-        ae_checkpoint_path: Path to VAE checkpoint
-        ae_config_path: Path to VAE config
+        ae_checkpoint_path: Path to VAE checkpoint (config is embedded in checkpoint)
         input_manifest_path: Path to ControlNet manifest (with layout_path, pov_path, graph_text_path)
         output_manifest_path: Path to output manifest (with all embeddings)
         batch_size: Batch size for encoding
@@ -114,29 +111,33 @@ def embed_controlnet_dataset_with_vae(
         ae_exp_name = None  # Store autoencoder experiment name
         
         # Step 1: Embed layouts using VAE (optional)
-        if ae_checkpoint_path and ae_config_path:
+        if ae_checkpoint_path:
             print(f"\n{'='*60}")
             print("Step 1/3: Embedding layouts with VAE")
             print(f"{'='*60}")
             
             ae_checkpoint_abs = Path(ae_checkpoint_path).resolve()
-            ae_config_abs = Path(ae_config_path).resolve()
             
-            # Extract autoencoder experiment name from config
-            import yaml
-            ae_exp_name = "unnamed"  # Will be set below
-            if ae_config_abs.exists():
-                try:
-                    with open(ae_config_abs, 'r') as f:
-                        ae_config_data = yaml.safe_load(f)
-                        ae_exp_name = ae_config_data.get("experiment", {}).get("name", "unnamed")
-                except Exception as e:
-                    print(f"[WARNING] Could not read autoencoder name from config: {e}")
-                    # Try to extract from checkpoint path as fallback
-                    checkpoint_path = Path(ae_checkpoint_abs)
-                    ae_exp_name = checkpoint_path.stem.replace("_checkpoint_best", "").replace("_checkpoint_latest", "").replace("_checkpoint", "")
-            else:
-                # Extract from checkpoint path
+            # Extract autoencoder experiment name from checkpoint (checkpoint contains config)
+            import torch
+            checkpoint_data = torch.load(ae_checkpoint_abs, map_location="cpu")
+            saved_config = checkpoint_data.get("config", {})
+            ae_exp_name = "unnamed"
+            if saved_config:
+                # Try to get experiment name from saved config
+                if isinstance(saved_config, dict):
+                    exp_config = saved_config.get("experiment", {})
+                    if isinstance(exp_config, dict):
+                        ae_exp_name = exp_config.get("name", "unnamed")
+                    # Also check if autoencoder config has experiment name
+                    ae_config = saved_config.get("autoencoder", {})
+                    if isinstance(ae_config, dict):
+                        exp_config = ae_config.get("experiment", {})
+                        if isinstance(exp_config, dict):
+                            ae_exp_name = exp_config.get("name", ae_exp_name)
+            
+            # Fallback: extract from checkpoint path
+            if ae_exp_name == "unnamed":
                 checkpoint_path = Path(ae_checkpoint_abs)
                 ae_exp_name = checkpoint_path.stem.replace("_checkpoint_best", "").replace("_checkpoint_latest", "").replace("_checkpoint", "")
             
@@ -148,17 +149,16 @@ def embed_controlnet_dataset_with_vae(
             latents_dir.mkdir(parents=True, exist_ok=True)
             print(f"[INFO] Latents will be saved to: {latents_dir}")
             
-            # Load autoencoder
+            # Load autoencoder from checkpoint (config is embedded in checkpoint)
             print(f"Loading autoencoder from: {ae_checkpoint_abs}")
             autoencoder = Autoencoder.load_checkpoint(ae_checkpoint_abs, map_location="cpu")
             autoencoder.eval()
             
-            # Get autoencoder config path
+            # Get autoencoder config path for transform (if needed)
             checkpoint_path = Path(ae_checkpoint_abs)
             possible_configs = [
                 checkpoint_path.parent / f"{checkpoint_path.stem.replace('_checkpoint_best', '').replace('_checkpoint_latest', '')}.yaml",
                 checkpoint_path.parent.parent / "experiment_config.yaml",
-                ae_config_abs,
             ]
             autoencoder_config_path = None
             for pc in possible_configs:
@@ -167,7 +167,7 @@ def embed_controlnet_dataset_with_vae(
                     break
             
             if not autoencoder_config_path:
-                print("[WARNING] Could not find autoencoder config, using defaults for transform")
+                print("[WARNING] Could not find autoencoder config file, using defaults for transform")
             
             # Create temporary manifest for layouts
             layout_temp_manifest = output_manifest_abs.parent / "temp_layout_manifest.csv"
@@ -606,7 +606,7 @@ def embed_controlnet_dataset_with_vae(
         create_manifest(output_rows, output_manifest_abs, fieldnames)
         
         # Clean up temporary files
-        if ae_checkpoint_path and ae_config_path:
+        if ae_checkpoint_path:
             for temp_file in [layout_temp_manifest, layout_output_manifest]:
                 if 'temp_file' in locals() and temp_file.exists():
                     temp_file.unlink()
@@ -667,13 +667,6 @@ def main():
         help="Path to VAE checkpoint (optional - if not provided, only POV and graph embeddings will be created)"
     )
     parser.add_argument(
-        "--ae-config",
-        type=Path,
-        required=False,
-        default=None,
-        help="Path to VAE config YAML (optional - only needed if --ae-checkpoint is provided)"
-    )
-    parser.add_argument(
         "--input-manifest",
         type=Path,
         required=True,
@@ -713,11 +706,9 @@ def main():
             print("ERROR: --layout-only requires --ae-checkpoint")
             sys.exit(1)
         print(f"VAE checkpoint: {args.ae_checkpoint}")
-        print(f"VAE config: {args.ae_config}")
         print("Mode: Embedding layouts only (updating existing manifest)")
     elif args.ae_checkpoint:
         print(f"VAE checkpoint: {args.ae_checkpoint}")
-        print(f"VAE config: {args.ae_config}")
         print("Mode: Creating layouts + POVs + graphs embeddings")
     else:
         print("Mode: Creating POVs + graphs embeddings only (no VAE)")
@@ -726,17 +717,8 @@ def main():
     print("="*60)
     print()
     
-    # Validate arguments
-    if args.ae_checkpoint and not args.ae_config:
-        print("ERROR: --ae-config is required when --ae-checkpoint is provided")
-        sys.exit(1)
-    if args.ae_config and not args.ae_checkpoint:
-        print("ERROR: --ae-checkpoint is required when --ae-config is provided")
-        sys.exit(1)
-    
     success = embed_controlnet_dataset_with_vae(
         args.ae_checkpoint,
-        args.ae_config,
         args.input_manifest,
         args.output_manifest,
         batch_size=args.batch_size,

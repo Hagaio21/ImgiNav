@@ -16,12 +16,9 @@ set -euo pipefail
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/embed_controlnet_dataset.py"
 
-# Input manifest (shared embeddings manifest)
-INPUT_MANIFEST="/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
-
-# Output directory for shared embeddings (latents will be saved here)
+# Shared embeddings manifest (input and output are the same file)
 SHARED_EMBEDDINGS_DIR="/work3/s233249/ImgiNav/experiments/shared_embeddings"
-SHARED_MANIFEST="${SHARED_EMBEDDINGS_DIR}/manifest_with_latents.csv"
+SHARED_MANIFEST="${SHARED_EMBEDDINGS_DIR}/manifest_with_embeddings.csv"
 
 # VAE configs and checkpoints
 VAE_CLIP_CONFIG="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256_clip.yaml"
@@ -32,9 +29,9 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"
 
-# Validate input manifest exists
-if [ ! -f "${INPUT_MANIFEST}" ]; then
-  echo "ERROR: Input manifest not found: ${INPUT_MANIFEST}" >&2
+# Validate shared manifest exists
+if [ ! -f "${SHARED_MANIFEST}" ]; then
+  echo "ERROR: Shared manifest not found: ${SHARED_MANIFEST}" >&2
   exit 1
 fi
 
@@ -123,7 +120,7 @@ fi
 echo "=========================================="
 echo "Embedding Latents with CLIP VAEs (Shared)"
 echo "=========================================="
-echo "Input manifest: ${INPUT_MANIFEST}"
+echo "Shared manifest: ${SHARED_MANIFEST}"
 echo "Output directory: ${SHARED_EMBEDDINGS_DIR}"
 if [ -n "${VAE_CLIP_CHECKPOINT}" ]; then
   echo "Non-spatial CLIP VAE: ${VAE_CLIP_CHECKPOINT}"
@@ -146,26 +143,19 @@ fi
 # Create shared embeddings directory
 mkdir -p "${SHARED_EMBEDDINGS_DIR}"
 
-# Start with shared embeddings manifest
-CURRENT_MANIFEST="${INPUT_MANIFEST}"
-
 # Run embedding for non-spatial CLIP VAE
 if [ -n "${VAE_CLIP_CHECKPOINT}" ]; then
   echo ""
   echo "Embedding with non-spatial CLIP VAE..."
   echo "=========================================="
-  # Use shared manifest as output - will update it with latent_path_vae_clip column
+  # Update shared manifest with latent_path_vae_clip column
   python "${PYTHON_SCRIPT}" \
     --ae-checkpoint "${VAE_CLIP_CHECKPOINT}" \
-    --ae-config "${VAE_CLIP_CONFIG}" \
-    --input-manifest "${CURRENT_MANIFEST}" \
+    --input-manifest "${SHARED_MANIFEST}" \
     --output-manifest "${SHARED_MANIFEST}" \
     --layout-only \
     --batch-size 32 \
     --num-workers 8
-  
-  # Update current manifest for next step
-  CURRENT_MANIFEST="${SHARED_MANIFEST}"
 fi
 
 # Run embedding for spatial CLIP VAE
@@ -176,8 +166,7 @@ if [ -n "${VAE_CLIP_SPATIAL_CHECKPOINT}" ]; then
   # Update the same manifest with latent_path_vae_clip_spatial column
   python "${PYTHON_SCRIPT}" \
     --ae-checkpoint "${VAE_CLIP_SPATIAL_CHECKPOINT}" \
-    --ae-config "${VAE_CLIP_SPATIAL_CONFIG}" \
-    --input-manifest "${CURRENT_MANIFEST}" \
+    --input-manifest "${SHARED_MANIFEST}" \
     --output-manifest "${SHARED_MANIFEST}" \
     --layout-only \
     --batch-size 32 \
@@ -191,8 +180,9 @@ if [ $EXIT_CODE -eq 0 ]; then
   echo "=========================================="
   echo "Embedding COMPLETE - SUCCESS"
   echo "=========================================="
-  echo "Manifest created: ${SHARED_MANIFEST}"
+  echo "Manifest updated: ${SHARED_MANIFEST}"
   echo "Latents saved in: ${SHARED_EMBEDDINGS_DIR}/latents/"
+  echo "Columns added: latent_path_vae_clip, latent_path_vae_clip_spatial"
   echo "End: $(date)"
   echo "=========================================="
   exit 0
