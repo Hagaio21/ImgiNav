@@ -2,11 +2,10 @@
 #BSUB -J train_diff_clip
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_diff_clip.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_diff_clip.%J.err
-#BSUB -n 4
-#BSUB -R "rusage[mem=16GB]"
-#BSUB -R "span[hosts=1]"
-#BSUB -gpu "num=1:mode=exclusive_process"
-#BSUB -W 72:00
+#BSUB -n 8
+#BSUB -R "rusage[mem=16000]"
+#BSUB -gpu "num=1"
+#BSUB -W 24:00
 #BSUB -q gpuv100
 
 set -euo pipefail
@@ -14,9 +13,18 @@ set -euo pipefail
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+# Get config path from first argument
+CONFIG_PATH="${1:-}"
+
+if [ -z "${CONFIG_PATH}" ]; then
+  echo "ERROR: Config path required as first argument" >&2
+  echo "Usage: $0 <config_path>" >&2
+  exit 1
+fi
+
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
-CONFIG="${BASE_DIR}/experiments/diffusion/clip/diff_clip.yaml"
+CONFIG="${BASE_DIR}/${CONFIG_PATH}"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Ensure log directory exists
@@ -24,9 +32,23 @@ mkdir -p "${LOG_DIR}"
 
 # Validate config file exists
 if [ ! -f "${CONFIG}" ]; then
-  echo "ERROR: Diffusion config file not found: ${CONFIG}" >&2
+  echo "ERROR: Config file not found: ${CONFIG}" >&2
   exit 1
 fi
+
+# Extract experiment name from config
+EXP_NAME=$(python3 -c "
+import yaml
+import sys
+try:
+    with open('${CONFIG}', 'r') as f:
+        config = yaml.safe_load(f)
+        exp_name = config.get('experiment', {}).get('name', 'unnamed')
+        print(exp_name)
+except Exception as e:
+    print('unnamed', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null || echo "unnamed")
 
 # =============================================================================
 # MODULES
@@ -54,20 +76,12 @@ fi
 # RUN
 # =============================================================================
 echo "=========================================="
-echo "Training Diffusion Model with Non-Spatial CLIP VAE"
+echo "Training CLIP Diffusion Model"
 echo "=========================================="
-echo "Config: ${CONFIG}"
+echo "Experiment: ${EXP_NAME}"
+echo "Config: ${CONFIG_PATH}"
 echo "Working directory: ${BASE_DIR}"
 echo "Start: $(date)"
-echo "=========================================="
-echo ""
-echo "Experiment Overview:"
-echo "  - Model: Conditional Diffusion with CLIP-aligned embeddings"
-echo "  - VAE: Non-spatial CLIP VAE (vae_clip)"
-echo "  - Conditioning: Text embeddings (graph) + POV embeddings"
-echo "  - UNet: UnetWithAttention (base_channels=48, depth=3)"
-echo "  - Cross-attention: Enabled in downs path"
-echo "  - Embedding projection: CLIPEmbeddingToSpatial (uses CLIP projections from VAE)"
 echo "=========================================="
 
 cd "${BASE_DIR}"
@@ -78,12 +92,7 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   exit 1
 fi
 
-# Run training
-# The script will automatically resume from latest checkpoint if available
-echo ""
-echo "Starting diffusion training..."
-echo "=========================================="
-
+# Run training with resume support
 python "${PYTHON_SCRIPT}" "${CONFIG}" --resume
 
 EXIT_CODE=$?
@@ -92,8 +101,8 @@ if [ $EXIT_CODE -eq 0 ]; then
   echo ""
   echo "=========================================="
   echo "Training COMPLETE - SUCCESS"
-  echo "=========================================="
-  echo "Config: $(basename ${CONFIG})"
+  echo "Experiment: ${EXP_NAME}"
+  echo "Config: ${CONFIG_PATH}"
   echo "End: $(date)"
   echo "=========================================="
   exit 0
@@ -101,8 +110,8 @@ else
   echo ""
   echo "=========================================="
   echo "Training FAILED with exit code: ${EXIT_CODE}"
-  echo "=========================================="
-  echo "Config: $(basename ${CONFIG})"
+  echo "Experiment: ${EXP_NAME}"
+  echo "Config: ${CONFIG_PATH}"
   echo "End: $(date)"
   echo "=========================================="
   exit $EXIT_CODE
