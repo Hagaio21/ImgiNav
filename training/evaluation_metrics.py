@@ -510,155 +510,188 @@ def compute_evaluation_metrics(
     
     # Layout-specific metrics (coverage, class matching, color matching)
     # These don't require external models - they analyze geometric properties directly
-    if taxonomy is not None:
+    # Default taxonomy path (always use this path)
+    DEFAULT_TAXONOMY_PATH = "/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
+    
+    try:
+        from common.taxonomy import Taxonomy
+        from analysis.evaluation_metrics import LayoutEvaluator
+        from data_preparation.utils.layout_analysis import LayoutSegmentor
+        
+        # Always use the default taxonomy path
+        taxonomy_path = DEFAULT_TAXONOMY_PATH
+        if not Path(taxonomy_path).exists():
+            # Try relative path as fallback
+            rel_path = Path("config/taxonomy.json")
+            if rel_path.exists():
+                taxonomy_path = str(rel_path)
+                taxonomy_obj = Taxonomy(taxonomy_path)
+            else:
+                warnings.warn(f"Taxonomy path does not exist: {DEFAULT_TAXONOMY_PATH}, trying to use provided taxonomy object")
+                # If taxonomy is already a Taxonomy instance, use it
+                if taxonomy is not None and not isinstance(taxonomy, (str, Path)):
+                    taxonomy_obj = taxonomy
+                else:
+                    raise ValueError(f"Taxonomy path does not exist: {DEFAULT_TAXONOMY_PATH} and no valid taxonomy object provided")
+        else:
+            taxonomy_obj = Taxonomy(taxonomy_path)
+        
+        # Verify taxonomy_obj is valid
+        if taxonomy_obj is None:
+            raise ValueError("taxonomy_obj is None after initialization")
+        if not isinstance(taxonomy_obj, Taxonomy):
+            raise ValueError(f"taxonomy_obj is not a Taxonomy instance, got {type(taxonomy_obj)}")
+        
+        # Verify methods exist and are callable
+        if not hasattr(taxonomy_obj, 'resolve_super'):
+            raise ValueError("taxonomy_obj does not have resolve_super method")
+        if not callable(getattr(taxonomy_obj, 'resolve_super', None)):
+            raise ValueError("taxonomy_obj.resolve_super is not callable")
+        
+        if not hasattr(taxonomy_obj, 'get_color'):
+            raise ValueError("taxonomy_obj does not have get_color method")
+        if not callable(getattr(taxonomy_obj, 'get_color', None)):
+            raise ValueError("taxonomy_obj.get_color is not callable")
+        
+        # Images are colored with category colors, but evaluator expects super-category colors
+        # Use LayoutSegmentor to convert: category colors -> category IDs -> super-category IDs -> super-category colors
         try:
-            from common.taxonomy import Taxonomy
-            from analysis.evaluation_metrics import LayoutEvaluator
-            from data_preparation.utils.layout_analysis import LayoutSegmentor
-            
-            # Ensure taxonomy is a Taxonomy instance
-            if isinstance(taxonomy, (str, Path)):
-                taxonomy_obj = Taxonomy(taxonomy)
-            else:
-                taxonomy_obj = taxonomy
-            
-            # Images are colored with category colors, but evaluator expects super-category colors
-            # Use LayoutSegmentor to convert: category colors -> category IDs -> super-category IDs -> super-category colors
-            try:
-                category_segmentor = LayoutSegmentor(taxonomy_obj, mode="category")
-            except Exception as e:
-                raise ValueError(f"Failed to create LayoutSegmentor: {e}")
-            
-            try:
-                evaluator = LayoutEvaluator(taxonomy_obj, mode="super", cooccurrence_radius=0.15)
-            except Exception as e:
-                raise ValueError(f"Failed to create LayoutEvaluator: {e}")
-            
-            # Verify methods exist
-            if not hasattr(taxonomy_obj, 'resolve_super') or taxonomy_obj.resolve_super is None:
-                raise ValueError("taxonomy_obj.resolve_super is None or doesn't exist")
-            if not hasattr(taxonomy_obj, 'get_color') or taxonomy_obj.get_color is None:
-                raise ValueError("taxonomy_obj.get_color is None or doesn't exist")
-            
-            print(f"  Computing layout-specific metrics (coverage, class matching)...")
-            
-            # Accumulate metrics across batch
-            all_dist_metrics = []
-            all_density_diffs = []
-            all_class_ious = []
-            
-            B = pred_images.shape[0]
-            for i in range(B):
-                # Convert tensors to PIL Images
-                pred_img = pred_images[i].cpu()
-                gt_img = gt_images[i].cpu()
-                
-                # Convert from [C, H, W] to [H, W, C] and to uint8
-                if pred_img.shape[0] == 3:
-                    pred_np = pred_img.permute(1, 2, 0).numpy()
-                    gt_np = gt_img.permute(1, 2, 0).numpy()
-                else:
-                    pred_np = pred_img.numpy()
-                    gt_np = gt_img.numpy()
-                
-                # Normalize to [0, 255] if needed
-                if pred_np.max() <= 1.0:
-                    pred_np = (pred_np * 255).astype(np.uint8)
-                    gt_np = (gt_np * 255).astype(np.uint8)
-                else:
-                    pred_np = pred_np.astype(np.uint8)
-                    gt_np = gt_np.astype(np.uint8)
-                
-                # Convert to PIL Images
-                pred_pil = Image.fromarray(pred_np)
-                gt_pil = Image.fromarray(gt_np)
-                
-                # Segment category-colored images to get category IDs, then convert to super-category colors
-                # LayoutSegmentor finds closest color for each pixel and assigns category ID
-                pred_cat_ids = category_segmentor.segment(pred_pil)  # (H, W) array of category IDs
-                gt_cat_ids = category_segmentor.segment(gt_pil)  # (H, W) array of category IDs
-                
-                # Convert category IDs to super-category IDs, then to super-category colors
-                def convert_to_super_colors(cat_id_map):
-                    """Convert category ID map to super-category colored image."""
-                    H, W = cat_id_map.shape
-                    super_colors = np.zeros((H, W, 3), dtype=np.uint8)
-                    
-                    # Vectorized conversion: map each category ID to its super-category color
-                    unique_cat_ids = np.unique(cat_id_map)
-                    for cat_id in unique_cat_ids:
-                        if cat_id == 0:  # Background/unknown
-                            continue
-                        try:
-                            # Resolve category ID to super-category ID
-                            super_id = taxonomy_obj.resolve_super(int(cat_id))
-                            if super_id is None:
-                                continue
-                            # Get super-category color - use default mode (resolves to super automatically)
-                            # get_color with any mode other than "category" will resolve to super-category
-                            super_color = taxonomy_obj.get_color(super_id, mode="none")
-                            if super_color is None:
-                                continue
-                            # Convert color tuple to numpy array
-                            if isinstance(super_color, (list, tuple)) and len(super_color) == 3:
-                                super_color_arr = np.array(super_color, dtype=np.uint8)
-                            else:
-                                continue
-                            # Assign color to all pixels with this category ID
-                            mask = (cat_id_map == cat_id)
-                            super_colors[mask] = super_color_arr
-                        except Exception as e:
-                            # Skip this category if conversion fails
-                            warnings.warn(f"Failed to convert category {cat_id} to super-category: {e}")
-                            continue
-                    
-                    return Image.fromarray(super_colors)
-                
-                # Convert to super-category colored images
-                pred_super_pil = convert_to_super_colors(pred_cat_ids)
-                gt_super_pil = convert_to_super_colors(gt_cat_ids)
-                
-                # Now use evaluator with super-category colored images
-                pred_counts = evaluator.count_objects(pred_super_pil)
-                gt_counts = evaluator.count_objects(gt_super_pil)
-                
-                # Compare distributions (class matching metrics)
-                dist_metrics = evaluator.compare_distributions(pred_counts, gt_counts)
-                all_dist_metrics.append(dist_metrics)
-                
-                # Coverage/density analysis - measures spatial coverage (objects per pixel)
-                pred_density = evaluator.analyze_bbox_density(pred_super_pil)
-                gt_density = evaluator.analyze_bbox_density(gt_super_pil)
-                density_diff = pred_density["overall_density"] - gt_density["overall_density"]
-                all_density_diffs.append(density_diff)
-                
-                # Class set IoU (class matching)
-                pred_classes = set(pred_counts.keys())
-                gt_classes = set(gt_counts.keys())
-                intersection = len(pred_classes & gt_classes)
-                union = len(pred_classes | gt_classes)
-                class_iou = intersection / union if union > 0 else 0.0
-                all_class_ious.append(class_iou)
-            
-            # Average metrics across batch
-            if len(all_dist_metrics) > 0:
-                # Class matching metrics (from distribution comparison)
-                metrics["class_kl_divergence"] = float(np.mean([d["kl_divergence"] for d in all_dist_metrics]))
-                metrics["class_total_variation"] = float(np.mean([d["total_variation"] for d in all_dist_metrics]))
-                metrics["class_l1_distance"] = float(np.mean([d["l1_distance"] for d in all_dist_metrics]))
-                metrics["class_iou"] = float(np.mean(all_class_ious))  # Intersection over Union of class sets
-                
-                # Coverage metric (density difference) - positive means more objects, negative means fewer
-                metrics["coverage_diff"] = float(np.mean(all_density_diffs))
-                print(f"  Layout metrics computed: coverage_diff={metrics['coverage_diff']:.6f}, class_iou={metrics['class_iou']:.4f}")
-            else:
-                warnings.warn("Layout-specific metrics: no valid samples processed")
+            category_segmentor = LayoutSegmentor(taxonomy_obj, mode="category")
         except Exception as e:
-            # Print full traceback for debugging
-            import traceback
-            error_msg = f"Layout-specific metrics computation failed: {e}\n{traceback.format_exc()}"
-            warnings.warn(error_msg)
-            print(f"  ERROR: {error_msg}")  # Also print to stdout for visibility
+            raise ValueError(f"Failed to create LayoutSegmentor: {e}")
+        
+        if category_segmentor is None:
+            raise ValueError("category_segmentor is None after initialization")
+        if not hasattr(category_segmentor, 'segment') or not callable(getattr(category_segmentor, 'segment', None)):
+            raise ValueError("category_segmentor.segment is not callable")
+        
+        try:
+            evaluator = LayoutEvaluator(taxonomy_obj, mode="super", cooccurrence_radius=0.15)
+        except Exception as e:
+            raise ValueError(f"Failed to create LayoutEvaluator: {e}")
+        
+        if evaluator is None:
+            raise ValueError("evaluator is None after initialization")
+        
+        print(f"  Computing layout-specific metrics (coverage, class matching)...")
+        
+        # Accumulate metrics across batch
+        all_dist_metrics = []
+        all_density_diffs = []
+        all_class_ious = []
+        
+        B = pred_images.shape[0]
+        for i in range(B):
+            # Convert tensors to PIL Images
+            pred_img = pred_images[i].cpu()
+            gt_img = gt_images[i].cpu()
+            
+            # Convert from [C, H, W] to [H, W, C] and to uint8
+            if pred_img.shape[0] == 3:
+                pred_np = pred_img.permute(1, 2, 0).numpy()
+                gt_np = gt_img.permute(1, 2, 0).numpy()
+            else:
+                pred_np = pred_img.numpy()
+                gt_np = gt_img.numpy()
+            
+            # Normalize to [0, 255] if needed
+            if pred_np.max() <= 1.0:
+                pred_np = (pred_np * 255).astype(np.uint8)
+                gt_np = (gt_np * 255).astype(np.uint8)
+            else:
+                pred_np = pred_np.astype(np.uint8)
+                gt_np = gt_np.astype(np.uint8)
+            
+            # Convert to PIL Images
+            pred_pil = Image.fromarray(pred_np)
+            gt_pil = Image.fromarray(gt_np)
+            
+            # Segment category-colored images to get category IDs, then convert to super-category colors
+            # LayoutSegmentor finds closest color for each pixel and assigns category ID
+            pred_cat_ids = category_segmentor.segment(pred_pil)  # (H, W) array of category IDs
+            gt_cat_ids = category_segmentor.segment(gt_pil)  # (H, W) array of category IDs
+            
+            # Convert category IDs to super-category IDs, then to super-category colors
+            def convert_to_super_colors(cat_id_map):
+                """Convert category ID map to super-category colored image."""
+                H, W = cat_id_map.shape
+                super_colors = np.zeros((H, W, 3), dtype=np.uint8)
+                
+                # Vectorized conversion: map each category ID to its super-category color
+                unique_cat_ids = np.unique(cat_id_map)
+                for cat_id in unique_cat_ids:
+                    if cat_id == 0:  # Background/unknown
+                        continue
+                    try:
+                        # Resolve category ID to super-category ID
+                        super_id = taxonomy_obj.resolve_super(int(cat_id))
+                        if super_id is None:
+                            continue
+                        # Get super-category color - use default mode (resolves to super automatically)
+                        # get_color with any mode other than "category" will resolve to super-category
+                        super_color = taxonomy_obj.get_color(super_id, mode="none")
+                        if super_color is None:
+                            continue
+                        # Convert color tuple to numpy array
+                        if isinstance(super_color, (list, tuple)) and len(super_color) == 3:
+                            super_color_arr = np.array(super_color, dtype=np.uint8)
+                        else:
+                            continue
+                        # Assign color to all pixels with this category ID
+                        mask = (cat_id_map == cat_id)
+                        super_colors[mask] = super_color_arr
+                    except Exception as e:
+                        # Skip this category if conversion fails
+                        warnings.warn(f"Failed to convert category {cat_id} to super-category: {e}")
+                        continue
+                
+                return Image.fromarray(super_colors)
+            
+            # Convert to super-category colored images
+            pred_super_pil = convert_to_super_colors(pred_cat_ids)
+            gt_super_pil = convert_to_super_colors(gt_cat_ids)
+            
+            # Now use evaluator with super-category colored images
+            pred_counts = evaluator.count_objects(pred_super_pil)
+            gt_counts = evaluator.count_objects(gt_super_pil)
+            
+            # Compare distributions (class matching metrics)
+            dist_metrics = evaluator.compare_distributions(pred_counts, gt_counts)
+            all_dist_metrics.append(dist_metrics)
+            
+            # Coverage/density analysis - measures spatial coverage (objects per pixel)
+            pred_density = evaluator.analyze_bbox_density(pred_super_pil)
+            gt_density = evaluator.analyze_bbox_density(gt_super_pil)
+            density_diff = pred_density["overall_density"] - gt_density["overall_density"]
+            all_density_diffs.append(density_diff)
+            
+            # Class set IoU (class matching)
+            pred_classes = set(pred_counts.keys())
+            gt_classes = set(gt_counts.keys())
+            intersection = len(pred_classes & gt_classes)
+            union = len(pred_classes | gt_classes)
+            class_iou = intersection / union if union > 0 else 0.0
+            all_class_ious.append(class_iou)
+        
+        # Average metrics across batch
+        if len(all_dist_metrics) > 0:
+            # Class matching metrics (from distribution comparison)
+            metrics["class_kl_divergence"] = float(np.mean([d["kl_divergence"] for d in all_dist_metrics]))
+            metrics["class_total_variation"] = float(np.mean([d["total_variation"] for d in all_dist_metrics]))
+            metrics["class_l1_distance"] = float(np.mean([d["l1_distance"] for d in all_dist_metrics]))
+            metrics["class_iou"] = float(np.mean(all_class_ious))  # Intersection over Union of class sets
+            
+            # Coverage metric (density difference) - positive means more objects, negative means fewer
+            metrics["coverage_diff"] = float(np.mean(all_density_diffs))
+            print(f"  Layout metrics computed: coverage_diff={metrics['coverage_diff']:.6f}, class_iou={metrics['class_iou']:.4f}")
+        else:
+            warnings.warn("Layout-specific metrics: no valid samples processed")
+    except Exception as e:
+        # Print full traceback for debugging
+        import traceback
+        error_msg = f"Layout-specific metrics computation failed: {e}\n{traceback.format_exc()}"
+        warnings.warn(error_msg)
+        print(f"  ERROR: {error_msg}")  # Also print to stdout for visibility
     
     return metrics
 
