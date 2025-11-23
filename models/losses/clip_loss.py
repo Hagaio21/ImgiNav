@@ -171,7 +171,24 @@ class CLIPProjections(BaseComponent):
             
             # Project VAE features spatially: [B, C, H, W] -> [B, projection_dim, H, W]
             # Use 1x1 conv to project channels
-            if self.latent_proj is None or self._latent_dim != C:
+            # In spatial mode, we MUST use Conv2d, not Linear
+            # Check if we need to recreate (if None, dimension changed, or if it's a Linear layer)
+            is_conv2d = False
+            if self.latent_proj is not None:
+                # Check if first layer is Conv2d (spatial mode) or Linear (global mode)
+                try:
+                    first_layer = self.latent_proj[0]
+                    is_conv2d = isinstance(first_layer, nn.Conv2d)
+                except (IndexError, TypeError):
+                    is_conv2d = False
+            
+            needs_conv2d = (
+                self.latent_proj is None or 
+                self._latent_dim != C or
+                not is_conv2d  # Must be Conv2d for spatial mode
+            )
+            
+            if needs_conv2d:
                 self._latent_dim = C
                 # Use Conv2d for spatial projection instead of Linear
                 self.latent_proj = nn.Sequential(
