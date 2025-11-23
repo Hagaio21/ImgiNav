@@ -701,9 +701,12 @@ def main():
         ax.legend()
         ax.grid(True, alpha=0.3)
         if len(df) > 1 and has_train_stats:
-            max_val = df['train_LatentStd_Mean'].max()
-            if max_val > 0:
-                ax.set_yscale('log')
+            try:
+                max_val = df['train_LatentStd_Mean'].max()
+                if isinstance(max_val, (int, float)) and max_val > 0:
+                    ax.set_yscale('log')
+            except (TypeError, ValueError):
+                pass
         
         # Plot 4: Std Loss component
         ax = axes[1, 1]
@@ -717,9 +720,12 @@ def main():
         ax.legend()
         ax.grid(True, alpha=0.3)
         if len(df) > 1 and has_train_stats:
-            max_val = df['train_LatentStd_Std'].max()
-            if max_val > 0:
-                ax.set_yscale('log')
+            try:
+                max_val = df['train_LatentStd_Std'].max()
+                if isinstance(max_val, (int, float)) and max_val > 0:
+                    ax.set_yscale('log')
+            except (TypeError, ValueError):
+                pass
         
         plt.tight_layout()
         
@@ -757,10 +763,14 @@ def main():
         ax.legend()
         ax.grid(True, alpha=0.3)
         if len(df) > 1 and has_train_kld:
-            max_val = df['train_KLD'].max()
-            min_val = df['train_KLD'].min()
-            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                ax.set_yscale('log')
+            try:
+                max_val = df['train_KLD'].max()
+                min_val = df['train_KLD'].min()
+                if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
+                    if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                        ax.set_yscale('log')
+            except (TypeError, ValueError):
+                pass
         
         # Plot 2: KLD Loss trend (smoothed)
         ax = axes[1]
@@ -787,10 +797,14 @@ def main():
         ax.legend()
         ax.grid(True, alpha=0.3)
         if len(df) > 1 and has_train_kld:
-            max_val = df['train_KLD'].max()
-            min_val = df['train_KLD'].min()
-            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                ax.set_yscale('log')
+            try:
+                max_val = df['train_KLD'].max()
+                min_val = df['train_KLD'].min()
+                if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
+                    if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                        ax.set_yscale('log')
+            except (TypeError, ValueError):
+                pass
         
         plt.tight_layout()
         
@@ -831,10 +845,14 @@ def main():
         
         # Use log scale if loss values span multiple orders of magnitude
         if has_train_loss and len(df) > 1:
-            max_loss = df['train_loss'].max()
-            min_loss = df['train_loss'].min()
-            if max_loss > 0 and min_loss > 0 and max_loss / min_loss > 10:
-                ax.set_yscale('log')
+            try:
+                max_loss = df['train_loss'].max()
+                min_loss = df['train_loss'].min()
+                if isinstance(max_loss, (int, float)) and isinstance(min_loss, (int, float)):
+                    if max_loss > 0 and min_loss > 0 and max_loss / min_loss > 10:
+                        ax.set_yscale('log')
+            except (TypeError, ValueError):
+                pass  # Skip log scale if values are not numeric
         
         plt.tight_layout()
         
@@ -907,10 +925,15 @@ def main():
             
             # Use log scale if values span multiple orders of magnitude
             if has_train and len(df) > 1:
-                max_val = df[train_col].max()
-                min_val = df[train_col].min()
-                if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                    ax.set_yscale('log')
+                try:
+                    max_val = df[train_col].max()
+                    min_val = df[train_col].min()
+                    # Check if values are numeric (not strings)
+                    if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
+                        if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                            ax.set_yscale('log')
+                except (TypeError, ValueError):
+                    pass  # Skip log scale if values are not numeric
             
             plt.tight_layout()
             
@@ -974,10 +997,15 @@ def main():
             
             # Use log scale if values span multiple orders of magnitude
             if has_train and len(df) > 1:
-                max_val = df[train_col].max()
-                min_val = df[train_col].min()
-                if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                    ax.set_yscale('log')
+                try:
+                    max_val = df[train_col].max()
+                    min_val = df[train_col].min()
+                    # Check if values are numeric (not strings)
+                    if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
+                        if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                            ax.set_yscale('log')
+                except (TypeError, ValueError):
+                    pass  # Skip log scale if values are not numeric
             
             plt.tight_layout()
             
@@ -1035,10 +1063,14 @@ def main():
                 
                 # Use log scale if values span multiple orders of magnitude
                 if has_train and len(df) > 1:
-                    max_val = df[train_col].max()
-                    min_val = df[train_col].min()
-                    if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                        ax.set_yscale('log')
+                    try:
+                        max_val = df[train_col].max()
+                        min_val = df[train_col].min()
+                        if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
+                            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                                ax.set_yscale('log')
+                    except (TypeError, ValueError):
+                        pass  # Skip log scale if values are not numeric
                 
                 plt.tight_layout()
                 
