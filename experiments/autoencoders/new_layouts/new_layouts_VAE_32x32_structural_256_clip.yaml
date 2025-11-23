@@ -93,7 +93,7 @@ training:
         weight: 1.0
         target_colors:
           # Dark gray for walls - higher sensitivity
-          - color: [64, 64, 64]  # RGB in 0-255 range (dark gray walls)
+          - color: [50, 50, 50]  # RGB in 0-255 range (dark gray walls)
             weight: 3.0  # 3x higher weight for wall colors
             tolerance: 0.15  # Distance threshold in RGB space
         color_space: rgb
