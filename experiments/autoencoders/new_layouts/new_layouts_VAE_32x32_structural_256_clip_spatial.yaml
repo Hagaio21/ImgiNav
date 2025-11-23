@@ -3,7 +3,7 @@
 # Includes CLIP loss with SPATIAL ALIGNMENT to align VAE spatial features with text/POV embeddings
 # Architecture: 32×32×4 = 4,096 dims (4x smaller than 64x64 for memory efficiency)
 # Encoder: VAE with strong KL divergence regularization
-# Loss: MSE=1.0, KLD=0.0001, LatentStd=0.1, CLIP=0.2 (spatial alignment mode)
+# Loss: ColorWeightedMSE=1.0 (walls=3.0x), KLD=0.0001, LatentStd=0.1, CLIP=0.2 (spatial alignment mode)
 
 experiment:
   name: "new_layouts_VAE_32x32_structural_256_clip_spatial"
@@ -89,10 +89,17 @@ training:
   loss:
     type: CompositeLoss
     losses:
-      - type: MSELoss
+      - type: ColorWeightedMSELoss
         key: rgb
         target: rgb
         weight: 1.0
+        target_colors:
+          # Dark gray for walls - higher sensitivity
+          - color: [64, 64, 64]  # RGB in 0-255 range (dark gray walls)
+            weight: 3.0  # 3x higher weight for wall colors
+            tolerance: 0.15  # Distance threshold in RGB space
+        color_space: rgb
+        fallback_weight: 1.0  # Weight for pixels not matching target colors
       - type: KLDLoss
         weight: 0.0001  # Strong KL divergence loss (encourages N(0,1) latent space)
       - type: LatentStandardizationLoss

@@ -277,6 +277,172 @@ class LatentStandardizationLoss(LossComponent):
 
 
 @register_loss
+class ColorWeightedMSELoss(LossComponent):
+    """
+    MSE loss with color-based pixel weighting.
+    Gives higher weight to pixels that are close to specific target colors.
+    
+    Config:
+        key: Key in preds for predictions (default: "rgb")
+        target: Key in targets for targets (default: "rgb")
+        weight: Loss weight
+        target_colors: List of target colors in RGB format [0-1] or [0-255]
+                      Each entry: {"color": [r, g, b], "weight": float, "tolerance": float}
+                      - color: RGB values (will be normalized to [0, 1] if > 1)
+                      - weight: Weight to apply to pixels near this color
+                      - tolerance: Distance threshold for matching (default: 0.1)
+        color_space: "rgb" or "lab" for color distance computation (default: "rgb")
+        fallback_weight: Weight for pixels not matching any target color (default: 1.0)
+    """
+    def _build(self):
+        super()._build()
+        
+        # Get target colors from config
+        target_colors_config = self._init_kwargs.get("target_colors", [])
+        self.color_space = self._init_kwargs.get("color_space", "rgb")
+        self.fallback_weight = self._init_kwargs.get("fallback_weight", 1.0)
+        
+        # Parse target colors
+        self.target_colors = []
+        for color_config in target_colors_config:
+            color = color_config.get("color", [0, 0, 0])
+            color_weight = color_config.get("weight", 1.0)
+            tolerance = color_config.get("tolerance", 0.1)
+            
+            # Normalize color to [0, 1] if needed
+            if isinstance(color, list):
+                color = torch.tensor(color, dtype=torch.float32)
+                if color.max() > 1.0:
+                    color = color / 255.0
+            else:
+                color = torch.tensor(color, dtype=torch.float32)
+                if color.max() > 1.0:
+                    color = color / 255.0
+            
+            self.target_colors.append({
+                "color": color,
+                "weight": color_weight,
+                "tolerance": tolerance
+            })
+        
+        if len(self.target_colors) == 0:
+            print("Warning: ColorWeightedMSELoss has no target colors specified. Using uniform weighting.")
+    
+    def _rgb_to_lab(self, rgb):
+        """Convert RGB to LAB color space."""
+        # RGB to XYZ conversion
+        rgb = torch.clamp(rgb, 0.0, 1.0)
+        
+        # Apply gamma correction
+        mask = rgb > 0.04045
+        rgb_linear = torch.where(mask, ((rgb + 0.055) / 1.055) ** 2.4, rgb / 12.92)
+        
+        # RGB to XYZ matrix (D65 illuminant)
+        matrix = torch.tensor([
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041]
+        ], device=rgb.device, dtype=rgb.dtype)
+        
+        xyz = torch.matmul(rgb_linear.permute(0, 2, 3, 1), matrix.t()).permute(0, 3, 1, 2)
+        
+        # Normalize by D65 white point
+        xyz[:, 0] = xyz[:, 0] / 0.95047
+        xyz[:, 2] = xyz[:, 2] / 1.08883
+        
+        # XYZ to LAB
+        xyz = torch.clamp(xyz, 0.0, 1.0)
+        mask = xyz > 0.008856
+        fxyz = torch.where(mask, xyz ** (1.0/3.0), (7.787 * xyz + 16.0/116.0))
+        
+        L = 116.0 * fxyz[:, 1] - 16.0
+        a = 500.0 * (fxyz[:, 0] - fxyz[:, 1])
+        b = 200.0 * (fxyz[:, 1] - fxyz[:, 2])
+        
+        lab = torch.stack([L, a, b], dim=1)
+        return lab
+    
+    def _compute_color_distance(self, rgb1, rgb2):
+        """Compute color distance between two RGB tensors."""
+        if self.color_space == "lab":
+            lab1 = self._rgb_to_lab(rgb1)
+            lab2 = self._rgb_to_lab(rgb2)
+            # Delta E distance in LAB space
+            diff = lab1 - lab2
+            distance = torch.sqrt(torch.sum(diff ** 2, dim=1))
+        else:  # rgb
+            # L2 distance in RGB space
+            diff = rgb1 - rgb2
+            distance = torch.sqrt(torch.sum(diff ** 2, dim=1))
+        
+        return distance
+    
+    def forward(self, preds, targets):
+        if self.key not in preds or self.target_key not in targets:
+            device = next(iter(preds.values())).device if preds else torch.device("cpu")
+            return torch.tensor(0.0, device=device), {f"ColorWeightedMSE_{self.key}": torch.tensor(0.0, device=device)}
+        
+        pred = preds[self.key]  # [B, 3, H, W] in [-1, 1] or [0, 1]
+        target = targets[self.target_key]  # [B, 3, H, W] in [-1, 1] or [0, 1]
+        
+        # Normalize to [0, 1] if in [-1, 1] range
+        if pred.min() < 0:
+            pred_normalized = (pred + 1.0) / 2.0
+        else:
+            pred_normalized = pred
+        
+        if target.min() < 0:
+            target_normalized = (target + 1.0) / 2.0
+        else:
+            target_normalized = target
+        
+        device = pred.device
+        B, C, H, W = pred.shape
+        
+        # Initialize weight map with fallback weight
+        weight_map = torch.ones(B, H, W, device=device, dtype=torch.float32) * self.fallback_weight
+        
+        # For each target color, compute distance and apply weight
+        for color_config in self.target_colors:
+            target_color = color_config["color"].to(device)  # [3]
+            color_weight = color_config["weight"]
+            tolerance = color_config["tolerance"]
+            
+            # Expand target color to match spatial dimensions: [B, 3, H, W]
+            target_color_expanded = target_color.view(1, 3, 1, 1).expand(B, 3, H, W)
+            
+            # Compute distance from each pixel to target color (using target image)
+            # This way we weight based on what the pixel should be, not what it is
+            distance = self._compute_color_distance(target_normalized, target_color_expanded)  # [B, H, W]
+            
+            # Apply weight based on distance (closer = higher weight)
+            # Use exponential decay: weight = color_weight * exp(-distance / tolerance)
+            # Or use step function: weight = color_weight if distance < tolerance
+            mask = distance < tolerance
+            weight_map[mask] = torch.maximum(weight_map[mask], torch.tensor(color_weight, device=device))
+        
+        # Expand weight map to match pred shape: [B, 1, H, W]
+        weight_map = weight_map.unsqueeze(1)
+        
+        # Compute per-pixel MSE
+        squared_diff = (pred - target) ** 2  # [B, 3, H, W]
+        
+        # Apply color-based weights
+        weighted_squared_diff = squared_diff * weight_map
+        
+        # Average over all dimensions
+        loss = weighted_squared_diff.mean() * self.weight
+        
+        # Also compute unweighted MSE for comparison
+        unweighted_loss = squared_diff.mean()
+        
+        return loss, {
+            f"ColorWeightedMSE_{self.key}": loss.detach(),
+            f"MSE_{self.key}": unweighted_loss.detach(),
+        }
+
+
+@register_loss
 class CrossEntropyLoss(LossComponent):
     def _build(self):
         super()._build()
