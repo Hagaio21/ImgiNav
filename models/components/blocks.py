@@ -201,6 +201,10 @@ class SelfAttentionBlock(nn.Module):
             
             if cond_signal.shape[1] != C:
                 cond_in_channels = cond_signal.shape[1]
+                # Initialize _ctrl_proj if it doesn't exist (e.g., if enable_cross_attention was set dynamically)
+                if not hasattr(self, '_ctrl_proj'):
+                    self._ctrl_proj = None
+                    self._ctrl_proj_channels = None
                 if self._ctrl_proj is None or self._ctrl_proj_channels != cond_in_channels or self._ctrl_proj.out_channels != C:
                     if hasattr(self, 'ctrl_proj'):
                         delattr(self, 'ctrl_proj')
