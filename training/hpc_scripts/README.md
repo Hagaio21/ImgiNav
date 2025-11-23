@@ -19,9 +19,13 @@ experiments/diffusion/clip/
 │   ├── medium_*.yaml # Medium models (64 base_channels, depth 4)
 │   └── large_*.yaml  # Large models (128 base_channels, depth 4)
 ├── regular_rooms/    # Regular CLIP VAE experiments (rooms only)
-│   └── small_*.yaml  # Small models with type filter: room
+│   ├── small_*.yaml  # Small models with type filter: room
+│   ├── medium_bottleneck.yaml  # Medium bottleneck (cross-attention at [downs, bottleneck])
+│   └── large_bottleneck.yaml   # Large bottleneck (cross-attention at [downs, bottleneck])
 ├── regular_scenes/   # Regular CLIP VAE experiments (scenes only)
-│   └── small_*.yaml  # Small models with type filter: scene
+│   ├── small_*.yaml  # Small models with type filter: scene
+│   ├── medium_bottleneck.yaml  # Medium bottleneck (cross-attention at [downs, bottleneck])
+│   └── large_bottleneck.yaml   # Large bottleneck (cross-attention at [downs, bottleneck])
 ├── spatial/          # Spatial CLIP VAE experiments (all types)
 │   ├── small_*.yaml
 │   ├── medium_*.yaml
@@ -120,26 +124,25 @@ Train diffusion models using the embedded latents. All experiments use cross-att
 ./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/spatial/*.yaml
 ```
 
-### Type-Filtered Experiments
+### Type-Filtered Experiments (Rooms & Scenes)
 
-Type-filtered experiments train on only rooms or only scenes:
+Type-filtered experiments train on only rooms or only scenes. Each launch script submits **2 jobs** (one for rooms, one for scenes) using the bottleneck variant:
 
 ```bash
-# Launch small_down for both rooms and scenes (regular CLIP)
-./training/hpc_scripts/launch_train_diff_clip_small_down.sh
+# Small models (2 jobs: rooms + scenes)
+./training/hpc_scripts/launch_train_diff_clip_small_gpuv100.sh    # gpuv100 queue (24h limit)
+./training/hpc_scripts/launch_train_diff_clip_small_gpul40s.sh    # gpul40s queue (48h limit)
 
-# Launch all regular rooms experiments
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular_rooms/*.yaml
+# Medium models (2 jobs: rooms + scenes)
+./training/hpc_scripts/launch_train_diff_clip_medium_gpuv100.sh   # gpuv100 queue (24h limit)
+./training/hpc_scripts/launch_train_diff_clip_medium_gpul40s.sh  # gpul40s queue (48h limit)
 
-# Launch all regular scenes experiments
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular_scenes/*.yaml
-
-# Launch all spatial rooms experiments
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/spatial_rooms/*.yaml
-
-# Launch all spatial scenes experiments
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/spatial_scenes/*.yaml
+# Large models (2 jobs: rooms + scenes)
+./training/hpc_scripts/launch_train_diff_clip_large_gpuv100.sh    # gpuv100 queue (24h limit)
+./training/hpc_scripts/launch_train_diff_clip_large_gpul40s.sh    # gpul40s queue (48h limit)
 ```
+
+**Note:** Each script launches the bottleneck variant for both rooms and scenes. The bottleneck configs use cross-attention at `[downs, bottleneck]` locations.
 
 ### Direct Run (without launch script)
 
@@ -152,16 +155,19 @@ bsub < training/hpc_scripts/run_train_diff_clip.sh experiments/diffusion/clip/re
 
 ### Model Sizes
 
-| Size | Base Channels | Depth | Attention Heads | Batch Size | Gradient Accumulation |
-|------|---------------|-------|-----------------|------------|----------------------|
-| Small | 48 | 3 | 2 | 4 | 1 |
-| Medium | 64 | 4 | 4 | 2 | 2 |
-| Large | 128 | 4 | 8 | 1 | 4 |
+| Size | Base Channels | Depth | Attention Heads | Batch Size (Regular) | Batch Size (Rooms/Scenes) | Gradient Accumulation |
+|------|---------------|-------|-----------------|---------------------|--------------------------|----------------------|
+| Small | 48 | 3 | 2 | 32 | 48 | 1 |
+| Medium | 64 | 4 | 4 | 16 | 48 | 1 |
+| Large | 128 | 4 | 8 | 2 | 8 | 1 |
+
+**Note:** Rooms/scenes experiments use larger batch sizes and have cross-attention at `[downs, bottleneck]` for bottleneck variants.
 
 ### Attention Locations
 
 - **down**: Cross-attention only in down path (memory efficient)
-- **bottleneck**: Cross-attention only at bottleneck
+- **bottleneck**: Cross-attention only at bottleneck (regular configs)
+- **bottleneck** (rooms/scenes): Cross-attention at `[downs, bottleneck]` for better conditioning
 - **up**: Cross-attention only in up path
 - **all**: Cross-attention at all locations (downs, bottleneck, ups)
 
@@ -244,7 +250,9 @@ Examples:
 
 - **Cross-Attention**: All models use cross-attention with CLIP embedding projections
 - **CLIP Alignment**: Embeddings are projected using CLIP projections from the VAE checkpoint
-- **Classifier-Free Guidance**: CFG dropout rate 0.1, guidance scale 3.0
+- **Classifier-Free Guidance**: 
+  - Regular configs: CFG dropout rate 0.1, guidance scale 3.0
+  - Rooms/scenes configs: CFG dropout rate 0.15, guidance scale 3.0
 - **Resume Support**: Training automatically resumes from latest checkpoint
 - **Shared Latents**: All experiments use the same shared latents manifest for consistency
 - **Type Filtering**: Optional filtering by `type` column (room/scene) for specialized models
@@ -266,10 +274,16 @@ Examples:
 - Increase gradient accumulation steps
 - Use a smaller model size
 
+## GPU Queues
+
+- **gpuv100**: 24-hour time limit, suitable for shorter experiments
+- **gpul40s**: 48-hour time limit, suitable for longer training runs
+
 ## Notes
 
-- All experiments use 24-hour time limit (gpuv100 queue limit)
 - Training automatically uses mixed precision (AMP) for efficiency
 - Checkpoints are saved every 20 epochs
 - Validation and sampling occur every 10 epochs
+- Evaluation metrics: CLIP Score, FID, and mIoU (computed during validation)
+- Sample generation: 16 unconditioned samples (4x4 grid) + 16 comparison samples (target vs generated)
 

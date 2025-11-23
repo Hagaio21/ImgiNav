@@ -145,7 +145,7 @@ except:
         -o "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.out" \
         -e "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.err" \
         -n 8 \
-        -R "rusage[mem=16000]" \
+        -R "rusage[mem=8000]" \
         -gpu "num=1" \
         -W 24:00 \
         -q gpuv100 \
