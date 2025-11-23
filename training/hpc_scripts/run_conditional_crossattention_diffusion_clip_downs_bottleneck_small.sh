@@ -1,13 +1,14 @@
 #!/bin/bash
 #BSUB -J diff_clip_downs_bottleneck_small
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/run_conditional_crossattention_diffusion_clip_downs_bottleneck_small_%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/run_conditional_crossattention_diffusion_clip_downs_bottleneck_small_%J.err
+
 #BSUB -q gpul40s
 #BSUB -n 4
 #BSUB -R "rusage[mem=8GB]"
 #BSUB -R "span[hosts=1]"
 #BSUB -gpu "num=1:mode=exclusive_process"
 #BSUB -W 48:00
-#BSUB -o logs/run_conditional_crossattention_diffusion_clip_downs_bottleneck_small_%J.out
-#BSUB -e logs/run_conditional_crossattention_diffusion_clip_downs_bottleneck_small_%J.err
 
 export MKL_INTERFACE_LAYER=LP64
 set -euo pipefail
