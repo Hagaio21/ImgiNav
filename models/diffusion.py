@@ -164,7 +164,7 @@ class DiffusionModel(BaseModel):
             import warnings
             warnings.warn(f"Failed to write model statistics: {e}")
 
-    def forward(self, x0_or_latents, t, cond=None, noise=None, conditioning_signal=None, text_emb=None, pov_emb=None):
+    def forward(self, x0_or_latents, t, cond=None, noise=None, text_emb=None, pov_emb=None):
         """
         Forward diffusion training step.
         
@@ -173,13 +173,13 @@ class DiffusionModel(BaseModel):
             t: Timestep tensor
             cond: Optional conditioning
             noise: Optional noise tensor
-            conditioning_signal: Optional conditioning signal tensor [B, C_cond, H_cond, W_cond] for cross-attention
             text_emb: Optional text/graph embeddings [B, text_dim] - will be converted to spatial features if embedding_proj is set
             pov_emb: Optional POV embeddings [B, pov_dim] - will be converted to spatial features if embedding_proj is set
         """
-        if self.embedding_proj is not None and text_emb is not None and pov_emb is not None:
-            if conditioning_signal is None:
-                conditioning_signal = self.embedding_proj(text_emb, pov_emb)
+        if self.embedding_proj is not None and (text_emb is not None or pov_emb is not None):
+            conditioning_signal = self.embedding_proj(text_emb, pov_emb)
+        else:
+            conditioning_signal = None
         
         if self._has_encoder:
             encoder_out = self.encoder(x0_or_latents)
@@ -243,7 +243,7 @@ class DiffusionModel(BaseModel):
 
     def sample(self, batch_size=1, latent_shape=None, cond=None, num_steps=50, 
                method="ddim", eta=0.0, device=None, return_history=False, verbose=False, 
-               conditioning_signal=None, text_emb=None, pov_emb=None):
+               guidance_scale=1.0, text_emb=None, pov_emb=None):
  
         if device is None:
             device = next(self.parameters()).device
@@ -268,9 +268,12 @@ class DiffusionModel(BaseModel):
         
         history = [] if return_history else None
         
-        if self.embedding_proj is not None and text_emb is not None and pov_emb is not None:
-            if conditioning_signal is None:
-                conditioning_signal = self.embedding_proj(text_emb, pov_emb)
+        if self.embedding_proj is not None and (text_emb is not None or pov_emb is not None):
+            conditioning_signal = self.embedding_proj(text_emb, pov_emb)
+        else:
+            conditioning_signal = None
+        
+        use_cfg = guidance_scale > 1.0 and conditioning_signal is not None
         
         for i, t in enumerate(timesteps):
             if verbose and (i % max(1, len(timesteps) // 10) == 0 or i == len(timesteps) - 1):
@@ -280,7 +283,13 @@ class DiffusionModel(BaseModel):
             
             with torch.no_grad():
                 self.unet.eval()
-                pred_noise = self.unet(latents, t_batch, cond, conditioning_signal=conditioning_signal)
+                
+                if use_cfg:
+                    cond_pred = self.unet(latents, t_batch, cond, conditioning_signal=conditioning_signal)
+                    uncond_pred = self.unet(latents, t_batch, cond, conditioning_signal=None)
+                    pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
+                else:
+                    pred_noise = self.unet(latents, t_batch, cond, conditioning_signal=conditioning_signal)
             
             if method == "ddim":
                 alpha_bars = self.scheduler.alpha_bars.to(device)

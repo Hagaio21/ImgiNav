@@ -559,12 +559,11 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     is_fully_unconditional = (cfg_dropout_rate >= 1.0)
     
     all_samples = []
-    cfg_info = f" with CFG scale={guidance_scale}" if guidance_scale > 1.0 else ""
     
     # ============================================================================
     # Part 1: Generate 4x4 grid of unconditioned samples (16 samples)
     # ============================================================================
-    print(f"  Generating 16 unconditioned samples (4x4 grid) using DDPM ({num_steps} steps){cfg_info}...")
+    print(f"  Generating 16 unconditioned samples (4x4 grid) using DDPM ({num_steps} steps)...")
     
     # Use epoch-based seed for sampling
     cpu_rng_state = torch.get_rng_state()
@@ -580,16 +579,16 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     with torch.no_grad():
         unconditioned_output = model.sample(
             batch_size=16,
-                    num_steps=num_steps,
-                    method="ddpm",
-                    eta=1.0,
-                    cond=None,
-            guidance_scale=guidance_scale if guidance_scale > 1.0 else 1.0,
+            num_steps=num_steps,
+            method="ddpm",
+            eta=1.0,
+            cond=None,
+            guidance_scale=1.0,
             text_emb=None,
             pov_emb=None,
-                    device=device_obj,
-                    verbose=False
-                )
+            device=device_obj,
+            verbose=False
+        )
         
         # Decode unconditioned samples
         if "rgb" in unconditioned_output:
@@ -744,21 +743,21 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             target_rgb = None
     
     # Generate conditioned samples using DDPM
-    print(f"  Generating {batch_size} conditioned samples using cross-attention diffusion with DDPM ({num_steps} steps){cfg_info}...")
+    print(f"  Generating {batch_size} conditioned samples using cross-attention diffusion with DDPM ({num_steps} steps)...")
     
     with torch.no_grad():
         conditioned_output = model.sample(
             batch_size=batch_size,
-                    num_steps=num_steps,
-                    method="ddpm",
-                    eta=1.0,
+            num_steps=num_steps,
+            method="ddpm",
+            eta=1.0,
             cond=cond,
-                    guidance_scale=guidance_scale,
+            guidance_scale=guidance_scale,
             text_emb=text_emb,
             pov_emb=pov_emb,
-                    device=device_obj,
-                    verbose=False
-                )
+            device=device_obj,
+            verbose=False
+        )
         
         # Decode generated latents to RGB
         if "rgb" in conditioned_output:

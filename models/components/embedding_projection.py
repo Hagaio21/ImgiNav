@@ -79,36 +79,44 @@ class CLIPEmbeddingToSpatial(BaseComponent):
         Convert embeddings to spatial feature map via CLIP joint space.
         
         Args:
-            text_emb: Text/graph embeddings [B, text_dim]
-            pov_emb: POV embeddings [B, pov_dim]
+            text_emb: Text/graph embeddings [B, text_dim] or None
+            pov_emb: POV embeddings [B, pov_dim] or None
         
         Returns:
             Spatial feature map [B, output_channels, H, W]
         """
-        B = text_emb.shape[0]
+        if text_emb is None and pov_emb is None:
+            raise ValueError("At least one of text_emb or pov_emb must be provided")
         
-        # Flatten embeddings if needed
-        if text_emb.dim() > 2:
-            text_emb = text_emb.flatten(start_dim=1)
-        if pov_emb.dim() > 2:
-            pov_emb = pov_emb.flatten(start_dim=1)
-        
-        # Project text and POV through CLIP projections to joint space
-        # This aligns embeddings with VAE features (which are also in this space)
-        text_proj = self.clip_projections.text_proj(text_emb)  # [B, 256]
-        pov_proj = self.clip_projections.pov_proj(pov_emb)  # [B, 256]
-        
-        # Normalize
-        text_proj = F.normalize(text_proj, p=2, dim=1)
-        pov_proj = F.normalize(pov_proj, p=2, dim=1)
-        
-        # Combine in joint space
-        if self.combine_method == "add":
-            combined_emb = text_proj + pov_proj
-        elif self.combine_method == "average":
-            combined_emb = (text_proj + pov_proj) / 2.0
+        if text_emb is not None:
+            B = text_emb.shape[0]
+            if text_emb.dim() > 2:
+                text_emb = text_emb.flatten(start_dim=1)
+            text_proj = self.clip_projections.text_proj(text_emb)
+            text_proj = F.normalize(text_proj, p=2, dim=1)
         else:
-            combined_emb = (text_proj + pov_proj) / 2.0
+            B = pov_emb.shape[0]
+            text_proj = None
+        
+        if pov_emb is not None:
+            if pov_emb.dim() > 2:
+                pov_emb = pov_emb.flatten(start_dim=1)
+            pov_proj = self.clip_projections.pov_proj(pov_emb)
+            pov_proj = F.normalize(pov_proj, p=2, dim=1)
+        else:
+            pov_proj = None
+        
+        if text_proj is not None and pov_proj is not None:
+            if self.combine_method == "add":
+                combined_emb = text_proj + pov_proj
+            elif self.combine_method == "average":
+                combined_emb = (text_proj + pov_proj) / 2.0
+            else:
+                combined_emb = (text_proj + pov_proj) / 2.0
+        elif text_proj is not None:
+            combined_emb = text_proj
+        else:
+            combined_emb = pov_proj
         
         combined_emb = F.normalize(combined_emb, p=2, dim=1)  # [B, 256] in joint space
         
@@ -207,25 +215,48 @@ class EmbeddingToSpatial(BaseComponent):
         Convert embeddings to spatial feature map.
         
         Args:
-            text_emb: Text/graph embeddings [B, text_dim]
-            pov_emb: POV embeddings [B, pov_dim]
+            text_emb: Text/graph embeddings [B, text_dim] or None
+            pov_emb: POV embeddings [B, pov_dim] or None
         
         Returns:
             Spatial feature map [B, output_channels, H, W]
         """
-        B = text_emb.shape[0]
+        if text_emb is None and pov_emb is None:
+            raise ValueError("At least one of text_emb or pov_emb must be provided")
         
-        # Project embeddings if needed
-        text_feat = self.text_proj(text_emb)  # [B, text_dim or common_dim]
-        pov_feat = self.pov_proj(pov_emb)  # [B, pov_dim or common_dim]
-        
-        # Combine embeddings
-        if self.combine_method == "add":
-            combined = text_feat + pov_feat  # [B, common_dim]
-        elif self.combine_method in ["concat", "concat_proj"]:
-            combined = torch.cat([text_feat, pov_feat], dim=1)  # [B, text_dim + pov_dim]
+        if text_emb is not None:
+            B = text_emb.shape[0]
+            text_feat = self.text_proj(text_emb)
         else:
-            raise ValueError(f"Unknown combine_method: {self.combine_method}")
+            B = pov_emb.shape[0]
+            text_feat = None
+        
+        if pov_emb is not None:
+            pov_feat = self.pov_proj(pov_emb)
+        else:
+            pov_feat = None
+        
+        if text_feat is not None and pov_feat is not None:
+            if self.combine_method == "add":
+                combined = text_feat + pov_feat
+            elif self.combine_method in ["concat", "concat_proj"]:
+                combined = torch.cat([text_feat, pov_feat], dim=1)
+            else:
+                raise ValueError(f"Unknown combine_method: {self.combine_method}")
+        elif text_feat is not None:
+            if self.combine_method in ["concat", "concat_proj"]:
+                zero_pov = torch.zeros(B, self.pov_dim, device=text_feat.device, dtype=text_feat.dtype)
+                pov_feat = self.pov_proj(zero_pov)
+                combined = torch.cat([text_feat, pov_feat], dim=1)
+            else:
+                combined = text_feat
+        else:
+            if self.combine_method in ["concat", "concat_proj"]:
+                zero_text = torch.zeros(B, self.text_dim, device=pov_feat.device, dtype=pov_feat.dtype)
+                text_feat = self.text_proj(zero_text)
+                combined = torch.cat([text_feat, pov_feat], dim=1)
+            else:
+                combined = pov_feat
         
         # Project to spatial features
         spatial_flat = self.spatial_proj(combined)  # [B, output_channels * H * W]
