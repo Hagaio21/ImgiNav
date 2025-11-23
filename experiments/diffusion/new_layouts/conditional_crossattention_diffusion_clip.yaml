@@ -1,7 +1,7 @@
 experiment:
-  name: conditional_crossattention_diffusion_clip
+  name: diff_clip
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/new_layouts/conditional_crossattention_diffusion_clip
+  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip
   epochs_target: 300
 
 dataset:
@@ -19,7 +19,7 @@ dataset:
 
 autoencoder:
   # IMPORTANT: Use the CLIP-trained VAE checkpoint
-  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256_clip/new_layouts_VAE_32x32_structural_256_clip_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/clip/vae_clip/vae_clip_checkpoint_best.pt
   frozen: true
 
 # CRITICAL: Fixes the "Neon Blob" issue.

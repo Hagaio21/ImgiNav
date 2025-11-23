@@ -1,16 +1,16 @@
 experiment:
-  name: conditional_crossattention_diffusion_clip_downs_bottleneck_small
+  name: diff_clip_small
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/new_layouts/conditional_crossattention_diffusion_clip_downs_bottleneck_small
+  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_small
   epochs_target: 300
 
 dataset:
   # Using shared embeddings manifest (with recolored layouts)
   # This manifest contains latent_path columns organized by autoencoder
-  # Column name: latent_path_new_layouts_VAE_32x32_structural_256_clip (from non-spatial CLIP autoencoder)
+  # Column name: latent_path_vae_clip (from non-spatial CLIP autoencoder)
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv
   outputs:
-    latent: latent_path_new_layouts_VAE_32x32_structural_256_clip  # VAE latents from non-spatial CLIP autoencoder
+    latent: latent_path_vae_clip  # VAE latents from non-spatial CLIP autoencoder
     text_emb: graph_embedding_path  # Graph/text embeddings (384-dim from all-MiniLM-L6-v2)
     pov_emb: pov_embedding_path     # POV embeddings (512-dim from ResNet18)
   filters:
@@ -20,7 +20,7 @@ dataset:
 
 autoencoder:
   # Using non-spatial CLIP-trained VAE for aligned embedding space
-  checkpoint: /work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256_clip/new_layouts_VAE_32x32_structural_256_clip_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/clip/vae_clip/vae_clip_checkpoint_best.pt
   frozen: true
 
 # CRITICAL: Fixes the "Neon Blob" issue.

@@ -6,9 +6,9 @@
 # Loss: ColorWeightedMSE=1.0 (walls=3.0x), KLD=0.0001, LatentStd=0.1, CLIP=0.2 (spatial alignment mode)
 
 experiment:
-  name: "new_layouts_VAE_32x32_structural_256_clip_spatial"
-  phase: "new_layouts_structural_training_with_clip_spatial"
-  save_path: "/work3/s233249/ImgiNav/experiments/new_layouts/new_layouts_VAE_32x32_structural_256_clip_spatial"
+  name: "vae_clip_spatial"
+  phase: "clip_vae_training_spatial"
+  save_path: "/work3/s233249/ImgiNav/experiments/clip/vae_clip_spatial"
 
 dataset:
   # Use manifest with POV and graph embeddings (created by run_embed_controlnet_dataset.sh without VAE)
