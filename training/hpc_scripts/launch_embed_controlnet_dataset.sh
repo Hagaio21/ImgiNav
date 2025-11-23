@@ -73,7 +73,7 @@ echo "==========================================================================
 JOB_OUTPUT=$(bsub -J "embed_controlnet_dataset" \
     -o "${BASE_DIR}/training/hpc_scripts/logs/embed_controlnet_dataset.%J.out" \
     -e "${BASE_DIR}/training/hpc_scripts/logs/embed_controlnet_dataset.%J.err" \
-    -n 8 \
+    -n 4 \
     -R "rusage[mem=16000]" \
     -gpu "num=1" \
     -W 24:00 \

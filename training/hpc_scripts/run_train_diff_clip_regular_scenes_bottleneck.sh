@@ -2,7 +2,7 @@
 #BSUB -J diff_clip_regular_scenes_small_bottleneck
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_diff_clip_regular_scenes_bottleneck.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_diff_clip_regular_scenes_bottleneck.%J.err
-#BSUB -n 8
+#BSUB -n 4
 #BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
 #BSUB -W 48:00

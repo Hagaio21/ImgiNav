@@ -2,7 +2,7 @@
 #BSUB -J embed_controlnet_dataset
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/embed_controlnet_dataset.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/embed_controlnet_dataset.%J.err
-#BSUB -n 8
+#BSUB -n 4
 #BSUB -R "rusage[mem=16000]"
 #BSUB -gpu "num=1"
 #BSUB -W 24:00

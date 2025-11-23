@@ -46,7 +46,7 @@ except:
     bsub -J "${exp_name}" \
         -o "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.out" \
         -e "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.err" \
-        -n 8 \
+        -n 4 \
         -R "rusage[mem=8000]" \
         -gpu "num=1" \
         -W 24:00 \

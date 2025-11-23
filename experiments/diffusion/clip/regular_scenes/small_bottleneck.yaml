@@ -57,7 +57,7 @@ training:
   seed: 4242
   train_split: 0.8
   batch_size: 48  # Small: 48²×2×3, with downs+bottleneck attention
-  num_workers: 8
+  num_workers: 4
   shuffle: true
   epochs: 300
   learning_rate: 0.0001
