@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Unified training script for diffusion models (Stage 1, Stage 2, Stage 3).
-Uses CompositeLoss from config to combine noise and semantic losses.
+Uses CompositeLoss from config to combine losses (MSE or SNR weighted).
 """
 
 import argparse
@@ -110,7 +110,7 @@ def calculate_scale_factor_from_dataset(dataset, num_samples=100, seed=42):
 
 def compute_loss(
     model, batch, latents, t, noise, cond, loss_fn, 
-    use_amp=False, device_obj=None, needs_decoding=False, cfg_dropout_rate=0.0
+    use_amp=False, device_obj=None, cfg_dropout_rate=0.0
 ):
     """
     Compute loss using CompositeLoss from config.
@@ -118,16 +118,9 @@ def compute_loss(
     This function prepares preds and targets dictionaries that are passed to
     CompositeLoss, which then distributes them to each sub-loss component.
     
-    Each loss component expects specific keys:
-    - SNRWeightedNoiseLoss: 
-        preds["pred_noise"], preds["scheduler"], preds["timesteps"]
-        targets["noise"]
-    - LatentStructuralLoss:
-        preds["pred_noise"], preds["scheduler"], preds["timesteps"], preds["noisy_latent"]
-        targets["latent"]
-    - SemanticLoss:
-        preds["decoded_rgb"]
-        targets["rgb"]
+    Loss components supported:
+    - MSELoss: preds["pred_noise"], targets["noise"]
+    - SNRWeightedNoiseLoss: preds["pred_noise"], preds["scheduler"], preds["timesteps"], targets["noise"]
     
     Args:
         model: Diffusion model
@@ -139,6 +132,7 @@ def compute_loss(
         loss_fn: CompositeLoss built from config
         use_amp: Whether to use mixed precision
         device_obj: Device object
+        cfg_dropout_rate: CFG dropout rate for conditioning
     
     Returns:
         (total_loss, logs_dict)
@@ -155,40 +149,28 @@ def compute_loss(
         if pov_emb.dim() > 1:
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
     
-    # Apply CFG dropout for embeddings (randomly drop embeddings with cfg_dropout_rate probability)
+    # Apply CFG dropout for conditioning signal C (randomly drop entire conditioning with cfg_dropout_rate probability)
+    # C = [c_pov, c_graph] but CFG doesn't care about structure - it drops the entire conditioning signal
     # This teaches the model to work both with and without cross-attention conditioning
-    if cfg_dropout_rate > 0.0 and text_emb is not None and pov_emb is not None:
+    if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
         if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
-            text_emb = None  # Drop embeddings for CFG training
+            text_emb = None  # Drop entire conditioning signal C for CFG training
             pov_emb = None
     
     # Forward pass through model
     outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
     
     # Prepare preds dict for loss computation
-    # All loss components will receive this dict, but only use the keys they need
     preds = {
-        "pred_noise": outputs["pred_noise"],      # For MSELoss
-        "scheduler": model.scheduler,            # For LatentStructuralLoss (if used)
-        "timesteps": t,                          # For LatentStructuralLoss (if used)
-        "noisy_latent": outputs.get("noisy_latent"),  # For LatentStructuralLoss (if used)
+        "pred_noise": outputs["pred_noise"],
+        "scheduler": model.scheduler,
+        "timesteps": t,
     }
-    
-    # Decode latents if semantic losses are needed (needs_decoding is cached from train_epoch)
-    if needs_decoding and "rgb" in batch:
-        decoded = model.decoder({"latent": latents})
-        preds["decoded_rgb"] = decoded.get("rgb")              # For SemanticLoss (perceptual)
     
     # Prepare targets dict
-    # All loss components will receive this dict, but only use the keys they need
     targets = {
-        "noise": noise,      # For MSELoss
-        "latent": latents,   # For LatentStructuralLoss (ground-truth clean latents, if used)
+        "noise": noise,
     }
-    
-    # Add RGB if available (for SemanticLoss)
-    if "rgb" in batch:
-        targets["rgb"] = batch["rgb"]  # For SemanticLoss (perceptual)
     
     # Compute loss using CompositeLoss
     if use_amp and device_obj.type == "cuda":
@@ -211,16 +193,6 @@ def train_epoch(
     log_dict = {}
     
     device_obj = to_device(device)
-    
-    # Cache loss class lookups and check if decoding is needed (once per epoch, not per batch)
-    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
-    SemanticLossClass = LOSS_REGISTRY.get("SemanticLoss")
-    needs_decoding = False
-    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-        for sub_loss in loss_fn.losses:
-            if SemanticLossClass and isinstance(sub_loss, SemanticLossClass):
-                needs_decoding = True
-                break
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch_idx, batch in enumerate(pbar):
@@ -329,7 +301,7 @@ def train_epoch(
             with torch.amp.autocast('cuda'):
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, needs_decoding, cfg_dropout_rate
+                    use_amp, device_obj, cfg_dropout_rate
                 )
                 # Scale loss for gradient accumulation
                 total_loss_val = total_loss_val * loss_scale
@@ -369,7 +341,7 @@ def train_epoch(
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
-                use_amp, device_obj, needs_decoding, cfg_dropout_rate
+                use_amp, device_obj, cfg_dropout_rate
             )
             # Scale loss for gradient accumulation
             total_loss_val = total_loss_val * loss_scale
@@ -434,16 +406,6 @@ def eval_epoch(
     
     device_obj = to_device(device)
     
-    # Cache loss class lookups and check if decoding is needed (once per epoch)
-    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
-    SemanticLossClass = LOSS_REGISTRY.get("SemanticLoss")
-    needs_decoding = False
-    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-        for sub_loss in loss_fn.losses:
-            if SemanticLossClass and isinstance(sub_loss, SemanticLossClass):
-                needs_decoding = True
-                break
-    
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
             batch = move_batch_to_device(batch, device_obj)
@@ -496,12 +458,12 @@ def eval_epoch(
                 with torch.amp.autocast('cuda'):
                     total_loss_val, logs = compute_loss(
                         model, batch, latents, t, noise, cond, loss_fn,
-                        use_amp, device_obj, needs_decoding, cfg_dropout_rate=0.0
+                        use_amp, device_obj, cfg_dropout_rate=0.0
                     )
             else:
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, needs_decoding, cfg_dropout_rate=0.0
+                    use_amp, device_obj, cfg_dropout_rate=0.0
                 )
             
             batch_size = latents.shape[0]
