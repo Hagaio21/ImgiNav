@@ -362,6 +362,11 @@ def compute_miou(
     """
     Compute mean Intersection over Union (mIoU) between segmentation maps.
     
+    Since layouts are geometric, mIoU provides a much more accurate assessment of 
+    spatial correctness than pixel-wise MSE. It measures how well the model preserves 
+    object boundaries and spatial relationships by computing IoU for each class and 
+    averaging across all classes.
+    
     Args:
         pred_seg: Predicted segmentation map [H, W] with class IDs
         gt_seg: Ground truth segmentation map [H, W] with class IDs
@@ -458,7 +463,10 @@ def compute_evaluation_metrics(
         except Exception as e:
             warnings.warn(f"FID computation failed: {e}")
     
-    # mIoU
+    # mIoU (mean Intersection over Union) - Critical for geometric/spatial correctness
+    # Since layouts are geometric, mIoU between generated and ground truth segmentation maps
+    # provides a much more accurate assessment of spatial correctness than pixel-wise MSE.
+    # It measures how well the model preserves object boundaries and spatial relationships.
     if compute_miou and taxonomy is not None:
         try:
             from data_preparation.utils.layout_analysis import LayoutSegmentor
@@ -487,11 +495,11 @@ def compute_evaluation_metrics(
                     pred_np = pred_np.astype(np.uint8)
                     gt_np = gt_np.astype(np.uint8)
                 
-                # Segment
+                # Segment images to category maps
                 pred_seg = segmentor.segment(pred_np)
                 gt_seg = segmentor.segment(gt_np)
                 
-                # Compute IoU
+                # Compute mean IoU across all classes
                 iou = compute_miou(pred_seg, gt_seg)
                 ious.append(iou)
             
@@ -499,6 +507,86 @@ def compute_evaluation_metrics(
                 metrics["miou"] = float(np.mean(ious))
         except Exception as e:
             warnings.warn(f"mIoU computation failed: {e}")
+    
+    # Layout-specific metrics (coverage, class matching, color matching)
+    if taxonomy is not None:
+        try:
+            from common.taxonomy import Taxonomy
+            from analysis.evaluation_metrics import LayoutEvaluator
+            
+            # Ensure taxonomy is a Taxonomy instance
+            if isinstance(taxonomy, (str, Path)):
+                taxonomy_obj = Taxonomy(taxonomy)
+            else:
+                taxonomy_obj = taxonomy
+            
+            evaluator = LayoutEvaluator(taxonomy_obj, mode="super", cooccurrence_radius=0.15)
+            
+            # Accumulate metrics across batch
+            all_dist_metrics = []
+            all_density_diffs = []
+            all_class_ious = []
+            
+            B = pred_images.shape[0]
+            for i in range(B):
+                # Convert tensors to PIL Images
+                pred_img = pred_images[i].cpu()
+                gt_img = gt_images[i].cpu()
+                
+                # Convert from [C, H, W] to [H, W, C] and to uint8
+                if pred_img.shape[0] == 3:
+                    pred_np = pred_img.permute(1, 2, 0).numpy()
+                    gt_np = gt_img.permute(1, 2, 0).numpy()
+                else:
+                    pred_np = pred_img.numpy()
+                    gt_np = gt_img.numpy()
+                
+                # Normalize to [0, 255] if needed
+                if pred_np.max() <= 1.0:
+                    pred_np = (pred_np * 255).astype(np.uint8)
+                    gt_np = (gt_np * 255).astype(np.uint8)
+                else:
+                    pred_np = pred_np.astype(np.uint8)
+                    gt_np = gt_np.astype(np.uint8)
+                
+                # Convert to PIL Images
+                pred_pil = Image.fromarray(pred_np)
+                gt_pil = Image.fromarray(gt_np)
+                
+                # Count objects (class matching)
+                pred_counts = evaluator.count_objects(pred_pil)
+                gt_counts = evaluator.count_objects(gt_pil)
+                
+                # Compare distributions (class matching metrics)
+                dist_metrics = evaluator.compare_distributions(pred_counts, gt_counts)
+                all_dist_metrics.append(dist_metrics)
+                
+                # Coverage/density analysis
+                pred_density = evaluator.analyze_bbox_density(pred_pil)
+                gt_density = evaluator.analyze_bbox_density(gt_pil)
+                density_diff = pred_density["overall_density"] - gt_density["overall_density"]
+                all_density_diffs.append(density_diff)
+                
+                # Class set IoU (class matching)
+                pred_classes = set(pred_counts.keys())
+                gt_classes = set(gt_counts.keys())
+                intersection = len(pred_classes & gt_classes)
+                union = len(pred_classes | gt_classes)
+                class_iou = intersection / union if union > 0 else 0.0
+                all_class_ious.append(class_iou)
+            
+            # Average metrics across batch
+            if len(all_dist_metrics) > 0:
+                # Class matching metrics (from distribution comparison)
+                metrics["class_kl_divergence"] = float(np.mean([d["kl_divergence"] for d in all_dist_metrics]))
+                metrics["class_total_variation"] = float(np.mean([d["total_variation"] for d in all_dist_metrics]))
+                metrics["class_l1_distance"] = float(np.mean([d["l1_distance"] for d in all_dist_metrics]))
+                metrics["class_iou"] = float(np.mean(all_class_ious))  # Intersection over Union of class sets
+                
+                # Coverage metric (density difference)
+                metrics["coverage_diff"] = float(np.mean(all_density_diffs))
+        except Exception as e:
+            warnings.warn(f"Layout-specific metrics computation failed: {e}")
     
     return metrics
 
