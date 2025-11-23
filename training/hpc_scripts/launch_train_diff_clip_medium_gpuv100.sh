@@ -1,16 +1,14 @@
 #!/bin/bash
 # Launch script for Medium CLIP Diffusion models on gpuv100 queue
-# Submits: medium_all, medium_down, medium_up, medium_bottleneck
+# Submits: medium_rooms_bottleneck, medium_scenes_bottleneck (2 experiments)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular/medium_all.yaml"
-    "experiments/diffusion/clip/regular/medium_down.yaml"
-    "experiments/diffusion/clip/regular/medium_up.yaml"
-    "experiments/diffusion/clip/regular/medium_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/medium_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
 )
 
 echo "=============================================================================="
@@ -59,4 +57,3 @@ except:
 done
 
 echo "Done! Submitted ${#CONFIGS[@]} jobs to gpuv100 queue"
-

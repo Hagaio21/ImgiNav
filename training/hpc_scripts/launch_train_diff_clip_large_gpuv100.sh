@@ -1,16 +1,14 @@
 #!/bin/bash
 # Launch script for Large CLIP Diffusion models on gpuv100 queue
-# Submits: large_all, large_down, large_up, large_bottleneck
+# Submits: large_rooms_bottleneck, large_scenes_bottleneck (2 experiments)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular/large_all.yaml"
-    "experiments/diffusion/clip/regular/large_down.yaml"
-    "experiments/diffusion/clip/regular/large_up.yaml"
-    "experiments/diffusion/clip/regular/large_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/large_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_scenes/large_bottleneck.yaml"
 )
 
 echo "=============================================================================="
@@ -21,7 +19,7 @@ echo "Submitting ${#CONFIGS[@]} jobs..."
 for config in "${CONFIGS[@]}"; do
     config_path="${BASE_DIR}/${config}"
     if [ ! -f "${config_path}" ]; then
-        echo "WARNING: Config not found: ${config}"
+        echo "WARNING: Config not found: ${config} (will be skipped)"
         continue
     fi
     
@@ -58,5 +56,4 @@ except:
     sleep 1
 done
 
-echo "Done! Submitted ${#CONFIGS[@]} jobs to gpuv100 queue"
-
+echo "Done! Submitted jobs to gpuv100 queue"

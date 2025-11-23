@@ -42,7 +42,7 @@ unet:
   use_attention: true
   attention_heads: 2
   attention_at:
-    - bottleneck           # Attention only at bottleneck
+    - bottleneck
   enable_cross_attention: true
   use_ema: false
 

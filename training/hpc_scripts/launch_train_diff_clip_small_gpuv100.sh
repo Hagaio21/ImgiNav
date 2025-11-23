@@ -1,16 +1,14 @@
 #!/bin/bash
 # Launch script for Small CLIP Diffusion models on gpuv100 queue
-# Submits: small_all, small_down, small_up, small_bottleneck
+# Submits: small_rooms_bottleneck, small_scenes_bottleneck (2 experiments)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular/small_all.yaml"
-    "experiments/diffusion/clip/regular/small_down.yaml"
-    "experiments/diffusion/clip/regular/small_up.yaml"
-    "experiments/diffusion/clip/regular/small_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/small_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_scenes/small_bottleneck.yaml"
 )
 
 echo "=============================================================================="
@@ -59,4 +57,3 @@ except:
 done
 
 echo "Done! Submitted ${#CONFIGS[@]} jobs to gpuv100 queue"
-
