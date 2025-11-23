@@ -465,7 +465,11 @@ def main():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_to_resume}")
         print(f"Using checkpoint from argument: {checkpoint_to_resume}")
     else:
-        latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
+        # Check in checkpoints folder first, then fallback to root (for backward compatibility)
+        checkpoint_dir_temp = output_dir / "checkpoints"
+        latest_checkpoint = checkpoint_dir_temp / f"{exp_name}_checkpoint_latest.pt"
+        if not latest_checkpoint.exists():
+            latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
         if latest_checkpoint.exists():
             checkpoint_to_resume = latest_checkpoint
             print(f"Found latest checkpoint: {latest_checkpoint}")
@@ -644,6 +648,10 @@ def main():
         print(f"  Early stopping: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
         if early_stopping_restore_best:
             print(f"  Will restore best checkpoint on early stop")
+    
+    # Create checkpoints directory
+    checkpoint_dir = output_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     checkpoint_files = []
     epochs_without_improvement = 0
@@ -1153,7 +1161,7 @@ def main():
                 print(f"  New best validation loss: {best_val_loss:.6f} (improvement: {improvement:.6f})")
                 
                 # Save best checkpoint immediately (always updated when best is found)
-                best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
+                best_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
                 model.save_checkpoint(best_path, include_config=True)
                 print(f"  Saved best checkpoint (val_loss: {best_val_loss:.6f})")
                 
@@ -1176,7 +1184,10 @@ def main():
                 
                 # Restore best checkpoint if requested
                 if early_stopping_restore_best:
-                    best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
+                    best_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
+                    if not best_path.exists():
+                        # Fallback to root for backward compatibility
+                        best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
                     if best_path.exists():
                         print(f"  Restoring best checkpoint from {best_path}")
                         model = Autoencoder.load_checkpoint(best_path, map_location=device_obj)
@@ -1217,13 +1228,13 @@ def main():
         # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
         if should_save:
-            checkpoint_path = output_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
+            checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
             # Save checkpoint with config inside (via save_checkpoint method)
             model.save_checkpoint(checkpoint_path, include_config=True)
             checkpoint_files.append(checkpoint_path)
         
         # Always save latest checkpoint (for resume - includes optimizer state)
-        latest_path = output_dir / f"{exp_name}_checkpoint_latest.pt"
+        latest_path = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
         model.save_checkpoint(latest_path, include_config=True,
                             epoch=epoch + 1, best_val_loss=best_val_loss,
                             optimizer_state=optimizer.state_dict(),
@@ -1238,7 +1249,7 @@ def main():
             checkpoint_files = checkpoint_files[-keep_checkpoints:]
     
     print(f"\nTraining complete!")
-    print(f"  Checkpoints (with config): {output_dir}/{exp_name}_checkpoint_*.pt")
+    print(f"  Checkpoints (with config): {checkpoint_dir}/{exp_name}_checkpoint_*.pt")
     print(f"  Metrics CSV: {metrics_csv_path}")
     
     # Save final VAE metadata if not already saved (use final validation stats)
