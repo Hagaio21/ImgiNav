@@ -38,6 +38,56 @@ from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
 
 
+def load_vae_metadata(ae_checkpoint_path):
+    """
+    Load VAE metadata JSON file and extract recommended values.
+    
+    Args:
+        ae_checkpoint_path: Path to autoencoder checkpoint
+        
+    Returns:
+        dict with 'scale_factor', 'latent_clamp_min', 'latent_clamp_max', or None if not found
+    """
+    import json
+    from pathlib import Path
+    
+    checkpoint_path = Path(ae_checkpoint_path)
+    if not checkpoint_path.exists():
+        return None
+    
+    # Metadata file is typically in the parent directory of checkpoints/
+    # e.g., /work3/.../vae_clip/checkpoints/vae_clip_checkpoint_best.pt
+    # -> /work3/.../vae_clip/vae_clip_metadata.json
+    checkpoint_dir = checkpoint_path.parent  # checkpoints/
+    vae_dir = checkpoint_dir.parent  # vae_clip/
+    
+    # Try to find metadata file - could be named {exp_name}_metadata.json
+    # Look for any *_metadata.json in the VAE directory
+    metadata_files = list(vae_dir.glob("*_metadata.json"))
+    
+    if not metadata_files:
+        return None
+    
+    # Use the first metadata file found (or could match by experiment name)
+    metadata_path = metadata_files[0]
+    
+    try:
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        recommended = metadata.get("recommended_values", {})
+        if recommended:
+            return {
+                "scale_factor": recommended.get("scale_factor"),
+                "latent_clamp_min": recommended.get("latent_clamp_min"),
+                "latent_clamp_max": recommended.get("latent_clamp_max")
+            }
+    except Exception as e:
+        print(f"Warning: Failed to load VAE metadata from {metadata_path}: {e}")
+    
+    return None
+
+
 def calculate_scale_factor_from_dataset(dataset, num_samples=100, seed=42):
     """
     Calculate scale_factor from dataset latents.
@@ -846,42 +896,86 @@ def main():
     
     device_obj = to_device(device)
     
+    # Try to load VAE metadata first (if autoencoder checkpoint is specified)
+    vae_metadata = None
+    ae_cfg = config.get("autoencoder") or config.get("diffusion", {}).get("autoencoder")
+    if ae_cfg and isinstance(ae_cfg, dict):
+        ae_checkpoint = ae_cfg.get("checkpoint")
+        if ae_checkpoint:
+            print("\nChecking for VAE metadata file...")
+            vae_metadata = load_vae_metadata(ae_checkpoint)
+            if vae_metadata:
+                print(f"  Found VAE metadata file")
+                if vae_metadata.get("scale_factor"):
+                    print(f"    scale_factor: {vae_metadata['scale_factor']:.6f}")
+                if vae_metadata.get("latent_clamp_min") is not None:
+                    print(f"    latent_clamp_min: {vae_metadata['latent_clamp_min']:.6f}")
+                if vae_metadata.get("latent_clamp_max") is not None:
+                    print(f"    latent_clamp_max: {vae_metadata['latent_clamp_max']:.6f}")
+            else:
+                print("  No VAE metadata file found")
+    
     # Calculate scale_factor if not provided in config
     # Check both diffusion section and top-level config
     diffusion_cfg = config.get("diffusion", {})
     if not diffusion_cfg:
         diffusion_cfg = {}
     
+    # Priority: config > VAE metadata > calculate from dataset
     scale_factor = diffusion_cfg.get("scale_factor") or config.get("scale_factor")
     
     if scale_factor is None:
-        print("\n" + "="*60)
-        print("scale_factor not found in config - calculating automatically from dataset")
-        print("="*60)
-        try:
-            scale_factor = calculate_scale_factor_from_dataset(
-                train_dataset,
-                num_samples=config.get("training", {}).get("scale_factor_samples", 100),
-                seed=config.get("training", {}).get("seed", 42)
-            )
+        # Try VAE metadata
+        if vae_metadata and vae_metadata.get("scale_factor") is not None:
+            scale_factor = vae_metadata["scale_factor"]
+            print(f"\nUsing scale_factor from VAE metadata: {scale_factor:.6f}")
             # Add to config for model building
             if "diffusion" in config:
                 config["diffusion"]["scale_factor"] = scale_factor
             else:
                 config["scale_factor"] = scale_factor
-            print(f"  Auto-calculated scale_factor: {scale_factor:.6f}")
-            print("  (Add this to your config to avoid recalculating)")
-            print("="*60 + "\n")
-        except Exception as e:
-            print(f"Warning: Failed to calculate scale_factor automatically: {e}")
-            print("  Using default scale_factor=1.0 (no scaling)")
-            scale_factor = 1.0
-            if "diffusion" in config:
-                config["diffusion"]["scale_factor"] = scale_factor
-            else:
-                config["scale_factor"] = scale_factor
+        else:
+            print("\n" + "="*60)
+            print("scale_factor not found in config or VAE metadata - calculating automatically from dataset")
+            print("="*60)
+            try:
+                scale_factor = calculate_scale_factor_from_dataset(
+                    train_dataset,
+                    num_samples=config.get("training", {}).get("scale_factor_samples", 100),
+                    seed=config.get("training", {}).get("seed", 42)
+                )
+                # Add to config for model building
+                if "diffusion" in config:
+                    config["diffusion"]["scale_factor"] = scale_factor
+                else:
+                    config["scale_factor"] = scale_factor
+                print(f"  Auto-calculated scale_factor: {scale_factor:.6f}")
+                print("  (Add this to your config to avoid recalculating)")
+                print("="*60 + "\n")
+            except Exception as e:
+                print(f"Warning: Failed to calculate scale_factor automatically: {e}")
+                print("  Using default scale_factor=1.0 (no scaling)")
+                scale_factor = 1.0
+                if "diffusion" in config:
+                    config["diffusion"]["scale_factor"] = scale_factor
+                else:
+                    config["scale_factor"] = scale_factor
     else:
         print(f"\nUsing scale_factor from config: {scale_factor}")
+    
+    # Load latent_clamp values (priority: config > VAE metadata > defaults)
+    latent_clamp_min = config.get("latent_clamp_min")
+    latent_clamp_max = config.get("latent_clamp_max")
+    
+    if latent_clamp_min is None and vae_metadata and vae_metadata.get("latent_clamp_min") is not None:
+        latent_clamp_min = vae_metadata["latent_clamp_min"]
+        config["latent_clamp_min"] = latent_clamp_min
+        print(f"Using latent_clamp_min from VAE metadata: {latent_clamp_min:.6f}")
+    
+    if latent_clamp_max is None and vae_metadata and vae_metadata.get("latent_clamp_max") is not None:
+        latent_clamp_max = vae_metadata["latent_clamp_max"]
+        config["latent_clamp_max"] = latent_clamp_max
+        print(f"Using latent_clamp_max from VAE metadata: {latent_clamp_max:.6f}")
     
     # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
@@ -953,6 +1047,12 @@ def main():
         # Add scale_factor if it was calculated or provided
         if scale_factor is not None:
             diffusion_cfg["scale_factor"] = scale_factor
+        
+        # Add latent_clamp values if available
+        if latent_clamp_min is not None:
+            diffusion_cfg["latent_clamp_min"] = latent_clamp_min
+        if latent_clamp_max is not None:
+            diffusion_cfg["latent_clamp_max"] = latent_clamp_max
         
         if "type" in diffusion_cfg:
             diffusion_cfg = {k: v for k, v in diffusion_cfg.items() if k != "type"}
