@@ -49,18 +49,15 @@ class CLIPEmbeddingToSpatial(BaseComponent):
             self.clip_projections = clip_projections
         
         # Efficient projection from joint space (256-dim) to spatial features
-        # Strategy: Project to output_channels first, then reshape to spatial
-        # This avoids creating huge Linear layers (e.g., 256 -> 24k -> 12k)
-        # Instead: 256 -> output_channels -> reshape to [B, output_channels, H, W]
+        # Use a simple learned projection: 256 -> output_channels
+        # This is trainable and learns to convert CLIP embeddings to spatial features
+        # Small enough to not collapse, but expressive enough to learn useful mappings
+        self.spatial_proj = nn.Linear(256, output_channels)
         
-        # Project from 256-dim joint space to output_channels
-        self.spatial_proj = nn.Sequential(
-            nn.Linear(256, output_channels * 2),  # 256 -> output_channels*2
-            nn.LayerNorm(output_channels * 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(output_channels * 2, output_channels)  # output_channels*2 -> output_channels
-        )
+        # Initialize to preserve information (Xavier/Glorot initialization)
+        nn.init.xavier_uniform_(self.spatial_proj.weight)
+        if self.spatial_proj.bias is not None:
+            nn.init.zeros_(self.spatial_proj.bias)
     
     def forward(self, text_emb, pov_emb):
         """
@@ -112,6 +109,7 @@ class CLIPEmbeddingToSpatial(BaseComponent):
         spatial_flat = self.spatial_proj(combined_emb)  # [B, output_channels]
         
         # Reshape to spatial: [B, output_channels] -> [B, output_channels, 1, 1] -> [B, output_channels, H, W]
+        # This broadcasts the same features across spatial dimensions (global conditioning)
         spatial = spatial_flat.unsqueeze(-1).unsqueeze(-1)  # [B, output_channels, 1, 1]
         spatial = F.interpolate(spatial, size=self.spatial_size, mode='bilinear', align_corners=False)  # [B, output_channels, H, W]
         
