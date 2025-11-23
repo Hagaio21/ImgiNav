@@ -205,6 +205,10 @@ class CLIPProjections(BaseComponent):
             
             # Project global conditions to joint space, then expand to spatial dimensions
             text_emb_flat = text_emb.flatten(start_dim=1) if text_emb.dim() > 2 else text_emb
+            # Ensure embeddings match projection dtype (for mixed precision training)
+            if self.spatial_text_proj is not None:
+                proj_dtype = next(self.spatial_text_proj.parameters()).dtype
+                text_emb_flat = text_emb_flat.to(dtype=proj_dtype)
             text_proj = self.spatial_text_proj(text_emb_flat)  # [B, projection_dim]
             text_proj = F.normalize(text_proj, p=2, dim=1)
             # Expand to spatial: [B, projection_dim] -> [B, projection_dim, 1, 1] -> [B, projection_dim, H, W]
@@ -216,6 +220,10 @@ class CLIPProjections(BaseComponent):
                 combined_emb = text_spatial
             else:
                 pov_emb_flat = pov_emb.flatten(start_dim=1) if pov_emb.dim() > 2 else pov_emb
+                # Ensure embeddings match projection dtype (for mixed precision training)
+                if self.spatial_pov_proj is not None:
+                    proj_dtype = next(self.spatial_pov_proj.parameters()).dtype
+                    pov_emb_flat = pov_emb_flat.to(dtype=proj_dtype)
                 pov_proj = self.spatial_pov_proj(pov_emb_flat)  # [B, projection_dim]
                 pov_proj = F.normalize(pov_proj, p=2, dim=1)
                 # Expand to spatial: [B, projection_dim] -> [B, projection_dim, 1, 1] -> [B, projection_dim, H, W]
