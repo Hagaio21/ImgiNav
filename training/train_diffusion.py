@@ -226,6 +226,37 @@ def train_epoch(
     for batch_idx, batch in enumerate(pbar):
         batch = move_batch_to_device(batch, device_obj)
         
+        # Verify CLIP projections are being used on first batch of first epoch
+        if epoch == 1 and batch_idx == 0:
+            from models.components.embedding_projection import CLIPEmbeddingToSpatial
+            if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
+                if isinstance(model.embedding_proj, CLIPEmbeddingToSpatial):
+                    text_emb = batch.get("text_emb", None)
+                    pov_emb = batch.get("pov_emb", None)
+                    if text_emb is not None and pov_emb is not None:
+                        # Flatten if needed
+                        if text_emb.dim() > 1:
+                            text_emb = text_emb.flatten(start_dim=1)
+                        if pov_emb.dim() > 1:
+                            pov_emb = pov_emb.flatten(start_dim=1)
+                        
+                        # Check that CLIP projections are actually being called
+                        with torch.no_grad():
+                            try:
+                                spatial_features = model.embedding_proj(text_emb[:1], pov_emb[:1])
+                                print(f"\n[CLIP Verification] ✓ CLIP projections used in forward pass")
+                                print(f"  - Input text_emb shape: {text_emb[:1].shape}")
+                                print(f"  - Input pov_emb shape: {pov_emb[:1].shape}")
+                                print(f"  - Output spatial features shape: {spatial_features.shape}")
+                                
+                                # Verify the projections are the same instance
+                                if hasattr(model.embedding_proj, 'clip_projections'):
+                                    clip_proj = model.embedding_proj.clip_projections
+                                    print(f"  - CLIP projection dim: {clip_proj.projection_dim}")
+                                    print(f"  - Using CLIP-aligned embeddings: ✓")
+                            except Exception as e:
+                                print(f"\n[CLIP Verification] ✗ ERROR: CLIP projections failed in forward pass: {e}")
+        
         # Get latents
         latents = batch.get("latent")
         if latents is None:
@@ -1053,6 +1084,56 @@ def main():
             diffusion_cfg["save_path"] = exp_cfg["save_path"]
         model = DiffusionModel(**diffusion_cfg)
         model = model.to(device_obj)
+    
+    # Verify CLIP projections are being used if configured
+    if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
+        from models.components.embedding_projection import CLIPEmbeddingToSpatial
+        if isinstance(model.embedding_proj, CLIPEmbeddingToSpatial):
+            print("\n" + "="*60)
+            print("CLIP Projections Verification")
+            print("="*60)
+            
+            # Check if CLIP projections exist
+            if hasattr(model.embedding_proj, 'clip_projections') and model.embedding_proj.clip_projections is not None:
+                clip_proj = model.embedding_proj.clip_projections
+                print("✓ CLIPEmbeddingToSpatial is using CLIP projections")
+                print(f"  - Projection dim: {clip_proj.projection_dim}")
+                print(f"  - Text dim: {clip_proj.text_dim}")
+                print(f"  - POV dim: {clip_proj.pov_dim}")
+                print(f"  - Spatial alignment: {getattr(clip_proj, 'spatial_alignment', False)}")
+                
+                # Verify projection layers exist
+                has_text = hasattr(clip_proj, 'text_proj') and clip_proj.text_proj is not None
+                has_pov = hasattr(clip_proj, 'pov_proj') and clip_proj.pov_proj is not None
+                print(f"  - Text projection layer: {'✓' if has_text else '✗'}")
+                print(f"  - POV projection layer: {'✓' if has_pov else '✗'}")
+                
+                if not (has_text and has_pov):
+                    print("  ✗ WARNING: CLIP projections missing required layers!")
+                else:
+                    # Test forward pass with dummy data to verify it works
+                    try:
+                        dummy_text = torch.randn(1, clip_proj.text_dim, device=device_obj)
+                        dummy_pov = torch.randn(1, clip_proj.pov_dim, device=device_obj)
+                        with torch.no_grad():
+                            test_output = model.embedding_proj(dummy_text, dummy_pov)
+                        print(f"  ✓ Forward pass test successful: output shape {test_output.shape}")
+                    except Exception as e:
+                        print(f"  ✗ ERROR: Forward pass test failed: {e}")
+            else:
+                print("✗ WARNING: CLIPEmbeddingToSpatial does not have clip_projections!")
+        else:
+            print("\n" + "="*60)
+            print("Embedding Projection Info")
+            print("="*60)
+            print(f"Using {type(model.embedding_proj).__name__} (not CLIPEmbeddingToSpatial)")
+    else:
+        print("\n" + "="*60)
+        print("Embedding Projection Info")
+        print("="*60)
+        print("No embedding projection configured")
+    
+    print("="*60 + "\n")
     
     # Keep decoder frozen - only UNet is trained
     if hasattr(model, 'decoder'):
