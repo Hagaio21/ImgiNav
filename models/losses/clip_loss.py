@@ -81,6 +81,29 @@ class CLIPProjections(BaseComponent):
     
     def _init_spatial_projections(self, h, w, device=None):
         """Initialize spatial projections for global conditions."""
+        # Validate dimensions to prevent memory issues
+        if h is None or w is None:
+            raise ValueError(f"Invalid spatial dimensions: h={h}, w={w}")
+        
+        # Convert to int if they're tensors
+        if isinstance(h, torch.Tensor):
+            h = int(h.item())
+        if isinstance(w, torch.Tensor):
+            w = int(w.item())
+        
+        h, w = int(h), int(w)
+        
+        # Safety check: if dimensions are unreasonably large, something is wrong
+        # Latent features should typically be 32x32, 64x64, or at most 128x128
+        MAX_SPATIAL_DIM = 512  # Reasonable upper bound
+        if h > MAX_SPATIAL_DIM or w > MAX_SPATIAL_DIM:
+            raise ValueError(
+                f"Spatial dimensions are too large: H={h}, W={w}. "
+                f"This suggests latent_features has wrong shape. "
+                f"Expected latent features (e.g., 32x32, 64x64), got {h}x{w}. "
+                f"Check that latent_features is from encoder output, not raw image."
+            )
+        
         if self._spatial_h == h and self._spatial_w == w and self.spatial_text_proj is not None:
             return  # Already initialized
         
