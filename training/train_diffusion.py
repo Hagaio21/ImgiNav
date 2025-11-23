@@ -259,39 +259,8 @@ def train_epoch(
             t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
         noise = model.scheduler.randn_like(latents)
         
-        # Extract and convert type labels (room/scene) to condition indices
-        # type column contains "room" or "scene" strings, convert to 0=ROOM, 1=SCENE
+        # No type-based conditioning - only using control signals (text_emb, pov_emb)
         cond = None
-        type_labels = batch.get("type", None)
-        if type_labels is not None:
-            # Handle both string and tensor types
-            if isinstance(type_labels, (list, tuple)) and len(type_labels) > 0:
-                if isinstance(type_labels[0], str):
-                    # Convert string labels to indices: "room" -> 0, "scene" -> 1
-                    cond = torch.tensor(
-                        [0 if t.lower().strip() == "room" else 1 for t in type_labels],
-                        device=device_obj, dtype=torch.long
-                    )
-                else:
-                    # Already tensor indices
-                    cond = type_labels.to(device_obj) if isinstance(type_labels, torch.Tensor) else torch.tensor(type_labels, device=device_obj, dtype=torch.long)
-            elif isinstance(type_labels, torch.Tensor):
-                # Tensor might contain strings or indices
-                if type_labels.dtype == torch.long or type_labels.dtype == torch.int:
-                    cond = type_labels.to(device_obj)
-                else:
-                    # Convert string tensor to indices
-                    cond = torch.tensor(
-                        [0 if str(t).lower().strip() == "room" else 1 for t in type_labels.cpu().tolist()],
-                        device=device_obj, dtype=torch.long
-                    )
-        
-        # Apply CFG condition dropout (randomly drop condition with cfg_dropout_rate probability)
-        # This teaches the model to work both conditionally and unconditionally
-        # Use per-batch dropout: randomly set entire batch to None with probability cfg_dropout_rate
-        if cfg_dropout_rate > 0.0 and cond is not None:
-            if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
-                cond = None  # Drop entire batch condition for CFG training
         
         # Compute loss
         # Scale loss by 1/gradient_accumulation_steps to maintain effective learning rate
@@ -427,32 +396,8 @@ def eval_epoch(
             t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
             noise = model.scheduler.randn_like(latents)
             
-            # Extract and convert type labels (room/scene) to condition indices
-            # type column contains "room" or "scene" strings, convert to 0=ROOM, 1=SCENE
+            # No type-based conditioning - only using control signals (text_emb, pov_emb)
             cond = None
-            type_labels = batch.get("type", None)
-            if type_labels is not None:
-                # Handle both string and tensor types
-                if isinstance(type_labels, (list, tuple)) and len(type_labels) > 0:
-                    if isinstance(type_labels[0], str):
-                        # Convert string labels to indices: "room" -> 0, "scene" -> 1
-                        cond = torch.tensor(
-                            [0 if t.lower().strip() == "room" else 1 for t in type_labels],
-                            device=device_obj, dtype=torch.long
-                        )
-                    else:
-                        # Already tensor indices
-                        cond = type_labels.to(device_obj) if isinstance(type_labels, torch.Tensor) else torch.tensor(type_labels, device=device_obj, dtype=torch.long)
-                elif isinstance(type_labels, torch.Tensor):
-                    # Tensor might contain strings or indices
-                    if type_labels.dtype == torch.long or type_labels.dtype == torch.int:
-                        cond = type_labels.to(device_obj)
-                    else:
-                        # Convert string tensor to indices
-                        cond = torch.tensor(
-                            [0 if str(t).lower().strip() == "room" else 1 for t in type_labels.cpu().tolist()],
-                            device=device_obj, dtype=torch.long
-                        )
             
             if use_amp and device_obj.type == "cuda":
                 with torch.amp.autocast('cuda'):
@@ -575,7 +520,8 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # Get dataset to find rooms and scenes (different conditioning structures)
     dataset = val_loader.dataset
     
-    # Find 4 rooms and 4 scenes from the validation dataset
+    # Find samples from the validation dataset
+    # Handle both mixed-type and single-type datasets
     room_indices = []
     scene_indices = []
     
@@ -588,19 +534,33 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
                 room_indices.append(idx)
             elif sample_type == 'scene' and len(scene_indices) < 4:
                 scene_indices.append(idx)
+            # For mixed-type datasets, stop when we have 4 of each
+            # For single-type datasets, continue until we have 8 samples
             if len(room_indices) >= 4 and len(scene_indices) >= 4:
+                break
+            # For single-type datasets, collect 8 samples of the available type
+            if (len(room_indices) > 0 and len(scene_indices) == 0 and len(room_indices) >= 8):
+                break
+            if (len(scene_indices) > 0 and len(room_indices) == 0 and len(scene_indices) >= 8):
                 break
     else:
         # Fallback: use first 8 samples if type column not available
-        room_indices = list(range(min(4, len(dataset))))
-        scene_indices = list(range(min(4, len(dataset))))
+        room_indices = list(range(min(8, len(dataset))))
+        scene_indices = []
     
-    # Combine indices: 4 rooms + 4 scenes = 8 total
-    selected_indices = room_indices + scene_indices
+    # Handle single-type vs mixed-type datasets
+    if len(room_indices) == 0 or len(scene_indices) == 0:
+        # Single-type dataset - use 8 samples of the available type
+        available_indices = room_indices if len(room_indices) > 0 else scene_indices
+        selected_indices = available_indices[:8] if len(available_indices) >= 8 else available_indices
+        dataset_type = "rooms" if len(room_indices) > 0 else "scenes"
+        print(f"  Type-filtered dataset detected: Using {len(selected_indices)} samples of type '{dataset_type}'")
+    else:
+        # Mixed-type dataset - use 4 of each type
+        selected_indices = room_indices + scene_indices
+        print(f"  Mixed-type dataset: Using {len(room_indices)} rooms and {len(scene_indices)} scenes")
+    
     batch_size = len(selected_indices)
-    
-    if batch_size < 8:
-        print(f"  Warning: Could only find {len(room_indices)} rooms and {len(scene_indices)} scenes. Using available samples.")
     
     if batch_size == 0:
         print("  Warning: No samples found in validation dataset for comparison")
@@ -625,27 +585,17 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     batch = move_batch_to_device(batch, device_obj, non_blocking=False)
     
-    print(f"  Selected {len(room_indices)} rooms and {len(scene_indices)} scenes for comparison")
+    # Print selection summary (only if both types are present)
+    if len(room_indices) > 0 and len(scene_indices) > 0:
+        print(f"  Selected {len(room_indices)} rooms and {len(scene_indices)} scenes for comparison")
     
-    # Extract embeddings and conditions
+    # Extract embeddings (control signals only - no type-based conditioning)
     text_emb = batch.get("text_emb", None)
     pov_emb = batch.get("pov_emb", None)
     target_latents = batch.get("latent", None)
     
-    # Extract cond if available
+    # No type-based conditioning - only using control signals (text_emb, pov_emb)
     cond = None
-    type_labels = batch.get("type", None)
-    if type_labels is not None:
-        if isinstance(type_labels, (list, tuple)) and len(type_labels) > 0:
-            if isinstance(type_labels[0], str):
-                cond = torch.tensor(
-                    [0 if t.lower().strip() == "room" else 1 for t in type_labels],
-                    device=device_obj, dtype=torch.long
-                )
-            else:
-                cond = torch.tensor(type_labels, device=device_obj, dtype=torch.long)
-        elif isinstance(type_labels, torch.Tensor):
-            cond = type_labels.to(device_obj)
     
     # Ensure embeddings are 1D (flatten if needed)
     if text_emb is not None:
@@ -747,7 +697,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         epoch_prefix = f"{exp_name}_epoch_{epoch:03d}" if exp_name else f"epoch_{epoch:03d}"
         comparison_path = samples_dir / f"{epoch_prefix}_comparison.png"
         comparison_img.save(comparison_path)
-        print(f"  Saved target vs generated comparison ({batch_size} samples: {len(room_indices)} rooms + {len(scene_indices)} scenes) to {comparison_path}")
+        # Print summary based on dataset type
+        if len(room_indices) > 0 and len(scene_indices) > 0:
+            print(f"  Saved target vs generated comparison ({batch_size} samples: {len(room_indices)} rooms + {len(scene_indices)} scenes) to {comparison_path}")
+        else:
+            dataset_type = "rooms" if len(room_indices) > 0 else "scenes"
+            print(f"  Saved target vs generated comparison ({batch_size} samples of type '{dataset_type}') to {comparison_path}")
         
         # Also save generated samples only
         samples_path = samples_dir / f"{epoch_prefix}_generated.png"
@@ -812,13 +767,11 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             target_img.save(images_dir / f"sample_{i:03d}_target.png")
             generated_img.save(images_dir / f"sample_{i:03d}_generated.png")
         
-        # Save conditioning embeddings
+        # Save control signal embeddings (no type-based conditioning)
         if text_emb is not None:
             torch.save(text_emb.cpu(), images_dir / "text_embeddings.pt")
         if pov_emb is not None:
             torch.save(pov_emb.cpu(), images_dir / "pov_embeddings.pt")
-        if cond is not None:
-            torch.save(cond.cpu(), images_dir / "cond_types.pt")
         
         # Save metadata
         metadata = {
@@ -830,7 +783,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             "layout_paths": layout_paths,
             "pov_paths": pov_paths,
             "graph_texts": graph_texts,
-            "cond_types": cond.cpu().tolist() if cond is not None else None,
             "has_text_emb": text_emb is not None,
             "has_pov_emb": pov_emb is not None,
             "guidance_scale": guidance_scale,
