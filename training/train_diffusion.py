@@ -519,8 +519,8 @@ def eval_epoch(
                 try:
                     with torch.no_grad():
                         # Re-compute forward pass to get latents (or extract from outputs if stored)
-                        # For efficiency, only compute on a small subset
-                        eval_batch_size = min(4, batch_size)
+                        # For efficiency, only compute on a small subset (4x4 = 16 samples)
+                        eval_batch_size = min(16, batch_size)
                         
                         # Get latents for evaluation subset
                         eval_latents = latents[:eval_batch_size]
@@ -633,7 +633,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     with torch.no_grad():
         unconditioned_output = model.sample(
-            batch_size=16,
+            batch_size=16,  # Keep 4x4 grid for unconditioned
             num_steps=num_steps,
             method="ddpm",
             eta=1.0,
@@ -682,7 +682,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         print(f"  Saved 16 unconditioned samples (4x4 grid) to {unconditioned_path}")
 
     # ============================================================================
-    # Part 2: Targets vs Generated comparison (4 rooms + 4 scenes)
+    # Part 2: Targets vs Generated comparison (4x4 = 16 samples)
     # ============================================================================
     # Get dataset to find rooms and scenes (different conditioning structures)
     dataset = val_loader.dataset
@@ -697,33 +697,33 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         for idx in range(len(dataset)):
             row = dataset.df.iloc[idx]
             sample_type = str(row.get('type', '')).lower().strip()
-            if sample_type == 'room' and len(room_indices) < 4:
+            if sample_type == 'room' and len(room_indices) < 8:
                 room_indices.append(idx)
-            elif sample_type == 'scene' and len(scene_indices) < 4:
+            elif sample_type == 'scene' and len(scene_indices) < 8:
                 scene_indices.append(idx)
-            # For mixed-type datasets, stop when we have 4 of each
-            # For single-type datasets, continue until we have 8 samples
-            if len(room_indices) >= 4 and len(scene_indices) >= 4:
+            # For mixed-type datasets, stop when we have 8 of each (16 total)
+            # For single-type datasets, continue until we have 16 samples
+            if len(room_indices) >= 8 and len(scene_indices) >= 8:
                 break
-            # For single-type datasets, collect 8 samples of the available type
-            if (len(room_indices) > 0 and len(scene_indices) == 0 and len(room_indices) >= 8):
+            # For single-type datasets, collect 16 samples of the available type
+            if (len(room_indices) > 0 and len(scene_indices) == 0 and len(room_indices) >= 16):
                 break
-            if (len(scene_indices) > 0 and len(room_indices) == 0 and len(scene_indices) >= 8):
+            if (len(scene_indices) > 0 and len(room_indices) == 0 and len(scene_indices) >= 16):
                 break
     else:
-        # Fallback: use first 8 samples if type column not available
-        room_indices = list(range(min(8, len(dataset))))
+        # Fallback: use first 16 samples if type column not available
+        room_indices = list(range(min(16, len(dataset))))
         scene_indices = []
     
     # Handle single-type vs mixed-type datasets
     if len(room_indices) == 0 or len(scene_indices) == 0:
-        # Single-type dataset - use 8 samples of the available type
+        # Single-type dataset - use 16 samples of the available type
         available_indices = room_indices if len(room_indices) > 0 else scene_indices
-        selected_indices = available_indices[:8] if len(available_indices) >= 8 else available_indices
+        selected_indices = available_indices[:16] if len(available_indices) >= 16 else available_indices
         dataset_type = "rooms" if len(room_indices) > 0 else "scenes"
         print(f"  Type-filtered dataset detected: Using {len(selected_indices)} samples of type '{dataset_type}'")
     else:
-        # Mixed-type dataset - use 4 of each type
+        # Mixed-type dataset - use 8 of each type (16 total)
         selected_indices = room_indices + scene_indices
         print(f"  Mixed-type dataset: Using {len(room_indices)} rooms and {len(scene_indices)} scenes")
     
