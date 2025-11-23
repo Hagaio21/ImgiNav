@@ -509,17 +509,7 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.grid(True, alpha=0.3)
         if 'miou' in train_col or 'clip_score' in train_col:
             ax.set_ylim([0, 1.05])
-    # Plot 8 (fallback): CFG Dropout Rate (if available and no correlations)
-    elif 'cfg_dropout_rate' in history_df.columns:
-        ax = fig.add_subplot(gs[2, 1])
-        ax.plot(history_df[x_col], history_df['cfg_dropout_rate'], label='CFG Dropout Rate', marker='o', markersize=2, linewidth=1.5, color='red')
-        ax.set_xlabel(x_col.capitalize())
-        ax.set_ylabel('CFG Dropout Rate')
-        ax.set_title('CFG Dropout Schedule', fontweight='bold')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim([0, 1.05])
-    # Plot 8 (fallback): Learning rate (if available and no correlations/CFG)
+    # Plot 8 (fallback): Learning rate (if available and no correlations)
     elif 'learning_rate' in history_df.columns:
         ax = fig.add_subplot(gs[2, 1])
         ax.plot(history_df[x_col], history_df['learning_rate'], label='Learning Rate', marker='o', markersize=2, linewidth=1.5, color='brown')
@@ -550,16 +540,6 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.grid(True, alpha=0.3)
         if 'miou' in train_col or 'clip_score' in train_col:
             ax.set_ylim([0, 1.05])
-    elif 'cfg_dropout_rate' in history_df.columns and 'learning_rate' in history_df.columns:
-        # Plot 9: Learning rate (if CFG dropout was plotted in position 8)
-        ax = fig.add_subplot(gs[2, 2])
-        ax.plot(history_df[x_col], history_df['learning_rate'], label='Learning Rate', marker='o', markersize=2, linewidth=1.5, color='brown')
-        ax.set_xlabel(x_col.capitalize())
-        ax.set_ylabel('Learning Rate')
-        ax.set_title('Learning Rate Schedule', fontweight='bold')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        ax.set_yscale('log')
     elif 'learning_rate' in history_df.columns and len(eval_metrics_list) == 0:
         # Plot 9: Learning rate (if not already plotted)
         ax = fig.add_subplot(gs[2, 2])

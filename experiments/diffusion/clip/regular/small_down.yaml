@@ -69,7 +69,7 @@ training:
   gradient_accumulation_steps: 1
   scheduler:
     type: cosine
-  cfg_dropout_rate: 0.1
+  cfg_dropout_rate: 0.15
   guidance_scale: 3.0
   loss:
     type: MSELoss
