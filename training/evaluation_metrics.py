@@ -5,6 +5,7 @@ Evaluation metrics for diffusion model training:
 - mIoU: Mean Intersection over Union for spatial correctness
 """
 
+import os
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -12,6 +13,30 @@ from PIL import Image
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 import warnings
+
+# Set cache directories to use work space instead of home directory
+# This avoids "No space left on device" errors in /zhome
+work_cache_dir = "/work3/s233249/ImgiNav/.cache"
+os.makedirs(work_cache_dir, exist_ok=True)
+
+# Shared directory for evaluation models (used by all experiments)
+SHARED_EVAL_MODELS_DIR = os.path.join(work_cache_dir, "eval_models")
+os.makedirs(SHARED_EVAL_MODELS_DIR, exist_ok=True)
+
+# Set HuggingFace cache directory
+hf_cache = os.path.join(work_cache_dir, "huggingface")
+os.makedirs(hf_cache, exist_ok=True)
+os.makedirs(os.path.join(hf_cache, "datasets"), exist_ok=True)
+
+os.environ["HF_HOME"] = work_cache_dir
+os.environ["TRANSFORMERS_CACHE"] = hf_cache
+os.environ["HF_DATASETS_CACHE"] = os.path.join(hf_cache, "datasets")
+
+# Set PyTorch hub cache directory
+torch_cache = os.path.join(work_cache_dir, "torch")
+os.makedirs(torch_cache, exist_ok=True)
+os.makedirs(os.path.join(torch_cache, "hub"), exist_ok=True)
+os.environ["TORCH_HOME"] = torch_cache
 
 try:
     from transformers import CLIPModel, CLIPProcessor
@@ -41,8 +66,16 @@ _clip_model = None
 _clip_processor = None
 
 
-def get_clip_model(device="cuda"):
-    """Get or load CLIP model for CLIP Score computation."""
+def get_clip_model(device="cuda", model_dir=None):
+    """Get or load CLIP model for CLIP Score computation.
+    
+    Args:
+        device: Device to load model on
+        model_dir: Deprecated - models are now saved in shared location
+    
+    Returns:
+        (clip_model, clip_processor) or (None, None) if unavailable
+    """
     global _clip_model, _clip_processor
     
     if not CLIP_AVAILABLE:
@@ -50,8 +83,31 @@ def get_clip_model(device="cuda"):
     
     if _clip_model is None:
         try:
-            _clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-            _clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            model_name = "openai/clip-vit-base-patch32"
+            clip_dir = Path(SHARED_EVAL_MODELS_DIR) / "clip"
+            clip_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Check if model exists in shared location
+            if (clip_dir / "config.json").exists():
+                try:
+                    _clip_model = CLIPModel.from_pretrained(str(clip_dir))
+                    _clip_processor = CLIPProcessor.from_pretrained(str(clip_dir))
+                    print(f"  Loaded CLIP model from shared cache: {clip_dir}")
+                except Exception as e:
+                    warnings.warn(f"Failed to load CLIP from {clip_dir}, downloading: {e}")
+                    clip_dir = None  # Fall back to downloading
+            
+            # Download if not found locally
+            if _clip_model is None:
+                _clip_model = CLIPModel.from_pretrained(model_name, cache_dir=None)
+                _clip_processor = CLIPProcessor.from_pretrained(model_name, cache_dir=None)
+                
+                # Save to shared location
+                clip_dir = Path(SHARED_EVAL_MODELS_DIR) / "clip"
+                _clip_model.save_pretrained(str(clip_dir))
+                _clip_processor.save_pretrained(str(clip_dir))
+                print(f"  Saved CLIP model to shared cache: {clip_dir} (~150MB)")
+            
             _clip_model = _clip_model.to(device)
             _clip_model.eval()
         except Exception as e:
@@ -149,8 +205,16 @@ _inception_model = None
 _inception_transform = None
 
 
-def get_inception_model(device="cuda"):
-    """Get or load Inception v3 model for FID computation."""
+def get_inception_model(device="cuda", model_dir=None):
+    """Get or load Inception v3 model for FID computation.
+    
+    Args:
+        device: Device to load model on
+        model_dir: Deprecated - models are now saved in shared location
+    
+    Returns:
+        (inception_model, inception_transform) or (None, None) if unavailable
+    """
     global _inception_model, _inception_transform
     
     if not TORCHVISION_AVAILABLE:
@@ -158,8 +222,30 @@ def get_inception_model(device="cuda"):
     
     if _inception_model is None:
         try:
-            _inception_model = inception_v3(pretrained=True, transform_input=False)
-            _inception_model.fc = torch.nn.Identity()  # Remove final classification layer
+            inception_dir = Path(SHARED_EVAL_MODELS_DIR) / "inception"
+            inception_dir.mkdir(parents=True, exist_ok=True)
+            inception_path = inception_dir / "inception_v3.pth"
+            
+            # Check if model exists in shared location
+            if inception_path.exists():
+                try:
+                    _inception_model = inception_v3(pretrained=False, transform_input=False)
+                    _inception_model.load_state_dict(torch.load(inception_path, map_location=device))
+                    _inception_model.fc = torch.nn.Identity()
+                    print(f"  Loaded Inception model from shared cache: {inception_path}")
+                except Exception as e:
+                    warnings.warn(f"Failed to load Inception from {inception_path}, downloading: {e}")
+                    inception_path = None  # Fall back to downloading
+            
+            # Download if not found locally
+            if _inception_model is None:
+                _inception_model = inception_v3(pretrained=True, transform_input=False)
+                _inception_model.fc = torch.nn.Identity()  # Remove final classification layer
+                
+                # Save to shared location
+                torch.save(_inception_model.state_dict(), inception_path)
+                print(f"  Saved Inception model to shared cache: {inception_path} (~100MB)")
+            
             _inception_model = _inception_model.to(device)
             _inception_model.eval()
             
@@ -327,7 +413,8 @@ def compute_evaluation_metrics(
     device: Optional[torch.device] = None,
     compute_clip: bool = True,
     compute_fid: bool = True,
-    compute_miou: bool = True
+    compute_miou: bool = True,
+    model_dir: Optional[str] = None
 ) -> Dict[str, float]:
     """
     Compute all evaluation metrics.
@@ -342,6 +429,7 @@ def compute_evaluation_metrics(
         compute_clip: Whether to compute CLIP Score
         compute_fid: Whether to compute FID
         compute_miou: Whether to compute mIoU
+        model_dir: Deprecated - models are now saved in shared location
     
     Returns:
         Dictionary of metric values
