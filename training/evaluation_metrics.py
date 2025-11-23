@@ -524,8 +524,22 @@ def compute_evaluation_metrics(
             
             # Images are colored with category colors, but evaluator expects super-category colors
             # Use LayoutSegmentor to convert: category colors -> category IDs -> super-category IDs -> super-category colors
-            category_segmentor = LayoutSegmentor(taxonomy_obj, mode="category")
-            evaluator = LayoutEvaluator(taxonomy_obj, mode="super", cooccurrence_radius=0.15)
+            try:
+                category_segmentor = LayoutSegmentor(taxonomy_obj, mode="category")
+            except Exception as e:
+                raise ValueError(f"Failed to create LayoutSegmentor: {e}")
+            
+            try:
+                evaluator = LayoutEvaluator(taxonomy_obj, mode="super", cooccurrence_radius=0.15)
+            except Exception as e:
+                raise ValueError(f"Failed to create LayoutEvaluator: {e}")
+            
+            # Verify methods exist
+            if not hasattr(taxonomy_obj, 'resolve_super') or taxonomy_obj.resolve_super is None:
+                raise ValueError("taxonomy_obj.resolve_super is None or doesn't exist")
+            if not hasattr(taxonomy_obj, 'get_color') or taxonomy_obj.get_color is None:
+                raise ValueError("taxonomy_obj.get_color is None or doesn't exist")
+            
             print(f"  Computing layout-specific metrics (coverage, class matching)...")
             
             # Accumulate metrics across batch
@@ -575,22 +589,28 @@ def compute_evaluation_metrics(
                     for cat_id in unique_cat_ids:
                         if cat_id == 0:  # Background/unknown
                             continue
-                        # Resolve category ID to super-category ID
-                        super_id = taxonomy_obj.resolve_super(int(cat_id))
-                        if super_id is None:
+                        try:
+                            # Resolve category ID to super-category ID
+                            super_id = taxonomy_obj.resolve_super(int(cat_id))
+                            if super_id is None:
+                                continue
+                            # Get super-category color - use default mode (resolves to super automatically)
+                            # get_color with any mode other than "category" will resolve to super-category
+                            super_color = taxonomy_obj.get_color(super_id, mode="none")
+                            if super_color is None:
+                                continue
+                            # Convert color tuple to numpy array
+                            if isinstance(super_color, (list, tuple)) and len(super_color) == 3:
+                                super_color_arr = np.array(super_color, dtype=np.uint8)
+                            else:
+                                continue
+                            # Assign color to all pixels with this category ID
+                            mask = (cat_id_map == cat_id)
+                            super_colors[mask] = super_color_arr
+                        except Exception as e:
+                            # Skip this category if conversion fails
+                            warnings.warn(f"Failed to convert category {cat_id} to super-category: {e}")
                             continue
-                        # Get super-category color
-                        super_color = taxonomy_obj.get_color(super_id, mode="super")
-                        if super_color is None:
-                            continue
-                        # Convert color tuple to numpy array
-                        if isinstance(super_color, (list, tuple)):
-                            super_color_arr = np.array(super_color, dtype=np.uint8)
-                        else:
-                            continue
-                        # Assign color to all pixels with this category ID
-                        mask = (cat_id_map == cat_id)
-                        super_colors[mask] = super_color_arr
                     
                     return Image.fromarray(super_colors)
                 
