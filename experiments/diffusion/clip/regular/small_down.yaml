@@ -5,8 +5,8 @@ experiment:
   epochs_target: 300
 
 dataset:
-  # Manifest with latents from non-spatial CLIP VAE (from shared_latents)
-  manifest: /work3/s233249/ImgiNav/experiments/shared_latents/manifest_with_latents.csv
+  # Manifest with latents from non-spatial CLIP VAE (from shared_embeddings)
+  manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_latents.csv
   outputs:
     latent: latent_path_vae_clip  # Column from shared embeddings manifest
     text_emb: graph_embedding_path

@@ -19,9 +19,9 @@ PYTHON_SCRIPT="${BASE_DIR}/training/embed_controlnet_dataset.py"
 # Input manifest (shared embeddings manifest)
 INPUT_MANIFEST="/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
 
-# Output directory for shared latents
-SHARED_LATENTS_DIR="/work3/s233249/ImgiNav/experiments/shared_latents"
-SHARED_MANIFEST="${SHARED_LATENTS_DIR}/manifest_with_latents.csv"
+# Output directory for shared embeddings (latents will be saved here)
+SHARED_EMBEDDINGS_DIR="/work3/s233249/ImgiNav/experiments/shared_embeddings"
+SHARED_MANIFEST="${SHARED_EMBEDDINGS_DIR}/manifest_with_latents.csv"
 
 # VAE configs and checkpoints
 VAE_CLIP_CONFIG="${BASE_DIR}/experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256_clip.yaml"
@@ -124,7 +124,7 @@ echo "=========================================="
 echo "Embedding Latents with CLIP VAEs (Shared)"
 echo "=========================================="
 echo "Input manifest: ${INPUT_MANIFEST}"
-echo "Output directory: ${SHARED_LATENTS_DIR}"
+echo "Output directory: ${SHARED_EMBEDDINGS_DIR}"
 if [ -n "${VAE_CLIP_CHECKPOINT}" ]; then
   echo "Non-spatial CLIP VAE: ${VAE_CLIP_CHECKPOINT}"
 fi
@@ -143,8 +143,8 @@ if [ ! -f "${PYTHON_SCRIPT}" ]; then
   exit 1
 fi
 
-# Create shared latents directory
-mkdir -p "${SHARED_LATENTS_DIR}"
+# Create shared embeddings directory
+mkdir -p "${SHARED_EMBEDDINGS_DIR}"
 
 # Start with shared embeddings manifest
 CURRENT_MANIFEST="${INPUT_MANIFEST}"
@@ -192,7 +192,7 @@ if [ $EXIT_CODE -eq 0 ]; then
   echo "Embedding COMPLETE - SUCCESS"
   echo "=========================================="
   echo "Manifest created: ${SHARED_MANIFEST}"
-  echo "Latents saved in: ${SHARED_LATENTS_DIR}/latents/"
+  echo "Latents saved in: ${SHARED_EMBEDDINGS_DIR}/latents/"
   echo "End: $(date)"
   echo "=========================================="
   exit 0

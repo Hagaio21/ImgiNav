@@ -80,15 +80,15 @@ bsub < training/hpc_scripts/run_embed_clip_vaes_shared.sh
 ```
 
 **What it does:**
-- Embeds layouts using regular CLIP VAE → saves to `shared_latents/latents/vae_clip/`
-- Embeds layouts using spatial CLIP VAE → saves to `shared_latents/latents/vae_clip_spatial/`
-- Creates/updates manifest at `shared_latents/manifest_with_latents.csv` with columns:
+- Embeds layouts using regular CLIP VAE → saves to `shared_embeddings/latents/vae_clip/`
+- Embeds layouts using spatial CLIP VAE → saves to `shared_embeddings/latents/vae_clip_spatial/`
+- Creates/updates manifest at `shared_embeddings/manifest_with_latents.csv` with columns:
   - `latent_path_vae_clip` - Paths to regular CLIP VAE latents
   - `latent_path_vae_clip_spatial` - Paths to spatial CLIP VAE latents
 
 **Input manifest:** `/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv`
 
-**Output manifest:** `/work3/s233249/ImgiNav/experiments/shared_latents/manifest_with_latents.csv`
+**Output manifest:** `/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_latents.csv`
 
 ## Step 3: Train Diffusion Models
 
@@ -202,8 +202,8 @@ bsub < training/hpc_scripts/run_embed_clip_vaes_shared.sh
 - Spatial CLIP VAE: `/work3/s233249/ImgiNav/experiments/clip/vae_clip_spatial/checkpoints/`
 
 ### Latents
-- Regular CLIP VAE latents: `/work3/s233249/ImgiNav/experiments/shared_latents/latents/vae_clip/`
-- Spatial CLIP VAE latents: `/work3/s233249/ImgiNav/experiments/shared_latents/latents/vae_clip_spatial/`
+- Regular CLIP VAE latents: `/work3/s233249/ImgiNav/experiments/shared_embeddings/latents/vae_clip/`
+- Spatial CLIP VAE latents: `/work3/s233249/ImgiNav/experiments/shared_embeddings/latents/vae_clip_spatial/`
 
 ### Diffusion Model Checkpoints
 Each experiment saves to its own directory:
@@ -257,7 +257,7 @@ Examples:
 
 ### Diffusion training fails
 - Verify embeddings were created successfully
-- Check that `shared_latents/manifest_with_latents.csv` exists
+- Check that `shared_embeddings/manifest_with_latents.csv` exists
 - Ensure the correct latent column is referenced in the config (`latent_path_vae_clip` or `latent_path_vae_clip_spatial`)
 - For type-filtered experiments, verify the manifest has a `type` column with values "room" or "scene"
 
