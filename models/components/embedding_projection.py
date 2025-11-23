@@ -48,30 +48,18 @@ class CLIPEmbeddingToSpatial(BaseComponent):
             # Use provided CLIPProjections instance
             self.clip_projections = clip_projections
         
-        # Project from joint space (256-dim) to spatial features
-        # Input: joint space embeddings [B, 256]
-        # Output: spatial features [B, output_channels, H, W]
-        spatial_elements = output_channels * spatial_size[0] * spatial_size[1]
+        # Efficient projection from joint space (256-dim) to spatial features
+        # Strategy: Project to output_channels first, then reshape to spatial
+        # This avoids creating huge Linear layers (e.g., 256 -> 24k -> 12k)
+        # Instead: 256 -> output_channels -> reshape to [B, output_channels, H, W]
         
-        # Safety check: prevent unreasonably large spatial projections
-        # Typical values: output_channels=96, spatial_size=(64,64) -> spatial_elements=393216
-        # If spatial_elements > 10M, something is wrong
-        MAX_SPATIAL_ELEMENTS = 10_000_000  # 10M elements max
-        if spatial_elements > MAX_SPATIAL_ELEMENTS:
-            raise ValueError(
-                f"spatial_elements is too large: {spatial_elements} "
-                f"(output_channels={output_channels}, spatial_size={spatial_size}). "
-                f"This would create a Linear layer with {spatial_elements * 2} input features, "
-                f"requiring ~{spatial_elements * 2 * spatial_elements * 4 / 1e9:.1f}GB of memory. "
-                f"Check that spatial_size is set to latent dimensions (e.g., (64, 64)), not image dimensions."
-            )
-        
+        # Project from 256-dim joint space to output_channels
         self.spatial_proj = nn.Sequential(
-            nn.Linear(256, spatial_elements * 2),  # 256 is CLIP projection_dim
-            nn.LayerNorm(spatial_elements * 2),
+            nn.Linear(256, output_channels * 2),  # 256 -> output_channels*2
+            nn.LayerNorm(output_channels * 2),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(spatial_elements * 2, spatial_elements)
+            nn.Linear(output_channels * 2, output_channels)  # output_channels*2 -> output_channels
         )
     
     def forward(self, text_emb, pov_emb):
@@ -120,9 +108,12 @@ class CLIPEmbeddingToSpatial(BaseComponent):
         
         combined_emb = F.normalize(combined_emb, p=2, dim=1)  # [B, 256] in joint space
         
-        # Project from joint space to spatial features
-        spatial_flat = self.spatial_proj(combined_emb)  # [B, output_channels * H * W]
-        spatial = spatial_flat.view(B, self.output_channels, self.spatial_size[0], self.spatial_size[1])
+        # Project from joint space to output_channels
+        spatial_flat = self.spatial_proj(combined_emb)  # [B, output_channels]
+        
+        # Reshape to spatial: [B, output_channels] -> [B, output_channels, 1, 1] -> [B, output_channels, H, W]
+        spatial = spatial_flat.unsqueeze(-1).unsqueeze(-1)  # [B, output_channels, 1, 1]
+        spatial = F.interpolate(spatial, size=self.spatial_size, mode='bilinear', align_corners=False)  # [B, output_channels, H, W]
         
         return spatial
     

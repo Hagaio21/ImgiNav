@@ -109,13 +109,23 @@ class DiffusionModel(BaseModel):
                         "This experiment requires CLIP projections to work."
                     )
                 print("✓ CLIPEmbeddingToSpatial initialized with CLIP projections")
+                
+                # Freeze CLIP projections (from VAE, should not be trained)
+                # But keep spatial_proj trainable (it learns to convert CLIP embeddings to spatial features)
+                if hasattr(self.embedding_proj, 'clip_projections') and self.embedding_proj.clip_projections is not None:
+                    for p in self.embedding_proj.clip_projections.parameters():
+                        p.requires_grad = False
+                    print("✓ CLIP projections frozen (from VAE)")
+                
+                # spatial_proj remains trainable - it learns to project CLIP joint space to spatial features
+                spatial_proj_params = sum(p.numel() for p in self.embedding_proj.spatial_proj.parameters())
+                print(f"✓ spatial_proj trainable ({spatial_proj_params:,} parameters)")
             else:
                 self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
-            
-            # Freeze embedding projection (CLIP projections and spatial projection should not be trained)
-            for p in self.embedding_proj.parameters():
-                p.requires_grad = False
-            print("✓ Embedding projection frozen (only UNet will be trained)")
+                # For non-CLIP embedding projection, freeze everything
+                for p in self.embedding_proj.parameters():
+                    p.requires_grad = False
+                print("✓ Embedding projection frozen (only UNet will be trained)")
         
         # Build UNet
         unet_type = unet_cfg.get("type", "").lower()
