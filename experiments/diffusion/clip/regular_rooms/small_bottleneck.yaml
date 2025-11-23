@@ -44,6 +44,7 @@ unet:
   use_attention: true
   attention_heads: 2
   attention_at:
+    - downs
     - bottleneck
   enable_cross_attention: true
   use_ema: false
@@ -55,7 +56,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 4
+  batch_size: 32
   num_workers: 8
   shuffle: true
   epochs: 300
