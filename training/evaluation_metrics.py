@@ -509,10 +509,12 @@ def compute_evaluation_metrics(
             warnings.warn(f"mIoU computation failed: {e}")
     
     # Layout-specific metrics (coverage, class matching, color matching)
+    # These don't require external models - they analyze geometric properties directly
     if taxonomy is not None:
         try:
             from common.taxonomy import Taxonomy
             from analysis.evaluation_metrics import LayoutEvaluator
+            from data_preparation.utils.layout_analysis import LayoutSegmentor
             
             # Ensure taxonomy is a Taxonomy instance
             if isinstance(taxonomy, (str, Path)):
@@ -520,7 +522,11 @@ def compute_evaluation_metrics(
             else:
                 taxonomy_obj = taxonomy
             
+            # Images are colored with category colors, but evaluator expects super-category colors
+            # Use LayoutSegmentor to convert: category colors -> category IDs -> super-category IDs -> super-category colors
+            category_segmentor = LayoutSegmentor(taxonomy_obj, mode="category")
             evaluator = LayoutEvaluator(taxonomy_obj, mode="super", cooccurrence_radius=0.15)
+            print(f"  Computing layout-specific metrics (coverage, class matching)...")
             
             # Accumulate metrics across batch
             all_dist_metrics = []
@@ -553,17 +559,56 @@ def compute_evaluation_metrics(
                 pred_pil = Image.fromarray(pred_np)
                 gt_pil = Image.fromarray(gt_np)
                 
-                # Count objects (class matching)
-                pred_counts = evaluator.count_objects(pred_pil)
-                gt_counts = evaluator.count_objects(gt_pil)
+                # Segment category-colored images to get category IDs, then convert to super-category colors
+                # LayoutSegmentor finds closest color for each pixel and assigns category ID
+                pred_cat_ids = category_segmentor.segment(pred_pil)  # (H, W) array of category IDs
+                gt_cat_ids = category_segmentor.segment(gt_pil)  # (H, W) array of category IDs
+                
+                # Convert category IDs to super-category IDs, then to super-category colors
+                def convert_to_super_colors(cat_id_map):
+                    """Convert category ID map to super-category colored image."""
+                    H, W = cat_id_map.shape
+                    super_colors = np.zeros((H, W, 3), dtype=np.uint8)
+                    
+                    # Vectorized conversion: map each category ID to its super-category color
+                    unique_cat_ids = np.unique(cat_id_map)
+                    for cat_id in unique_cat_ids:
+                        if cat_id == 0:  # Background/unknown
+                            continue
+                        # Resolve category ID to super-category ID
+                        super_id = taxonomy_obj.resolve_super(int(cat_id))
+                        if super_id is None:
+                            continue
+                        # Get super-category color
+                        super_color = taxonomy_obj.get_color(super_id, mode="super")
+                        if super_color is None:
+                            continue
+                        # Convert color tuple to numpy array
+                        if isinstance(super_color, (list, tuple)):
+                            super_color_arr = np.array(super_color, dtype=np.uint8)
+                        else:
+                            continue
+                        # Assign color to all pixels with this category ID
+                        mask = (cat_id_map == cat_id)
+                        super_colors[mask] = super_color_arr
+                    
+                    return Image.fromarray(super_colors)
+                
+                # Convert to super-category colored images
+                pred_super_pil = convert_to_super_colors(pred_cat_ids)
+                gt_super_pil = convert_to_super_colors(gt_cat_ids)
+                
+                # Now use evaluator with super-category colored images
+                pred_counts = evaluator.count_objects(pred_super_pil)
+                gt_counts = evaluator.count_objects(gt_super_pil)
                 
                 # Compare distributions (class matching metrics)
                 dist_metrics = evaluator.compare_distributions(pred_counts, gt_counts)
                 all_dist_metrics.append(dist_metrics)
                 
-                # Coverage/density analysis
-                pred_density = evaluator.analyze_bbox_density(pred_pil)
-                gt_density = evaluator.analyze_bbox_density(gt_pil)
+                # Coverage/density analysis - measures spatial coverage (objects per pixel)
+                pred_density = evaluator.analyze_bbox_density(pred_super_pil)
+                gt_density = evaluator.analyze_bbox_density(gt_super_pil)
                 density_diff = pred_density["overall_density"] - gt_density["overall_density"]
                 all_density_diffs.append(density_diff)
                 
@@ -583,10 +628,17 @@ def compute_evaluation_metrics(
                 metrics["class_l1_distance"] = float(np.mean([d["l1_distance"] for d in all_dist_metrics]))
                 metrics["class_iou"] = float(np.mean(all_class_ious))  # Intersection over Union of class sets
                 
-                # Coverage metric (density difference)
+                # Coverage metric (density difference) - positive means more objects, negative means fewer
                 metrics["coverage_diff"] = float(np.mean(all_density_diffs))
+                print(f"  Layout metrics computed: coverage_diff={metrics['coverage_diff']:.6f}, class_iou={metrics['class_iou']:.4f}")
+            else:
+                warnings.warn("Layout-specific metrics: no valid samples processed")
         except Exception as e:
-            warnings.warn(f"Layout-specific metrics computation failed: {e}")
+            # Print full traceback for debugging
+            import traceback
+            error_msg = f"Layout-specific metrics computation failed: {e}\n{traceback.format_exc()}"
+            warnings.warn(error_msg)
+            print(f"  ERROR: {error_msg}")  # Also print to stdout for visibility
     
     return metrics
 
