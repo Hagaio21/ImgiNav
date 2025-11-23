@@ -77,6 +77,9 @@ class CLIPEmbeddingToSpatial(BaseComponent):
             B = text_emb.shape[0]
             if text_emb.dim() > 2:
                 text_emb = text_emb.flatten(start_dim=1)
+            # Ensure dtype matches CLIP projection parameters (for mixed precision training)
+            text_proj_dtype = next(self.clip_projections.text_proj.parameters()).dtype
+            text_emb = text_emb.to(dtype=text_proj_dtype)
             text_proj = self.clip_projections.text_proj(text_emb)
             text_proj = F.normalize(text_proj, p=2, dim=1)
         else:
@@ -86,6 +89,9 @@ class CLIPEmbeddingToSpatial(BaseComponent):
         if pov_emb is not None:
             if pov_emb.dim() > 2:
                 pov_emb = pov_emb.flatten(start_dim=1)
+            # Ensure dtype matches CLIP projection parameters (for mixed precision training)
+            pov_proj_dtype = next(self.clip_projections.pov_proj.parameters()).dtype
+            pov_emb = pov_emb.to(dtype=pov_proj_dtype)
             pov_proj = self.clip_projections.pov_proj(pov_emb)
             pov_proj = F.normalize(pov_proj, p=2, dim=1)
         else:
