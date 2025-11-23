@@ -137,7 +137,7 @@ class DiscriminatorLoss(LossComponent):
         if discriminator.training:
             discriminator.eval()
         
-        # Note: We need gradients for viability_scores to compute loss gradients
+        # We need gradients for viability_scores to compute loss gradients
         # The discriminator is frozen (requires_grad=False), so no gradients flow through it
         # but the output still needs to be part of the computation graph for loss backprop
         viability_scores = discriminator(generated_latents)  # [B, 1] in [0, 1]

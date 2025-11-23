@@ -414,7 +414,7 @@ class CLIPLoss(LossComponent):
             # Return zero loss connected to computation graph via latent_features
             return (latent_features * 0.0).sum() * 0.0, {}
         
-        # Note: text_emb and pov_emb are pre-computed and may be detached
+        # text_emb and pov_emb are pre-computed and may be detached
         # This is fine - the projections will still compute gradients for their parameters
         # The key is that latent_features has gradients, which will flow through latent_proj
         
@@ -502,7 +502,7 @@ class CLIPLoss(LossComponent):
             # Global alignment (original behavior)
             # Compute similarity matrix
             # latent_proj @ combined_emb.T -> [B, B]
-            # Note: combined_emb may not have gradients (from detached text_emb/pov_emb),
+            # combined_emb may not have gradients (from detached text_emb/pov_emb),
             # but gradients will still flow through latent_proj
             B = latent_proj.shape[0]
             logits = latent_proj @ combined_emb.T / self.temperature  # [B, B]

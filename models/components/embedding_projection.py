@@ -125,7 +125,6 @@ class CLIPEmbeddingToSpatial(BaseComponent):
             "spatial_size": self.spatial_size,
             "combine_method": self.combine_method,
         })
-        # Note: clip_projections is not serialized (loaded from checkpoint)
         return cfg
 
 

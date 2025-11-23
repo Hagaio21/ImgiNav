@@ -51,7 +51,7 @@ unet:
   
   time_dim: 256
   norm_groups: 8          # Standard for 48 channels
-  dropout: 0.1
+  dropout: 0.1            # Applied to conv features only (for regularization)
   
   # CROSS-ATTENTION AT DOWNS AND BOTTLENECK ONLY (memory efficient)
   use_attention: true
@@ -96,8 +96,9 @@ training:
     type: cosine          # This refers to the Learning Rate scheduler, not Noise scheduler
 
   # Classifier-Free Guidance (CFG) for cross-attention conditioning
-  # cfg_dropout_rate: Probability of dropping embeddings during training (0.0 = no dropout, 1.0 = always drop)
-  cfg_dropout_rate: 0.1   # Drop embeddings 10% of the time during training
+  # cfg_dropout_rate: Probability of completely dropping conditioning signal during training (0.0 = no dropout, 1.0 = always drop)
+  # When dropped, text_emb and pov_emb are set to None, resulting in conditioning_signal=None (unconditional training)
+  cfg_dropout_rate: 0.1   # Drop conditioning signal 10% of the time during training (CFG)
   
   # guidance_scale: CFG scale for sampling (1.0 = no CFG, >1.0 = stronger conditioning)
   # Higher values (e.g., 3.0-7.0) typically give better adherence to conditions

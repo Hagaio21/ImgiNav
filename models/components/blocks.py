@@ -67,7 +67,7 @@ def _compute_num_heads(channels, target_heads_per_32=1):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, cond_dim=0):
+    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0):
         super().__init__()
         norm_groups_in = _compute_num_groups(in_ch, norm_groups)
         norm_groups_out = _compute_num_groups(out_ch, norm_groups)
@@ -79,12 +79,6 @@ class ResidualBlock(nn.Module):
         self.dropout1 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
 
         self.time_emb = nn.Linear(time_dim, out_ch)
-        
-        # Optional conditioning embedding
-        if cond_dim > 0:
-            self.cond_emb = nn.Linear(cond_dim, out_ch)
-        else:
-            self.cond_emb = None
 
         self.norm2 = nn.GroupNorm(norm_groups_out, out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
@@ -94,17 +88,13 @@ class ResidualBlock(nn.Module):
 
         self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def forward(self, x, t_emb, cond_emb=None):
+    def forward(self, x, t_emb):
         h = self.act(self.norm1(x))
         h = self.conv1(h)
         h = self.dropout1(h)
 
         t = self.time_emb(t_emb).unsqueeze(-1).unsqueeze(-1)
-        if self.cond_emb is not None and cond_emb is not None:
-            c = self.cond_emb(cond_emb).unsqueeze(-1).unsqueeze(-1)
-            h = h + t + c  # Add both time and condition embeddings
-        else:
-            h = h + t  # Only time embedding (backward compatible)
+        h = h + t  # Add time embedding
 
         h = self.act(self.norm2(h))
         h = self.conv2(h)
@@ -114,51 +104,51 @@ class ResidualBlock(nn.Module):
 
 
 class DownBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, cond_dim=0):
+    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0):
         super().__init__()
         self.res_blocks = nn.ModuleList([
-            ResidualBlock(in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout, cond_dim)
+            ResidualBlock(in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout)
             for i in range(num_res_blocks)
         ])
         self.downsample = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
 
-    def forward(self, x, t_emb, cond_emb=None):
+    def forward(self, x, t_emb):
         for res in self.res_blocks:
-            x = res(x, t_emb, cond_emb)
+            x = res(x, t_emb)
         skip = x
         x = self.downsample(x)
         return x, skip
 
 class UpBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, cond_dim=0):
+    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0):
         super().__init__()
 
         self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
 
         self.res_blocks = nn.ModuleList([
-            ResidualBlock(out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout, cond_dim)
+            ResidualBlock(out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout)
             for i in range(num_res_blocks)
         ])
 
-    def forward(self, x, skip, t_emb, cond_emb=None):
+    def forward(self, x, skip, t_emb):
         x = self.upsample(x)
         x = torch.cat([x, skip], dim=1)
         for res in self.res_blocks:
-            x = res(x, t_emb, cond_emb)
+            x = res(x, t_emb)
         return x
 
 
 class SelfAttentionBlock(nn.Module):
     """
-    Self-attention block for UNet with optional cross-attention support for ControlNet signals.
+    Self-attention block for UNet with optional cross-attention support for conditioning signals.
     Applies self-attention to capture long-range spatial dependencies.
-    Can optionally use cross-attention with ControlNet signals as keys/values.
+    Can optionally use cross-attention with conditioning signals as keys/values.
     
     Args:
         channels: Number of input/output channels
         num_heads: Number of attention heads (default: channels // 32, min 1)
         norm_groups: Number of groups for GroupNorm (default: 8)
-        enable_cross_attention: If True, enables cross-attention with ControlNet signals (default: False)
+        enable_cross_attention: If True, enables cross-attention with conditioning signals (default: False)
     """
     def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False):
         super().__init__()
@@ -166,99 +156,66 @@ class SelfAttentionBlock(nn.Module):
         self.norm_groups = _compute_num_groups(channels, norm_groups)
         self.enable_cross_attention = enable_cross_attention
         
-        # Ensure num_heads divides channels evenly
         if num_heads is None:
             num_heads = _compute_num_heads(channels, target_heads_per_32=1)
         else:
-            # If explicitly provided, ensure it divides channels
             if channels % num_heads != 0:
-                # Find the closest valid num_heads
                 num_heads = _compute_num_heads(channels, target_heads_per_32=1)
         self.num_heads = num_heads
         
-        # GroupNorm + SiLU + Q projection (always needed)
         self.norm = nn.GroupNorm(self.norm_groups, channels)
         self.act = nn.SiLU()
-        
-        # Query projection (always needed)
         self.q_proj = nn.Conv2d(channels, channels, 1)
         
         if enable_cross_attention:
-            # For cross-attention: separate K, V projections for ControlNet signals
-            # ControlNet signals may have different channel dimensions, so we use adaptive projections
-            # We'll project controlnet signals to match channels if needed
-            self.k_proj = nn.Conv2d(channels, channels, 1)  # Will be applied to control signals
-            self.v_proj = nn.Conv2d(channels, channels, 1)  # Will be applied to control signals
-            # Note: If controlnet signals have different channels, we'll create projection on first use
-            # This is stored as a module attribute but initialized lazily
+            self.k_proj = nn.Conv2d(channels, channels, 1)
+            self.v_proj = nn.Conv2d(channels, channels, 1)
             self._ctrl_proj = None
             self._ctrl_proj_channels = None
         else:
-            # For self-attention: QKV projection
             self.qkv = nn.Conv2d(channels, channels * 3, 1)
         
         self.proj = nn.Conv2d(channels, channels, 1)
         
-    def forward(self, x, controlnet_signal=None):
+    def forward(self, x, conditioning_signal=None):
         """
         Args:
             x: Input tensor [B, C, H, W]
-            controlnet_signal: Optional ControlNet signal tensor [B, C_ctrl, H_ctrl, W_ctrl]
+            conditioning_signal: Optional conditioning signal tensor [B, C_cond, H_cond, W_cond]
                              If provided and cross-attention is enabled, uses it for K, V
         
         Returns:
             Output tensor [B, C, H, W]
         """
         B, C, H, W = x.shape
-        
-        # Normalize and activate
         h = self.act(self.norm(x))
+        q = self.q_proj(h)
         
-        # Compute Query from input
-        q = self.q_proj(h)  # [B, C, H, W]
-        
-        if self.enable_cross_attention and controlnet_signal is not None:
-            # Cross-attention: Q from input, K and V from ControlNet signal
-            # Clone controlnet_signal to avoid modifying the original (which is shared across blocks)
-            # This prevents memory accumulation from multiple blocks modifying the same tensor
-            ctrl_signal = controlnet_signal
+        if self.enable_cross_attention and conditioning_signal is not None:
+            cond_signal = conditioning_signal
             
-            # Ensure controlnet_signal has the same spatial dimensions (or can be interpolated)
-            if ctrl_signal.shape[2:] != (H, W):
-                # Interpolate controlnet signal to match spatial dimensions
-                # Use in-place-like operation by reassigning to avoid keeping old tensor
-                ctrl_signal = F.interpolate(
-                    ctrl_signal, size=(H, W), mode='bilinear', align_corners=False
+            if cond_signal.shape[2:] != (H, W):
+                cond_signal = F.interpolate(
+                    cond_signal, size=(H, W), mode='bilinear', align_corners=False
                 )
             
-            # Ensure channel match - if different, use 1x1 conv to project
-            if ctrl_signal.shape[1] != C:
-                # Project controlnet signal to match channels
-                ctrl_in_channels = ctrl_signal.shape[1]
-                if self._ctrl_proj is None or self._ctrl_proj_channels != ctrl_in_channels or self._ctrl_proj.out_channels != C:
-                    # Remove old module if it exists to prevent memory leaks
+            if cond_signal.shape[1] != C:
+                cond_in_channels = cond_signal.shape[1]
+                if self._ctrl_proj is None or self._ctrl_proj_channels != cond_in_channels or self._ctrl_proj.out_channels != C:
                     if hasattr(self, 'ctrl_proj'):
                         delattr(self, 'ctrl_proj')
-                    # Create or recreate projection with the correct input channels
-                    self._ctrl_proj = nn.Conv2d(ctrl_in_channels, C, 1).to(ctrl_signal.device)
-                    self._ctrl_proj_channels = ctrl_in_channels
-                    # Register as a submodule so it's saved/loaded properly
-                    # Use a unique name to avoid conflicts
+                    self._ctrl_proj = nn.Conv2d(cond_in_channels, C, 1).to(cond_signal.device)
+                    self._ctrl_proj_channels = cond_in_channels
                     self.add_module('ctrl_proj', self._ctrl_proj)
-                ctrl_signal = self._ctrl_proj(ctrl_signal)
+                cond_signal = self._ctrl_proj(cond_signal)
             
-            # Compute K, V from controlnet signal
-            k = self.k_proj(ctrl_signal)  # [B, C, H, W]
-            v = self.v_proj(ctrl_signal)  # [B, C, H, W]
-            # Clear ctrl_signal reference to help GC
-            del ctrl_signal
+            k = self.k_proj(cond_signal)
+            v = self.v_proj(cond_signal)
+            del cond_signal
         else:
-            # Self-attention: Q, K, V all from input
-            qkv = self.qkv(h)  # [B, 3*C, H, W]
-            q, k, v = qkv.chunk(3, dim=1)  # Each: [B, C, H, W]
+            qkv = self.qkv(h)
+            q, k, v = qkv.chunk(3, dim=1)
         
-        # Reshape for multi-head attention: [B, C, H, W] -> [B, num_heads, C//num_heads, H*W]
-        # Ensure channels divide evenly by num_heads (should be guaranteed at init, but double-check)
         if C % self.num_heads != 0:
             raise ValueError(
                 f"Channels ({C}) must be divisible by num_heads ({self.num_heads}). "
@@ -266,69 +223,47 @@ class SelfAttentionBlock(nn.Module):
                 f"Model may have been modified incorrectly."
             )
         head_dim = C // self.num_heads
-        q = q.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
-        k = k.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
-        v = v.view(B, self.num_heads, head_dim, H * W)  # [B, num_heads, head_dim, H*W]
+        q = q.view(B, self.num_heads, head_dim, H * W)
+        k = k.view(B, self.num_heads, head_dim, H * W)
+        v = v.view(B, self.num_heads, head_dim, H * W)
         
-        # Transpose for attention computation: [B, num_heads, head_dim, H*W] -> [B, num_heads, H*W, head_dim]
-        q = q.transpose(-2, -1)  # [B, num_heads, H*W, head_dim]
-        k = k.transpose(-2, -1)  # [B, num_heads, H*W, head_dim]
-        v = v.transpose(-2, -1)  # [B, num_heads, H*W, head_dim]
+        q = q.transpose(-2, -1)
+        k = k.transpose(-2, -1)
+        v = v.transpose(-2, -1)
         
-        # Scaled dot-product attention
-        # Attention scores: [B, num_heads, H*W, H*W]
         scale = (head_dim ** -0.5)
-        
-        # Use chunked attention for large sequences to reduce memory
-        # Chunk size: process in chunks to avoid large intermediate tensors
         seq_len = H * W
-        # Dynamically adjust chunk size based on sequence length and batch size
-        # For smaller models or higher resolutions, use smaller chunks
-        # Formula: chunk_size should be small enough that chunk_len * seq_len fits in memory
-        # For batch_size=16, num_heads=4: chunk_size=128 gives ~8MB per chunk
-        # For batch_size=16, num_heads=8: chunk_size=128 gives ~16MB per chunk
+        
         if seq_len <= 64:
-            chunk_size = seq_len  # No chunking needed for very small sequences
+            chunk_size = seq_len
         elif seq_len <= 256:
-            chunk_size = 64  # Very small chunks for medium sequences (16x16) - reduced for memory
+            chunk_size = 64
         else:
-            chunk_size = 32   # Tiny chunks for large sequences (32x32+)
+            chunk_size = 32
         
         if seq_len > chunk_size:
-            # Chunked attention for memory efficiency
             out_chunks = []
-            # Pre-compute k^T once to avoid repeated transpose operations
-            k_t = k.transpose(-2, -1)  # [B, num_heads, head_dim, seq_len]
+            k_t = k.transpose(-2, -1)
             for i in range(0, seq_len, chunk_size):
                 end_idx = min(i + chunk_size, seq_len)
-                q_chunk = q[:, :, i:end_idx, :]  # [B, num_heads, chunk_len, head_dim]
-                
-                # Compute attention scores for this chunk
-                # attn_chunk: [B, num_heads, chunk_len, seq_len]
+                q_chunk = q[:, :, i:end_idx, :]
                 attn_chunk = torch.matmul(q_chunk, k_t) * scale
                 attn_chunk = F.softmax(attn_chunk, dim=-1)
-                
-                # Apply to values
-                out_chunk = torch.matmul(attn_chunk, v)  # [B, num_heads, chunk_len, head_dim]
+                out_chunk = torch.matmul(attn_chunk, v)
                 out_chunks.append(out_chunk)
-                # Clear intermediate tensors to free memory
                 del attn_chunk, q_chunk, out_chunk
             
-            out = torch.cat(out_chunks, dim=2)  # [B, num_heads, seq_len, head_dim]
-            del out_chunks, k_t  # Free memory
+            out = torch.cat(out_chunks, dim=2)
+            del out_chunks, k_t
         else:
-            # Standard attention for small sequences
             attn = torch.matmul(q, k.transpose(-2, -1)) * scale
             attn = F.softmax(attn, dim=-1)
             out = torch.matmul(attn, v)
         
-        # Reshape back: [B, num_heads, H*W, head_dim] -> [B, C, H, W]
-        out = out.transpose(-2, -1).contiguous()  # [B, num_heads, head_dim, H*W]
+        out = out.transpose(-2, -1).contiguous()
         out = out.view(B, C, H, W)
-        
-        # Project and residual connection
         out = self.proj(out)
-        return x + out  # Residual connection
+        return x + out
 
 
 class ResidualBlockWithAttention(nn.Module):
@@ -336,7 +271,7 @@ class ResidualBlockWithAttention(nn.Module):
     Residual block with optional self-attention.
     Similar to ResidualBlock but can include attention after the second conv.
     """
-    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None, cond_dim=0):
+    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None):
         super().__init__()
         norm_groups_in = _compute_num_groups(in_ch, norm_groups)
         norm_groups_out = _compute_num_groups(out_ch, norm_groups)
@@ -348,23 +283,13 @@ class ResidualBlockWithAttention(nn.Module):
         self.dropout1 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
 
         self.time_emb = nn.Linear(time_dim, out_ch)
-        
-        # Optional conditioning embedding
-        if cond_dim > 0:
-            self.cond_emb = nn.Linear(cond_dim, out_ch)
-        else:
-            self.cond_emb = None
 
         self.norm2 = nn.GroupNorm(norm_groups_out, out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
-        
-        # Dropout after second conv
         self.dropout2 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
         
-        # Optional self-attention
         self.use_attention = use_attention
         if use_attention:
-            # Check if cross-attention should be enabled (can be set via config)
             enable_cross_attention = getattr(self, '_enable_cross_attention', False)
             self.attention = SelfAttentionBlock(
                 out_ch, num_heads=attention_heads, norm_groups=norm_groups,
@@ -375,25 +300,20 @@ class ResidualBlockWithAttention(nn.Module):
 
         self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def forward(self, x, t_emb, cond_emb=None, controlnet_signal=None):
+    def forward(self, x, t_emb, conditioning_signal=None):
         h = self.act(self.norm1(x))
         h = self.conv1(h)
         h = self.dropout1(h)
 
         t = self.time_emb(t_emb).unsqueeze(-1).unsqueeze(-1)
-        if self.cond_emb is not None and cond_emb is not None:
-            c = self.cond_emb(cond_emb).unsqueeze(-1).unsqueeze(-1)
-            h = h + t + c  # Add both time and condition embeddings
-        else:
-            h = h + t  # Only time embedding (backward compatible)
+        h = h + t  # Add time embedding
 
         h = self.act(self.norm2(h))
         h = self.conv2(h)
         h = self.dropout2(h)
         
-        # Apply attention if enabled
         if self.use_attention:
-            h = self.attention(h, controlnet_signal=controlnet_signal)
+            h = self.attention(h, conditioning_signal=conditioning_signal)
 
         return h + self.skip(x)
 
@@ -401,12 +321,12 @@ class ResidualBlockWithAttention(nn.Module):
 class DownBlockWithAttention(nn.Module):
     """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, 
-                 use_attention=False, attention_heads=None, cond_dim=0, enable_cross_attention=False):
+                 use_attention=False, attention_heads=None, enable_cross_attention=False):
         super().__init__()
         self.res_blocks = nn.ModuleList([
             ResidualBlockWithAttention(
                 in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
-                use_attention=use_attention, attention_heads=attention_heads, cond_dim=cond_dim
+                use_attention=use_attention, attention_heads=attention_heads
             )
             for i in range(num_res_blocks)
         ])
@@ -417,9 +337,9 @@ class DownBlockWithAttention(nn.Module):
                     res_block.attention.enable_cross_attention = True
         self.downsample = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
 
-    def forward(self, x, t_emb, cond_emb=None, controlnet_signal=None):
+    def forward(self, x, t_emb, conditioning_signal=None):
         for res in self.res_blocks:
-            x = res(x, t_emb, cond_emb, controlnet_signal=controlnet_signal)
+            x = res(x, t_emb, conditioning_signal=conditioning_signal)
         skip = x
         x = self.downsample(x)
         return x, skip
@@ -428,13 +348,13 @@ class DownBlockWithAttention(nn.Module):
 class UpBlockWithAttention(nn.Module):
     """UpBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0,
-                 use_attention=False, attention_heads=None, cond_dim=0, enable_cross_attention=False):
+                 use_attention=False, attention_heads=None, enable_cross_attention=False):
         super().__init__()
         self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
         self.res_blocks = nn.ModuleList([
             ResidualBlockWithAttention(
                 out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
-                use_attention=use_attention, attention_heads=attention_heads, cond_dim=cond_dim
+                use_attention=use_attention, attention_heads=attention_heads
             )
             for i in range(num_res_blocks)
         ])
@@ -444,9 +364,9 @@ class UpBlockWithAttention(nn.Module):
                 if hasattr(res_block, 'attention') and res_block.attention is not None:
                     res_block.attention.enable_cross_attention = True
 
-    def forward(self, x, skip, t_emb, cond_emb=None, controlnet_signal=None):
+    def forward(self, x, skip, t_emb, conditioning_signal=None):
         x = self.upsample(x)
         x = torch.cat([x, skip], dim=1)
         for res in self.res_blocks:
-            x = res(x, t_emb, cond_emb, controlnet_signal=controlnet_signal)
+            x = res(x, t_emb, conditioning_signal=conditioning_signal)
         return x

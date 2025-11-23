@@ -11,7 +11,6 @@ from pathlib import Path
 # Load RGB to class mapping from YAML
 _LOSS_DIR = Path(__file__).parent
 _RGB_CONFIG_PATH = _LOSS_DIR / "rgb_to_class.yaml"
-# Note: Room/scene classification uses sample_type column directly ("room"=0, "scene"=1), no YAML needed
 
 def _load_rgb_to_class():
     """Load RGB to class mapping from YAML file."""
