@@ -86,24 +86,28 @@ class CLIPProjections(BaseComponent):
         
         self._spatial_h = h
         self._spatial_w = w
-        spatial_elements = self.projection_dim * h * w
         
-        # Project global text embedding to spatial [B, projection_dim, H, W]
+        # More efficient approach: first project to projection_dim, then expand spatially
+        # This avoids creating huge Linear layers (projection_dim * H * W can be millions)
+        # Step 1: Project to joint space (projection_dim)
+        # Step 2: Expand to spatial using interpolation or small expansion
+        
+        # Project global text embedding: text_dim -> projection_dim -> spatial
         self.spatial_text_proj = nn.Sequential(
-            nn.Linear(self.text_dim, spatial_elements * 2),
-            nn.LayerNorm(spatial_elements * 2),
+            nn.Linear(self.text_dim, self.projection_dim * 2),
+            nn.LayerNorm(self.projection_dim * 2),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(spatial_elements * 2, spatial_elements)
+            nn.Linear(self.projection_dim * 2, self.projection_dim)
         )
         
-        # Project global POV embedding to spatial [B, projection_dim, H, W]
+        # Project global POV embedding: pov_dim -> projection_dim -> spatial
         self.spatial_pov_proj = nn.Sequential(
-            nn.Linear(self.pov_dim, spatial_elements * 2),
-            nn.LayerNorm(spatial_elements * 2),
+            nn.Linear(self.pov_dim, self.projection_dim * 2),
+            nn.LayerNorm(self.projection_dim * 2),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(spatial_elements * 2, spatial_elements)
+            nn.Linear(self.projection_dim * 2, self.projection_dim)
         )
         
         if device is not None:
@@ -148,18 +152,24 @@ class CLIPProjections(BaseComponent):
             latent_proj = self.latent_proj(latent_features)  # [B, projection_dim, H, W]
             latent_proj = F.normalize(latent_proj, p=2, dim=1)  # Normalize per spatial location
             
-            # Project global conditions to spatial dimensions
+            # Project global conditions to joint space, then expand to spatial dimensions
             text_emb_flat = text_emb.flatten(start_dim=1) if text_emb.dim() > 2 else text_emb
-            text_spatial_flat = self.spatial_text_proj(text_emb_flat)  # [B, projection_dim * H * W]
-            text_spatial = text_spatial_flat.view(B, self.projection_dim, H, W)
+            text_proj = self.spatial_text_proj(text_emb_flat)  # [B, projection_dim]
+            text_proj = F.normalize(text_proj, p=2, dim=1)
+            # Expand to spatial: [B, projection_dim] -> [B, projection_dim, 1, 1] -> [B, projection_dim, H, W]
+            text_spatial = text_proj.unsqueeze(-1).unsqueeze(-1)  # [B, projection_dim, 1, 1]
+            text_spatial = F.interpolate(text_spatial, size=(H, W), mode='bilinear', align_corners=False)  # [B, projection_dim, H, W]
             text_spatial = F.normalize(text_spatial, p=2, dim=1)
             
             if pov_emb is None:
                 combined_emb = text_spatial
             else:
                 pov_emb_flat = pov_emb.flatten(start_dim=1) if pov_emb.dim() > 2 else pov_emb
-                pov_spatial_flat = self.spatial_pov_proj(pov_emb_flat)  # [B, projection_dim * H * W]
-                pov_spatial = pov_spatial_flat.view(B, self.projection_dim, H, W)
+                pov_proj = self.spatial_pov_proj(pov_emb_flat)  # [B, projection_dim]
+                pov_proj = F.normalize(pov_proj, p=2, dim=1)
+                # Expand to spatial: [B, projection_dim] -> [B, projection_dim, 1, 1] -> [B, projection_dim, H, W]
+                pov_spatial = pov_proj.unsqueeze(-1).unsqueeze(-1)  # [B, projection_dim, 1, 1]
+                pov_spatial = F.interpolate(pov_spatial, size=(H, W), mode='bilinear', align_corners=False)  # [B, projection_dim, H, W]
                 pov_spatial = F.normalize(pov_spatial, p=2, dim=1)
                 
                 # Combine text and POV spatially
