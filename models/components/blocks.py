@@ -194,27 +194,33 @@ class SelfAttentionBlock(nn.Module):
         h = self.act(self.norm(x))
         q = self.q_proj(h)
         
-        if self.enable_cross_attention and conditioning_signal is not None:
-            cond_signal = conditioning_signal
-            
-            if cond_signal.shape[2:] != (H, W):
-                cond_signal = F.interpolate(
-                    cond_signal, size=(H, W), mode='bilinear', align_corners=False
-                )
-            
-            if cond_signal.shape[1] != C:
-                if self.ctrl_proj is None:
-                    raise RuntimeError(
-                        f"Conditioning signal has {cond_signal.shape[1]} channels but attention block expects {C} channels. "
-                        f"ctrl_proj was not initialized. Set conditioning_channels={cond_signal.shape[1]} when creating the attention block."
+        if self.enable_cross_attention:
+            if conditioning_signal is not None:
+                # Cross-attention: use conditioning signal for K, V
+                cond_signal = conditioning_signal
+                
+                if cond_signal.shape[2:] != (H, W):
+                    cond_signal = F.interpolate(
+                        cond_signal, size=(H, W), mode='bilinear', align_corners=False
                     )
-                cond_signal = self.ctrl_proj(cond_signal)
-            
-            k = self.k_proj(cond_signal)
-            v = self.v_proj(cond_signal)
-            del cond_signal
+                
+                if cond_signal.shape[1] != C:
+                    if self.ctrl_proj is None:
+                        raise RuntimeError(
+                            f"Conditioning signal has {cond_signal.shape[1]} channels but attention block expects {C} channels. "
+                            f"ctrl_proj was not initialized. Set conditioning_channels={cond_signal.shape[1]} when creating the attention block."
+                        )
+                    cond_signal = self.ctrl_proj(cond_signal)
+                
+                k = self.k_proj(cond_signal)
+                v = self.v_proj(cond_signal)
+                del cond_signal
+            else:
+                # Self-attention fallback: use input for K, V when conditioning_signal is None (CFG dropout)
+                k = self.k_proj(h)
+                v = self.v_proj(h)
         else:
-            # Self-attention: use qkv projection
+            # Standard self-attention: use qkv projection
             qkv = self.qkv(h)
             q, k, v = qkv.chunk(3, dim=1)
         
