@@ -61,21 +61,10 @@ def embed_layouts_with_vae(
     print(f"Column: {column_name}")
     print(f"{'='*60}\n")
     
-    # Load VAE from checkpoint
+    # Load VAE from checkpoint with strict=False to handle spatial projection layer mismatches
+    # We only need encoder/decoder for embedding, not CLIP projections
     print(f"Loading VAE from checkpoint...")
-    checkpoint_data = torch.load(checkpoint_path, map_location="cpu")
-    
-    # Build model from config in checkpoint
-    model_config = checkpoint_data.get("config")
-    if model_config:
-        autoencoder = Autoencoder.from_config(model_config)
-    else:
-        # Fallback: try to load without config (may fail if architecture doesn't match)
-        autoencoder = Autoencoder()
-    
-    # Load state dict with strict=False to ignore spatial projection layers
-    # (we only need encoder for embedding, not CLIP projections)
-    autoencoder.load_state_dict(checkpoint_data["state_dict"], strict=False)
+    autoencoder = Autoencoder.load_checkpoint(checkpoint_path, map_location="cpu", strict=False)
     
     autoencoder = autoencoder.to(device)
     autoencoder.eval()
