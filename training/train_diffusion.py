@@ -1041,8 +1041,13 @@ def main():
             diffusion_cfg = {
                 "autoencoder": config.get("autoencoder"),
                 "unet": config.get("unet", {}),
-                "scheduler": config.get("scheduler", {})
+                "scheduler": config.get("scheduler", {}),
+                "embedding_projection": config.get("embedding_projection")
             }
+        else:
+            # Ensure embedding_projection is included if it exists at top level
+            if "embedding_projection" not in diffusion_cfg and "embedding_projection" in config:
+                diffusion_cfg["embedding_projection"] = config.get("embedding_projection")
         
         # Add scale_factor if it was calculated or provided
         if scale_factor is not None:
