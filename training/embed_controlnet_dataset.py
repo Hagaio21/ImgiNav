@@ -38,19 +38,7 @@ def embed_layouts_with_vae(
     num_workers=8,
     device="cuda"
 ):
-    """
-    Embed layouts using VAE and update manifest.
-    
-    Args:
-        checkpoint_path: Path to VAE checkpoint
-        manifest_path: Input manifest path
-        output_manifest_path: Output manifest path (can be same as input)
-        latent_dir: Directory to save latents
-        column_name: Column name in manifest (e.g., "latent_path_vae_clip")
-        batch_size: Batch size for encoding
-        num_workers: Number of workers
-        device: Device to use
-    """
+
     print(f"\n{'='*60}")
     print(f"Embedding layouts with VAE")
     print(f"{'='*60}")

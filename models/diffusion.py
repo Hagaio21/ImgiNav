@@ -65,7 +65,59 @@ class DiffusionModel(BaseModel):
         else:
             raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config")
 
+        # Build embedding projection
+        embedding_proj_cfg = self._init_kwargs.get("embedding_projection", None)
+        self.embedding_proj = None
+        conditioning_channels = None
+        
+        if embedding_proj_cfg:
+            if "output_channels" not in embedding_proj_cfg:
+                embedding_proj_cfg["output_channels"] = unet_cfg.get("base_channels", 96)
+            conditioning_channels = embedding_proj_cfg.get("output_channels")
+            
+            # Load CLIP projections from VAE if using CLIPEmbeddingToSpatial
+            embedding_proj_type = embedding_proj_cfg.get("type", "EmbeddingToSpatial")
+            if embedding_proj_type == "CLIPEmbeddingToSpatial":
+                if not ae_cfg or not ae_cfg.get("checkpoint"):
+                    raise ValueError(
+                        "CLIPEmbeddingToSpatial requires autoencoder.checkpoint to load CLIP projections. "
+                        "This experiment requires CLIP projections from the VAE."
+                    )
+                
+                try:
+                    autoencoder = Autoencoder.load_checkpoint(ae_cfg.get("checkpoint"), map_location="cpu")
+                    if not hasattr(autoencoder, 'clip_projections') or autoencoder.clip_projections is None:
+                        raise ValueError(
+                            f"VAE checkpoint {ae_cfg.get('checkpoint')} does not have CLIP projections. "
+                            "This experiment requires a VAE trained with CLIP projections."
+                        )
+                    embedding_proj_cfg["clip_projections"] = autoencoder.clip_projections
+                    print("✓ Loaded CLIP projections from VAE checkpoint for embedding projection")
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to load CLIP projections from VAE checkpoint: {e}\n"
+                        "This experiment requires CLIP projections. Cannot proceed without them."
+                    ) from e
+            
+            # Create embedding projection
+            if embedding_proj_type == "CLIPEmbeddingToSpatial":
+                self.embedding_proj = CLIPEmbeddingToSpatial.from_config(embedding_proj_cfg)
+                # Verify CLIP projections are actually set
+                if not hasattr(self.embedding_proj, 'clip_projections') or self.embedding_proj.clip_projections is None:
+                    raise RuntimeError(
+                        "CLIPEmbeddingToSpatial was created but clip_projections is None. "
+                        "This experiment requires CLIP projections to work."
+                    )
+                print("✓ CLIPEmbeddingToSpatial initialized with CLIP projections")
+            else:
+                self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
+        
+        # Build UNet
         unet_type = unet_cfg.get("type", "").lower()
+        if conditioning_channels is not None and unet_cfg.get("enable_cross_attention", False):
+            unet_cfg = unet_cfg.copy()
+            unet_cfg["conditioning_channels"] = conditioning_channels
+        
         if unet_type in ("dualunet", "dual_unet"):
             self.unet = DualUNet.from_config(unet_cfg)
         elif unet_type in ("unetwithattention", "unet_with_attention"):
@@ -73,8 +125,7 @@ class DiffusionModel(BaseModel):
         else:
             self.unet = Unet.from_config(unet_cfg)
         
-        self._latent_clamp_min = self._init_kwargs.get("latent_clamp_min", -6.0)
-        self._latent_clamp_max = self._init_kwargs.get("latent_clamp_max", 6.0)
+        # Freeze UNet if requested
         if unet_cfg.get("frozen", False):
             self.unet.freeze()
         if unet_cfg.get("freeze_downblocks", False):
@@ -85,42 +136,15 @@ class DiffusionModel(BaseModel):
         if freeze_blocks:
             self.unet.freeze_blocks(freeze_blocks)
 
+        # Build scheduler
         sched_type = sched_cfg.get("type", "CosineScheduler")
         if sched_type not in SCHEDULER_REGISTRY:
             raise ValueError(f"Unknown scheduler: {sched_type}")
         self.scheduler = SCHEDULER_REGISTRY[sched_type].from_config(sched_cfg)
         
         self.scale_factor = self._init_kwargs.get("scale_factor", 1.0)
-        
-        embedding_proj_cfg = self._init_kwargs.get("embedding_projection", None)
-        if embedding_proj_cfg:
-            embedding_proj_type = embedding_proj_cfg.get("type", "EmbeddingToSpatial")
-            
-            if "output_channels" not in embedding_proj_cfg:
-                embedding_proj_cfg["output_channels"] = unet_cfg.get("base_channels", 96)
-            
-            if embedding_proj_type == "CLIPEmbeddingToSpatial":
-                clip_projections = None
-                if ae_cfg and ae_cfg.get("checkpoint"):
-                    try:
-                        autoencoder = Autoencoder.load_checkpoint(ae_cfg.get("checkpoint"), map_location="cpu")
-                        if hasattr(autoencoder, 'clip_projections') and autoencoder.clip_projections is not None:
-                            clip_projections = autoencoder.clip_projections
-                            print("Loaded CLIP projections from VAE checkpoint for embedding projection")
-                    except Exception as e:
-                        print(f"Warning: Could not load CLIP projections from VAE: {e}")
-                        print("  Falling back to regular EmbeddingToSpatial")
-                        embedding_proj_type = "EmbeddingToSpatial"
-                
-                if clip_projections is not None:
-                    embedding_proj_cfg["clip_projections"] = clip_projections
-                    self.embedding_proj = CLIPEmbeddingToSpatial.from_config(embedding_proj_cfg)
-                else:
-                    self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
-            else:
-                self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
-        else:
-            self.embedding_proj = None
+        self._latent_clamp_min = self._init_kwargs.get("latent_clamp_min", -6.0)
+        self._latent_clamp_max = self._init_kwargs.get("latent_clamp_max", 6.0)
         
         self._write_model_statistics()
 
@@ -165,17 +189,15 @@ class DiffusionModel(BaseModel):
             warnings.warn(f"Failed to write model statistics: {e}")
 
     def forward(self, x0_or_latents, t, cond=None, noise=None, text_emb=None, pov_emb=None):
-        """
-        Forward diffusion training step.
+        # Validate CLIP projections are being used if configured
+        if self.embedding_proj is not None:
+            if isinstance(self.embedding_proj, CLIPEmbeddingToSpatial):
+                if not hasattr(self.embedding_proj, 'clip_projections') or self.embedding_proj.clip_projections is None:
+                    raise RuntimeError(
+                        "CLIPEmbeddingToSpatial is configured but clip_projections is None. "
+                        "This experiment requires CLIP projections. Cannot proceed."
+                    )
         
-        Args:
-            x0_or_latents: Either images (if encoder available) or latents (if decoder-only)
-            t: Timestep tensor
-            cond: Optional conditioning
-            noise: Optional noise tensor
-            text_emb: Optional text/graph embeddings [B, text_dim] - will be converted to spatial features if embedding_proj is set
-            pov_emb: Optional POV embeddings [B, pov_dim] - will be converted to spatial features if embedding_proj is set
-        """
         if self.embedding_proj is not None and (text_emb is not None or pov_emb is not None):
             conditioning_signal = self.embedding_proj(text_emb, pov_emb)
         else:

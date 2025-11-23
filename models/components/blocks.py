@@ -150,7 +150,7 @@ class SelfAttentionBlock(nn.Module):
         norm_groups: Number of groups for GroupNorm (default: 8)
         enable_cross_attention: If True, enables cross-attention with conditioning signals (default: False)
     """
-    def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False):
+    def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False, conditioning_channels=None):
         super().__init__()
         self.channels = channels
         self.norm_groups = _compute_num_groups(channels, norm_groups)
@@ -170,8 +170,11 @@ class SelfAttentionBlock(nn.Module):
         if enable_cross_attention:
             self.k_proj = nn.Conv2d(channels, channels, 1)
             self.v_proj = nn.Conv2d(channels, channels, 1)
-            self._ctrl_proj = None
-            self._ctrl_proj_channels = None
+            # Initialize ctrl_proj if conditioning_channels is provided and different from channels
+            if conditioning_channels is not None and conditioning_channels != channels:
+                self.ctrl_proj = nn.Conv2d(conditioning_channels, channels, 1)
+            else:
+                self.ctrl_proj = None
         else:
             self.qkv = nn.Conv2d(channels, channels * 3, 1)
         
@@ -200,23 +203,18 @@ class SelfAttentionBlock(nn.Module):
                 )
             
             if cond_signal.shape[1] != C:
-                cond_in_channels = cond_signal.shape[1]
-                # Initialize _ctrl_proj if it doesn't exist (e.g., if enable_cross_attention was set dynamically)
-                if not hasattr(self, '_ctrl_proj'):
-                    self._ctrl_proj = None
-                    self._ctrl_proj_channels = None
-                if self._ctrl_proj is None or self._ctrl_proj_channels != cond_in_channels or self._ctrl_proj.out_channels != C:
-                    if hasattr(self, 'ctrl_proj'):
-                        delattr(self, 'ctrl_proj')
-                    self._ctrl_proj = nn.Conv2d(cond_in_channels, C, 1).to(cond_signal.device)
-                    self._ctrl_proj_channels = cond_in_channels
-                    self.add_module('ctrl_proj', self._ctrl_proj)
-                cond_signal = self._ctrl_proj(cond_signal)
+                if self.ctrl_proj is None:
+                    raise RuntimeError(
+                        f"Conditioning signal has {cond_signal.shape[1]} channels but attention block expects {C} channels. "
+                        f"ctrl_proj was not initialized. Set conditioning_channels={cond_signal.shape[1]} when creating the attention block."
+                    )
+                cond_signal = self.ctrl_proj(cond_signal)
             
             k = self.k_proj(cond_signal)
             v = self.v_proj(cond_signal)
             del cond_signal
         else:
+            # Self-attention: use qkv projection
             qkv = self.qkv(h)
             q, k, v = qkv.chunk(3, dim=1)
         
@@ -275,7 +273,7 @@ class ResidualBlockWithAttention(nn.Module):
     Residual block with optional self-attention.
     Similar to ResidualBlock but can include attention after the second conv.
     """
-    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None):
+    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
         super().__init__()
         norm_groups_in = _compute_num_groups(in_ch, norm_groups)
         norm_groups_out = _compute_num_groups(out_ch, norm_groups)
@@ -294,10 +292,10 @@ class ResidualBlockWithAttention(nn.Module):
         
         self.use_attention = use_attention
         if use_attention:
-            enable_cross_attention = getattr(self, '_enable_cross_attention', False)
             self.attention = SelfAttentionBlock(
                 out_ch, num_heads=attention_heads, norm_groups=norm_groups,
-                enable_cross_attention=enable_cross_attention
+                enable_cross_attention=enable_cross_attention,
+                conditioning_channels=conditioning_channels
             )
         else:
             self.attention = None
@@ -325,20 +323,17 @@ class ResidualBlockWithAttention(nn.Module):
 class DownBlockWithAttention(nn.Module):
     """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, 
-                 use_attention=False, attention_heads=None, enable_cross_attention=False):
+                 use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
         super().__init__()
         self.res_blocks = nn.ModuleList([
             ResidualBlockWithAttention(
                 in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
-                use_attention=use_attention, attention_heads=attention_heads
+                use_attention=use_attention, attention_heads=attention_heads,
+                enable_cross_attention=enable_cross_attention,
+                conditioning_channels=conditioning_channels
             )
             for i in range(num_res_blocks)
         ])
-        # Set cross-attention flag on attention blocks
-        if enable_cross_attention:
-            for res_block in self.res_blocks:
-                if hasattr(res_block, 'attention') and res_block.attention is not None:
-                    res_block.attention.enable_cross_attention = True
         self.downsample = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
 
     def forward(self, x, t_emb, conditioning_signal=None):
@@ -352,21 +347,18 @@ class DownBlockWithAttention(nn.Module):
 class UpBlockWithAttention(nn.Module):
     """UpBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0,
-                 use_attention=False, attention_heads=None, enable_cross_attention=False):
+                 use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
         super().__init__()
         self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
         self.res_blocks = nn.ModuleList([
             ResidualBlockWithAttention(
                 out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout,
-                use_attention=use_attention, attention_heads=attention_heads
+                use_attention=use_attention, attention_heads=attention_heads,
+                enable_cross_attention=enable_cross_attention,
+                conditioning_channels=conditioning_channels
             )
             for i in range(num_res_blocks)
         ])
-        # Set cross-attention flag on attention blocks
-        if enable_cross_attention:
-            for res_block in self.res_blocks:
-                if hasattr(res_block, 'attention') and res_block.attention is not None:
-                    res_block.attention.enable_cross_attention = True
 
     def forward(self, x, skip, t_emb, conditioning_signal=None):
         x = self.upsample(x)
