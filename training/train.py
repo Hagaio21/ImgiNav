@@ -99,6 +99,95 @@ def compute_latent_statistics(all_latents):
     return stats
 
 
+def save_vae_metadata(output_dir, exp_name, latent_stats):
+    """
+    Save VAE metadata file with latent statistics for scale_factor and clamp values.
+    
+    Args:
+        output_dir: Output directory path
+        exp_name: Experiment name
+        latent_stats: Dictionary with latent statistics (from compute_latent_statistics)
+    """
+    if not latent_stats or len(latent_stats) == 0:
+        return
+    
+    import json
+    import numpy as np
+    
+    # Extract statistics
+    latent_std = latent_stats.get("LatentStats_Std", None)
+    latent_mean = latent_stats.get("LatentStats_Mean", 0.0)
+    latent_min = latent_stats.get("LatentStats_Min", None)
+    latent_max = latent_stats.get("LatentStats_Max", None)
+    
+    # Calculate scale_factor (1.0 / std to normalize to unit variance)
+    scale_factor = 1.0 / latent_std if latent_std and latent_std > 0 else 1.0
+    
+    # Calculate clamp values (based on std: typically ±6σ covers 99.7% of data)
+    # Or use actual min/max if available
+    if latent_min is not None and latent_max is not None:
+        # Use actual min/max with some margin
+        clamp_min = latent_min - 0.5  # Small margin
+        clamp_max = latent_max + 0.5  # Small margin
+    else:
+        # Fallback to std-based clamping (±6σ)
+        clamp_min = -6.0
+        clamp_max = 6.0
+    
+    # Extract per-channel stats if available
+    per_channel_mean = None
+    per_channel_std = None
+    per_channel_min = None
+    per_channel_max = None
+    
+    if "LatentStats_MeanPerCh" in latent_stats:
+        per_channel_mean = json.loads(latent_stats["LatentStats_MeanPerCh"])
+    if "LatentStats_StdPerCh" in latent_stats:
+        per_channel_std = json.loads(latent_stats["LatentStats_StdPerCh"])
+    if "LatentStats_MinPerCh" in latent_stats:
+        per_channel_min = json.loads(latent_stats["LatentStats_MinPerCh"])
+    if "LatentStats_MaxPerCh" in latent_stats:
+        per_channel_max = json.loads(latent_stats["LatentStats_MaxPerCh"])
+    
+    # Build metadata dictionary
+    metadata = {
+        "experiment_name": exp_name,
+        "latent_statistics": {
+            "global": {
+                "mean": float(latent_mean),
+                "std": float(latent_std) if latent_std else None,
+                "min": float(latent_min) if latent_min is not None else None,
+                "max": float(latent_max) if latent_max is not None else None,
+            },
+            "per_channel": {
+                "mean": per_channel_mean,
+                "std": per_channel_std,
+                "min": per_channel_min,
+                "max": per_channel_max,
+            } if per_channel_mean is not None else None,
+        },
+        "recommended_values": {
+            "scale_factor": float(scale_factor),
+            "latent_clamp_min": float(clamp_min),
+            "latent_clamp_max": float(clamp_max),
+        },
+        "notes": {
+            "scale_factor": "1.0 / std, normalizes latents to unit variance",
+            "latent_clamp_min": "Minimum value for clamping latents during diffusion",
+            "latent_clamp_max": "Maximum value for clamping latents during diffusion",
+        }
+    }
+    
+    # Save metadata file
+    metadata_path = output_dir / f"{exp_name}_metadata.json"
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    print(f"  Saved VAE metadata: {metadata_path}")
+    print(f"    Scale factor: {scale_factor:.6f}")
+    print(f"    Clamp range: [{clamp_min:.2f}, {clamp_max:.2f}]")
+
+
 def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=False, collect_latents=False):
     """Train for one epoch."""
     model.train()
@@ -755,6 +844,193 @@ def main():
         plt.close()
         print(f"  Saved loss curves plot: {plot_path}")
     
+    def _plot_all_loss_components(df, output_dir, exp_name):
+        """Plot all loss components (MSE, CLIP, KLD, etc.) from CompositeLoss."""
+        sns.set_style("darkgrid")
+        
+        # Find all loss component columns (excluding total loss and special columns)
+        exclude_patterns = ['loss', 'epoch', 'LatentStd_', 'KLD']  # We plot KLD separately
+        loss_components = []
+        
+        # Get all columns that look like loss components
+        for col in df.columns:
+            if col.startswith('train_') or col.startswith('val_'):
+                # Extract the loss name (remove train_/val_ prefix)
+                loss_name = col.replace('train_', '').replace('val_', '')
+                # Skip if it's total loss or matches exclude patterns
+                if loss_name == 'loss':
+                    continue
+                if any(pattern in loss_name for pattern in exclude_patterns):
+                    continue
+                # Skip if it's a per-class MSE (we'll handle those separately)
+                if '_' in loss_name and loss_name.startswith('MSE_'):
+                    continue
+                if loss_name not in loss_components:
+                    loss_components.append(loss_name)
+        
+        if len(loss_components) == 0:
+            return  # No loss components to plot
+        
+        epochs = df['epoch'].values
+        
+        # Create figure with subplots (arrange in grid)
+        n_components = len(loss_components)
+        n_cols = min(3, n_components)
+        n_rows = (n_components + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        fig.suptitle(f'Loss Components - {exp_name}', fontsize=16, fontweight='bold')
+        
+        # Flatten axes if needed
+        if n_components == 1:
+            axes = [axes]
+        elif n_rows == 1:
+            axes = axes if isinstance(axes, list) else [axes]
+        else:
+            axes = axes.flatten()
+        
+        # Color palette for different components
+        colors = plt.cm.tab10(range(n_components))
+        
+        for idx, loss_name in enumerate(loss_components):
+            ax = axes[idx] if n_components > 1 else axes[0]
+            
+            train_col = f'train_{loss_name}'
+            val_col = f'val_{loss_name}'
+            
+            has_train = train_col in df.columns
+            has_val = val_col in df.columns
+            
+            if has_train:
+                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=2, 
+                       color=colors[idx], alpha=0.8)
+            
+            if has_val:
+                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=2, 
+                       color=colors[idx], alpha=0.8, linestyle='--')
+            
+            ax.set_xlabel('Epoch', fontsize=10)
+            ax.set_ylabel('Loss', fontsize=10)
+            ax.set_title(loss_name, fontsize=12, fontweight='bold')
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.3)
+            
+            # Use log scale if values span multiple orders of magnitude
+            if has_train and len(df) > 1:
+                max_val = df[train_col].max()
+                min_val = df[train_col].min()
+                if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                    ax.set_yscale('log')
+        
+        # Hide unused subplots
+        for idx in range(n_components, len(axes)):
+            axes[idx].set_visible(False)
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = output_dir / f'{exp_name}_loss_components.png'
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.close()
+        print(f"  Saved loss components plot: {plot_path}")
+    
+    def _plot_mse_losses(df, output_dir, exp_name):
+        """Plot MSE losses (including ColorWeightedMSE and per-class MSE if available)."""
+        sns.set_style("darkgrid")
+        
+        # Find all MSE-related columns
+        mse_columns = [col for col in df.columns if 'MSE' in col and ('train_' in col or 'val_' in col)]
+        
+        if len(mse_columns) == 0:
+            return  # No MSE losses to plot
+        
+        epochs = df['epoch'].values
+        
+        # Separate into main MSE and per-class MSE
+        main_mse = [col for col in mse_columns if '_' not in col.replace('train_', '').replace('val_', '').replace('MSE_', '')]
+        per_class_mse = [col for col in mse_columns if col not in main_mse]
+        
+        # Plot main MSE losses
+        if main_mse:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+            fig.suptitle(f'MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
+            
+            for col in main_mse:
+                is_train = col.startswith('train_')
+                label = col.replace('train_', '').replace('val_', '')
+                color = 'blue' if is_train else 'red'
+                linestyle = '-' if is_train else '--'
+                marker = 'o' if is_train else 's'
+                
+                ax.plot(epochs, df[col], label=label, linewidth=2, marker=marker, markersize=3, 
+                       color=color, alpha=0.8, linestyle=linestyle)
+            
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('MSE Loss', fontsize=12)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plot_path = output_dir / f'{exp_name}_mse_losses.png'
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+            plt.close()
+            print(f"  Saved MSE losses plot: {plot_path}")
+        
+        # Plot per-class MSE if available (e.g., from ClassWeightedMSELoss)
+        if per_class_mse:
+            # Group by class
+            classes = set()
+            for col in per_class_mse:
+                parts = col.replace('train_', '').replace('val_', '').split('_')
+                if len(parts) >= 3:  # MSE_rgb_classname
+                    class_name = '_'.join(parts[2:])
+                    classes.add(class_name)
+            
+            if classes:
+                n_classes = len(classes)
+                n_cols = min(3, n_classes)
+                n_rows = (n_classes + n_cols - 1) // n_cols
+                
+                fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+                fig.suptitle(f'Per-Class MSE Losses - {exp_name}', fontsize=16, fontweight='bold')
+                
+                if n_classes == 1:
+                    axes = [axes]
+                elif n_rows == 1:
+                    axes = axes if isinstance(axes, list) else [axes]
+                else:
+                    axes = axes.flatten()
+                
+                for idx, class_name in enumerate(sorted(classes)):
+                    ax = axes[idx]
+                    
+                    train_col = f'train_MSE_rgb_{class_name}'
+                    val_col = f'val_MSE_rgb_{class_name}'
+                    
+                    if train_col in df.columns:
+                        ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=2, 
+                               color='blue', alpha=0.8)
+                    
+                    if val_col in df.columns:
+                        ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=2, 
+                               color='red', alpha=0.8, linestyle='--')
+                    
+                    ax.set_xlabel('Epoch', fontsize=10)
+                    ax.set_ylabel('MSE Loss', fontsize=10)
+                    ax.set_title(f'{class_name}', fontsize=12, fontweight='bold')
+                    ax.legend(fontsize=9)
+                    ax.grid(True, alpha=0.3)
+                
+                # Hide unused subplots
+                for idx in range(n_classes, len(axes)):
+                    axes[idx].set_visible(False)
+                
+                plt.tight_layout()
+                plot_path = output_dir / f'{exp_name}_mse_per_class.png'
+                plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+                plt.close()
+                print(f"  Saved per-class MSE losses plot: {plot_path}")
+    
     # Check if model is VAE (variational encoder) to enable latent statistics collection
     is_vae = hasattr(model.encoder, 'variational') and model.encoder.variational
     
@@ -801,6 +1077,13 @@ def main():
                 best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
                 model.save_checkpoint(best_path, include_config=True)
                 print(f"  Saved best checkpoint (val_loss: {best_val_loss:.6f})")
+                
+                # Save VAE metadata with latent statistics if available
+                if is_vae and val_logs:
+                    # Extract latent statistics from validation logs
+                    latent_stats = {k: v for k, v in val_logs.items() if k.startswith("LatentStats_")}
+                    if latent_stats:
+                        save_vae_metadata(output_dir, exp_name, latent_stats)
             else:
                 epochs_without_improvement += 1
                 if early_stopping_patience:
@@ -840,6 +1123,12 @@ def main():
         # Plot main loss curves (always plot if training loss exists)
         _plot_loss_curves(df, output_dir, exp_name)
         
+        # Plot all loss components (MSE, CLIP, etc.)
+        _plot_all_loss_components(df, output_dir, exp_name)
+        
+        # Plot MSE losses (including ColorWeightedMSE and per-class if available)
+        _plot_mse_losses(df, output_dir, exp_name)
+        
         # Plot latent statistics if available (from LatentStandardizationLoss)
         _plot_latent_statistics(df, output_dir, exp_name)
         
@@ -872,6 +1161,16 @@ def main():
     print(f"\nTraining complete!")
     print(f"  Checkpoints (with config): {output_dir}/{exp_name}_checkpoint_*.pt")
     print(f"  Metrics CSV: {metrics_csv_path}")
+    
+    # Save final VAE metadata if not already saved (use final validation stats)
+    if is_vae and val_loader:
+        final_val_loss, final_val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp, collect_latents=True)
+        latent_stats = {k: v for k, v in final_val_logs.items() if k.startswith("LatentStats_")}
+        if latent_stats:
+            # Check if metadata already exists (from best checkpoint save)
+            metadata_path = output_dir / f"{exp_name}_metadata.json"
+            if not metadata_path.exists():
+                save_vae_metadata(output_dir, exp_name, latent_stats)
 
 
 if __name__ == "__main__":
