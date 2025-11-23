@@ -33,7 +33,8 @@ from training.utils import (
     create_grad_scaler,
     save_metrics_csv,
 )
-from training.plotting_utils import plot_diffusion_metrics_epochs
+from training.plotting_utils import plot_diffusion_metrics_epochs, plot_evaluation_metrics
+from training.evaluation_metrics import compute_evaluation_metrics
 from models.diffusion import DiffusionModel
 from models.losses.base_loss import LOSS_REGISTRY
 
@@ -158,9 +159,11 @@ def calculate_scale_factor_from_dataset(dataset, num_samples=100, seed=42):
     return scale_factor
 
 
+
+
 def compute_loss(
     model, batch, latents, t, noise, cond, loss_fn, 
-    use_amp=False, device_obj=None, cfg_dropout_rate=0.0
+    use_amp=False, device_obj=None, cfg_dropout_rate=0.0, compute_eval_metrics=False, taxonomy=None
 ):
     """
     Compute loss using CompositeLoss from config.
@@ -183,6 +186,7 @@ def compute_loss(
         use_amp: Whether to use mixed precision
         device_obj: Device object
         cfg_dropout_rate: CFG dropout rate for conditioning
+        compute_eval_metrics: Whether to compute evaluation metrics (CLIP Score, FID, mIoU) (default: False)
     
     Returns:
         (total_loss, logs_dict)
@@ -190,6 +194,10 @@ def compute_loss(
     # Extract embeddings if available (for cross-attention conditioning)
     text_emb = batch.get("text_emb", None)
     pov_emb = batch.get("pov_emb", None)
+    
+    # Store original embeddings for evaluation metrics (before CFG dropout and flattening)
+    text_emb_orig = text_emb.clone() if text_emb is not None else None
+    pov_emb_orig = pov_emb.clone() if pov_emb is not None else None
     
     # Ensure embeddings are 1D (flatten if needed)
     if text_emb is not None:
@@ -199,16 +207,42 @@ def compute_loss(
         if pov_emb.dim() > 1:
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
     
+    # Also flatten original embeddings for evaluation metrics
+    if text_emb_orig is not None and text_emb_orig.dim() > 1:
+        text_emb_orig = text_emb_orig.flatten(start_dim=1)
+    if pov_emb_orig is not None and pov_emb_orig.dim() > 1:
+        pov_emb_orig = pov_emb_orig.flatten(start_dim=1)
+    
     # Apply CFG dropout for conditioning signal C (randomly drop entire conditioning with cfg_dropout_rate probability)
     # C = [c_pov, c_graph] but CFG doesn't care about structure - it drops the entire conditioning signal
     # This teaches the model to work both with and without cross-attention conditioning
+    cfg_dropped = False
     if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
         if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
             text_emb = None  # Drop entire conditioning signal C for CFG training
             pov_emb = None
+            cfg_dropped = True
     
     # Forward pass through model
     outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+    
+    # Store latents for evaluation metrics (if needed)
+    pred_latents = None
+    if compute_eval_metrics and not cfg_dropped:
+        with torch.no_grad():
+            # Get noisy latents from scheduler
+            noisy_latents = outputs.get("noisy_latent", None)
+            if noisy_latents is None:
+                # Reconstruct noisy latents if not in outputs
+                alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+                alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+                noisy_latents = alpha_bar.sqrt() * latents + (1 - alpha_bar).sqrt() * noise
+            
+            # Predict clean latents: x0 = (x_t - sqrt(1 - alpha_bar) * epsilon_pred) / sqrt(alpha_bar)
+            alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+            alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)
+            pred_latents = (noisy_latents - (1 - alpha_bar).sqrt() * outputs["pred_noise"]) / alpha_bar.sqrt().clamp(min=1e-8)
+            pred_latents = torch.clamp(pred_latents, -6.0, 6.0)
     
     # Prepare preds dict for loss computation
     preds = {
@@ -228,6 +262,15 @@ def compute_loss(
             total_loss, logs = loss_fn(preds, targets)
     else:
         total_loss, logs = loss_fn(preds, targets)
+    
+    # Store latents for evaluation metrics if requested and conditions weren't dropped
+    # Note: These metrics require decoded images, so they're computed in eval_epoch
+    if compute_eval_metrics and not cfg_dropped and pred_latents is not None:
+        # Store in outputs dict (will be extracted in eval_epoch)
+        outputs["pred_latents"] = pred_latents
+        outputs["gt_latents"] = latents
+        outputs["text_emb_orig"] = text_emb_orig
+        outputs["pov_emb_orig"] = pov_emb_orig
     
     return total_loss, logs
 
@@ -316,11 +359,14 @@ def train_epoch(
         # Scale loss by 1/gradient_accumulation_steps to maintain effective learning rate
         loss_scale = 1.0 / gradient_accumulation_steps
         
+        # Don't compute eval metrics during training (too expensive)
+        # They're computed during evaluation instead
+        
         if use_amp and device_obj.type == "cuda":
             with torch.amp.autocast('cuda'):
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, cfg_dropout_rate
+                    use_amp, device_obj, cfg_dropout_rate, compute_eval_metrics=False
                 )
                 # Scale loss for gradient accumulation
                 total_loss_val = total_loss_val * loss_scale
@@ -360,7 +406,7 @@ def train_epoch(
         else:
             total_loss_val, logs = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
-                use_amp, device_obj, cfg_dropout_rate
+                use_amp, device_obj, cfg_dropout_rate, compute_eval_metrics=False
             )
             # Scale loss for gradient accumulation
             total_loss_val = total_loss_val * loss_scale
@@ -415,7 +461,7 @@ def train_epoch(
 
 def eval_epoch(
     model, dataloader, scheduler, loss_fn, 
-    device, use_amp=False
+    device, use_amp=False, taxonomy=None, compute_eval_metrics=True
 ):
     """Evaluate for one epoch using CompositeLoss."""
     model.eval()
@@ -453,18 +499,89 @@ def eval_epoch(
                 with torch.amp.autocast('cuda'):
                     total_loss_val, logs = compute_loss(
                         model, batch, latents, t, noise, cond, loss_fn,
-                        use_amp, device_obj, cfg_dropout_rate=0.0
+                        use_amp, device_obj, cfg_dropout_rate=0.0, 
+                        compute_eval_metrics=compute_eval_metrics, taxonomy=taxonomy
                     )
             else:
                 total_loss_val, logs = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, cfg_dropout_rate=0.0
+                    use_amp, device_obj, cfg_dropout_rate=0.0,
+                    compute_eval_metrics=compute_eval_metrics, taxonomy=taxonomy
                 )
             
             batch_size = latents.shape[0]
             loss_val = total_loss_val.item()
             total_loss += loss_val * batch_size
             total_samples += batch_size
+            
+            # Compute evaluation metrics if requested (only on first batch to avoid overhead)
+            if compute_eval_metrics and batch_idx == 0:
+                try:
+                    with torch.no_grad():
+                        # Re-compute forward pass to get latents (or extract from outputs if stored)
+                        # For efficiency, only compute on a small subset
+                        eval_batch_size = min(4, batch_size)
+                        
+                        # Get latents for evaluation subset
+                        eval_latents = latents[:eval_batch_size]
+                        eval_t = t[:eval_batch_size]
+                        eval_noise = noise[:eval_batch_size]
+                        eval_text_emb = batch.get("text_emb", None)
+                        eval_pov_emb = batch.get("pov_emb", None)
+                        
+                        if eval_text_emb is not None:
+                            eval_text_emb = eval_text_emb[:eval_batch_size]
+                            if eval_text_emb.dim() > 1:
+                                eval_text_emb = eval_text_emb.flatten(start_dim=1)
+                        if eval_pov_emb is not None:
+                            eval_pov_emb = eval_pov_emb[:eval_batch_size]
+                            if eval_pov_emb.dim() > 1:
+                                eval_pov_emb = eval_pov_emb.flatten(start_dim=1)
+                        
+                        # Forward pass to get predicted latents
+                        eval_outputs = model(eval_latents, eval_t, cond=None, noise=eval_noise, 
+                                           text_emb=eval_text_emb, pov_emb=eval_pov_emb)
+                        
+                        # Predict clean latents
+                        alpha_bars = model.scheduler.alpha_bars.to(device_obj)
+                        alpha_bar = alpha_bars[eval_t].view(-1, 1, 1, 1)
+                        noisy_latents_eval = alpha_bar.sqrt() * eval_latents + (1 - alpha_bar).sqrt() * eval_noise
+                        pred_latents_eval = (noisy_latents_eval - (1 - alpha_bar).sqrt() * eval_outputs["pred_noise"]) / alpha_bar.sqrt().clamp(min=1e-8)
+                        pred_latents_eval = torch.clamp(pred_latents_eval, -6.0, 6.0)
+                        gt_latents_eval = eval_latents
+                        
+                        # Decode latents to images
+                        pred_decoded = model.decoder({"latent": pred_latents_eval})
+                        gt_decoded = model.decoder({"latent": gt_latents_eval})
+                        
+                        pred_images = pred_decoded.get("rgb", None)
+                        gt_images = gt_decoded.get("rgb", None)
+                        
+                        if pred_images is not None and gt_images is not None:
+                            # Normalize to [0, 1] if needed
+                            if pred_images.min() < 0:
+                                pred_images = (pred_images + 1.0) / 2.0
+                            if gt_images.min() < 0:
+                                gt_images = (gt_images + 1.0) / 2.0
+                            pred_images = torch.clamp(pred_images, 0.0, 1.0)
+                            gt_images = torch.clamp(gt_images, 0.0, 1.0)
+                            
+                            # Compute evaluation metrics
+                            eval_metrics = compute_evaluation_metrics(
+                                pred_images, gt_images, eval_text_emb, eval_pov_emb,
+                                taxonomy=taxonomy, device=device_obj,
+                                compute_clip=True, compute_fid=True, compute_miou=True
+                            )
+                            
+                            # Add to logs (weighted by eval batch size)
+                            for k, v in eval_metrics.items():
+                                if k not in log_dict:
+                                    log_dict[k] = 0.0
+                                log_dict[k] += v * eval_batch_size
+                except Exception as e:
+                    # Silently fail if evaluation metrics computation fails
+                    import warnings
+                    warnings.warn(f"Evaluation metrics computation failed: {e}")
             
             for k, v in logs.items():
                 if k not in log_dict:
@@ -1346,9 +1463,16 @@ def main():
         val_loss = float("inf")
         val_logs = {}
         if val_loader and (epoch + 1) % eval_interval == 0:
+            # Try to get taxonomy from dataset if available
+            taxonomy = None
+            if hasattr(val_loader.dataset, 'taxonomy'):
+                taxonomy = val_loader.dataset.taxonomy
+            elif hasattr(train_loader.dataset, 'taxonomy'):
+                taxonomy = train_loader.dataset.taxonomy
+            
             val_loss, val_logs = eval_epoch(
                 model, val_loader, scheduler, loss_fn,
-                device_obj, use_amp=use_amp
+                device_obj, use_amp=use_amp, taxonomy=taxonomy, compute_eval_metrics=True
             )
             print(f"Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():
@@ -1406,6 +1530,8 @@ def main():
             try:
                 df = pd.DataFrame(training_history)
                 plot_diffusion_metrics_epochs(df, output_dir, exp_name=exp_name)
+                # Also create dedicated evaluation metrics plot if metrics exist
+                plot_evaluation_metrics(df, output_dir, exp_name=exp_name)
             except Exception as e:
                 print(f"  Warning: Could not plot metrics: {e}")
         

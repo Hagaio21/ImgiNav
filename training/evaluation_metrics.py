@@ -1,0 +1,416 @@
+"""
+Evaluation metrics for diffusion model training:
+- CLIP Score: Semantic alignment between generated layouts and text/POV inputs
+- FID: Fréchet Inception Distance for distribution quality
+- mIoU: Mean Intersection over Union for spatial correctness
+"""
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+from PIL import Image
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+import warnings
+
+try:
+    from transformers import CLIPModel, CLIPProcessor
+    CLIP_AVAILABLE = True
+except ImportError:
+    CLIP_AVAILABLE = False
+    warnings.warn("transformers library not available. CLIP Score will be disabled.")
+
+try:
+    from scipy import linalg
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    warnings.warn("scipy not available. FID computation will be disabled.")
+
+try:
+    from torchvision.models import inception_v3
+    from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+    TORCHVISION_AVAILABLE = True
+except ImportError:
+    TORCHVISION_AVAILABLE = False
+    warnings.warn("torchvision not available. FID computation will be disabled.")
+
+
+# Global CLIP model cache
+_clip_model = None
+_clip_processor = None
+
+
+def get_clip_model(device="cuda"):
+    """Get or load CLIP model for CLIP Score computation."""
+    global _clip_model, _clip_processor
+    
+    if not CLIP_AVAILABLE:
+        return None, None
+    
+    if _clip_model is None:
+        try:
+            _clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+            _clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            _clip_model = _clip_model.to(device)
+            _clip_model.eval()
+        except Exception as e:
+            warnings.warn(f"Failed to load CLIP model: {e}")
+            return None, None
+    
+    return _clip_model, _clip_processor
+
+
+def compute_clip_score(
+    images: torch.Tensor,
+    text_emb: Optional[torch.Tensor] = None,
+    pov_emb: Optional[torch.Tensor] = None,
+    device: Optional[torch.device] = None,
+    use_text_prompt: bool = False
+) -> Dict[str, float]:
+    """
+    Compute CLIP Score: semantic alignment between images and text/POV embeddings.
+    
+    Args:
+        images: Generated images [B, C, H, W] in range [0, 1] or [0, 255]
+        text_emb: Text embeddings [B, D] or None
+        pov_emb: POV embeddings [B, D] or None
+        device: Device to run on
+        use_text_prompt: If True, uses a generic prompt instead of embeddings
+    
+    Returns:
+        Dictionary with 'clip_score' (average cosine similarity)
+    """
+    if not CLIP_AVAILABLE:
+        return {}
+    
+    if device is None:
+        device = images.device if isinstance(images, torch.Tensor) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    clip_model, clip_processor = get_clip_model(device)
+    if clip_model is None:
+        return {}
+    
+    # Convert images to PIL format for CLIP processor
+    # Images should be [B, C, H, W] in range [0, 1] or [0, 255]
+    B = images.shape[0]
+    
+    # Normalize to [0, 1] if needed
+    if images.max() > 1.1:
+        images = images / 255.0
+    
+    # Convert to PIL Images
+    pil_images = []
+    for i in range(B):
+        img_tensor = images[i].cpu()
+        # Convert from [C, H, W] to [H, W, C] and to numpy
+        if img_tensor.shape[0] == 3:
+            img_np = img_tensor.permute(1, 2, 0).numpy()
+        else:
+            img_np = img_tensor.numpy()
+        img_np = (img_np * 255).astype(np.uint8)
+        pil_images.append(Image.fromarray(img_np))
+    
+    # Process images through CLIP
+    with torch.no_grad():
+        inputs = clip_processor(images=pil_images, return_tensors="pt", padding=True)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        image_features = clip_model.get_image_features(**inputs)
+        image_features = F.normalize(image_features, p=2, dim=1)
+    
+    # For text, we can either:
+    # 1. Use a generic prompt (if use_text_prompt=True)
+    # 2. Try to reconstruct text from embeddings (not straightforward)
+    # 3. Use embeddings directly if CLIP has a way to do that
+    
+    # For now, use a generic prompt as placeholder
+    # In practice, you'd want to use actual text prompts or find a way to map embeddings to text
+    if use_text_prompt:
+        text_prompts = ["a room layout"] * B
+        text_inputs = clip_processor(text=text_prompts, return_tensors="pt", padding=True)
+        text_inputs = {k: v.to(device) for k, v in text_inputs.items()}
+        with torch.no_grad():
+            text_features = clip_model.get_text_features(**text_inputs)
+            text_features = F.normalize(text_features, p=2, dim=1)
+        
+        # Compute cosine similarity
+        clip_scores = (image_features * text_features).sum(dim=1)  # [B]
+        avg_score = clip_scores.mean().item()
+        
+        return {"clip_score": avg_score}
+    
+    # If we have embeddings but no text, we can't compute CLIP score directly
+    # Return empty dict to indicate metric unavailable
+    return {}
+
+
+# Global Inception model cache
+_inception_model = None
+_inception_transform = None
+
+
+def get_inception_model(device="cuda"):
+    """Get or load Inception v3 model for FID computation."""
+    global _inception_model, _inception_transform
+    
+    if not TORCHVISION_AVAILABLE:
+        return None, None
+    
+    if _inception_model is None:
+        try:
+            _inception_model = inception_v3(pretrained=True, transform_input=False)
+            _inception_model.fc = torch.nn.Identity()  # Remove final classification layer
+            _inception_model = _inception_model.to(device)
+            _inception_model.eval()
+            
+            _inception_transform = Compose([
+                Resize(299),
+                CenterCrop(299),
+                ToTensor(),
+                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+        except Exception as e:
+            warnings.warn(f"Failed to load Inception model: {e}")
+            return None, None
+    
+    return _inception_model, _inception_transform
+
+
+def compute_fid_features(images: torch.Tensor, device: Optional[torch.device] = None) -> torch.Tensor:
+    """
+    Extract Inception features for FID computation.
+    
+    Args:
+        images: Images [B, C, H, W] in range [0, 1]
+        device: Device to run on
+    
+    Returns:
+        Features [B, 2048]
+    """
+    if not TORCHVISION_AVAILABLE or not SCIPY_AVAILABLE:
+        return None
+    
+    if device is None:
+        device = images.device if isinstance(images, torch.Tensor) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    inception_model, transform = get_inception_model(device)
+    if inception_model is None:
+        return None
+    
+    B = images.shape[0]
+    
+    # Normalize to [0, 1] if needed
+    if images.max() > 1.1:
+        images = images / 255.0
+    
+    # Process each image through Inception
+    features_list = []
+    with torch.no_grad():
+        for i in range(B):
+            img_tensor = images[i].cpu()
+            # Convert from [C, H, W] to PIL Image
+            if img_tensor.shape[0] == 3:
+                img_np = img_tensor.permute(1, 2, 0).numpy()
+            else:
+                img_np = img_tensor.numpy()
+            img_np = (img_np * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
+            
+            # Transform and extract features
+            img_transformed = transform(pil_img).unsqueeze(0).to(device)
+            feat = inception_model(img_transformed)
+            features_list.append(feat.cpu())
+    
+    if len(features_list) == 0:
+        return None
+    
+    return torch.cat(features_list, dim=0)
+
+
+def compute_fid(
+    real_features: torch.Tensor,
+    fake_features: torch.Tensor
+) -> float:
+    """
+    Compute Fréchet Inception Distance (FID).
+    
+    Args:
+        real_features: Features from real images [N, 2048]
+        fake_features: Features from generated images [M, 2048]
+    
+    Returns:
+        FID score (lower is better)
+    """
+    if not SCIPY_AVAILABLE:
+        return float('inf')
+    
+    try:
+        # Compute mean and covariance
+        mu1 = real_features.mean(dim=0).numpy()
+        sigma1 = np.cov(real_features.numpy(), rowvar=False)
+        
+        mu2 = fake_features.mean(dim=0).numpy()
+        sigma2 = np.cov(fake_features.numpy(), rowvar=False)
+        
+        # Compute FID
+        diff = mu1 - mu2
+        covmean, _ = linalg.sqrtm(sigma1 @ sigma2, disp=False)
+        
+        if not np.isfinite(covmean).all():
+            # Add small epsilon to diagonal if singular
+            offset = np.eye(sigma1.shape[0]) * 1e-6
+            covmean = linalg.sqrtm((sigma1 + offset) @ (sigma2 + offset))
+        
+        fid = diff.dot(diff) + np.trace(sigma1 + sigma2 - 2 * covmean)
+        return float(fid)
+    except Exception as e:
+        warnings.warn(f"FID computation failed: {e}")
+        return float('inf')
+
+
+def compute_miou(
+    pred_seg: np.ndarray,
+    gt_seg: np.ndarray,
+    num_classes: Optional[int] = None
+) -> float:
+    """
+    Compute mean Intersection over Union (mIoU) between segmentation maps.
+    
+    Args:
+        pred_seg: Predicted segmentation map [H, W] with class IDs
+        gt_seg: Ground truth segmentation map [H, W] with class IDs
+        num_classes: Number of classes (if None, inferred from data)
+    
+    Returns:
+        mIoU score (higher is better, range [0, 1])
+    """
+    if pred_seg.shape != gt_seg.shape:
+        # Resize pred to match gt
+        from scipy.ndimage import zoom
+        zoom_factors = (gt_seg.shape[0] / pred_seg.shape[0], gt_seg.shape[1] / pred_seg.shape[1])
+        pred_seg = zoom(pred_seg, zoom_factors, order=0)  # Nearest neighbor
+    
+    # Get unique classes
+    if num_classes is None:
+        all_classes = np.unique(np.concatenate([pred_seg.flatten(), gt_seg.flatten()]))
+        num_classes = len(all_classes)
+        class_map = {cls: idx for idx, cls in enumerate(all_classes)}
+    else:
+        all_classes = np.arange(num_classes)
+        class_map = {cls: idx for idx, cls in enumerate(all_classes)}
+    
+    # Compute IoU for each class
+    ious = []
+    for cls in all_classes:
+        pred_mask = (pred_seg == cls)
+        gt_mask = (gt_seg == cls)
+        
+        intersection = np.logical_and(pred_mask, gt_mask).sum()
+        union = np.logical_or(pred_mask, gt_mask).sum()
+        
+        if union > 0:
+            iou = intersection / union
+            ious.append(iou)
+    
+    # Return mean IoU
+    if len(ious) == 0:
+        return 0.0
+    return float(np.mean(ious))
+
+
+def compute_evaluation_metrics(
+    pred_images: torch.Tensor,
+    gt_images: torch.Tensor,
+    text_emb: Optional[torch.Tensor] = None,
+    pov_emb: Optional[torch.Tensor] = None,
+    taxonomy=None,
+    device: Optional[torch.device] = None,
+    compute_clip: bool = True,
+    compute_fid: bool = True,
+    compute_miou: bool = True
+) -> Dict[str, float]:
+    """
+    Compute all evaluation metrics.
+    
+    Args:
+        pred_images: Generated images [B, C, H, W]
+        gt_images: Ground truth images [B, C, H, W]
+        text_emb: Text embeddings [B, D] or None
+        pov_emb: POV embeddings [B, D] or None
+        taxonomy: Taxonomy instance for mIoU (required if compute_miou=True)
+        device: Device to run on
+        compute_clip: Whether to compute CLIP Score
+        compute_fid: Whether to compute FID
+        compute_miou: Whether to compute mIoU
+    
+    Returns:
+        Dictionary of metric values
+    """
+    metrics = {}
+    
+    if device is None:
+        device = pred_images.device if isinstance(pred_images, torch.Tensor) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # CLIP Score
+    if compute_clip:
+        clip_metrics = compute_clip_score(pred_images, text_emb, pov_emb, device, use_text_prompt=True)
+        metrics.update(clip_metrics)
+    
+    # FID (requires accumulating features across batches - this is a per-batch approximation)
+    if compute_fid:
+        try:
+            pred_features = compute_fid_features(pred_images, device)
+            gt_features = compute_fid_features(gt_images, device)
+            if pred_features is not None and gt_features is not None:
+                # Note: This is a per-batch FID, not the full dataset FID
+                # For accurate FID, you need to accumulate features across all validation batches
+                fid_score = compute_fid(gt_features, pred_features)
+                if np.isfinite(fid_score):
+                    metrics["fid"] = fid_score
+        except Exception as e:
+            warnings.warn(f"FID computation failed: {e}")
+    
+    # mIoU
+    if compute_miou and taxonomy is not None:
+        try:
+            from data_preparation.utils.layout_analysis import LayoutSegmentor
+            segmentor = LayoutSegmentor(taxonomy, mode="category")
+            
+            ious = []
+            B = pred_images.shape[0]
+            for i in range(B):
+                # Convert tensors to numpy arrays
+                pred_img = pred_images[i].cpu()
+                gt_img = gt_images[i].cpu()
+                
+                # Convert from [C, H, W] to [H, W, C] and to uint8
+                if pred_img.shape[0] == 3:
+                    pred_np = pred_img.permute(1, 2, 0).numpy()
+                    gt_np = gt_img.permute(1, 2, 0).numpy()
+                else:
+                    pred_np = pred_img.numpy()
+                    gt_np = gt_img.numpy()
+                
+                # Normalize to [0, 255] if needed
+                if pred_np.max() <= 1.0:
+                    pred_np = (pred_np * 255).astype(np.uint8)
+                    gt_np = (gt_np * 255).astype(np.uint8)
+                else:
+                    pred_np = pred_np.astype(np.uint8)
+                    gt_np = gt_np.astype(np.uint8)
+                
+                # Segment
+                pred_seg = segmentor.segment(pred_np)
+                gt_seg = segmentor.segment(gt_np)
+                
+                # Compute IoU
+                iou = compute_miou(pred_seg, gt_seg)
+                ious.append(iou)
+            
+            if len(ious) > 0:
+                metrics["miou"] = float(np.mean(ious))
+        except Exception as e:
+            warnings.warn(f"mIoU computation failed: {e}")
+    
+    return metrics
+

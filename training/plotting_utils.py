@@ -480,8 +480,37 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.grid(True, alpha=0.3)
         ax.set_ylim([0, 1])
     
-    # Plot 8: CFG Dropout Rate (if available)
-    if 'cfg_dropout_rate' in history_df.columns:
+    # Plot 8: Evaluation metrics (CLIP Score, FID, mIoU)
+    # Check for evaluation metrics first (defined at function scope)
+    eval_metrics_list = []
+    if 'clip_score' in history_df.columns or 'val_clip_score' in history_df.columns:
+        eval_metrics_list.append(('clip_score', 'val_clip_score', 'CLIP Score', 'Higher is Better'))
+    if 'fid' in history_df.columns or 'val_fid' in history_df.columns:
+        eval_metrics_list.append(('fid', 'val_fid', 'FID', 'Lower is Better'))
+    if 'miou' in history_df.columns or 'val_miou' in history_df.columns:
+        eval_metrics_list.append(('miou', 'val_miou', 'mIoU', 'Higher is Better'))
+    
+    if eval_metrics_list:
+        ax = fig.add_subplot(gs[2, 1])
+        # Plot first metric (most important)
+        train_col, val_col, metric_name, _ = eval_metrics_list[0]
+        if train_col in history_df.columns:
+            data = history_df[[x_col, train_col]].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data[train_col], label='Train', marker='o', markersize=2, linewidth=1.5, alpha=0.8, color='blue')
+        if val_col in history_df.columns:
+            data = history_df[[x_col, val_col]].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data[val_col], label='Val', marker='s', markersize=2, linewidth=1.5, alpha=0.8, color='orange')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel(metric_name)
+        ax.set_title(f'{metric_name} ({eval_metrics_list[0][3]})', fontweight='bold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        if 'miou' in train_col or 'clip_score' in train_col:
+            ax.set_ylim([0, 1.05])
+    # Plot 8 (fallback): CFG Dropout Rate (if available and no correlations)
+    elif 'cfg_dropout_rate' in history_df.columns:
         ax = fig.add_subplot(gs[2, 1])
         ax.plot(history_df[x_col], history_df['cfg_dropout_rate'], label='CFG Dropout Rate', marker='o', markersize=2, linewidth=1.5, color='red')
         ax.set_xlabel(x_col.capitalize())
@@ -490,7 +519,7 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_ylim([0, 1.05])
-    # Plot 9: Learning rate (if available and CFG dropout not present)
+    # Plot 8 (fallback): Learning rate (if available and no correlations/CFG)
     elif 'learning_rate' in history_df.columns:
         ax = fig.add_subplot(gs[2, 1])
         ax.plot(history_df[x_col], history_df['learning_rate'], label='Learning Rate', marker='o', markersize=2, linewidth=1.5, color='brown')
@@ -501,8 +530,38 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
         ax.grid(True, alpha=0.3)
         ax.set_yscale('log')
     
-    # Plot 9 (or 8 if CFG dropout was plotted): Learning rate (if available and CFG dropout was plotted)
-    if 'cfg_dropout_rate' in history_df.columns and 'learning_rate' in history_df.columns:
+    # Plot 9: Additional evaluation metrics or Learning rate
+    if len(eval_metrics_list) > 1:
+        # Show second evaluation metric
+        ax = fig.add_subplot(gs[2, 2])
+        train_col, val_col, metric_name, direction = eval_metrics_list[1]
+        if train_col in history_df.columns:
+            data = history_df[[x_col, train_col]].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data[train_col], label='Train', marker='o', markersize=2, linewidth=1.5, alpha=0.8, color='blue')
+        if val_col in history_df.columns:
+            data = history_df[[x_col, val_col]].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data[val_col], label='Val', marker='s', markersize=2, linewidth=1.5, alpha=0.8, color='orange')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel(metric_name)
+        ax.set_title(f'{metric_name} ({direction})', fontweight='bold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        if 'miou' in train_col or 'clip_score' in train_col:
+            ax.set_ylim([0, 1.05])
+    elif 'cfg_dropout_rate' in history_df.columns and 'learning_rate' in history_df.columns:
+        # Plot 9: Learning rate (if CFG dropout was plotted in position 8)
+        ax = fig.add_subplot(gs[2, 2])
+        ax.plot(history_df[x_col], history_df['learning_rate'], label='Learning Rate', marker='o', markersize=2, linewidth=1.5, color='brown')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel('Learning Rate')
+        ax.set_title('Learning Rate Schedule', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_yscale('log')
+    elif 'learning_rate' in history_df.columns and len(eval_metrics_list) == 0:
+        # Plot 9: Learning rate (if not already plotted)
         ax = fig.add_subplot(gs[2, 2])
         ax.plot(history_df[x_col], history_df['learning_rate'], label='Learning Rate', marker='o', markersize=2, linewidth=1.5, color='brown')
         ax.set_xlabel(x_col.capitalize())
@@ -526,6 +585,129 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
     plt.close()
     
     print(f"  Saved diffusion metrics plot with loss breakdown to: {plot_path}")
+
+
+def plot_evaluation_metrics(history_df, output_dir, exp_name="diffusion"):
+    """
+    Create a dedicated plot for evaluation metrics (CLIP Score, FID, mIoU).
+    
+    Args:
+        history_df: DataFrame with training metrics
+        output_dir: Directory to save plots
+        exp_name: Experiment name
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Determine x-axis column
+    x_col = "step" if "step" in history_df.columns else "epoch"
+    
+    # Find evaluation metric columns
+    eval_cols = []
+    if 'clip_score' in history_df.columns:
+        eval_cols.append('clip_score')
+    if 'fid' in history_df.columns:
+        eval_cols.append('fid')
+    if 'miou' in history_df.columns:
+        eval_cols.append('miou')
+    
+    # Also check for val_ prefixed versions
+    val_eval_cols = []
+    if 'val_clip_score' in history_df.columns:
+        val_eval_cols.append('val_clip_score')
+    if 'val_fid' in history_df.columns:
+        val_eval_cols.append('val_fid')
+    if 'val_miou' in history_df.columns:
+        val_eval_cols.append('val_miou')
+    
+    if not eval_cols and not val_eval_cols:
+        print(f"  No evaluation metrics found in history, skipping evaluation metrics plot")
+        return
+    
+    # Create figure with subplots (one for each metric)
+    n_plots = len(set(eval_cols + [c.replace('val_', '') for c in val_eval_cols]))
+    if n_plots == 0:
+        return
+    
+    fig, axes = plt.subplots(1, n_plots, figsize=(5 * n_plots, 4))
+    if n_plots == 1:
+        axes = [axes]
+    fig.suptitle(f'Evaluation Metrics - {exp_name}', fontsize=16, y=0.995)
+    
+    plot_idx = 0
+    
+    # Plot CLIP Score
+    if 'clip_score' in eval_cols or 'val_clip_score' in val_eval_cols:
+        ax = axes[plot_idx] if plot_idx < len(axes) else axes[0]
+        if 'clip_score' in eval_cols:
+            data = history_df[[x_col, 'clip_score']].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data['clip_score'], label='Train', marker='o', markersize=3, linewidth=2, alpha=0.8, color='blue')
+        if 'val_clip_score' in val_eval_cols:
+            data = history_df[[x_col, 'val_clip_score']].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data['val_clip_score'], label='Val', marker='s', markersize=3, linewidth=2, alpha=0.8, color='orange')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel('CLIP Score')
+        ax.set_title('CLIP Score (Higher is Better)', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plot_idx += 1
+    
+    # Plot FID
+    if 'fid' in eval_cols or 'val_fid' in val_eval_cols:
+        ax = axes[plot_idx] if plot_idx < len(axes) else axes[0]
+        if 'fid' in eval_cols:
+            data = history_df[[x_col, 'fid']].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data['fid'], label='Train', marker='o', markersize=3, linewidth=2, alpha=0.8, color='blue')
+        if 'val_fid' in val_eval_cols:
+            data = history_df[[x_col, 'val_fid']].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data['val_fid'], label='Val', marker='s', markersize=3, linewidth=2, alpha=0.8, color='orange')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel('FID')
+        ax.set_title('FID (Lower is Better)', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plot_idx += 1
+    
+    # Plot mIoU
+    if 'miou' in eval_cols or 'val_miou' in val_eval_cols:
+        ax = axes[plot_idx] if plot_idx < len(axes) else axes[0]
+        if 'miou' in eval_cols:
+            data = history_df[[x_col, 'miou']].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data['miou'], label='Train', marker='o', markersize=3, linewidth=2, alpha=0.8, color='blue')
+        if 'val_miou' in val_eval_cols:
+            data = history_df[[x_col, 'val_miou']].dropna()
+            if len(data) > 0:
+                ax.plot(data[x_col], data['val_miou'], label='Val', marker='s', markersize=3, linewidth=2, alpha=0.8, color='orange')
+        ax.set_xlabel(x_col.capitalize())
+        ax.set_ylabel('mIoU')
+        ax.set_title('mIoU (Higher is Better)', fontweight='bold')
+        ax.set_ylim([0, 1.05])
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plot_idx += 1
+    
+    # Hide unused subplots
+    for idx in range(plot_idx, len(axes)):
+        axes[idx].axis('off')
+    
+    # Use tight_layout with error handling
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass
+    
+    plot_path = output_dir / f"{exp_name}_evaluation_metrics.png"
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  Saved evaluation metrics plot to: {plot_path}")
 
 
 def plot_overall_iteration_metrics(output_dir, exp_name="diffusion"):
