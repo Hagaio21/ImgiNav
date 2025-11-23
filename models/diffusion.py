@@ -111,6 +111,11 @@ class DiffusionModel(BaseModel):
                 print("✓ CLIPEmbeddingToSpatial initialized with CLIP projections")
             else:
                 self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
+            
+            # Freeze embedding projection (CLIP projections and spatial projection should not be trained)
+            for p in self.embedding_proj.parameters():
+                p.requires_grad = False
+            print("✓ Embedding projection frozen (only UNet will be trained)")
         
         # Build UNet
         unet_type = unet_cfg.get("type", "").lower()
