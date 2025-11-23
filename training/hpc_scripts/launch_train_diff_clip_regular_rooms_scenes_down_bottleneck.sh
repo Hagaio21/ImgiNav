@@ -97,8 +97,18 @@ SUBMITTED=0
 FAILED=0
 JOB_IDS=()
 
+CONFIG_INDEX=0
 for config in "${CONFIGS[@]}"; do
+    CONFIG_INDEX=$((CONFIG_INDEX + 1))
     config_path="${BASE_DIR}/${config}"
+    
+    # Verify config exists (should have been validated, but double-check)
+    if [ ! -f "${config_path}" ]; then
+        echo ""
+        echo "SKIPPING: ${config} (file not found)"
+        ((FAILED++))
+        continue
+    fi
     
     # Extract experiment name for job name
     exp_name=$(python3 -c "
@@ -115,18 +125,25 @@ try:
         if len(exp_name) > 50:
             exp_name = exp_name[:50]
         print(exp_name)
-except:
+except Exception as e:
     print('unnamed')
 " 2>/dev/null || echo "unnamed")
+    
+    # Add index to job name to ensure uniqueness
+    # This prevents duplicate job names if experiments have similar names
+    unique_job_name="${exp_name}_${CONFIG_INDEX}"
     
     # Sanitize config path for log filename
     log_suffix=$(echo "${config}" | sed 's/[^a-zA-Z0-9]/_/g' | sed 's/_\+/_/g')
     
     echo ""
-    echo "Submitting: ${config}"
+    echo "Submitting job ${CONFIG_INDEX}/${#CONFIGS[@]}: ${config}"
     echo "  Experiment: ${exp_name}"
+    echo "  Job name: ${unique_job_name}"
     
-    JOB_OUTPUT=$(bsub -J "${exp_name}" \
+    # Use set +e to continue on error (we handle errors manually)
+    set +e
+    JOB_OUTPUT=$(bsub -J "${unique_job_name}" \
         -o "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.out" \
         -e "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.err" \
         -n 8 \
@@ -135,26 +152,28 @@ except:
         -W 24:00 \
         -q gpuv100 \
         bash "${TRAIN_SCRIPT}" "${config}" 2>&1)
-    
     BSUB_EXIT_CODE=$?
+    set -e
+    
     if [ $BSUB_EXIT_CODE -eq 0 ]; then
         # Extract job ID from bsub output
         JOB_ID=$(echo "${JOB_OUTPUT}" | grep -oP 'Job <\K[0-9]+(?=>)' || echo "")
         if [ -n "${JOB_ID}" ]; then
-            echo "  SUCCESS - Job ID: ${JOB_ID}"
+            echo "  ✓ SUCCESS - Job ID: ${JOB_ID}"
             JOB_IDS+=("${JOB_ID}")
             ((SUBMITTED++))
         else
             if echo "${JOB_OUTPUT}" | grep -qi "submitted"; then
-                echo "  SUBMITTED (could not extract job ID)"
+                echo "  ✓ SUBMITTED (could not extract job ID)"
+                echo "  Output: ${JOB_OUTPUT}"
                 ((SUBMITTED++))
             else
-                echo "  FAILED - bsub output: ${JOB_OUTPUT}"
+                echo "  ✗ FAILED - bsub output: ${JOB_OUTPUT}"
                 ((FAILED++))
             fi
         fi
     else
-        echo "  FAILED (bsub exit code: ${BSUB_EXIT_CODE})"
+        echo "  ✗ FAILED (bsub exit code: ${BSUB_EXIT_CODE})"
         echo "  bsub output: ${JOB_OUTPUT}"
         ((FAILED++))
     fi
