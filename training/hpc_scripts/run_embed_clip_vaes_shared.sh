@@ -153,6 +153,8 @@ if [ -n "${VAE_CLIP_CHECKPOINT}" ]; then
     --ae-checkpoint "${VAE_CLIP_CHECKPOINT}" \
     --input-manifest "${SHARED_MANIFEST}" \
     --output-manifest "${SHARED_MANIFEST}" \
+    --latent-dir "${SHARED_EMBEDDINGS_DIR}/latents/vae_clip" \
+    --column-name "latent_path_vae_clip" \
     --layout-only \
     --batch-size 32 \
     --num-workers 8
@@ -168,6 +170,8 @@ if [ -n "${VAE_CLIP_SPATIAL_CHECKPOINT}" ]; then
     --ae-checkpoint "${VAE_CLIP_SPATIAL_CHECKPOINT}" \
     --input-manifest "${SHARED_MANIFEST}" \
     --output-manifest "${SHARED_MANIFEST}" \
+    --latent-dir "${SHARED_EMBEDDINGS_DIR}/latents/vae_clip_spatial" \
+    --column-name "latent_path_vae_clip_spatial" \
     --layout-only \
     --batch-size 32 \
     --num-workers 8
