@@ -52,6 +52,20 @@ class CLIPEmbeddingToSpatial(BaseComponent):
         # Input: joint space embeddings [B, 256]
         # Output: spatial features [B, output_channels, H, W]
         spatial_elements = output_channels * spatial_size[0] * spatial_size[1]
+        
+        # Safety check: prevent unreasonably large spatial projections
+        # Typical values: output_channels=96, spatial_size=(64,64) -> spatial_elements=393216
+        # If spatial_elements > 10M, something is wrong
+        MAX_SPATIAL_ELEMENTS = 10_000_000  # 10M elements max
+        if spatial_elements > MAX_SPATIAL_ELEMENTS:
+            raise ValueError(
+                f"spatial_elements is too large: {spatial_elements} "
+                f"(output_channels={output_channels}, spatial_size={spatial_size}). "
+                f"This would create a Linear layer with {spatial_elements * 2} input features, "
+                f"requiring ~{spatial_elements * 2 * spatial_elements * 4 / 1e9:.1f}GB of memory. "
+                f"Check that spatial_size is set to latent dimensions (e.g., (64, 64)), not image dimensions."
+            )
+        
         self.spatial_proj = nn.Sequential(
             nn.Linear(256, spatial_elements * 2),  # 256 is CLIP projection_dim
             nn.LayerNorm(spatial_elements * 2),
@@ -171,6 +185,18 @@ class EmbeddingToSpatial(BaseComponent):
         # Project combined embeddings to spatial features
         # Output: [B, output_channels, H, W]
         spatial_elements = output_channels * spatial_size[0] * spatial_size[1]
+        
+        # Safety check: prevent unreasonably large spatial projections
+        MAX_SPATIAL_ELEMENTS = 10_000_000  # 10M elements max
+        if spatial_elements > MAX_SPATIAL_ELEMENTS:
+            raise ValueError(
+                f"spatial_elements is too large: {spatial_elements} "
+                f"(output_channels={output_channels}, spatial_size={spatial_size}). "
+                f"This would create a Linear layer with {spatial_elements * 2} input features, "
+                f"requiring ~{spatial_elements * 2 * spatial_elements * 4 / 1e9:.1f}GB of memory. "
+                f"Check that spatial_size is set to latent dimensions (e.g., (64, 64)), not image dimensions."
+            )
+        
         self.spatial_proj = nn.Sequential(
             nn.Linear(combined_dim, spatial_elements * 2),  # Intermediate layer
             nn.SiLU(),

@@ -155,6 +155,17 @@ class CLIPProjections(BaseComponent):
             # Spatial alignment mode: preserve spatial structure
             B, C, H, W = latent_features.shape
             
+            # Validate input shape - latent features should be small (e.g., 32x32, 64x64)
+            # If H or W are very large, this might be the raw image instead of latent features
+            if H > 512 or W > 512:
+                raise ValueError(
+                    f"latent_features has unreasonably large spatial dimensions: {H}x{W}. "
+                    f"Expected latent features from encoder (typically 32x32, 64x64, or at most 128x128). "
+                    f"Got shape: {latent_features.shape}. "
+                    f"This suggests the input might be a raw image instead of encoder features. "
+                    f"Check that you're passing encoder output, not the original image."
+                )
+            
             # Initialize spatial projections if needed
             self._init_spatial_projections(H, W, latent_features.device)
             
