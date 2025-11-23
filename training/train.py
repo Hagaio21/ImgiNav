@@ -17,6 +17,7 @@ from torchvision.utils import save_image, make_grid
 from PIL import Image
 import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for HPC
 import matplotlib.pyplot as plt
@@ -863,40 +864,45 @@ def main():
         print(f"  Saved loss curves plot: {plot_path}")
     
     def _plot_all_loss_components(df, output_dir, exp_name):
-        """Plot all loss components (MSE, CLIP, KLD, etc.) from CompositeLoss as individual plots."""
+        """Plot all loss components from CSV as individual plots (train_key, val_key pairs)."""
         sns.set_style("darkgrid")
         
         # Create plots directory
         plots_dir = output_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
         
-        # Find all loss component columns (excluding total loss and special columns)
-        exclude_patterns = ['loss', 'epoch', 'LatentStd_', 'KLD']  # We plot KLD separately
-        loss_components = []
+        # Find all loss component columns from CSV
+        # Pattern: train_* and val_* pairs (excluding total 'loss' column)
+        loss_components = set()
         
-        # Get all columns that look like loss components
         for col in df.columns:
-            if col.startswith('train_') or col.startswith('val_'):
-                # Extract the loss name (remove train_/val_ prefix)
-                loss_name = col.replace('train_', '').replace('val_', '')
-                # Skip if it's total loss or matches exclude patterns
+            if col.startswith('train_'):
+                loss_name = col.replace('train_', '', 1)
+                # Skip total loss column
                 if loss_name == 'loss':
                     continue
-                if any(pattern in loss_name for pattern in exclude_patterns):
+                # Skip epoch and other non-loss columns
+                if loss_name == 'epoch':
                     continue
-                # Skip if it's a per-class MSE (we'll handle those separately)
-                if '_' in loss_name and loss_name.startswith('MSE_') and loss_name.count('_') > 1:
+                loss_components.add(loss_name)
+            elif col.startswith('val_'):
+                loss_name = col.replace('val_', '', 1)
+                # Skip total loss column
+                if loss_name == 'loss':
                     continue
-                if loss_name not in loss_components:
-                    loss_components.append(loss_name)
+                # Skip epoch and other non-loss columns
+                if loss_name == 'epoch':
+                    continue
+                loss_components.add(loss_name)
         
         if len(loss_components) == 0:
             return  # No loss components to plot
         
         epochs = df['epoch'].values
+        plotted_count = 0
         
         # Plot each component individually
-        for loss_name in loss_components:
+        for loss_name in sorted(loss_components):
             train_col = f'train_{loss_name}'
             val_col = f'val_{loss_name}'
             
@@ -911,12 +917,29 @@ def main():
             fig.suptitle(f'{loss_name} - {exp_name}', fontsize=16, fontweight='bold')
             
             if has_train:
-                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=4, 
-                       color='blue', alpha=0.8)
+                # Check if column contains numeric values (not strings)
+                try:
+                    train_values = df[train_col]
+                    # Filter out non-numeric values
+                    numeric_mask = pd.to_numeric(train_values, errors='coerce').notna()
+                    if numeric_mask.any():
+                        ax.plot(epochs[numeric_mask], train_values[numeric_mask], 
+                               label='Train', linewidth=2, marker='o', markersize=4, 
+                               color='blue', alpha=0.8)
+                except Exception:
+                    pass  # Skip if can't plot
             
             if has_val:
-                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=4, 
-                       color='red', alpha=0.8, linestyle='--')
+                try:
+                    val_values = df[val_col]
+                    # Filter out non-numeric values
+                    numeric_mask = pd.to_numeric(val_values, errors='coerce').notna()
+                    if numeric_mask.any():
+                        ax.plot(epochs[numeric_mask], val_values[numeric_mask], 
+                               label='Val', linewidth=2, marker='s', markersize=4, 
+                               color='red', alpha=0.8, linestyle='--')
+                except Exception:
+                    pass  # Skip if can't plot
             
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel('Loss', fontsize=12)
@@ -926,12 +949,14 @@ def main():
             # Use log scale if values span multiple orders of magnitude
             if has_train and len(df) > 1:
                 try:
-                    max_val = df[train_col].max()
-                    min_val = df[train_col].min()
-                    # Check if values are numeric (not strings)
-                    if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
-                        if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                            ax.set_yscale('log')
+                    train_values = df[train_col]
+                    numeric_values = pd.to_numeric(train_values, errors='coerce').dropna()
+                    if len(numeric_values) > 0:
+                        max_val = numeric_values.max()
+                        min_val = numeric_values.min()
+                        if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
+                            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
+                                ax.set_yscale('log')
                 except (TypeError, ValueError):
                     pass  # Skip log scale if values are not numeric
             
@@ -943,8 +968,10 @@ def main():
             plot_path = plots_dir / f'{exp_name}_{safe_name}.png'
             plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
             plt.close()
+            plotted_count += 1
         
-        print(f"  Saved {len(loss_components)} loss component plots to {plots_dir}")
+        if plotted_count > 0:
+            print(f"  Saved {plotted_count} loss component plots to {plots_dir}")
     
     def _plot_mse_losses(df, output_dir, exp_name):
         """Plot MSE losses (including ColorWeightedMSE and per-class MSE if available) as individual plots."""
