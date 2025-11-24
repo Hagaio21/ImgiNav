@@ -282,7 +282,10 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
     # Initialize optimizer (zero gradients)
     optimizer.zero_grad()
     
-    for iteration in range(100):
+    num_iterations = 1000
+    print(f"Running overfit test for {num_iterations} iterations...")
+    
+    for iteration in range(num_iterations):
         # Get latents (same logic as train_epoch)
         latents = batch.get("latent")
         if latents is None:
@@ -318,7 +321,7 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
         
         if use_amp and device_obj.type == "cuda":
             with torch.amp.autocast('cuda'):
-                total_loss_val, logs = compute_loss(
+                total_loss_val, _ = compute_loss(
                     model, batch, latents, t, noise, cond, loss_fn,
                     use_amp, device_obj, cfg_dropout_rate, compute_eval_metrics=False
                 )
@@ -349,7 +352,7 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
                 if hasattr(model, 'update_ema'):
                     model.update_ema()
         else:
-            total_loss_val, logs = compute_loss(
+            total_loss_val, _ = compute_loss(
                 model, batch, latents, t, noise, cond, loss_fn,
                 use_amp, device_obj, cfg_dropout_rate, compute_eval_metrics=False
             )
@@ -373,9 +376,9 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
         loss_val = total_loss_val.detach().item() * gradient_accumulation_steps
         losses.append(loss_val)
         
-        # Print every 10 steps
-        if (iteration + 1) % 10 == 0:
-            print(f"  Iteration {iteration + 1:3d}/100: Loss = {loss_val:.6f}")
+        # Print every 100 steps
+        if (iteration + 1) % 100 == 0:
+            print(f"  Iteration {iteration + 1:4d}/{num_iterations}: Loss = {loss_val:.6f}")
     
     # Ensure gradients are zeroed at the end
     optimizer.zero_grad()

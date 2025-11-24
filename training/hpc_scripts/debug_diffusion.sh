@@ -11,8 +11,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 DEBUG_SCRIPT="${BASE_DIR}/debug_diffusion.py"
 
-# Configs for the 3 model sizes
+# Configs for all combinations: 3 model sizes × 2 dataset types (rooms/scenes)
 CONFIGS=(
+    "experiments/diffusion/clip/regular_rooms/small_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/medium_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/large_bottleneck.yaml"
     "experiments/diffusion/clip/regular_scenes/small_bottleneck.yaml"
     "experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
     "experiments/diffusion/clip/regular_scenes/large_bottleneck.yaml"
@@ -58,7 +61,8 @@ fi
 echo "=============================================================================="
 echo "Debugging Diffusion Training Pipeline"
 echo "=============================================================================="
-echo "Running debug tests for ${#CONFIGS[@]} model sizes"
+echo "Running debug tests for ${#CONFIGS[@]} configurations"
+echo "  (3 model sizes × 2 dataset types: rooms + scenes)"
 echo "Working directory: ${BASE_DIR}"
 echo "Python: $(which python)"
 echo "Conda env: ${CONDA_DEFAULT_ENV:-unknown}"
@@ -75,8 +79,12 @@ for config in "${CONFIGS[@]}"; do
         continue
     fi
     
-    # Extract model size from config path
+    # Extract model size and dataset type from config path
+    # e.g., regular_rooms/small_bottleneck.yaml -> rooms_small
+    dataset_type=$(echo "${config}" | sed 's|.*/regular_||' | sed 's|/.*||')
     model_size=$(basename "${config}" | sed 's/_bottleneck.yaml//' | sed 's/.*_//')
+    model_key="${dataset_type}_${model_size}"
+    
     exp_name=$(python -c "
 import yaml
 import re
@@ -97,24 +105,24 @@ except:
     
     echo ""
     echo "=============================================================================="
-    echo "Running debug tests for: ${model_size} model (${exp_name})"
+    echo "Running debug tests for: ${model_size} model on ${dataset_type} (${exp_name})"
     echo "Config: ${config}"
     echo "=============================================================================="
     
-    # Create output directory for debug results
-    output_dir="${BASE_DIR}/debug_outputs/${model_size}"
+    # Create output directory for debug results (organized by dataset_type/model_size)
+    output_dir="${BASE_DIR}/debug_outputs/${dataset_type}/${model_size}"
     mkdir -p "${output_dir}"
     
     # Run debug script
     echo "Running: python ${DEBUG_SCRIPT} ${config_path}"
-    python "${DEBUG_SCRIPT}" "${config_path}" 2>&1 | tee "${output_dir}/debug_${model_size}.log"
+    python "${DEBUG_SCRIPT}" "${config_path}" 2>&1 | tee "${output_dir}/debug_${model_key}.log"
     
     EXIT_CODE=${PIPESTATUS[0]}
     
     if [ $EXIT_CODE -ne 0 ]; then
-        echo "WARNING: Debug test failed for ${model_size} model (exit code: ${EXIT_CODE})"
+        echo "WARNING: Debug test failed for ${model_key} (exit code: ${EXIT_CODE})"
     else
-        echo "✓ Debug test completed successfully for ${model_size} model"
+        echo "✓ Debug test completed successfully for ${model_key}"
     fi
     
     # Move generated debug images to output directory
@@ -140,8 +148,9 @@ echo "==========================================================================
 echo ""
 echo "Debug results saved to:"
 for config in "${CONFIGS[@]}"; do
+    dataset_type=$(echo "${config}" | sed 's|.*/regular_||' | sed 's|/.*||')
     model_size=$(basename "${config}" | sed 's/_bottleneck.yaml//' | sed 's/.*_//')
-    echo "  - ${BASE_DIR}/debug_outputs/${model_size}/"
+    echo "  - ${BASE_DIR}/debug_outputs/${dataset_type}/${model_size}/"
 done
 echo "=============================================================================="
 

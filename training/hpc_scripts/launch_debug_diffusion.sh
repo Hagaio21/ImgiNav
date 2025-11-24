@@ -13,14 +13,14 @@ echo "==========================================================================
 echo "Submitting Debug Job for Diffusion Models"
 echo "=============================================================================="
 echo "This will run debug tests for:"
-echo "  - Small bottleneck model"
-echo "  - Medium bottleneck model"
-echo "  - Large bottleneck model"
+echo "  - 3 model sizes (small, medium, large)"
+echo "  - 2 dataset types (rooms, scenes)"
+echo "  - Total: 6 configurations"
 echo ""
 echo "Debug tests include:"
 echo "  1. VAE Round Trip (encode/decode test)"
 echo "  2. Noise Schedule (forward process visualization)"
-echo "  3. Overfit Test (single batch training)"
+echo "  3. Overfit Test (single batch training for 1000 iterations)"
 echo "=============================================================================="
 
 # Submit job to HPC queue
@@ -32,7 +32,7 @@ bsub -J "debug_diffusion" \
     -n 2 \
     -R "rusage[mem=16000]" \
     -gpu "num=1" \
-    -W 6:00 \
+    -W 12:00 \
     -q gpul40s \
     bash "${DEBUG_SCRIPT}"
 
