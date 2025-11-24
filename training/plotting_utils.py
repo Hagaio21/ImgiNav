@@ -569,7 +569,8 @@ def plot_diffusion_metrics_epochs(history_df, output_dir, exp_name="diffusion"):
 
 def plot_evaluation_metrics(history_df, output_dir, exp_name="diffusion"):
     """
-    Create a dedicated plot for evaluation metrics (CLIP Score, FID, mIoU).
+    Create separate plots for each evaluation metric.
+    Automatically detects all evaluation metrics and plots them individually.
     
     Args:
         history_df: DataFrame with training metrics
@@ -582,112 +583,140 @@ def plot_evaluation_metrics(history_df, output_dir, exp_name="diffusion"):
     # Determine x-axis column
     x_col = "step" if "step" in history_df.columns else "epoch"
     
-    # Find evaluation metric columns
-    eval_cols = []
-    if 'clip_score' in history_df.columns:
-        eval_cols.append('clip_score')
-    if 'fid' in history_df.columns:
-        eval_cols.append('fid')
-    if 'miou' in history_df.columns:
-        eval_cols.append('miou')
+    # Exclude standard training columns to find evaluation metrics
+    exclude_cols = {
+        'epoch', 'step', 'train_loss', 'val_loss', 'cfg_dropout_rate',
+        'train_MSE_pred_noise', 'val_MSE_pred_noise'
+    }
     
-    # Also check for val_ prefixed versions
-    val_eval_cols = []
-    if 'val_clip_score' in history_df.columns:
-        val_eval_cols.append('val_clip_score')
-    if 'val_fid' in history_df.columns:
-        val_eval_cols.append('val_fid')
-    if 'val_miou' in history_df.columns:
-        val_eval_cols.append('val_miou')
+    # Find all evaluation metric columns (both train and val versions)
+    all_cols = set(history_df.columns)
+    eval_metrics = {}
     
-    if not eval_cols and not val_eval_cols:
-        print(f"  No evaluation metrics found in history, skipping evaluation metrics plot")
+    for col in all_cols:
+        if col in exclude_cols:
+            continue
+        
+        # Check if it's a train metric (starts with train_ but not train_loss)
+        if col.startswith('train_'):
+            metric_name = col.replace('train_', '')
+            if metric_name not in exclude_cols:
+                if metric_name not in eval_metrics:
+                    eval_metrics[metric_name] = {'train': None, 'val': None}
+                eval_metrics[metric_name]['train'] = col
+        
+        # Check if it's a val metric (starts with val_ but not val_loss)
+        elif col.startswith('val_'):
+            metric_name = col.replace('val_', '')
+            if metric_name not in exclude_cols:
+                if metric_name not in eval_metrics:
+                    eval_metrics[metric_name] = {'train': None, 'val': None}
+                eval_metrics[metric_name]['val'] = col
+        
+        # Check if it's a direct metric (no prefix)
+        elif col not in exclude_cols and not col.startswith('train_') and not col.startswith('val_'):
+            # This might be a metric without prefix, check if there's a val version
+            val_col = f'val_{col}'
+            if val_col in all_cols:
+                if col not in eval_metrics:
+                    eval_metrics[col] = {'train': None, 'val': None}
+                eval_metrics[col]['train'] = col
+                eval_metrics[col]['val'] = val_col
+            else:
+                # Standalone metric
+                if col not in eval_metrics:
+                    eval_metrics[col] = {'train': None, 'val': None}
+                eval_metrics[col]['train'] = col
+    
+    if not eval_metrics:
+        print(f"  No evaluation metrics found in history, skipping evaluation metrics plots")
         return
     
-    # Create figure with subplots (one for each metric)
-    n_plots = len(set(eval_cols + [c.replace('val_', '') for c in val_eval_cols]))
-    if n_plots == 0:
-        return
-    
-    fig, axes = plt.subplots(1, n_plots, figsize=(5 * n_plots, 4))
-    if n_plots == 1:
-        axes = [axes]
-    fig.suptitle(f'Evaluation Metrics - {exp_name}', fontsize=16, y=0.995)
-    
-    plot_idx = 0
-    
-    # Plot CLIP Score
-    if 'clip_score' in eval_cols or 'val_clip_score' in val_eval_cols:
-        ax = axes[plot_idx] if plot_idx < len(axes) else axes[0]
-        if 'clip_score' in eval_cols:
-            data = history_df[[x_col, 'clip_score']].dropna()
-            if len(data) > 0:
-                ax.plot(data[x_col], data['clip_score'], label='Train', marker='o', markersize=3, linewidth=2, alpha=0.8, color='blue')
-        if 'val_clip_score' in val_eval_cols:
-            data = history_df[[x_col, 'val_clip_score']].dropna()
-            if len(data) > 0:
-                ax.plot(data[x_col], data['val_clip_score'], label='Val', marker='s', markersize=3, linewidth=2, alpha=0.8, color='orange')
+    # Create a separate plot for each metric
+    for metric_name, cols in eval_metrics.items():
+        # Skip if no valid data
+        has_data = False
+        train_data = None
+        val_data = None
+        
+        if cols['train'] and cols['train'] in history_df.columns:
+            train_data = history_df[[x_col, cols['train']]].dropna()
+            if len(train_data) > 0 and train_data[cols['train']].notna().any():
+                has_data = True
+        
+        if cols['val'] and cols['val'] in history_df.columns:
+            val_data = history_df[[x_col, cols['val']]].dropna()
+            if len(val_data) > 0 and val_data[cols['val']].notna().any():
+                has_data = True
+        
+        if not has_data:
+            continue
+        
+        # Create individual plot for this metric
+        fig, ax = plt.subplots(figsize=(8, 5))
+        
+        # Plot train data
+        if train_data is not None and len(train_data) > 0:
+            # Filter out inf values
+            train_data_clean = train_data[train_data[cols['train']] != float('inf')]
+            train_data_clean = train_data_clean[np.isfinite(train_data_clean[cols['train']])]
+            if len(train_data_clean) > 0:
+                ax.plot(train_data_clean[x_col], train_data_clean[cols['train']], 
+                       label='Train', marker='o', markersize=3, linewidth=2, alpha=0.8, color='blue')
+        
+        # Plot val data
+        if val_data is not None and len(val_data) > 0:
+            # Filter out inf values
+            val_data_clean = val_data[val_data[cols['val']] != float('inf')]
+            val_data_clean = val_data_clean[np.isfinite(val_data_clean[cols['val']])]
+            if len(val_data_clean) > 0:
+                ax.plot(val_data_clean[x_col], val_data_clean[cols['val']], 
+                       label='Val', marker='s', markersize=3, linewidth=2, alpha=0.8, color='orange')
+        
+        # Determine if metric is "higher is better" or "lower is better"
+        metric_display_name = metric_name.replace('_', ' ').title()
+        if metric_name in ['fid', 'class_kl_divergence', 'class_total_variation', 'class_l1_distance', 'coverage_diff']:
+            direction = "Lower is Better"
+        elif metric_name in ['clip_score', 'miou', 'class_iou']:
+            direction = "Higher is Better"
+        else:
+            direction = ""
+        
         ax.set_xlabel(x_col.capitalize())
-        ax.set_ylabel('CLIP Score')
-        ax.set_title('CLIP Score (Higher is Better)', fontweight='bold')
+        ax.set_ylabel(metric_display_name)
+        title = f'{metric_display_name}'
+        if direction:
+            title += f' ({direction})'
+        ax.set_title(title, fontweight='bold')
         ax.legend()
         ax.grid(True, alpha=0.3)
-        plot_idx += 1
-    
-    # Plot FID
-    if 'fid' in eval_cols or 'val_fid' in val_eval_cols:
-        ax = axes[plot_idx] if plot_idx < len(axes) else axes[0]
-        if 'fid' in eval_cols:
-            data = history_df[[x_col, 'fid']].dropna()
-            if len(data) > 0:
-                ax.plot(data[x_col], data['fid'], label='Train', marker='o', markersize=3, linewidth=2, alpha=0.8, color='blue')
-        if 'val_fid' in val_eval_cols:
-            data = history_df[[x_col, 'val_fid']].dropna()
-            if len(data) > 0:
-                ax.plot(data[x_col], data['val_fid'], label='Val', marker='s', markersize=3, linewidth=2, alpha=0.8, color='orange')
-        ax.set_xlabel(x_col.capitalize())
-        ax.set_ylabel('FID')
-        ax.set_title('FID (Lower is Better)', fontweight='bold')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        plot_idx += 1
-    
-    # Plot mIoU
-    if 'miou' in eval_cols or 'val_miou' in val_eval_cols:
-        ax = axes[plot_idx] if plot_idx < len(axes) else axes[0]
-        if 'miou' in eval_cols:
-            data = history_df[[x_col, 'miou']].dropna()
-            if len(data) > 0:
-                ax.plot(data[x_col], data['miou'], label='Train', marker='o', markersize=3, linewidth=2, alpha=0.8, color='blue')
-        if 'val_miou' in val_eval_cols:
-            data = history_df[[x_col, 'val_miou']].dropna()
-            if len(data) > 0:
-                ax.plot(data[x_col], data['val_miou'], label='Val', marker='s', markersize=3, linewidth=2, alpha=0.8, color='orange')
-        ax.set_xlabel(x_col.capitalize())
-        ax.set_ylabel('mIoU')
-        ax.set_title('mIoU (Higher is Better)', fontweight='bold')
-        ax.set_ylim([0, 1.05])
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        plot_idx += 1
-    
-    # Hide unused subplots
-    for idx in range(plot_idx, len(axes)):
-        axes[idx].axis('off')
-    
-    # Use tight_layout with error handling
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
-        try:
-            plt.tight_layout()
-        except Exception:
-            pass
-    
-    plot_path = output_dir / f"{exp_name}_evaluation_metrics.png"
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    print(f"  Saved evaluation metrics plot to: {plot_path}")
+        
+        # Set reasonable y-axis limits for certain metrics
+        if metric_name == 'miou' or metric_name == 'class_iou':
+            ax.set_ylim([0, 1.05])
+        elif metric_name == 'clip_score':
+            ax.set_ylim(bottom=0)
+        elif metric_name == 'fid':
+            # Only set upper limit if values are reasonable (< 1e6)
+            if val_data is not None and len(val_data_clean) > 0:
+                max_val = val_data_clean[cols['val']].max()
+                if max_val < 1e6:
+                    ax.set_ylim(bottom=0)
+        
+        # Use tight_layout with error handling
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+            try:
+                plt.tight_layout()
+            except Exception:
+                pass
+        
+        # Save individual plot
+        plot_path = output_dir / f"{exp_name}_metric_{metric_name}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  Saved {metric_display_name} plot to: {plot_path}")
 
 
 def plot_overall_iteration_metrics(output_dir, exp_name="diffusion"):

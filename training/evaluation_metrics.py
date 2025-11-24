@@ -347,12 +347,33 @@ def compute_fid(
         return float('inf')
     
     try:
-        # Compute mean and covariance
-        mu1 = real_features.mean(dim=0).numpy()
-        sigma1 = np.cov(real_features.numpy(), rowvar=False)
+        # Validate inputs
+        if real_features.shape[0] < 2 or fake_features.shape[0] < 2:
+            warnings.warn(f"FID requires at least 2 samples per set. Got {real_features.shape[0]} real and {fake_features.shape[0]} fake samples.")
+            return float('inf')
         
-        mu2 = fake_features.mean(dim=0).numpy()
-        sigma2 = np.cov(fake_features.numpy(), rowvar=False)
+        # Check for NaN or Inf values
+        if not torch.isfinite(real_features).all() or not torch.isfinite(fake_features).all():
+            warnings.warn("FID features contain NaN or Inf values. Skipping FID computation.")
+            return float('inf')
+        
+        # Convert to numpy
+        real_np = real_features.numpy()
+        fake_np = fake_features.numpy()
+        
+        # Compute mean and covariance
+        mu1 = real_np.mean(axis=0)
+        mu2 = fake_np.mean(axis=0)
+        
+        # Compute covariance with regularization to avoid singular matrices
+        # Add small epsilon to diagonal for numerical stability
+        eps = 1e-6
+        sigma1 = np.cov(real_np, rowvar=False)
+        sigma2 = np.cov(fake_np, rowvar=False)
+        
+        # Regularize covariance matrices
+        sigma1 += np.eye(sigma1.shape[0]) * eps
+        sigma2 += np.eye(sigma2.shape[0]) * eps
         
         # Compute FID
         diff = mu1 - mu2
@@ -361,15 +382,29 @@ def compute_fid(
         # Take real part (matrix square root can produce complex values)
         covmean = np.real(covmean)
         
+        # Check if covmean is valid
         if not np.isfinite(covmean).all():
-            # Add small epsilon to diagonal if singular
-            offset = np.eye(sigma1.shape[0]) * 1e-6
-            covmean, _ = linalg.sqrtm((sigma1 + offset) @ (sigma2 + offset))
+            # Try with larger regularization
+            eps = 1e-4
+            sigma1_reg = sigma1 + np.eye(sigma1.shape[0]) * eps
+            sigma2_reg = sigma2 + np.eye(sigma2.shape[0]) * eps
+            covmean, _ = linalg.sqrtm(sigma1_reg @ sigma2_reg, disp=False)
             covmean = np.real(covmean)
+        
+        # Final validation
+        if not np.isfinite(covmean).all():
+            warnings.warn("FID computation produced invalid covmean. Returning inf.")
+            return float('inf')
         
         fid = diff.dot(diff) + np.trace(sigma1 + sigma2 - 2 * covmean)
         # Ensure result is real and finite
         fid = np.real(fid)
+        
+        # Validate final result is reasonable (FID should typically be < 1000 for similar images)
+        if not np.isfinite(fid) or fid < 0 or fid > 1e6:
+            warnings.warn(f"FID computation produced unreasonable value: {fid}. This may indicate numerical issues.")
+            return float('inf')
+        
         return float(fid)
     except Exception as e:
         warnings.warn(f"FID computation failed: {e}")
