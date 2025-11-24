@@ -49,31 +49,31 @@ def vae_round_trip_test(vae_model, dataloader, device_obj, output_path):
     batch = move_batch_to_device(batch, device_obj)
     
     # Get RGB images from batch (we need RGB for VAE round trip)
+    # Dataset provides RGB in [-1, 1] range (normalized by dataset transforms)
     if "rgb" in batch:
-        original_images = batch["rgb"]
-        print(f"Using RGB images from batch: {original_images.shape}")
+        original_images_raw = batch["rgb"]
+        print(f"Using RGB images from batch: {original_images_raw.shape}")
+        print(f"  Original images range: [{original_images_raw.min().item():.3f}, {original_images_raw.max().item():.3f}]")
     elif "latent" in batch:
         # If we only have latents, decode them first to get RGB
         print("Only latents available in batch, decoding to get RGB...")
         with torch.no_grad():
             decoded = vae_model.decoder({"latent": batch["latent"]})
-            original_images = decoded.get("rgb", None)
-            if original_images is None:
+            original_images_raw = decoded.get("rgb", None)
+            if original_images_raw is None:
                 raise ValueError("Decoder did not return RGB")
-            # Normalize from [-1, 1] to [0, 1]
-            if original_images.min() < -0.1:
-                original_images = (original_images + 1.0) / 2.0
-            original_images = torch.clamp(original_images, 0.0, 1.0)
-        print(f"Decoded RGB images: {original_images.shape}")
+        print(f"Decoded RGB images: {original_images_raw.shape}")
+        print(f"  Decoded images range: [{original_images_raw.min().item():.3f}, {original_images_raw.max().item():.3f}]")
     else:
         raise ValueError("Batch must contain either 'rgb' or 'latent' for VAE round trip test")
     
     # VAE Round Trip: RGB -> Encode -> Latents -> Decode -> RGB
+    # VAE expects/returns images in [-1, 1] range (tanh activation)
     print("\nPerforming VAE round trip: RGB -> Encode -> Latents -> Decode -> RGB")
     
-    # Encode RGB to latents
+    # Encode RGB to latents (VAE encoder expects [-1, 1] range)
     with torch.no_grad():
-        encoder_out = vae_model.encode(original_images)
+        encoder_out = vae_model.encode(original_images_raw)
         if "latent" in encoder_out:
             latents = encoder_out["latent"]
         elif "mu" in encoder_out:
@@ -92,22 +92,26 @@ def vae_round_trip_test(vae_model, dataloader, device_obj, output_path):
     else:
         print(f"⚠ WARNING: Latent std ({latent_std:.6f}) is not close to 1.0 (expected ~1.0)")
     
-    # Decode latents back to RGB
+    # Decode latents back to RGB (VAE decoder outputs [-1, 1] range)
     with torch.no_grad():
         decoded = vae_model.decode({"latent": latents})
-        reconstructed_images = decoded.get("rgb", None)
-        if reconstructed_images is None:
+        reconstructed_images_raw = decoded.get("rgb", None)
+        if reconstructed_images_raw is None:
             raise ValueError("Decoder did not return RGB")
-        # Normalize from [-1, 1] to [0, 1]
-        if reconstructed_images.min() < -0.1:
-            reconstructed_images = (reconstructed_images + 1.0) / 2.0
-        reconstructed_images = torch.clamp(reconstructed_images, 0.0, 1.0)
     
-    print(f"Reconstructed images shape: {reconstructed_images.shape}")
+    print(f"Reconstructed images shape: {reconstructed_images_raw.shape}")
+    print(f"  Reconstructed images range: [{reconstructed_images_raw.min().item():.3f}, {reconstructed_images_raw.max().item():.3f}]")
     
-    # Compute reconstruction error
-    mse = torch.nn.functional.mse_loss(original_images, reconstructed_images).item()
-    print(f"Reconstruction MSE: {mse:.6f}")
+    # Compute reconstruction error in native [-1, 1] range (no extra normalization)
+    mse = torch.nn.functional.mse_loss(original_images_raw, reconstructed_images_raw).item()
+    print(f"Reconstruction MSE (in [-1, 1] range): {mse:.6f}")
+    
+    # Normalize both to [0, 1] only for visualization
+    # Convert from [-1, 1] to [0, 1] for matplotlib
+    original_images = (original_images_raw + 1.0) / 2.0
+    original_images = torch.clamp(original_images, 0.0, 1.0)
+    reconstructed_images = (reconstructed_images_raw + 1.0) / 2.0
+    reconstructed_images = torch.clamp(reconstructed_images, 0.0, 1.0)
     
     if mse < 0.01:
         print(f"✓ Excellent reconstruction (MSE < 0.01)")
