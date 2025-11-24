@@ -117,7 +117,7 @@ training:
   batch_size: 32
   learning_rate: 0.0001
   cfg_dropout_rate: 0.1      # Probability of dropping conditioning
-  guidance_scale: 3.0        # For inference
+  guidance_scale: 5.0        # For inference
 ```
 
 ### Experiment Variants
