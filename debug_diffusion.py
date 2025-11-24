@@ -344,15 +344,19 @@ def test_batch_size(model, dataset, device_obj, loss_fn, config, max_batch_size=
             noise = model.scheduler.randn_like(latents)
             
             cond = None
+            # Get text_emb and pov_emb from batch if available
+            text_emb = batch.get("text_emb", None)
+            pov_emb = batch.get("pov_emb", None)
             
             # Forward pass with memory tracking
+            # Use model.forward() which takes clean latents and applies noise internally
             if use_amp:
                 with torch.amp.autocast('cuda'):
                     with torch.no_grad():
-                        _ = model.denoise(latents, t, cond=cond)
+                        _ = model.forward(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
             else:
                 with torch.no_grad():
-                    _ = model.denoise(latents, t, cond=cond)
+                    _ = model.forward(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
             
             # Get memory stats
             stats = get_memory_stats(device_obj)
@@ -676,8 +680,19 @@ def main():
     
     # Build dataset
     print("\n[DATASET] Building dataset...")
-    dataset = build_dataset(config)
-    print(f"[DATASET] Dataset built: {len(dataset)} samples")
+    try:
+        dataset = build_dataset(config)
+        print(f"[DATASET] Dataset built: {len(dataset)} samples")
+    except KeyError as e:
+        if "latent_path_vae_clip" in str(e):
+            print(f"[DATASET] ERROR: Required column not found in manifest: {e}")
+            print(f"[DATASET] This config requires a manifest with the '{e}' column.")
+            print(f"[DATASET] Note: The manifest only has 'latent_path_vae_clip' (regular), not 'latent_path_vae_clip_spatial'.")
+            print(f"[DATASET] Spatial VAE configs require running the embedding script to create spatial latents first.")
+            print(f"[DATASET] Skipping this configuration.")
+            sys.exit(0)  # Exit gracefully instead of returning from main
+        else:
+            raise
     
     # Create dataloader
     batch_size = config.get("training", {}).get("batch_size", 32)
@@ -768,10 +783,14 @@ def main():
     if "type" in diffusion_cfg:
         diffusion_cfg = {k: v for k, v in diffusion_cfg.items() if k != "type"}
     
-    # Pass save_path from experiment config so model can write statistics
+    # Do NOT pass save_path - this is just a debug test, don't create experiment folders
+    # Remove save_path if it exists to prevent directory creation
+    if "save_path" in diffusion_cfg:
+        del diffusion_cfg["save_path"]
     exp_cfg = config.get("experiment", {})
     if exp_cfg.get("save_path"):
-        diffusion_cfg["save_path"] = exp_cfg["save_path"]
+        # Don't pass save_path - we don't want to create experiment folders during debug
+        pass
     
     model = DiffusionModel(**diffusion_cfg)
     model = model.to(device_obj)

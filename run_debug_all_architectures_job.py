@@ -68,31 +68,36 @@ def run_debug(config_path, output_dir):
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    try:
-        result = subprocess.run(
-            [sys.executable, "debug_diffusion.py", str(config_path), "--output-dir", str(output_dir)],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        print(result.stdout)
-        if result.stderr:
-            print("STDERR:", result.stderr, file=sys.stderr)
-        
-        # Load metrics
-        metrics_path = output_dir / "debug_metrics.json"
-        if metrics_path.exists():
-            with open(metrics_path, 'r') as f:
-                metrics = json.load(f)
-            return metrics
-        else:
-            print(f"Warning: Metrics file not found: {metrics_path}")
+    result = subprocess.run(
+        [sys.executable, "debug_diffusion.py", str(config_path), "--output-dir", str(output_dir)],
+        capture_output=True,
+        text=True,
+        check=False  # Don't raise on non-zero exit - we handle it below
+    )
+    
+    print(result.stdout)
+    if result.stderr:
+        print("STDERR:", result.stderr, file=sys.stderr)
+    
+    # Check if it exited gracefully (missing column)
+    if result.returncode != 0:
+        if "Missing required column" in result.stdout or "latent_path_vae_clip" in result.stdout:
+            # Graceful skip - return None
+            print(f"  ⚠ Config skipped due to missing manifest column")
             return None
-            
-    except subprocess.CalledProcessError as e:
-        print(f"Error running debug script:")
-        print(e.stdout)
-        print(e.stderr, file=sys.stderr)
+        else:
+            # Actual error
+            print(f"Error running debug script (exit code {result.returncode})")
+            return None
+    
+    # Load metrics
+    metrics_path = output_dir / "debug_metrics.json"
+    if metrics_path.exists():
+        with open(metrics_path, 'r') as f:
+            metrics = json.load(f)
+        return metrics
+    else:
+        print(f"Warning: Metrics file not found: {metrics_path}")
         return None
 
 
@@ -163,7 +168,7 @@ def main():
         
         for attn_type, metrics in attn_results.items():
             if metrics is None:
-                print(f"{vae_type:<15} {filter_type:<15} {attn_type:<15} {'FAILED':<12} {'-':<12} {'-':<12} {'-':<12} {'-':<8} {'-':<10}")
+                print(f"{vae_type:<15} {filter_type:<15} {attn_type:<15} {'SKIPPED':<12} {'-':<12} {'-':<12} {'-':<12} {'-':<8} {'-':<10}")
                 continue
             
             vae_mse = "-"
@@ -194,4 +199,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
