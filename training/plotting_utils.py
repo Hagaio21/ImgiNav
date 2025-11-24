@@ -711,12 +711,12 @@ def plot_evaluation_metrics(history_df, output_dir, exp_name="diffusion"):
         except Exception:
             pass
     
-        # Save individual plot
-        plot_path = output_dir / f"{exp_name}_metric_{metric_name}.png"
+    # Save individual plot
+    plot_path = output_dir / f"{exp_name}_metric_{metric_name}.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-        print(f"  Saved {metric_display_name} plot to: {plot_path}")
+    print(f"  Saved {metric_display_name} plot to: {plot_path}")
 
 
 def plot_overall_iteration_metrics(output_dir, exp_name="diffusion"):
