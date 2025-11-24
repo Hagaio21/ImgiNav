@@ -2,6 +2,8 @@
 # Debug script for diffusion training pipeline
 # Runs sanity checks (VAE round trip, noise schedule, overfit test) for all 3 model sizes
 
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 DEBUG_SCRIPT="${BASE_DIR}/debug_diffusion.py"
@@ -13,11 +15,41 @@ CONFIGS=(
     "experiments/diffusion/clip/regular_scenes/large_bottleneck.yaml"
 )
 
+# =============================================================================
+# MODULES
+# =============================================================================
+module load cuda/11.8
+module load cudnn/v8.6.0.163-prod-cuda-11.X
+export MKL_INTERFACE_LAYER=LP64
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# =============================================================================
+# CONDA ENV
+# =============================================================================
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+  source "$HOME/miniconda3/etc/profile.d/conda.sh"
+  conda activate imginav || {
+    echo "Failed to activate conda environment 'imginav'" >&2
+    conda activate scenefactor || {
+      echo "Failed to activate any conda environment" >&2
+      exit 1
+    }
+  }
+else
+  echo "WARNING: conda.sh not found, trying to activate environment anyway..." >&2
+  conda activate imginav || conda activate scenefactor || {
+    echo "ERROR: Failed to activate conda environment" >&2
+    exit 1
+  }
+fi
+
 echo "=============================================================================="
 echo "Debugging Diffusion Training Pipeline"
 echo "=============================================================================="
 echo "Running debug tests for ${#CONFIGS[@]} model sizes"
 echo "Date: $(date)"
+echo "Python: $(which python)"
+echo "Conda env: ${CONDA_DEFAULT_ENV:-unknown}"
 echo "=============================================================================="
 
 cd "${BASE_DIR}"
