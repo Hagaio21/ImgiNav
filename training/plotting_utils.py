@@ -693,7 +693,7 @@ def plot_evaluation_metrics(history_df, output_dir, exp_name="diffusion"):
         
         # Set reasonable y-axis limits for certain metrics
         if metric_name == 'miou' or metric_name == 'class_iou':
-        ax.set_ylim([0, 1.05])
+            ax.set_ylim([0, 1.05])
         elif metric_name == 'clip_score':
             ax.set_ylim(bottom=0)
         elif metric_name == 'fid':
