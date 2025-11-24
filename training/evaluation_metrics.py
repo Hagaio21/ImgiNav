@@ -587,29 +587,19 @@ def compute_evaluation_metrics(
                 # Get CLIP features for both
                 # IMPORTANT: pred_features = features from GENERATED images
                 #           gt_features = features from TARGET images
-                # Process images one at a time to avoid batch size mismatches from padding
-                pred_features_list = []
-                gt_features_list = []
-                
+                # Process in batches but ensure consistent sizing
                 with torch.no_grad():
-                    for i in range(B):
-                        # Process pred image
-                        pred_inputs = clip_processor(images=[pred_pil[i]], return_tensors="pt", padding=True)
-                        pred_inputs = {k: v.to(device) for k, v in pred_inputs.items()}
-                        pred_feat = clip_model.get_image_features(**pred_inputs)
-                        pred_feat = F.normalize(pred_feat, p=2, dim=1)
-                        pred_features_list.append(pred_feat)
-                        
-                        # Process gt image
-                        gt_inputs = clip_processor(images=[gt_pil[i]], return_tensors="pt", padding=True)
-                        gt_inputs = {k: v.to(device) for k, v in gt_inputs.items()}
-                        gt_feat = clip_model.get_image_features(**gt_inputs)
-                        gt_feat = F.normalize(gt_feat, p=2, dim=1)
-                        gt_features_list.append(gt_feat)
-                
-                # Concatenate features
-                pred_features = torch.cat(pred_features_list, dim=0)  # [B, D]
-                gt_features = torch.cat(gt_features_list, dim=0)  # [B, D]
+                    # Process pred images in batch
+                    pred_inputs = clip_processor(images=pred_pil, return_tensors="pt", padding=True)
+                    pred_inputs = {k: v.to(device) for k, v in pred_inputs.items()}
+                    pred_features = clip_model.get_image_features(**pred_inputs)
+                    pred_features = F.normalize(pred_features, p=2, dim=1)
+                    
+                    # Process gt images in batch
+                    gt_inputs = clip_processor(images=gt_pil, return_tensors="pt", padding=True)
+                    gt_inputs = {k: v.to(device) for k, v in gt_inputs.items()}
+                    gt_features = clip_model.get_image_features(**gt_inputs)
+                    gt_features = F.normalize(gt_features, p=2, dim=1)
                 
                 # Validate batch sizes match
                 if pred_features.shape[0] != gt_features.shape[0]:

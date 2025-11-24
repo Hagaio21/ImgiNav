@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 import sys
 import json
+import time
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -280,6 +281,7 @@ def train_epoch(
     optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False, cfg_dropout_rate=0.0, gradient_accumulation_steps=1
 ):
     """Train for one epoch using CompositeLoss."""
+    start_time = time.time()
     model.train()
     total_loss = 0.0
     total_samples = 0
@@ -456,6 +458,9 @@ def train_epoch(
     if scheduler:
         scheduler.step()
     
+    elapsed_time = time.time() - start_time
+    print(f"  Training epoch {epoch} completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+    
     return avg_loss, avg_logs
 
 
@@ -464,6 +469,7 @@ def eval_epoch(
     device, use_amp=False, taxonomy=None, compute_eval_metrics=True, guidance_scale=1.0, limit_val_batches=50
 ):
     """Evaluate for one epoch using CompositeLoss."""
+    start_time = time.time()
     model.eval()
     total_loss = 0.0
     total_samples = 0
@@ -526,8 +532,8 @@ def eval_epoch(
                 try:
                     with torch.no_grad():
                         # Generate conditioned samples for evaluation (like in save_samples)
-                        # For efficiency, only compute on a small subset
-                        eval_batch_size = min(16, batch_size)
+                        # For efficiency, only compute on a small subset (reduced from 16 to 8 for speed)
+                        eval_batch_size = min(8, batch_size)
                         
                         # Get conditioning from batch
                         eval_text_emb = batch.get("text_emb", None)
@@ -551,11 +557,11 @@ def eval_epoch(
                         # model.sample() starts from random noise and performs num_steps denoising steps
                         num_steps = model.scheduler.num_steps
                         
-                        print(f"  [DEBUG] Generating {eval_batch_size} samples using DDIM sampling (100 steps)")
+                        print(f"  [DEBUG] Generating {eval_batch_size} samples using DDIM sampling (50 steps)")
                         
                         conditioned_output = model.sample(
                             batch_size=eval_batch_size,
-                            num_steps=100,  # Use 100 steps for DDIM
+                            num_steps=50,  # Reduced from 100 to 50 for faster evaluation
                             method="ddim",
                             eta=0.0,
                             cond=None,
@@ -654,12 +660,13 @@ def eval_epoch(
                             # CRITICAL: Ensure we're passing them in the correct order
                             # pred_images = generated (should be noise-like if model is untrained)
                             # gt_images = targets (should be real floor plans)
+                            # Compute evaluation metrics (FID disabled for speed - requires 100+ samples)
                             eval_metrics = compute_evaluation_metrics(
                                 pred_images,  # GENERATED images (from model.sample())
                                 gt_images,    # TARGET images (from dataset)
                                 eval_text_emb, eval_pov_emb,
                                 taxonomy=taxonomy, device=device_obj,
-                                compute_clip=True, compute_fid=True, compute_miou=True
+                                compute_clip=True, compute_fid=False, compute_miou=True  # FID disabled - too few samples
                             )
                             
                             # Add pixel MSE to metrics for debugging
@@ -693,6 +700,9 @@ def eval_epoch(
     
     avg_loss = total_loss / total_samples
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
+    
+    elapsed_time = time.time() - start_time
+    print(f"  Evaluation epoch completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
     
     return avg_loss, avg_logs
 
