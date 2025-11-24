@@ -532,8 +532,8 @@ def eval_epoch(
                 try:
                     with torch.no_grad():
                         # Generate conditioned samples for evaluation (like in save_samples)
-                        # For efficiency, only compute on a small subset (reduced from 16 to 8 for speed)
-                        eval_batch_size = min(8, batch_size)
+                        # For efficiency, only compute on a small subset (reduced to 4 for speed)
+                        eval_batch_size = min(4, batch_size)
                         
                         # Get conditioning from batch
                         eval_text_emb = batch.get("text_emb", None)
@@ -1477,6 +1477,7 @@ def main():
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
+    metrics_interval = config["training"].get("metrics_interval", 100)  # Compute full metrics every N epochs
     use_non_uniform_sampling = config["training"].get("use_non_uniform_sampling", False)  # Default False for uniform sampling
     early_stopping_patience = config["training"].get("early_stopping_patience", None)
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
@@ -1494,6 +1495,9 @@ def main():
     print(f"  Mixed precision: {use_amp}")
     print(f"  Max grad norm: {max_grad_norm}")
     print(f"  Non-uniform timestep sampling: {use_non_uniform_sampling}")
+    print(f"  Evaluation interval: every {eval_interval} epochs")
+    print(f"  Sample generation interval: every {sample_interval} epochs")
+    print(f"  Metrics computation interval: every {metrics_interval} epochs")
     cfg_dropout_config = config.get("training", {}).get("cfg_dropout_rate", 0.0)
     guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
     if isinstance(cfg_dropout_config, dict):
@@ -1583,6 +1587,8 @@ def main():
         val_logs = {}
         # Always evaluate at epoch 1, then according to eval_interval
         should_eval = val_loader and ((epoch + 1 == 1) or ((epoch + 1) % eval_interval == 0))
+        # Compute full metrics (CLIP, mIoU, etc.) only at epoch 1 and every metrics_interval epochs
+        should_compute_metrics = should_eval and ((epoch + 1 == 1) or ((epoch + 1) % metrics_interval == 0))
         if should_eval:
             # Try to get taxonomy from dataset if available
             taxonomy = None
@@ -1596,7 +1602,7 @@ def main():
             
             val_loss, val_logs = eval_epoch(
                 model, val_loader, scheduler, loss_fn,
-                device_obj, use_amp=use_amp, taxonomy=taxonomy, compute_eval_metrics=True,
+                device_obj, use_amp=use_amp, taxonomy=taxonomy, compute_eval_metrics=should_compute_metrics,
                 guidance_scale=guidance_scale, limit_val_batches=50
             )
             print(f"Val Loss: {val_loss:.6f}")

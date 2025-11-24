@@ -689,6 +689,10 @@ def compute_evaluation_metrics(
         except Exception as e:
             warnings.warn(f"FID computation failed: {e}", exc_info=True)
     
+    # Initialize stored segmentations for reuse (will be populated by mIoU computation)
+    stored_pred_segs = None
+    stored_gt_segs = None
+    
     # mIoU (mean Intersection over Union) - Critical for geometric/spatial correctness
     # Since layouts are geometric, mIoU between generated and ground truth segmentation maps
     # provides a much more accurate assessment of spatial correctness than pixel-wise MSE.
@@ -730,6 +734,9 @@ def compute_evaluation_metrics(
             
             ious = []
             B = pred_images.shape[0]
+            # Store segmentations for reuse in Layout-specific metrics
+            stored_pred_segs = []
+            stored_gt_segs = []
             for i in range(B):
                 # Convert tensors to numpy arrays
                 pred_img = pred_images[i].cpu()
@@ -754,6 +761,10 @@ def compute_evaluation_metrics(
                 # Segment images to category maps
                 pred_seg = segmentor.segment(pred_np)
                 gt_seg = segmentor.segment(gt_np)
+                
+                # Store for reuse in Layout-specific metrics
+                stored_pred_segs.append(pred_seg)
+                stored_gt_segs.append(gt_seg)
                 
                 # Compute mean IoU across all classes
                 # IMPORTANT: pred_seg = segmentation of GENERATED images
@@ -848,34 +859,41 @@ def compute_evaluation_metrics(
         
         B = pred_images.shape[0]
         for i in range(B):
-            # Convert tensors to PIL Images
-            pred_img = pred_images[i].cpu()
-            gt_img = gt_images[i].cpu()
-            
-            # Convert from [C, H, W] to [H, W, C] and to uint8
-            if pred_img.shape[0] == 3:
-                pred_np = pred_img.permute(1, 2, 0).numpy()
-                gt_np = gt_img.permute(1, 2, 0).numpy()
+            # Reuse segmentations from mIoU computation if available, otherwise compute them
+            if stored_pred_segs is not None and stored_gt_segs is not None and i < len(stored_pred_segs):
+                # Reuse segmentations computed in mIoU block
+                pred_cat_ids = stored_pred_segs[i]
+                gt_cat_ids = stored_gt_segs[i]
             else:
-                pred_np = pred_img.numpy()
-                gt_np = gt_img.numpy()
-            
-            # Normalize to [0, 255] if needed
-            if pred_np.max() <= 1.0:
-                pred_np = (pred_np * 255).astype(np.uint8)
-                gt_np = (gt_np * 255).astype(np.uint8)
-            else:
-                pred_np = pred_np.astype(np.uint8)
-                gt_np = gt_np.astype(np.uint8)
-            
-            # Convert to PIL Images
-            pred_pil = Image.fromarray(pred_np)
-            gt_pil = Image.fromarray(gt_np)
-            
-            # Segment category-colored images to get category IDs, then convert to super-category colors
-            # LayoutSegmentor finds closest color for each pixel and assigns category ID
-            pred_cat_ids = category_segmentor.segment(pred_pil)  # (H, W) array of category IDs
-            gt_cat_ids = category_segmentor.segment(gt_pil)  # (H, W) array of category IDs
+                # Fallback: compute segmentations if mIoU computation didn't run or failed
+                # Convert tensors to PIL Images
+                pred_img = pred_images[i].cpu()
+                gt_img = gt_images[i].cpu()
+                
+                # Convert from [C, H, W] to [H, W, C] and to uint8
+                if pred_img.shape[0] == 3:
+                    pred_np = pred_img.permute(1, 2, 0).numpy()
+                    gt_np = gt_img.permute(1, 2, 0).numpy()
+                else:
+                    pred_np = pred_img.numpy()
+                    gt_np = gt_img.numpy()
+                
+                # Normalize to [0, 255] if needed
+                if pred_np.max() <= 1.0:
+                    pred_np = (pred_np * 255).astype(np.uint8)
+                    gt_np = (gt_np * 255).astype(np.uint8)
+                else:
+                    pred_np = pred_np.astype(np.uint8)
+                    gt_np = gt_np.astype(np.uint8)
+                
+                # Convert to PIL Images
+                pred_pil = Image.fromarray(pred_np)
+                gt_pil = Image.fromarray(gt_np)
+                
+                # Segment category-colored images to get category IDs, then convert to super-category colors
+                # LayoutSegmentor finds closest color for each pixel and assigns category ID
+                pred_cat_ids = category_segmentor.segment(pred_pil)  # (H, W) array of category IDs
+                gt_cat_ids = category_segmentor.segment(gt_pil)  # (H, W) array of category IDs
             
             # Compute pixel_class_l1 metric: L1 distance between normalized class ID histograms
             # This measures if the palette/area distribution matches the target
