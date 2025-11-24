@@ -506,29 +506,148 @@ def compute_evaluation_metrics(
     if device is None:
         device = pred_images.device if isinstance(pred_images, torch.Tensor) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # CLIP Score
+    # Validate inputs
+    if pred_images.shape != gt_images.shape:
+        raise ValueError(f"Image shape mismatch: pred_images {pred_images.shape} vs gt_images {gt_images.shape}")
+    
+    # Debug: Check if images are actually different (sanity check)
+    pixel_diff = torch.abs(pred_images - gt_images).mean().item()
+    if pixel_diff < 0.01:
+        warnings.warn(
+            f"WARNING: pred_images and gt_images are very similar (mean abs diff={pixel_diff:.6f}). "
+            f"Metrics may be unreliable. Pred range: [{pred_images.min().item():.3f}, {pred_images.max().item():.3f}], "
+            f"GT range: [{gt_images.min().item():.3f}, {gt_images.max().item():.3f}]"
+        )
+    
+    # CLIP Score - Compare generated images to ground truth images (image-to-image similarity)
+    # This is more meaningful than comparing to a generic text prompt
+    # IMPORTANT: pred_images = GENERATED, gt_images = TARGETS
+    # For bad generated images, CLIP score should be LOW (bad similarity)
     if compute_clip:
-        clip_metrics = compute_clip_score(pred_images, text_emb, pov_emb, device, use_text_prompt=True)
-        metrics.update(clip_metrics)
+        try:
+            # Compute CLIP features for both pred and gt images
+            clip_model, clip_processor = get_clip_model(device)
+            if clip_model is not None:
+                B = pred_images.shape[0]
+                
+                # Debug: Print image stats to verify we have the right images
+                pred_img_mean = pred_images.mean().item()
+                gt_img_mean = gt_images.mean().item()
+                print(f"  [DEBUG] CLIP computation:")
+                print(f"    pred_images (GENERATED) mean: {pred_img_mean:.3f}")
+                print(f"    gt_images (TARGETS) mean: {gt_img_mean:.3f}")
+                
+                # Convert images to PIL format
+                pred_pil = []
+                gt_pil = []
+                for i in range(B):
+                    pred_img = pred_images[i].cpu()
+                    gt_img = gt_images[i].cpu()
+                    
+                    # Normalize to [0, 1] if needed
+                    if pred_img.max() > 1.1:
+                        pred_img = pred_img / 255.0
+                    if gt_img.max() > 1.1:
+                        gt_img = gt_img / 255.0
+                    
+                    # Convert to numpy and PIL
+                    if pred_img.shape[0] == 3:
+                        pred_np = pred_img.permute(1, 2, 0).numpy()
+                        gt_np = gt_img.permute(1, 2, 0).numpy()
+                    else:
+                        pred_np = pred_img.numpy()
+                        gt_np = gt_img.numpy()
+                    
+                    pred_np = (pred_np * 255).astype(np.uint8)
+                    gt_np = (gt_np * 255).astype(np.uint8)
+                    pred_pil.append(Image.fromarray(pred_np))
+                    gt_pil.append(Image.fromarray(gt_np))
+                
+                # Get CLIP features for both
+                # IMPORTANT: pred_features = features from GENERATED images
+                #           gt_features = features from TARGET images
+                with torch.no_grad():
+                    pred_inputs = clip_processor(images=pred_pil, return_tensors="pt", padding=True)
+                    pred_inputs = {k: v.to(device) for k, v in pred_inputs.items()}
+                    pred_features = clip_model.get_image_features(**pred_inputs)
+                    pred_features = F.normalize(pred_features, p=2, dim=1)
+                    
+                    gt_inputs = clip_processor(images=gt_pil, return_tensors="pt", padding=True)
+                    gt_inputs = {k: v.to(device) for k, v in gt_inputs.items()}
+                    gt_features = clip_model.get_image_features(**gt_inputs)
+                    gt_features = F.normalize(gt_features, p=2, dim=1)
+                
+                # Compute cosine similarity between pred (GENERATED) and gt (TARGET) image features
+                # For bad generated images, this should be LOW (close to 0)
+                # For good generated images, this should be HIGH (close to 1)
+                clip_scores = (pred_features * gt_features).sum(dim=1)  # [B]
+                avg_clip_score = clip_scores.mean().item()
+                metrics["clip_score"] = avg_clip_score
+                
+                print(f"    CLIP score: {avg_clip_score:.6f} (higher is better, should be LOW for bad images)")
+        except Exception as e:
+            warnings.warn(f"CLIP score computation failed: {e}", exc_info=True)
     
     # FID (requires accumulating features across batches - this is a per-batch approximation)
     if compute_fid:
         try:
-            pred_features = compute_fid_features(pred_images, device)
-            gt_features = compute_fid_features(gt_images, device)
-            if pred_features is not None and gt_features is not None:
-                # Note: This is a per-batch FID, not the full dataset FID
-                # For accurate FID, you need to accumulate features across all validation batches
-                fid_score = compute_fid_func(gt_features, pred_features)
-                if np.isfinite(fid_score):
-                    metrics["fid"] = fid_score
-                else:
-                    warnings.warn(f"FID score is not finite: {fid_score}")
+            B = pred_images.shape[0]
+            
+            # FID requires sufficient samples for reliable statistics
+            # With very small batches, FID can be misleadingly low (appear "good" when it shouldn't)
+            # FID typically needs 1000+ samples for reliable estimates
+            if B < 16:
+                warnings.warn(
+                    f"FID computation skipped: batch size ({B}) is too small for reliable FID. "
+                    f"FID requires at least 16 samples per set (ideally 1000+). "
+                    f"With <16 samples, FID can be misleadingly low. "
+                    f"Consider accumulating features across all validation batches for accurate FID."
+                )
             else:
-                if pred_features is None:
-                    warnings.warn("FID computation skipped: pred_features is None (Inception model may not be available)")
-                if gt_features is None:
-                    warnings.warn("FID computation skipped: gt_features is None (Inception model may not be available)")
+                pred_features = compute_fid_features(pred_images, device)
+                gt_features = compute_fid_features(gt_images, device)
+                if pred_features is not None and gt_features is not None:
+                    # Debug: Check feature statistics
+                    pred_feat_mean = pred_features.mean(dim=0).mean().item()
+                    pred_feat_std = pred_features.std().item()
+                    gt_feat_mean = gt_features.mean(dim=0).mean().item()
+                    gt_feat_std = gt_features.std().item()
+                    
+                    # Compute feature distance as sanity check
+                    feat_diff = torch.norm(pred_features.mean(dim=0) - gt_features.mean(dim=0)).item()
+                    
+                    # Note: This is a per-batch FID, not the full dataset FID
+                    # For accurate FID, you need to accumulate features across all validation batches
+                    # With small batches, FID can be unreliable (may be misleadingly low)
+                    # IMPORTANT: gt_features = real (ground truth), pred_features = fake (generated)
+                    fid_score = compute_fid_func(gt_features, pred_features)
+                    if np.isfinite(fid_score):
+                        metrics["fid"] = fid_score
+                        
+                        # Debug output
+                        print(f"  [DEBUG] FID computation:")
+                        print(f"    GT features: mean={gt_feat_mean:.3f}, std={gt_feat_std:.3f}")
+                        print(f"    Pred features: mean={pred_feat_mean:.3f}, std={pred_feat_std:.3f}")
+                        print(f"    Feature mean distance: {feat_diff:.3f}")
+                        print(f"    FID score: {fid_score:.2f}")
+                        
+                        # Warn if FID seems suspiciously low for bad images
+                        # For noise vs real images, FID should typically be > 50-100
+                        if fid_score < 20.0:
+                            warnings.warn(
+                                f"FID score ({fid_score:.2f}) is suspiciously low. "
+                                f"For bad/generated images vs real images, FID should typically be > 50-100. "
+                                f"This may indicate: (1) small batch size ({B}) causing unreliable estimates, "
+                                f"(2) features are too similar (mean distance={feat_diff:.3f}), "
+                                f"or (3) images are being compared incorrectly."
+                            )
+                    else:
+                        warnings.warn(f"FID score is not finite: {fid_score}")
+                else:
+                    if pred_features is None:
+                        warnings.warn("FID computation skipped: pred_features is None (Inception model may not be available)")
+                    if gt_features is None:
+                        warnings.warn("FID computation skipped: gt_features is None (Inception model may not be available)")
         except Exception as e:
             warnings.warn(f"FID computation failed: {e}", exc_info=True)
     
@@ -566,6 +685,11 @@ def compute_evaluation_metrics(
             from data_preparation.utils.layout_analysis import LayoutSegmentor
             segmentor = LayoutSegmentor(taxonomy_obj, mode="category")
             
+            # Debug: Verify we're comparing the right images
+            print(f"  [DEBUG] mIoU computation:")
+            print(f"    pred_images (GENERATED) mean: {pred_images.mean().item():.3f}")
+            print(f"    gt_images (TARGETS) mean: {gt_images.mean().item():.3f}")
+            
             ious = []
             B = pred_images.shape[0]
             for i in range(B):
@@ -594,11 +718,17 @@ def compute_evaluation_metrics(
                 gt_seg = segmentor.segment(gt_np)
                 
                 # Compute mean IoU across all classes
+                # IMPORTANT: pred_seg = segmentation of GENERATED images
+                #           gt_seg = segmentation of TARGET images
+                # For bad generated images, mIoU should be LOW (close to 0)
+                # For good generated images, mIoU should be HIGH (close to 1)
                 iou = compute_miou_func(pred_seg, gt_seg)
                 ious.append(iou)
             
             if len(ious) > 0:
-                metrics["miou"] = float(np.mean(ious))
+                avg_miou = float(np.mean(ious))
+                metrics["miou"] = avg_miou
+                print(f"    mIoU: {avg_miou:.6f} (higher is better, should be LOW for bad images)")
             else:
                 warnings.warn("mIoU computation skipped: no valid IoU values computed")
         except Exception as e:

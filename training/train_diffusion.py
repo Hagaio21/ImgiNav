@@ -538,12 +538,17 @@ def eval_epoch(
                         # Get target latents for comparison
                         target_latents = latents[:eval_batch_size]
                         
-                        # Generate conditioned samples using full sampling process
+                        # CRITICAL: Generate completely new images using FULL sampling process
+                        # This performs the complete DDPM reverse process: noise -> denoised image
+                        # We do NOT use single-step denoised latents from the training forward pass!
+                        # model.sample() starts from random noise and performs num_steps denoising steps
                         num_steps = model.scheduler.num_steps
+                        
+                        print(f"  [DEBUG] Generating {eval_batch_size} samples using FULL sampling process ({num_steps} steps)")
                         
                         conditioned_output = model.sample(
                             batch_size=eval_batch_size,
-                            num_steps=num_steps,
+                            num_steps=num_steps,  # Full sampling: all steps from noise to final image
                             method="ddpm",
                             eta=1.0,
                             cond=None,
@@ -554,35 +559,109 @@ def eval_epoch(
                             verbose=False
                         )
                         
+                        print(f"  [DEBUG] Full sampling complete. Generated latents shape: {conditioned_output.get('latent', 'N/A').shape if 'latent' in conditioned_output else 'N/A'}")
+                        
+                        # Verify that generated latents are different from target latents
+                        if "latent" in conditioned_output:
+                            gen_latents = conditioned_output["latent"]
+                            latent_diff = torch.abs(gen_latents - target_latents).mean().item()
+                            if latent_diff < 0.01:
+                                raise RuntimeError(
+                                    f"BUG: Generated latents are identical to target latents (diff={latent_diff:.6f})! "
+                                    f"This suggests model.sample() is not working correctly or is using target latents."
+                                )
+                            print(f"  [DEBUG] Latent comparison: mean abs diff={latent_diff:.6f}")
+                        
                         # Decode generated samples
+                        # Note: model.sample() may return rgb already normalized to [0, 1]
                         if "rgb" in conditioned_output:
-                            pred_images = conditioned_output["rgb"]
-                            if pred_images.min() < 0:
+                            pred_images = conditioned_output["rgb"].clone()
+                            # Ensure in [0, 1] range
+                            if pred_images.min() < -0.1:  # Likely in [-1, 1] range
                                 pred_images = (pred_images + 1.0) / 2.0
                             pred_images = torch.clamp(pred_images, 0.0, 1.0)
                         else:
                             pred_decoded = model.decoder({"latent": conditioned_output["latent"]})
                             pred_images = pred_decoded.get("rgb", None)
                             if pred_images is not None:
-                                if pred_images.min() < 0:
+                                # Decoder typically outputs in [-1, 1] range
+                                if pred_images.min() < -0.1:
                                     pred_images = (pred_images + 1.0) / 2.0
                                 pred_images = torch.clamp(pred_images, 0.0, 1.0)
                         
                         # Decode target latents to get ground truth images
+                        # These are the actual ground truth latents from the dataset
                         gt_decoded = model.decoder({"latent": target_latents})
                         gt_images = gt_decoded.get("rgb", None)
                         if gt_images is not None:
-                            if gt_images.min() < 0:
+                            # Decoder typically outputs in [-1, 1] range
+                            if gt_images.min() < -0.1:
                                 gt_images = (gt_images + 1.0) / 2.0
                             gt_images = torch.clamp(gt_images, 0.0, 1.0)
                         
+                        # CRITICAL: Verify we have different images
                         if pred_images is not None and gt_images is not None:
+                            # Check if images are identical (would indicate a bug)
+                            if torch.allclose(pred_images, gt_images, atol=1e-5):
+                                raise RuntimeError(
+                                    "BUG: Generated images and target images are identical! "
+                                    "This should never happen. Check if images are being swapped."
+                                )
+                        
+                        if pred_images is not None and gt_images is not None:
+                            # Sanity check: compute pixel-wise MSE to verify images are different
+                            pixel_mse = torch.nn.functional.mse_loss(pred_images, gt_images).item()
+                            
+                            # Debug: print image statistics
+                            pred_mean = pred_images.mean().item()
+                            pred_std = pred_images.std().item()
+                            pred_min = pred_images.min().item()
+                            pred_max = pred_images.max().item()
+                            gt_mean = gt_images.mean().item()
+                            gt_std = gt_images.std().item()
+                            gt_min = gt_images.min().item()
+                            gt_max = gt_images.max().item()
+                            
+                            # Print debug info
+                            print(f"  [DEBUG] Image comparison:")
+                            print(f"    Pred: mean={pred_mean:.3f}, std={pred_std:.3f}, range=[{pred_min:.3f}, {pred_max:.3f}]")
+                            print(f"    GT:   mean={gt_mean:.3f}, std={gt_std:.3f}, range=[{gt_min:.3f}, {gt_max:.3f}]")
+                            print(f"    Pixel MSE: {pixel_mse:.6f}")
+                            
+                            # If images are too similar (MSE < 0.01), something is wrong
+                            if pixel_mse < 0.01:
+                                warnings.warn(
+                                    f"WARNING: Generated and target images are very similar (MSE={pixel_mse:.6f}). "
+                                    f"This suggests a bug - images may be swapped or identical. "
+                                    f"Pred stats: mean={pred_mean:.3f}, std={pred_std:.3f}, "
+                                    f"GT stats: mean={gt_mean:.3f}, std={gt_std:.3f}"
+                                )
+                            
                             # Compute evaluation metrics between conditioned samples and targets
+                            # IMPORTANT: pred_images = GENERATED (from model.sample()), gt_images = TARGETS (from dataset)
+                            # Verify order is correct before computing metrics
+                            print(f"  [DEBUG] Computing metrics:")
+                            print(f"    pred_images shape: {pred_images.shape}, mean: {pred_images.mean().item():.3f}")
+                            print(f"    gt_images shape: {gt_images.shape}, mean: {gt_images.mean().item():.3f}")
+                            
+                            # CRITICAL: Ensure we're passing them in the correct order
+                            # pred_images = generated (should be noise-like if model is untrained)
+                            # gt_images = targets (should be real floor plans)
                             eval_metrics = compute_evaluation_metrics(
-                                pred_images, gt_images, eval_text_emb, eval_pov_emb,
+                                pred_images,  # GENERATED images (from model.sample())
+                                gt_images,    # TARGET images (from dataset)
+                                eval_text_emb, eval_pov_emb,
                                 taxonomy=taxonomy, device=device_obj,
                                 compute_clip=True, compute_fid=True, compute_miou=True
                             )
+                            
+                            # Add pixel MSE to metrics for debugging
+                            eval_metrics["pixel_mse"] = pixel_mse
+                            
+                            # Print metric values for debugging
+                            print(f"  [DEBUG] Computed metrics:")
+                            for k, v in eval_metrics.items():
+                                print(f"    {k}: {v:.6f}")
                             
                             # Add to logs (weighted by eval batch size)
                             for k, v in eval_metrics.items():
@@ -1485,7 +1564,9 @@ def main():
         # Validate
         val_loss = float("inf")
         val_logs = {}
-        if val_loader and (epoch + 1) % eval_interval == 0:
+        # Always evaluate at epoch 1, then according to eval_interval
+        should_eval = val_loader and ((epoch + 1 == 1) or ((epoch + 1) % eval_interval == 0))
+        if should_eval:
             # Try to get taxonomy from dataset if available
             taxonomy = None
             if hasattr(val_loader.dataset, 'taxonomy'):
@@ -1531,7 +1612,8 @@ def main():
             save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale, cfg_dropout_rate=cfg_dropout_rate)
         
         # Save checkpoint (is_best was already determined above if validation ran)
-        if val_loader and (epoch + 1) % eval_interval == 0:
+        # Use same condition as evaluation: always at epoch 1, then according to eval_interval
+        if should_eval:
             # is_best already determined above
             pass
         else:

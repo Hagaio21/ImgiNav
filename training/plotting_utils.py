@@ -693,7 +693,7 @@ def plot_evaluation_metrics(history_df, output_dir, exp_name="diffusion"):
         
         # Set reasonable y-axis limits for certain metrics
         if metric_name == 'miou' or metric_name == 'class_iou':
-            ax.set_ylim([0, 1.05])
+        ax.set_ylim([0, 1.05])
         elif metric_name == 'clip_score':
             ax.set_ylim(bottom=0)
         elif metric_name == 'fid':
@@ -702,20 +702,20 @@ def plot_evaluation_metrics(history_df, output_dir, exp_name="diffusion"):
                 max_val = val_data_clean[cols['val']].max()
                 if max_val < 1e6:
                     ax.set_ylim(bottom=0)
-        
-        # Use tight_layout with error handling
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
-            try:
-                plt.tight_layout()
-            except Exception:
-                pass
-        
+    
+    # Use tight_layout with error handling
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*tight_layout.*')
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass
+    
         # Save individual plot
         plot_path = output_dir / f"{exp_name}_metric_{metric_name}.png"
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
         print(f"  Saved {metric_display_name} plot to: {plot_path}")
 
 
