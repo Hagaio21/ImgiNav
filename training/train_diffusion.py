@@ -90,74 +90,6 @@ def load_vae_metadata(ae_checkpoint_path):
     return None
 
 
-def calculate_scale_factor_from_dataset(dataset, num_samples=100, seed=42):
-    """
-    Calculate scale_factor from dataset latents.
-    
-    Samples random latents from the dataset and calculates their global standard deviation.
-    Returns scale_factor = 1.0 / std to normalize latents to unit variance.
-    
-    Args:
-        dataset: Dataset with 'latent' key in samples
-        num_samples: Number of random samples to use (default: 100)
-        seed: Random seed for reproducibility
-    
-    Returns:
-        float: scale_factor (1.0 / std)
-    """
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    
-    # Sample random indices
-    dataset_size = len(dataset)
-    num_samples = min(num_samples, dataset_size)
-    sampled_indices = random.sample(range(dataset_size), num_samples)
-    
-    print(f"Calculating scale_factor from {num_samples} random latents...")
-    
-    all_latent_values = []
-    loaded_count = 0
-    
-    for idx in tqdm(sampled_indices, desc="Loading latents"):
-        try:
-            sample = dataset[idx]
-            latents = sample.get("latent")
-            if latents is None:
-                continue
-            
-            # Convert to numpy and flatten
-            if isinstance(latents, torch.Tensor):
-                latent_np = latents.cpu().numpy()
-            else:
-                latent_np = np.array(latents)
-            
-            # Flatten to 1D array
-            latent_flat = latent_np.flatten()
-            all_latent_values.append(latent_flat)
-            loaded_count += 1
-        except Exception as e:
-            print(f"Warning: Failed to load sample {idx}: {e}")
-            continue
-    
-    if loaded_count == 0:
-        raise RuntimeError("Failed to load any latents from dataset")
-    
-    # Concatenate all latents and calculate global statistics
-    all_latents = np.concatenate(all_latent_values)
-    
-    mean = np.mean(all_latents)
-    std = np.std(all_latents)
-    
-    # Calculate scale factor (1.0 / std to normalize to unit variance)
-    scale_factor = 1.0 / std if std > 0 else 1.0
-    
-    print(f"  Loaded {loaded_count} latents")
-    print(f"  Mean: {mean:.6f}, Std: {std:.6f}")
-    print(f"  Calculated scale_factor: {scale_factor:.6f}")
-    
-    return scale_factor
 
 
 
@@ -196,23 +128,13 @@ def compute_loss(
     text_emb = batch.get("text_emb", None)
     pov_emb = batch.get("pov_emb", None)
     
-    # Store original embeddings for evaluation metrics (before CFG dropout and flattening)
-    text_emb_orig = text_emb.clone() if text_emb is not None else None
-    pov_emb_orig = pov_emb.clone() if pov_emb is not None else None
-    
-    # Ensure embeddings are 1D (flatten if needed)
+    # Ensure embeddings are 1D (flatten if needed) - optimized: only clone if needed
     if text_emb is not None:
         if text_emb.dim() > 1:
             text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
     if pov_emb is not None:
         if pov_emb.dim() > 1:
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
-    
-    # Also flatten original embeddings for evaluation metrics
-    if text_emb_orig is not None and text_emb_orig.dim() > 1:
-        text_emb_orig = text_emb_orig.flatten(start_dim=1)
-    if pov_emb_orig is not None and pov_emb_orig.dim() > 1:
-        pov_emb_orig = pov_emb_orig.flatten(start_dim=1)
     
     # Apply CFG dropout for conditioning signal C (randomly drop entire conditioning with cfg_dropout_rate probability)
     # C = [c_pov, c_graph] but CFG doesn't care about structure - it drops the entire conditioning signal
@@ -227,23 +149,8 @@ def compute_loss(
     # Forward pass through model
     outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
     
-    # Store latents for evaluation metrics (if needed)
-    pred_latents = None
-    if compute_eval_metrics and not cfg_dropped:
-        with torch.no_grad():
-            # Get noisy latents from scheduler
-            noisy_latents = outputs.get("noisy_latent", None)
-            if noisy_latents is None:
-                # Reconstruct noisy latents if not in outputs
-                alpha_bars = model.scheduler.alpha_bars.to(device_obj)
-                alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)  # [B, 1, 1, 1]
-                noisy_latents = alpha_bar.sqrt() * latents + (1 - alpha_bar).sqrt() * noise
-            
-            # Predict clean latents: x0 = (x_t - sqrt(1 - alpha_bar) * epsilon_pred) / sqrt(alpha_bar)
-            alpha_bars = model.scheduler.alpha_bars.to(device_obj)
-            alpha_bar = alpha_bars[t].view(-1, 1, 1, 1)
-            pred_latents = (noisy_latents - (1 - alpha_bar).sqrt() * outputs["pred_noise"]) / alpha_bar.sqrt().clamp(min=1e-8)
-            pred_latents = torch.clamp(pred_latents, -6.0, 6.0)
+    # Note: Evaluation metrics computation removed from compute_loss for speed
+    # Metrics are computed separately in eval_epoch when needed
     
     # Prepare preds dict for loss computation
     preds = {
@@ -264,15 +171,6 @@ def compute_loss(
     else:
         total_loss, logs = loss_fn(preds, targets)
     
-    # Store latents for evaluation metrics if requested and conditions weren't dropped
-    # Note: These metrics require decoded images, so they're computed in eval_epoch
-    if compute_eval_metrics and not cfg_dropped and pred_latents is not None:
-        # Store in outputs dict (will be extracted in eval_epoch)
-        outputs["pred_latents"] = pred_latents
-        outputs["gt_latents"] = latents
-        outputs["text_emb_orig"] = text_emb_orig
-        outputs["pov_emb_orig"] = pov_emb_orig
-    
     return total_loss, logs
 
 
@@ -281,6 +179,7 @@ def train_epoch(
     optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False, cfg_dropout_rate=0.0, gradient_accumulation_steps=1
 ):
     """Train for one epoch using CompositeLoss."""
+    print(f"[TRAIN] Starting training epoch {epoch}...")
     start_time = time.time()
     model.train()
     total_loss = 0.0
@@ -293,8 +192,9 @@ def train_epoch(
     for batch_idx, batch in enumerate(pbar):
         batch = move_batch_to_device(batch, device_obj)
         
-        # Verify CLIP projections are being used on first batch of first epoch
+        # Verify CLIP projections are being used on first batch of first epoch (optimized: only check once)
         if epoch == 1 and batch_idx == 0:
+            print("[TRAIN] Verifying CLIP projections on first batch...")
             from models.components.embedding_projection import CLIPEmbeddingToSpatial
             if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
                 if isinstance(model.embedding_proj, CLIPEmbeddingToSpatial):
@@ -311,18 +211,11 @@ def train_epoch(
                         with torch.no_grad():
                             try:
                                 spatial_features = model.embedding_proj(text_emb[:1], pov_emb[:1])
-                                print(f"\n[CLIP Verification] ✓ CLIP projections used in forward pass")
-                                print(f"  - Input text_emb shape: {text_emb[:1].shape}")
-                                print(f"  - Input pov_emb shape: {pov_emb[:1].shape}")
-                                print(f"  - Output spatial features shape: {spatial_features.shape}")
-                                
-                                # Verify the projections are the same instance
-                                if hasattr(model.embedding_proj, 'clip_projections'):
-                                    clip_proj = model.embedding_proj.clip_projections
-                                    print(f"  - CLIP projection dim: {clip_proj.projection_dim}")
-                                    print(f"  - Using CLIP-aligned embeddings: ✓")
+                                print(f"[TRAIN] [CLIP] ✓ CLIP projections verified")
+                                print(f"  Input text_emb shape: {text_emb[:1].shape}, pov_emb shape: {pov_emb[:1].shape}")
+                                print(f"  Output spatial features shape: {spatial_features.shape}")
                             except Exception as e:
-                                print(f"\n[CLIP Verification] ✗ ERROR: CLIP projections failed in forward pass: {e}")
+                                print(f"[TRAIN] [CLIP] ✗ ERROR: CLIP projections failed: {e}")
         
         # Get latents
         latents = batch.get("latent")
@@ -459,7 +352,7 @@ def train_epoch(
         scheduler.step()
     
     elapsed_time = time.time() - start_time
-    print(f"  Training epoch {epoch} completed in {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+    print(f"[TRAIN] Epoch {epoch} completed in {elapsed_time:.2f}s ({elapsed_time/60:.2f} min)")
     
     return avg_loss, avg_logs
 
@@ -469,8 +362,8 @@ def eval_epoch(
     device, use_amp=False, taxonomy=None, compute_eval_metrics=True, guidance_scale=1.0, limit_val_batches=50
 ):
     """Evaluate for one epoch using CompositeLoss."""
+    print(f"[EVAL] Starting evaluation epoch (compute_eval_metrics={compute_eval_metrics})...")
     start_time = time.time()
-    print(f"  [EVAL] Starting evaluation epoch (compute_eval_metrics={compute_eval_metrics})")
     model.eval()
     total_loss = 0.0
     total_samples = 0
@@ -481,7 +374,7 @@ def eval_epoch(
     # Determine the actual number of batches to process
     total_batches = len(dataloader)
     num_batches = min(limit_val_batches, total_batches) if limit_val_batches is not None else total_batches
-    print(f"  [EVAL] Processing {num_batches} batches (limit_val_batches={limit_val_batches})")
+    print(f"[EVAL] Processing {num_batches}/{total_batches} batches (limit={limit_val_batches})")
     
     loss_compute_time = 0.0
     metrics_compute_time = 0.0
@@ -537,7 +430,7 @@ def eval_epoch(
             # Compute evaluation metrics if requested (only on first batch to avoid overhead)
             if compute_eval_metrics and batch_idx == 0:
                 metrics_start_time = time.time()
-                print(f"  [EVAL] Starting metrics computation on batch {batch_idx}...")
+                print(f"[EVAL] [METRICS] Computing metrics on batch {batch_idx}...")
                 try:
                     with torch.no_grad():
                         # Generate conditioned samples for evaluation (like in save_samples)
@@ -565,7 +458,7 @@ def eval_epoch(
                         print(f"  [EVAL] [METRICS] Target latent shape: {target_latents.shape}, using shape {current_latent_shape} for generation")
                         
                         # CRITICAL: Generate completely new images using FULL sampling process
-                        # This performs the complete DDPM reverse process: noise -> denoised image
+                        # This performs the complete DDIM reverse process: noise -> denoised image
                         # We do NOT use single-step denoised latents from the training forward pass!
                         # model.sample() starts from random noise and performs num_steps denoising steps
                         num_steps = model.scheduler.num_steps
@@ -765,11 +658,12 @@ def eval_epoch(
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
     
     elapsed_time = time.time() - start_time
-    print(f"  [EVAL] Evaluation epoch breakdown:")
-    print(f"    Loss computation: {loss_compute_time:.2f}s ({loss_compute_time/elapsed_time*100:.1f}%)")
+    print(f"[EVAL] Evaluation completed in {elapsed_time:.2f}s ({elapsed_time/60:.2f} min)")
+    print(f"[EVAL] Breakdown: Loss={loss_compute_time:.2f}s ({loss_compute_time/elapsed_time*100:.1f}%)", end="")
     if compute_eval_metrics:
-        print(f"    Metrics computation: {metrics_compute_time:.2f}s ({metrics_compute_time/elapsed_time*100:.1f}%)")
-    print(f"    Total time: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+        print(f", Metrics={metrics_compute_time:.2f}s ({metrics_compute_time/elapsed_time*100:.1f}%)")
+    else:
+        print()
     
     return avg_loss, avg_logs
 
@@ -781,6 +675,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     - Unconditioned samples: 4x4 grid (16 samples)
     - Targets vs Generated comparison: side-by-side comparison from validation batch
     """
+    print(f"[SAMPLES] Starting sample generation for epoch {epoch}...")
     model.eval()
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
@@ -798,7 +693,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # ============================================================================
     # Part 1: Generate unconditioned samples (4x4 grid)
     # ============================================================================
-    print(f"  Generating 16 unconditioned samples (4x4 grid) using DDPM ({num_steps} steps)...")
+    print(f"  [SAMPLING] Generating 16 unconditioned samples (4x4 grid) using DDIM ({num_steps} steps)...")
     
     sampling_seed = 42 + epoch
     torch.manual_seed(sampling_seed)
@@ -809,8 +704,8 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         unconditioned_output = model.sample(
             batch_size=16,  # Keep 4x4 grid for unconditioned
             num_steps=num_steps,
-            method="ddpm",
-            eta=1.0,
+            method="ddim",
+            eta=0.0,
             cond=None,
             guidance_scale=1.0,
             text_emb=None,
@@ -961,15 +856,15 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             print("  Warning: Decoder did not produce RGB output for targets")
             target_rgb = None
     
-    # Generate conditioned samples using DDPM
-    print(f"  Generating {batch_size} conditioned samples using DDPM ({num_steps} steps)...")
+    # Generate conditioned samples using DDIM
+    print(f"  [SAMPLING] Generating {batch_size} conditioned samples using DDIM ({num_steps} steps)...")
     
     with torch.no_grad():
         conditioned_output = model.sample(
             batch_size=batch_size,
             num_steps=num_steps,
-            method="ddpm",
-            eta=1.0,
+            method="ddim",
+            eta=0.0,
             cond=cond,
             guidance_scale=guidance_scale,
             text_emb=text_emb,
@@ -1179,80 +1074,68 @@ def main():
     metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
     
     # Build dataset
-    print("Building dataset...")
+    print("[DATASET] Building dataset...")
     dataset = build_dataset(config)
+    print(f"[DATASET] Dataset built: {len(dataset)} samples")
     
     # Build validation dataset
+    print("[DATASET] Splitting dataset into train/val...")
     train_dataset, val_dataset = split_dataset(dataset, config["training"])
+    print(f"[DATASET] Train: {len(train_dataset)} samples, Val: {len(val_dataset) if val_dataset else 0} samples")
     
     device_obj = to_device(device)
     
     # Try to load VAE metadata first (if autoencoder checkpoint is specified)
+    print("[VAE_METADATA] Checking for VAE metadata file...")
     vae_metadata = None
     ae_cfg = config.get("autoencoder") or config.get("diffusion", {}).get("autoencoder")
     if ae_cfg and isinstance(ae_cfg, dict):
         ae_checkpoint = ae_cfg.get("checkpoint")
         if ae_checkpoint:
-            print("\nChecking for VAE metadata file...")
             vae_metadata = load_vae_metadata(ae_checkpoint)
             if vae_metadata:
-                print(f"  Found VAE metadata file")
+                print(f"[VAE_METADATA] Found VAE metadata file")
                 if vae_metadata.get("scale_factor"):
-                    print(f"    scale_factor: {vae_metadata['scale_factor']:.6f}")
+                    print(f"  scale_factor: {vae_metadata['scale_factor']:.6f}")
                 if vae_metadata.get("latent_clamp_min") is not None:
-                    print(f"    latent_clamp_min: {vae_metadata['latent_clamp_min']:.6f}")
+                    print(f"  latent_clamp_min: {vae_metadata['latent_clamp_min']:.6f}")
                 if vae_metadata.get("latent_clamp_max") is not None:
-                    print(f"    latent_clamp_max: {vae_metadata['latent_clamp_max']:.6f}")
+                    print(f"  latent_clamp_max: {vae_metadata['latent_clamp_max']:.6f}")
             else:
-                print("  No VAE metadata file found")
+                print("[VAE_METADATA] No VAE metadata file found")
+    else:
+        print("[VAE_METADATA] No autoencoder checkpoint specified")
     
-    # Calculate scale_factor if not provided in config
+    # Get scale_factor from config or VAE metadata (should be part of VAE statistics)
     # Check both diffusion section and top-level config
     diffusion_cfg = config.get("diffusion", {})
     if not diffusion_cfg:
         diffusion_cfg = {}
     
-    # Priority: config > VAE metadata > calculate from dataset
+    # Priority: config > VAE metadata
     scale_factor = diffusion_cfg.get("scale_factor") or config.get("scale_factor")
     
     if scale_factor is None:
         # Try VAE metadata
         if vae_metadata and vae_metadata.get("scale_factor") is not None:
             scale_factor = vae_metadata["scale_factor"]
-            print(f"\nUsing scale_factor from VAE metadata: {scale_factor:.6f}")
+            print(f"\n[SCALE_FACTOR] Using scale_factor from VAE metadata: {scale_factor:.6f}")
             # Add to config for model building
             if "diffusion" in config:
                 config["diffusion"]["scale_factor"] = scale_factor
             else:
                 config["scale_factor"] = scale_factor
         else:
-            print("\n" + "="*60)
-            print("scale_factor not found in config or VAE metadata - calculating automatically from dataset")
-            print("="*60)
-            try:
-                scale_factor = calculate_scale_factor_from_dataset(
-                    train_dataset,
-                    num_samples=config.get("training", {}).get("scale_factor_samples", 100),
-                    seed=config.get("training", {}).get("seed", 42)
-                )
-                # Add to config for model building
-                if "diffusion" in config:
-                    config["diffusion"]["scale_factor"] = scale_factor
-                else:
-                    config["scale_factor"] = scale_factor
-                print(f"  Auto-calculated scale_factor: {scale_factor:.6f}")
-                print("  (Add this to your config to avoid recalculating)")
-                print("="*60 + "\n")
-            except Exception as e:
-                print(f"Warning: Failed to calculate scale_factor automatically: {e}")
-                print("  Using default scale_factor=1.0 (no scaling)")
-                scale_factor = 1.0
-                if "diffusion" in config:
-                    config["diffusion"]["scale_factor"] = scale_factor
-                else:
-                    config["scale_factor"] = scale_factor
+            print("\n[SCALE_FACTOR] WARNING: scale_factor not found in config or VAE metadata")
+            print("  Using default scale_factor=1.0 (no scaling)")
+            print("  Note: scale_factor should be calculated as part of VAE statistics")
+            scale_factor = 1.0
+            if "diffusion" in config:
+                config["diffusion"]["scale_factor"] = scale_factor
+            else:
+                config["scale_factor"] = scale_factor
     else:
-        print(f"\nUsing scale_factor from config: {scale_factor}")
+        print(f"\n[SCALE_FACTOR] Using scale_factor from config: {scale_factor}")
     
     # Load latent_clamp values (priority: config > VAE metadata > defaults)
     latent_clamp_min = config.get("latent_clamp_min")
@@ -1272,11 +1155,12 @@ def main():
     should_resume = not args.no_resume and latest_checkpoint.exists()
     
     # Load checkpoint (Stage 1, Stage 2, or resume)
+    print("[MODEL] Loading model...")
     stage1_checkpoint = config.get("diffusion", {}).get("stage1_checkpoint")
     stage2_checkpoint = config.get("diffusion", {}).get("stage2_checkpoint")
     
     if stage2_checkpoint and not should_resume:
-        print(f"\nLoading Stage 2 checkpoint from: {stage2_checkpoint}")
+        print(f"[MODEL] Loading Stage 2 checkpoint from: {stage2_checkpoint}")
         model, _ = DiffusionModel.load_checkpoint(
             stage2_checkpoint,
             map_location=device,
@@ -1284,9 +1168,9 @@ def main():
             config=config
         )
         model = model.to(device_obj)
-        print("Stage 2 checkpoint loaded successfully")
+        print("[MODEL] Stage 2 checkpoint loaded successfully")
     elif stage1_checkpoint and not should_resume:
-        print(f"\nLoading Stage 1 checkpoint from: {stage1_checkpoint}")
+        print(f"[MODEL] Loading Stage 1 checkpoint from: {stage1_checkpoint}")
         model, _ = DiffusionModel.load_checkpoint(
             stage1_checkpoint,
             map_location=device,
@@ -1294,10 +1178,10 @@ def main():
             config=config
         )
         model = model.to(device_obj)
-        print("Stage 1 checkpoint loaded successfully")
+        print("[MODEL] Stage 1 checkpoint loaded successfully")
     elif should_resume:
-        print(f"\nFound latest checkpoint: {latest_checkpoint}")
-        print("Resuming training...")
+        print(f"[MODEL] Found latest checkpoint: {latest_checkpoint}")
+        print("[MODEL] Resuming training...")
         
         model, extra_state = DiffusionModel.load_checkpoint(
             latest_checkpoint,
@@ -1313,27 +1197,28 @@ def main():
         
         if not training_history and metrics_csv_path.exists():
             try:
+                print("[MODEL] Loading training history from CSV...")
                 df = pd.read_csv(metrics_csv_path)
                 df_filtered = df[df['epoch'] < (start_epoch + 1)]
                 training_history = df_filtered.to_dict('records')
-                print(f"  Loaded {len(training_history)} epochs from CSV file")
+                print(f"[MODEL] Loaded {len(training_history)} epochs from CSV file")
             except Exception as e:
-                print(f"  Warning: Could not load metrics from CSV: {e}")
+                print(f"[MODEL] Warning: Could not load metrics from CSV: {e}")
         
-        print(f"  Resuming from epoch {start_epoch + 1}")
-        print(f"  Best validation loss so far: {best_val_loss:.6f}")
+        print(f"[MODEL] Resuming from epoch {start_epoch + 1}")
+        print(f"[MODEL] Best validation loss so far: {best_val_loss:.6f}")
         
         # Check if we need to continue training beyond the checkpoint
         epochs = config["training"].get("epochs", 100)
         if start_epoch >= epochs:
-            print(f"\n  WARNING: Checkpoint is at epoch {start_epoch + 1}, but config specifies only {epochs} epochs.")
-            print(f"  Training is already complete. To continue training, increase 'epochs' in config.")
+            print(f"[MODEL] WARNING: Checkpoint is at epoch {start_epoch + 1}, but config specifies only {epochs} epochs.")
+            print(f"[MODEL] Training is already complete. To continue training, increase 'epochs' in config.")
         else:
             remaining_epochs = epochs - start_epoch
-            print(f"  Will continue training for {remaining_epochs} more epochs (until epoch {epochs})")
+            print(f"[MODEL] Will continue training for {remaining_epochs} more epochs (until epoch {epochs})")
     else:
         # Build model from config (fresh start)
-        print("\nBuilding model from config...")
+        print("[MODEL] Building model from config...")
         diffusion_cfg = config.get("diffusion", {})
         
         # If no diffusion section, extract from top-level config (for ablation configs)
@@ -1420,14 +1305,15 @@ def main():
     
     # Keep decoder frozen - only UNet is trained
     if hasattr(model, 'decoder'):
-        print("Keeping decoder frozen - only UNet will be trained...")
+        print("[MODEL] Freezing decoder - only UNet will be trained...")
         for param in model.decoder.parameters():
             param.requires_grad = False
+        print("[MODEL] Decoder frozen")
     
     # CRITICAL: Ensure UNet is trainable (explicitly set requires_grad=True)
     # This overrides any frozen settings from config or checkpoint
     if hasattr(model, 'unet'):
-        print("Ensuring UNet is trainable...")
+        print("[MODEL] Ensuring UNet is trainable...")
         trainable_params = 0
         frozen_params = 0
         frozen_tensors = 0
@@ -1440,15 +1326,17 @@ def main():
                 param.requires_grad = True  # Force trainable
         
         if frozen_tensors > 0:
-            print(f"  WARNING: Found {frozen_tensors} frozen UNet parameter tensors ({frozen_params:,} params) - setting them to trainable!")
+            print(f"[MODEL] WARNING: Found {frozen_tensors} frozen UNet parameter tensors ({frozen_params:,} params) - setting them to trainable!")
         total_params = trainable_params + frozen_params
-        print(f"  UNet parameters: {total_params:,} total, {total_params:,} trainable")
+        print(f"[MODEL] UNet parameters: {total_params:,} total, {total_params:,} trainable")
     
     # Build data loaders
+    print("[DATALOADER] Building data loaders...")
     batch_size = config["training"].get("batch_size", 32)
     num_workers = config["training"].get("num_workers", 8)
     shuffle = config["training"].get("shuffle", True)
     use_weighted_sampling = config["training"].get("use_weighted_sampling", False)
+    print(f"[DATALOADER] Batch size: {batch_size}, Workers: {num_workers}, Shuffle: {shuffle}, Weighted sampling: {use_weighted_sampling}")
     
     # Auto-generate weight stats if needed
     weights_stats_path = None
@@ -1509,34 +1397,36 @@ def main():
         print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)}")
     
     # Build loss function from config (uses CompositeLoss)
-    print("Building loss function from config...")
+    print("[LOSS] Building loss function from config...")
     loss_fn = build_loss(config)
-    print(f"  Loss type: {type(loss_fn).__name__}")
+    print(f"[LOSS] Loss type: {type(loss_fn).__name__}")
     if hasattr(loss_fn, 'losses'):
-        print(f"  Loss components: {[type(l).__name__ for l in loss_fn.losses]}")
+        print(f"[LOSS] Loss components: {[type(l).__name__ for l in loss_fn.losses]}")
     
     # Build optimizer
-    print("Building optimizer...")
+    print("[OPTIMIZER] Building optimizer...")
     optimizer = build_optimizer(model, config)
     
     # Verify optimizer has trainable parameters
     total_optimizer_params = sum(len(group['params']) for group in optimizer.param_groups)
     total_trainable_model_params = sum(p.numel() for p in model.trainable_parameters())
-    print(f"  Optimizer parameter groups: {len(optimizer.param_groups)}")
-    print(f"  Total trainable parameters in model: {total_trainable_model_params:,}")
+    print(f"[OPTIMIZER] Parameter groups: {len(optimizer.param_groups)}")
+    print(f"[OPTIMIZER] Total trainable parameters: {total_trainable_model_params:,}")
     
     # Count UNet parameters specifically
     if hasattr(model, 'unet'):
         unet_trainable = sum(p.numel() for p in model.unet.parameters() if p.requires_grad)
         unet_total = sum(p.numel() for p in model.unet.parameters())
-        print(f"  UNet parameters: {unet_trainable:,} trainable / {unet_total:,} total")
+        print(f"[OPTIMIZER] UNet parameters: {unet_trainable:,} trainable / {unet_total:,} total")
         if unet_trainable == 0:
-            print("  ERROR: UNet has no trainable parameters! Training will not work!")
+            print("[OPTIMIZER] ERROR: UNet has no trainable parameters! Training will not work!")
     
     # Build learning rate scheduler (account for already-trained epochs when resuming)
     # Use last_epoch=-1 for fresh start, or start_epoch for resume
+    print("[SCHEDULER] Building learning rate scheduler...")
     last_epoch = start_epoch if start_epoch > 0 else -1
     scheduler = build_scheduler(optimizer, config, last_epoch=last_epoch)
+    print(f"[SCHEDULER] Initial learning rate: {optimizer.param_groups[0]['lr']}")
     
     # Training settings
     epochs = config["training"].get("epochs", 100)
@@ -1697,12 +1587,15 @@ def main():
         # Save samples
         # Always save at epoch 1, then every sample_interval epochs
         if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
+            print(f"[CHECKPOINT] Saving samples for epoch {epoch + 1}...")
             # Get guidance_scale from config (default 1.0 = no CFG)
             guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
             save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale, cfg_dropout_rate=cfg_dropout_rate)
+            print(f"[CHECKPOINT] Samples saved")
         
         # Save checkpoint (is_best was already determined above if validation ran)
         # Use same condition as evaluation: always at epoch 1, then according to eval_interval
+        print(f"[CHECKPOINT] Saving checkpoint for epoch {epoch + 1}...")
         if should_eval:
             # is_best already determined above
             pass
@@ -1745,6 +1638,7 @@ def main():
             best_val_loss=best_val_loss,
             training_history=training_history
         )
+        print(f"[CHECKPOINT] Saved latest checkpoint: {checkpoint_path}")
         
         if is_best:
             best_checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
@@ -1754,7 +1648,7 @@ def main():
                 best_val_loss=best_val_loss,
                 training_history=training_history
             )
-            print(f"  Saved best checkpoint (val_loss={best_val_loss:.6f})")
+            print(f"[CHECKPOINT] Saved best checkpoint (val_loss={best_val_loss:.6f}): {best_checkpoint_path}")
         
         # Early stopping check
         if early_stopping_patience is not None and epochs_without_improvement >= early_stopping_patience:
