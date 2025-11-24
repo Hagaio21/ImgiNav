@@ -441,9 +441,10 @@ def compute_evaluation_metrics(
     """
     metrics = {}
     
-    # Store reference to compute_fid function before parameter shadows it
-    # Access the function from globals to avoid parameter shadowing
+    # Store references to functions before parameters shadow them
+    # Access the functions from globals to avoid parameter shadowing
     compute_fid_func = globals()['compute_fid']
+    compute_miou_func = globals()['compute_miou']
     
     if device is None:
         device = pred_images.device if isinstance(pred_images, torch.Tensor) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -464,8 +465,15 @@ def compute_evaluation_metrics(
                 fid_score = compute_fid_func(gt_features, pred_features)
                 if np.isfinite(fid_score):
                     metrics["fid"] = fid_score
+                else:
+                    warnings.warn(f"FID score is not finite: {fid_score}")
+            else:
+                if pred_features is None:
+                    warnings.warn("FID computation skipped: pred_features is None (Inception model may not be available)")
+                if gt_features is None:
+                    warnings.warn("FID computation skipped: gt_features is None (Inception model may not be available)")
         except Exception as e:
-            warnings.warn(f"FID computation failed: {e}")
+            warnings.warn(f"FID computation failed: {e}", exc_info=True)
     
     # mIoU (mean Intersection over Union) - Critical for geometric/spatial correctness
     # Since layouts are geometric, mIoU between generated and ground truth segmentation maps
@@ -504,13 +512,15 @@ def compute_evaluation_metrics(
                 gt_seg = segmentor.segment(gt_np)
                 
                 # Compute mean IoU across all classes
-                iou = compute_miou(pred_seg, gt_seg)
+                iou = compute_miou_func(pred_seg, gt_seg)
                 ious.append(iou)
             
             if len(ious) > 0:
                 metrics["miou"] = float(np.mean(ious))
+            else:
+                warnings.warn("mIoU computation skipped: no valid IoU values computed")
         except Exception as e:
-            warnings.warn(f"mIoU computation failed: {e}")
+            warnings.warn(f"mIoU computation failed: {e}", exc_info=True)
     
     # Layout-specific metrics (coverage, class matching, color matching)
     # These don't require external models - they analyze geometric properties directly
