@@ -820,6 +820,7 @@ def compute_evaluation_metrics(
         all_dist_metrics = []
         all_density_diffs = []
         all_class_ious = []
+        all_pixel_class_l1 = []
         
         B = pred_images.shape[0]
         for i in range(B):
@@ -851,6 +852,30 @@ def compute_evaluation_metrics(
             # LayoutSegmentor finds closest color for each pixel and assigns category ID
             pred_cat_ids = category_segmentor.segment(pred_pil)  # (H, W) array of category IDs
             gt_cat_ids = category_segmentor.segment(gt_pil)  # (H, W) array of category IDs
+            
+            # Compute pixel_class_l1 metric: L1 distance between normalized class ID histograms
+            # This measures if the palette/area distribution matches the target
+            pred_flat = pred_cat_ids.flatten()
+            gt_flat = gt_cat_ids.flatten()
+            
+            # Get all unique class IDs that appear in either image
+            all_class_ids = np.unique(np.concatenate([pred_flat, gt_flat]))
+            
+            # Compute histograms for each class ID (count occurrences)
+            pred_counts = {cls_id: np.sum(pred_flat == cls_id) for cls_id in all_class_ids}
+            gt_counts = {cls_id: np.sum(gt_flat == cls_id) for cls_id in all_class_ids}
+            
+            # Convert to arrays in the same order
+            pred_hist = np.array([pred_counts.get(cls_id, 0) for cls_id in all_class_ids], dtype=np.float32)
+            gt_hist = np.array([gt_counts.get(cls_id, 0) for cls_id in all_class_ids], dtype=np.float32)
+            
+            # Normalize to probability distributions (sum to 1)
+            pred_hist = pred_hist / (pred_hist.sum() + 1e-10)
+            gt_hist = gt_hist / (gt_hist.sum() + 1e-10)
+            
+            # Calculate L1 distance (sum of absolute differences)
+            pixel_class_l1 = np.abs(pred_hist - gt_hist).sum()
+            all_pixel_class_l1.append(pixel_class_l1)
             
             # Convert category IDs to super-category IDs, then to super-category colors
             def convert_to_super_colors(cat_id_map):
@@ -924,6 +949,11 @@ def compute_evaluation_metrics(
             
             # Coverage metric (density difference) - positive means more objects, negative means fewer
             metrics["coverage_diff"] = float(np.mean(all_density_diffs))
+            
+            # Pixel class L1 metric - L1 distance between normalized class ID histograms
+            if len(all_pixel_class_l1) > 0:
+                metrics["pixel_class_l1"] = float(np.mean(all_pixel_class_l1))
+            
             print(f"  Layout metrics computed: coverage_diff={metrics['coverage_diff']:.6f}, class_iou={metrics['class_iou']:.4f}")
         else:
             warnings.warn("Layout-specific metrics: no valid samples processed")
