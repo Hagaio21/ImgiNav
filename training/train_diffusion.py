@@ -461,7 +461,7 @@ def train_epoch(
 
 def eval_epoch(
     model, dataloader, scheduler, loss_fn, 
-    device, use_amp=False, taxonomy=None, compute_eval_metrics=True, guidance_scale=1.0
+    device, use_amp=False, taxonomy=None, compute_eval_metrics=True, guidance_scale=1.0, limit_val_batches=50
 ):
     """Evaluate for one epoch using CompositeLoss."""
     model.eval()
@@ -471,8 +471,15 @@ def eval_epoch(
     
     device_obj = to_device(device)
     
+    # Determine the actual number of batches to process
+    total_batches = len(dataloader)
+    num_batches = min(limit_val_batches, total_batches) if limit_val_batches is not None else total_batches
+    
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", total=num_batches)):
+            # Break early if we've reached the limit
+            if limit_val_batches is not None and batch_idx >= limit_val_batches:
+                break
             batch = move_batch_to_device(batch, device_obj)
             
             latents = batch.get("latent")
@@ -544,13 +551,13 @@ def eval_epoch(
                         # model.sample() starts from random noise and performs num_steps denoising steps
                         num_steps = model.scheduler.num_steps
                         
-                        print(f"  [DEBUG] Generating {eval_batch_size} samples using FULL sampling process ({num_steps} steps)")
+                        print(f"  [DEBUG] Generating {eval_batch_size} samples using DDIM sampling (100 steps)")
                         
                         conditioned_output = model.sample(
                             batch_size=eval_batch_size,
-                            num_steps=num_steps,  # Full sampling: all steps from noise to final image
-                            method="ddpm",
-                            eta=1.0,
+                            num_steps=100,  # Use 100 steps for DDIM
+                            method="ddim",
+                            eta=0.0,
                             cond=None,
                             guidance_scale=guidance_scale,
                             text_emb=eval_text_emb,
@@ -1580,7 +1587,7 @@ def main():
             val_loss, val_logs = eval_epoch(
                 model, val_loader, scheduler, loss_fn,
                 device_obj, use_amp=use_amp, taxonomy=taxonomy, compute_eval_metrics=True,
-                guidance_scale=guidance_scale
+                guidance_scale=guidance_scale, limit_val_batches=50
             )
             print(f"Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():

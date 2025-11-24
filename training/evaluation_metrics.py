@@ -341,12 +341,21 @@ def compute_fid(
         fake_features: Features from generated images [M, 2048]
     
     Returns:
-        FID score (lower is better)
+        FID score (lower is better) or NaN if insufficient samples
     """
     if not SCIPY_AVAILABLE:
         return float('inf')
     
     try:
+        # Check batch size - FID requires sufficient samples for reliable statistics
+        if real_features.shape[0] < 100 or fake_features.shape[0] < 100:
+            warnings.warn(
+                f"FID requires at least 100 samples per set for reliable statistics. "
+                f"Got {real_features.shape[0]} real and {fake_features.shape[0]} fake samples. "
+                f"Returning NaN to avoid misleading scores."
+            )
+            return float('nan')
+        
         # Validate inputs
         if real_features.shape[0] < 2 or fake_features.shape[0] < 2:
             warnings.warn(f"FID requires at least 2 samples per set. Got {real_features.shape[0]} real and {fake_features.shape[0]} fake samples.")
@@ -414,7 +423,8 @@ def compute_fid(
 def compute_miou(
     pred_seg: np.ndarray,
     gt_seg: np.ndarray,
-    num_classes: Optional[int] = None
+    num_classes: Optional[int] = None,
+    ignore_index: int = 0
 ) -> float:
     """
     Compute mean Intersection over Union (mIoU) between segmentation maps.
@@ -428,6 +438,7 @@ def compute_miou(
         pred_seg: Predicted segmentation map [H, W] with class IDs
         gt_seg: Ground truth segmentation map [H, W] with class IDs
         num_classes: Number of classes (if None, inferred from data)
+        ignore_index: Class index to ignore (default: 0, typically background)
     
     Returns:
         mIoU score (higher is better, range [0, 1])
@@ -450,6 +461,10 @@ def compute_miou(
     # Compute IoU for each class
     ious = []
     for cls in all_classes:
+        # Skip the ignore_index class
+        if cls == ignore_index:
+            continue
+        
         pred_mask = (pred_seg == cls)
         gt_mask = (gt_seg == cls)
         
@@ -722,7 +737,7 @@ def compute_evaluation_metrics(
                 #           gt_seg = segmentation of TARGET images
                 # For bad generated images, mIoU should be LOW (close to 0)
                 # For good generated images, mIoU should be HIGH (close to 1)
-                iou = compute_miou_func(pred_seg, gt_seg)
+                iou = compute_miou_func(pred_seg, gt_seg, ignore_index=0)
                 ious.append(iou)
             
             if len(ious) > 0:
