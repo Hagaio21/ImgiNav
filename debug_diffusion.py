@@ -29,29 +29,34 @@ from training.utils import (
     build_dataset,
     to_device,
     move_batch_to_device,
+    create_grad_scaler,
 )
+from training.train_diffusion import compute_loss, load_vae_metadata
 from models.diffusion import DiffusionModel
+from models.autoencoder import Autoencoder
 
 
-def vae_round_trip_test(model, dataloader, device_obj, output_path):
-    """Test 1: VAE Round Trip - encode and decode a batch."""
+def vae_round_trip_test(vae_model, dataloader, device_obj, output_path):
+    """Test 1: VAE Round Trip - encode and decode a batch using VAE separately."""
     print("\n" + "="*60)
-    print("Test 1: VAE Round Trip")
+    print("Test 1: VAE Round Trip (Separate VAE Test)")
     print("="*60)
     
-    model.eval()
+    vae_model.eval()
     
-    # Get a batch
+    # Get a batch with RGB images
     batch = next(iter(dataloader))
     batch = move_batch_to_device(batch, device_obj)
     
-    # Get RGB images (either from batch or decode latents)
+    # Get RGB images from batch (we need RGB for VAE round trip)
     if "rgb" in batch:
         original_images = batch["rgb"]
+        print(f"Using RGB images from batch: {original_images.shape}")
     elif "latent" in batch:
-        # Decode latents to get RGB
+        # If we only have latents, decode them first to get RGB
+        print("Only latents available in batch, decoding to get RGB...")
         with torch.no_grad():
-            decoded = model.decoder({"latent": batch["latent"]})
+            decoded = vae_model.decoder({"latent": batch["latent"]})
             original_images = decoded.get("rgb", None)
             if original_images is None:
                 raise ValueError("Decoder did not return RGB")
@@ -59,25 +64,24 @@ def vae_round_trip_test(model, dataloader, device_obj, output_path):
             if original_images.min() < -0.1:
                 original_images = (original_images + 1.0) / 2.0
             original_images = torch.clamp(original_images, 0.0, 1.0)
+        print(f"Decoded RGB images: {original_images.shape}")
     else:
-        raise ValueError("Batch must contain either 'rgb' or 'latent'")
+        raise ValueError("Batch must contain either 'rgb' or 'latent' for VAE round trip test")
     
-    print(f"Original images shape: {original_images.shape}")
+    # VAE Round Trip: RGB -> Encode -> Latents -> Decode -> RGB
+    print("\nPerforming VAE round trip: RGB -> Encode -> Latents -> Decode -> RGB")
     
-    # Encode to latents
+    # Encode RGB to latents
     with torch.no_grad():
-        if model._has_encoder:
-            encoder_out = model.encoder(original_images)
-            if "latent" in encoder_out:
-                latents = encoder_out["latent"]
-            elif "mu" in encoder_out:
-                latents = encoder_out["mu"]
-            else:
-                raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
+        encoder_out = vae_model.encode(original_images)
+        if "latent" in encoder_out:
+            latents = encoder_out["latent"]
+        elif "mu" in encoder_out:
+            latents = encoder_out["mu"]
         else:
-            raise ValueError("Model does not have encoder - cannot perform VAE round trip")
+            raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
     
-    print(f"Latents shape: {latents.shape}")
+    print(f"Encoded latents shape: {latents.shape}")
     print(f"Latents mean: {latents.mean().item():.6f}")
     print(f"Latents std: {latents.std().item():.6f}")
     
@@ -88,9 +92,9 @@ def vae_round_trip_test(model, dataloader, device_obj, output_path):
     else:
         print(f"⚠ WARNING: Latent std ({latent_std:.6f}) is not close to 1.0 (expected ~1.0)")
     
-    # Decode back to RGB
+    # Decode latents back to RGB
     with torch.no_grad():
-        decoded = model.decoder({"latent": latents})
+        decoded = vae_model.decode({"latent": latents})
         reconstructed_images = decoded.get("rgb", None)
         if reconstructed_images is None:
             raise ValueError("Decoder did not return RGB")
@@ -104,6 +108,13 @@ def vae_round_trip_test(model, dataloader, device_obj, output_path):
     # Compute reconstruction error
     mse = torch.nn.functional.mse_loss(original_images, reconstructed_images).item()
     print(f"Reconstruction MSE: {mse:.6f}")
+    
+    if mse < 0.01:
+        print(f"✓ Excellent reconstruction (MSE < 0.01)")
+    elif mse < 0.05:
+        print(f"✓ Good reconstruction (MSE < 0.05)")
+    else:
+        print(f"⚠ WARNING: High reconstruction error (MSE >= 0.05)")
     
     # Save comparison image
     batch_size = min(8, original_images.shape[0])
@@ -142,9 +153,10 @@ def noise_schedule_test(model, dataloader, device_obj, output_path):
     batch = next(iter(dataloader))
     batch = move_batch_to_device(batch, device_obj)
     
-    # Get latents
+    # Get latents (prefer pre-encoded from dataset)
     if "latent" in batch:
         latents = batch["latent"][:1]  # Take first sample
+        print(f"Using pre-encoded latents from dataset: {latents.shape}")
     elif "rgb" in batch and model._has_encoder:
         with torch.no_grad():
             encoder_out = model.encoder(batch["rgb"][:1])
@@ -154,8 +166,9 @@ def noise_schedule_test(model, dataloader, device_obj, output_path):
                 latents = encoder_out["mu"]
             else:
                 raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
+        print(f"Encoded RGB to latents: {latents.shape}")
     else:
-        raise ValueError("Batch must contain either 'latent' or 'rgb'")
+        raise ValueError("Batch must contain either 'latent' (pre-encoded) or 'rgb' (with encoder)")
     
     print(f"Original latent shape: {latents.shape}")
     
@@ -227,24 +240,46 @@ def noise_schedule_test(model, dataloader, device_obj, output_path):
     print(f"Saved noise schedule visualization to {output_path}")
 
 
-def overfit_test(model, dataloader, device_obj, loss_fn, optimizer):
-    """Test 3: Overfit Test - train on a single batch for 100 iterations."""
+def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
+    """Test 3: Overfit Test - train on a single batch for 100 iterations using same logic as training."""
     print("\n" + "="*60)
     print("Test 3: Overfit Test")
     print("="*60)
     
     model.train()
     
-    # Get a single batch and keep it
+    # Get a single batch and keep it (same as training)
     batch = next(iter(dataloader))
     batch = move_batch_to_device(batch, device_obj)
     
-    print(f"Training on batch of size: {batch.get('latent', batch.get('rgb')).shape[0]}")
+    batch_size = batch.get("latent", batch.get("rgb", torch.empty(1))).shape[0]
+    print(f"Training on batch of size: {batch_size}")
+    
+    # Get training settings from config (same as training script)
+    use_amp = config.get("training", {}).get("use_amp", False)
+    max_grad_norm = config.get("training", {}).get("max_grad_norm", None)
+    gradient_accumulation_steps = config.get("training", {}).get("gradient_accumulation_steps", 1)
+    use_non_uniform_sampling = config.get("training", {}).get("use_non_uniform_sampling", False)
+    cfg_dropout_rate = 0.0  # No CFG dropout for overfit test
+    
+    print(f"Training settings:")
+    print(f"  Mixed precision (AMP): {use_amp}")
+    print(f"  Max grad norm: {max_grad_norm}")
+    print(f"  Gradient accumulation steps: {gradient_accumulation_steps}")
+    print(f"  Non-uniform sampling: {use_non_uniform_sampling}")
+    
+    # Create grad scaler if using AMP
+    scaler = None
+    if use_amp and device_obj.type == "cuda":
+        scaler = create_grad_scaler(use_amp, device_obj)
     
     losses = []
     
+    # Initialize optimizer (zero gradients)
+    optimizer.zero_grad()
+    
     for iteration in range(100):
-        # Get latents
+        # Get latents (same logic as train_epoch)
         latents = batch.get("latent")
         if latents is None:
             if "rgb" in batch and model._has_encoder:
@@ -257,54 +292,89 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer):
                     else:
                         raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
             else:
-                raise ValueError("Batch must contain either 'latent' or 'rgb'")
+                raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
         
-        # Sample random timesteps
+        # Sample random timesteps (same logic as train_epoch)
         num_steps = model.scheduler.num_steps
-        t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
+        if use_non_uniform_sampling:
+            # Higher probability for early timesteps (high noise)
+            probs = torch.exp(-torch.linspace(0, 2, num_steps, device=device_obj))
+            probs = probs / probs.sum()
+            t = torch.multinomial(probs, latents.shape[0], replacement=True)
+        else:
+            # Uniform sampling (default)
+            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
         noise = model.scheduler.randn_like(latents)
         
-        # Get embeddings
-        text_emb = batch.get("text_emb", None)
-        pov_emb = batch.get("pov_emb", None)
+        # No type-based conditioning - only using control signals (text_emb, pov_emb)
+        cond = None
         
-        # Flatten embeddings if needed
-        if text_emb is not None and text_emb.dim() > 1:
-            text_emb = text_emb.flatten(start_dim=1)
-        if pov_emb is not None and pov_emb.dim() > 1:
-            pov_emb = pov_emb.flatten(start_dim=1)
+        # Compute loss using same function as training (handles CFG dropout, embeddings, etc.)
+        loss_scale = 1.0 / gradient_accumulation_steps
         
-        # Forward pass
-        optimizer.zero_grad()
+        if use_amp and device_obj.type == "cuda":
+            with torch.amp.autocast('cuda'):
+                total_loss_val, logs = compute_loss(
+                    model, batch, latents, t, noise, cond, loss_fn,
+                    use_amp, device_obj, cfg_dropout_rate, compute_eval_metrics=False
+                )
+                # Scale loss for gradient accumulation
+                total_loss_val = total_loss_val * loss_scale
+            
+            if scaler:
+                scaler.scale(total_loss_val).backward()
+            else:
+                total_loss_val.backward()
+            
+            # Step optimizer every gradient_accumulation_steps
+            if (iteration + 1) % gradient_accumulation_steps == 0:
+                if scaler:
+                    if max_grad_norm is not None:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    if max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                    optimizer.step()
+                
+                optimizer.zero_grad()
+                
+                # Update EMA after optimizer step
+                if hasattr(model, 'update_ema'):
+                    model.update_ema()
+        else:
+            total_loss_val, logs = compute_loss(
+                model, batch, latents, t, noise, cond, loss_fn,
+                use_amp, device_obj, cfg_dropout_rate, compute_eval_metrics=False
+            )
+            # Scale loss for gradient accumulation
+            total_loss_val = total_loss_val * loss_scale
+            
+            total_loss_val.backward()
+            
+            # Step optimizer every gradient_accumulation_steps
+            if (iteration + 1) % gradient_accumulation_steps == 0:
+                if max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                optimizer.step()
+                optimizer.zero_grad()
+                
+                # Update EMA after optimizer step
+                if hasattr(model, 'update_ema'):
+                    model.update_ema()
         
-        outputs = model(latents, t, cond=None, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
-        
-        # Compute loss
-        preds = {
-            "pred_noise": outputs["pred_noise"],
-            "scheduler": model.scheduler,
-            "timesteps": t,
-        }
-        targets = {
-            "noise": noise,
-        }
-        
-        loss, logs = loss_fn(preds, targets)
-        
-        # Backward pass
-        loss.backward()
-        optimizer.step()
-        
-        # Update EMA if exists
-        if hasattr(model, 'update_ema'):
-            model.update_ema()
-        
-        loss_val = loss.item()
+        # For logging, use unscaled loss (multiply back by accumulation_steps)
+        loss_val = total_loss_val.detach().item() * gradient_accumulation_steps
         losses.append(loss_val)
         
         # Print every 10 steps
         if (iteration + 1) % 10 == 0:
             print(f"  Iteration {iteration + 1:3d}/100: Loss = {loss_val:.6f}")
+    
+    # Ensure gradients are zeroed at the end
+    optimizer.zero_grad()
     
     # Check if loss decreased
     initial_loss = losses[0]
@@ -365,7 +435,39 @@ def main():
         pin_memory=device_obj.type == "cuda",
     )
     
-    # Build model from config
+    # Load VAE metadata (same as training script)
+    print("\n[VAE_METADATA] Checking for VAE metadata file...")
+    vae_metadata = None
+    ae_cfg = config.get("autoencoder") or config.get("diffusion", {}).get("autoencoder")
+    if ae_cfg and isinstance(ae_cfg, dict):
+        ae_checkpoint = ae_cfg.get("checkpoint")
+        if ae_checkpoint:
+            # Use same load_vae_metadata function as training script
+            checkpoint_path = Path(ae_checkpoint)
+            if checkpoint_path.exists():
+                checkpoint_dir = checkpoint_path.parent
+                vae_dir = checkpoint_dir.parent
+                metadata_files = list(vae_dir.glob("*_metadata.json"))
+                if metadata_files:
+                    import json
+                    metadata_path = metadata_files[0]
+                    try:
+                        with open(metadata_path, 'r') as f:
+                            metadata = json.load(f)
+                        recommended = metadata.get("recommended_values", {})
+                        if recommended:
+                            vae_metadata = {
+                                "scale_factor": recommended.get("scale_factor"),
+                                "latent_clamp_min": recommended.get("latent_clamp_min"),
+                                "latent_clamp_max": recommended.get("latent_clamp_max")
+                            }
+                            print(f"[VAE_METADATA] Found VAE metadata file")
+                            if vae_metadata.get("scale_factor"):
+                                print(f"  scale_factor: {vae_metadata['scale_factor']:.6f}")
+                    except Exception as e:
+                        print(f"[VAE_METADATA] Warning: Failed to load VAE metadata: {e}")
+    
+    # Build model from config (same logic as training script)
     print("\n[MODEL] Building model from config...")
     diffusion_cfg = config.get("diffusion", {})
     if not diffusion_cfg:
@@ -375,26 +477,75 @@ def main():
             "scheduler": config.get("scheduler", {}),
             "embedding_projection": config.get("embedding_projection")
         }
+    else:
+        # Ensure embedding_projection is included if it exists at top level
+        if "embedding_projection" not in diffusion_cfg and "embedding_projection" in config:
+            diffusion_cfg["embedding_projection"] = config.get("embedding_projection")
     
-    # Add scale_factor if available
+    # Get scale_factor from config or VAE metadata (priority: config > VAE metadata)
     scale_factor = diffusion_cfg.get("scale_factor") or config.get("scale_factor")
+    if scale_factor is None:
+        if vae_metadata and vae_metadata.get("scale_factor") is not None:
+            scale_factor = vae_metadata["scale_factor"]
+            print(f"[SCALE_FACTOR] Using scale_factor from VAE metadata: {scale_factor:.6f}")
+        else:
+            print("[SCALE_FACTOR] WARNING: scale_factor not found, using default 1.0")
+            scale_factor = 1.0
+    else:
+        print(f"[SCALE_FACTOR] Using scale_factor from config: {scale_factor}")
+    
     if scale_factor is not None:
         diffusion_cfg["scale_factor"] = scale_factor
     
-    # Add latent_clamp values if available
+    # Add latent_clamp values if available (priority: config > VAE metadata)
     latent_clamp_min = config.get("latent_clamp_min")
     latent_clamp_max = config.get("latent_clamp_max")
+    if latent_clamp_min is None and vae_metadata and vae_metadata.get("latent_clamp_min") is not None:
+        latent_clamp_min = vae_metadata["latent_clamp_min"]
+        print(f"[LATENT_CLAMP] Using latent_clamp_min from VAE metadata: {latent_clamp_min:.6f}")
+    if latent_clamp_max is None and vae_metadata and vae_metadata.get("latent_clamp_max") is not None:
+        latent_clamp_max = vae_metadata["latent_clamp_max"]
+        print(f"[LATENT_CLAMP] Using latent_clamp_max from VAE metadata: {latent_clamp_max:.6f}")
+    
     if latent_clamp_min is not None:
         diffusion_cfg["latent_clamp_min"] = latent_clamp_min
     if latent_clamp_max is not None:
         diffusion_cfg["latent_clamp_max"] = latent_clamp_max
     
+    if "type" in diffusion_cfg:
+        diffusion_cfg = {k: v for k, v in diffusion_cfg.items() if k != "type"}
+    
+    # Pass save_path from experiment config so model can write statistics
+    exp_cfg = config.get("experiment", {})
+    if exp_cfg.get("save_path"):
+        diffusion_cfg["save_path"] = exp_cfg["save_path"]
+    
     model = DiffusionModel(**diffusion_cfg)
     model = model.to(device_obj)
     print("[MODEL] Model built")
     
-    # Run Test 1: VAE Round Trip
-    vae_round_trip_test(model, dataloader, device_obj, "debug_vae_reconstruction.png")
+    # Run Test 1: VAE Round Trip (separate VAE test)
+    # Load VAE separately from diffusion model
+    print("\n[VAE] Loading VAE separately for round trip test...")
+    vae_model = None
+    ae_cfg = config.get("autoencoder") or config.get("diffusion", {}).get("autoencoder")
+    if ae_cfg and isinstance(ae_cfg, dict):
+        ae_checkpoint = ae_cfg.get("checkpoint")
+        if ae_checkpoint:
+            print(f"Loading VAE from checkpoint: {ae_checkpoint}")
+            vae_model = Autoencoder.load_checkpoint(ae_checkpoint, map_location=device)
+            vae_model = vae_model.to(device_obj)
+            vae_model.eval()
+            print("[VAE] VAE loaded successfully")
+        else:
+            print("[VAE] WARNING: No VAE checkpoint specified, skipping VAE round trip test")
+    else:
+        print("[VAE] WARNING: No autoencoder config found, skipping VAE round trip test")
+    
+    if vae_model is not None:
+        vae_round_trip_test(vae_model, dataloader, device_obj, "debug_vae_reconstruction.png")
+    else:
+        print("[VAE] Skipping VAE round trip test (VAE not available)")
     
     # Run Test 2: Noise Schedule
     noise_schedule_test(model, dataloader, device_obj, "debug_forward_process.png")
@@ -403,7 +554,7 @@ def main():
     print("\n[OVERFIT] Setting up optimizer and loss...")
     loss_fn = build_loss(config)
     optimizer = build_optimizer(model, config)
-    overfit_test(model, dataloader, device_obj, loss_fn, optimizer)
+    overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config)
     
     print("\n" + "="*60)
     print("All debug tests completed!")
