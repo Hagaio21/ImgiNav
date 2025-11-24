@@ -55,10 +55,16 @@ except ImportError:
 try:
     from torchvision.models import inception_v3
     from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+    # Try to import weights enum (available in newer torchvision versions)
+    try:
+        from torchvision.models import Inception_V3_Weights
+    except ImportError:
+        Inception_V3_Weights = None
     TORCHVISION_AVAILABLE = True
 except ImportError:
     TORCHVISION_AVAILABLE = False
     warnings.warn("torchvision not available. FID computation will be disabled.")
+    Inception_V3_Weights = None
 
 
 # Global CLIP model cache
@@ -230,19 +236,29 @@ def get_inception_model(device="cuda", model_dir=None):
             if inception_path.exists():
                 try:
                     _inception_model = inception_v3(pretrained=False, transform_input=False)
-                    _inception_model.load_state_dict(torch.load(inception_path, map_location=device))
+                    # Remove fc layer before loading to match saved state
                     _inception_model.fc = torch.nn.Identity()
+                    # Load state dict with strict=False to ignore fc layer if present
+                    saved_state = torch.load(inception_path, map_location=device)
+                    # Filter out fc layer keys if they exist
+                    filtered_state = {k: v for k, v in saved_state.items() if not k.startswith('fc.')}
+                    _inception_model.load_state_dict(filtered_state, strict=False)
                     print(f"  Loaded Inception model from shared cache: {inception_path}")
                 except Exception as e:
                     warnings.warn(f"Failed to load Inception from {inception_path}, downloading: {e}")
-                    inception_path = None  # Fall back to downloading
+                    _inception_model = None  # Will fall back to downloading
             
-            # Download if not found locally
+            # Download if not found locally or loading failed
             if _inception_model is None:
-                _inception_model = inception_v3(pretrained=True, transform_input=False)
+                # Use newer weights API if available, fall back to pretrained for older versions
+                try:
+                    _inception_model = inception_v3(weights=Inception_V3_Weights.IMAGENET1K_V1, transform_input=False)
+                except (AttributeError, TypeError):
+                    # Fall back to deprecated pretrained parameter for older torchvision
+                    _inception_model = inception_v3(pretrained=True, transform_input=False)
                 _inception_model.fc = torch.nn.Identity()  # Remove final classification layer
                 
-                # Save to shared location
+                # Save to shared location (without fc layer)
                 torch.save(_inception_model.state_dict(), inception_path)
                 print(f"  Saved Inception model to shared cache: {inception_path} (~100MB)")
             
@@ -342,12 +358,18 @@ def compute_fid(
         diff = mu1 - mu2
         covmean, _ = linalg.sqrtm(sigma1 @ sigma2, disp=False)
         
+        # Take real part (matrix square root can produce complex values)
+        covmean = np.real(covmean)
+        
         if not np.isfinite(covmean).all():
             # Add small epsilon to diagonal if singular
             offset = np.eye(sigma1.shape[0]) * 1e-6
-            covmean = linalg.sqrtm((sigma1 + offset) @ (sigma2 + offset))
+            covmean, _ = linalg.sqrtm((sigma1 + offset) @ (sigma2 + offset))
+            covmean = np.real(covmean)
         
         fid = diff.dot(diff) + np.trace(sigma1 + sigma2 - 2 * covmean)
+        # Ensure result is real and finite
+        fid = np.real(fid)
         return float(fid)
     except Exception as e:
         warnings.warn(f"FID computation failed: {e}")
