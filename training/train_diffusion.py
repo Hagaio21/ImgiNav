@@ -1549,12 +1549,13 @@ def main():
         
         # Print current CFG dropout rate if using schedule
         if isinstance(cfg_dropout_config, dict):
-            print(f"  Current CFG dropout rate: {cfg_dropout_rate:.4f}")
-        print(f"Train Loss: {train_loss:.6f}")
+            print(f"  Current CFG dropout rate: {cfg_dropout_rate:.4f}", flush=True)
+        print(f"Train Loss: {train_loss:.6f}", flush=True)
         for k, v in train_logs.items():
-            print(f"  {k}: {v:.6f}")
+            print(f"  {k}: {v:.6f}", flush=True)
         
         # Validate
+        print(f"[EPOCH] Starting validation for epoch {epoch + 1}...", flush=True)
         val_loss = float("inf")
         val_logs = {}
         # Always evaluate at epoch 1, then according to eval_interval
@@ -1577,9 +1578,9 @@ def main():
                 device_obj, use_amp=use_amp, taxonomy=taxonomy, compute_eval_metrics=should_compute_metrics,
                 guidance_scale=guidance_scale, limit_val_batches=50
             )
-            print(f"Val Loss: {val_loss:.6f}")
+            print(f"[EPOCH] Validation completed. Val Loss: {val_loss:.6f}", flush=True)
             for k, v in val_logs.items():
-                print(f"  {k}: {v:.6f}")
+                print(f"  {k}: {v:.6f}", flush=True)
             
             # Check if this is the best validation loss BEFORE updating best_val_loss
             is_best = val_loss < best_val_loss
@@ -1591,26 +1592,27 @@ def main():
                     epochs_without_improvement = 0
                     if is_best:
                         best_val_loss = val_loss
-                    print(f"  Improvement: {improvement:.6f} (new best: {best_val_loss:.6f})")
+                    print(f"[EPOCH] Improvement: {improvement:.6f} (new best: {best_val_loss:.6f})", flush=True)
                 else:
                     epochs_without_improvement += 1
-                    print(f"  No improvement for {epochs_without_improvement}/{early_stopping_patience} epochs")
+                    print(f"[EPOCH] No improvement for {epochs_without_improvement}/{early_stopping_patience} epochs", flush=True)
             elif is_best:
                 # Update best_val_loss if not using early stopping
                 best_val_loss = val_loss
+                print(f"[EPOCH] New best validation loss: {best_val_loss:.6f}", flush=True)
         
         # Save samples
         # Always save at epoch 1, then every sample_interval epochs
         if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
-            print(f"[CHECKPOINT] Saving samples for epoch {epoch + 1}...")
+            print(f"[EPOCH] Saving samples for epoch {epoch + 1}...", flush=True)
             # Get guidance_scale from config (default 1.0 = no CFG)
             guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
             save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale, cfg_dropout_rate=cfg_dropout_rate)
-            print(f"[CHECKPOINT] Samples saved")
+            print(f"[EPOCH] Samples saved", flush=True)
         
         # Save checkpoint (is_best was already determined above if validation ran)
         # Use same condition as evaluation: always at epoch 1, then according to eval_interval
-        print(f"[CHECKPOINT] Saving checkpoint for epoch {epoch + 1}...")
+        print(f"[EPOCH] Saving checkpoint for epoch {epoch + 1}...", flush=True)
         if should_eval:
             # is_best already determined above
             pass
@@ -1619,6 +1621,7 @@ def main():
             is_best = False
         
         # Record history
+        print(f"[EPOCH] Recording training history...", flush=True)
         history_entry = {
             "epoch": epoch + 1,
             "train_loss": train_loss,
@@ -1630,19 +1633,24 @@ def main():
         training_history.append(history_entry)
         
         # Save metrics to CSV
+        print(f"[EPOCH] Saving metrics to CSV...", flush=True)
         save_metrics_csv(training_history, metrics_csv_path)
+        print(f"[EPOCH] Metrics CSV saved", flush=True)
         
         # Plot metrics with loss breakdown
         if len(training_history) > 0:
+            print(f"[EPOCH] Plotting metrics...", flush=True)
             try:
                 df = pd.DataFrame(training_history)
                 plot_diffusion_metrics_epochs(df, output_dir, exp_name=exp_name)
                 # Also create dedicated evaluation metrics plot if metrics exist
                 plot_evaluation_metrics(df, output_dir, exp_name=exp_name)
+                print(f"[EPOCH] Metrics plots saved", flush=True)
             except Exception as e:
-                print(f"  Warning: Could not plot metrics: {e}")
+                print(f"[EPOCH] Warning: Could not plot metrics: {e}", flush=True)
         
         # Save checkpoint
+        print(f"[EPOCH] Writing checkpoint files...", flush=True)
         checkpoint_dir = output_dir / "checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
@@ -1653,7 +1661,7 @@ def main():
             best_val_loss=best_val_loss,
             training_history=training_history
         )
-        print(f"[CHECKPOINT] Saved latest checkpoint: {checkpoint_path}")
+        print(f"[EPOCH] Saved latest checkpoint: {checkpoint_path}", flush=True)
         
         if is_best:
             best_checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
@@ -1663,7 +1671,9 @@ def main():
                 best_val_loss=best_val_loss,
                 training_history=training_history
             )
-            print(f"[CHECKPOINT] Saved best checkpoint (val_loss={best_val_loss:.6f}): {best_checkpoint_path}")
+            print(f"[EPOCH] Saved best checkpoint (val_loss={best_val_loss:.6f}): {best_checkpoint_path}", flush=True)
+        
+        print(f"[EPOCH] Epoch {epoch + 1} completed successfully", flush=True)
         
         # Early stopping check
         if early_stopping_patience is not None and epochs_without_improvement >= early_stopping_patience:
