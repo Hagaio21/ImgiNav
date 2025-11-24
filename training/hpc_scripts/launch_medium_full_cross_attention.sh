@@ -2,13 +2,10 @@
 # Launch script for medium size experiments with full cross attention
 # Runs rooms, scenes, and both (regular)
 
-set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-LAUNCH_SCRIPT="${SCRIPT_DIR}/launch_train_diff_clip.sh"
+BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
+TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
 
-# Configs to launch (medium size with full cross attention)
 CONFIGS=(
     "experiments/diffusion/clip/regular_rooms/medium_all.yaml"
     "experiments/diffusion/clip/regular_scenes/medium_all.yaml"
@@ -18,21 +15,47 @@ CONFIGS=(
 echo "=============================================================================="
 echo "Launching Medium Size Experiments with Full Cross Attention"
 echo "=============================================================================="
-echo ""
-echo "Configs to launch:"
+echo "Submitting ${#CONFIGS[@]} jobs..."
+
 for config in "${CONFIGS[@]}"; do
-    if [ -f "${BASE_DIR}/${config}" ]; then
-        echo "  - ${config} ✓"
-    else
-        echo "  - ${config} ✗ (NOT FOUND - will be skipped)"
+    config_path="${BASE_DIR}/${config}"
+    if [ ! -f "${config_path}" ]; then
+        echo "WARNING: Config not found: ${config}"
+        continue
     fi
+    
+    exp_name=$(python3 -c "
+import yaml
+import re
+try:
+    with open('${config_path}', 'r') as f:
+        config_data = yaml.safe_load(f)
+        exp_name = config_data.get('experiment', {}).get('name', 'unnamed')
+        exp_name = re.sub(r'[^a-zA-Z0-9_]', '_', exp_name)
+        exp_name = re.sub(r'_+', '_', exp_name).strip('_')
+        if len(exp_name) > 50:
+            exp_name = exp_name[:50]
+        print(exp_name)
+except:
+    print('unnamed')
+" 2>/dev/null || echo "unnamed")
+    
+    log_suffix=$(echo "${config}" | sed 's/[^a-zA-Z0-9]/_/g' | sed 's/_\+/_/g')
+    
+    echo "Submitting: ${config} (${exp_name})"
+    
+    bsub -J "${exp_name}" \
+        -o "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.out" \
+        -e "${BASE_DIR}/training/hpc_scripts/logs/train_diff_clip_${log_suffix}.%J.err" \
+        -n 4 \
+        -R "rusage[mem=8000]" \
+        -gpu "num=1" \
+        -W 24:00 \
+        -q gpuv100 \
+        bash "${TRAIN_SCRIPT}" "${config}"
+    
+    sleep 1
 done
-echo ""
-echo "=============================================================================="
 
-# Make launch script executable
-chmod +x "${LAUNCH_SCRIPT}"
-
-# Launch all configs
-bash "${LAUNCH_SCRIPT}" "${CONFIGS[@]}"
+echo "Done! Submitted ${#CONFIGS[@]} jobs to gpuv100 queue"
 
