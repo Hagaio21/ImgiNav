@@ -137,13 +137,17 @@ def compute_loss(
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
     
     # Apply CFG dropout for conditioning signal C (randomly drop entire conditioning with cfg_dropout_rate probability)
+    # CRITICAL: Replace None with torch.zeros_like to avoid errors in embedding_proj
     # C = [c_pov, c_graph] but CFG doesn't care about structure - it drops the entire conditioning signal
     # This teaches the model to work both with and without cross-attention conditioning
     cfg_dropped = False
     if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
         if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
-            text_emb = None  # Drop entire conditioning signal C for CFG training
-            pov_emb = None
+            # Replace with zero tensors instead of None to avoid embedding_proj errors
+            if text_emb is not None:
+                text_emb = torch.zeros_like(text_emb)
+            if pov_emb is not None:
+                pov_emb = torch.zeros_like(pov_emb)
             cfg_dropped = True
     
     # Forward pass through model
@@ -443,16 +447,28 @@ def eval_epoch(
                         eval_text_emb = batch.get("text_emb", None)
                         eval_pov_emb = batch.get("pov_emb", None)
                         
+                        # CRITICAL: Replace None with torch.zeros_like to avoid embedding_proj errors
                         if eval_text_emb is not None:
                             eval_text_emb = eval_text_emb[:eval_batch_size]
                             if eval_text_emb.dim() > 1:
                                 eval_text_emb = eval_text_emb.flatten(start_dim=1)
                             print(f"[EVAL] [METRICS] Text embeddings shape: {eval_text_emb.shape}", flush=True)
+                        elif eval_pov_emb is not None:
+                            # Create zero tensor matching pov_emb shape for text_emb
+                            eval_text_emb = torch.zeros_like(eval_pov_emb[:eval_batch_size])
+                            if eval_text_emb.dim() > 1:
+                                eval_text_emb = eval_text_emb.flatten(start_dim=1)
+                            print(f"[EVAL] [METRICS] Text embeddings missing, using zeros with shape: {eval_text_emb.shape}", flush=True)
+                        
                         if eval_pov_emb is not None:
                             eval_pov_emb = eval_pov_emb[:eval_batch_size]
                             if eval_pov_emb.dim() > 1:
                                 eval_pov_emb = eval_pov_emb.flatten(start_dim=1)
                             print(f"[EVAL] [METRICS] POV embeddings shape: {eval_pov_emb.shape}", flush=True)
+                        elif eval_text_emb is not None:
+                            # Create zero tensor matching text_emb shape for pov_emb
+                            eval_pov_emb = torch.zeros_like(eval_text_emb)
+                            print(f"[EVAL] [METRICS] POV embeddings missing, using zeros with shape: {eval_pov_emb.shape}", flush=True)
                         
                         # Get target latents for comparison
                         target_latents = latents[:eval_batch_size]

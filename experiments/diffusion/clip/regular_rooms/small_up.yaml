@@ -23,7 +23,7 @@ autoencoder:
 
 latent_clamp_min: -6.0
 latent_clamp_max: 6.0
-scale_factor: 5.5
+scale_factor: 1.0
 
 embedding_projection:
   type: CLIPEmbeddingToSpatial
