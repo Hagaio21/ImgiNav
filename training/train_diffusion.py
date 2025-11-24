@@ -1148,6 +1148,15 @@ def main():
         
         print(f"  Resuming from epoch {start_epoch + 1}")
         print(f"  Best validation loss so far: {best_val_loss:.6f}")
+        
+        # Check if we need to continue training beyond the checkpoint
+        epochs = config["training"].get("epochs", 100)
+        if start_epoch >= epochs:
+            print(f"\n  WARNING: Checkpoint is at epoch {start_epoch + 1}, but config specifies only {epochs} epochs.")
+            print(f"  Training is already complete. To continue training, increase 'epochs' in config.")
+        else:
+            remaining_epochs = epochs - start_epoch
+            print(f"  Will continue training for {remaining_epochs} more epochs (until epoch {epochs})")
     else:
         # Build model from config (fresh start)
         print("\nBuilding model from config...")
@@ -1369,7 +1378,10 @@ def main():
     epochs_without_improvement = 0
     
     print(f"\nStarting training...")
-    print(f"  Epochs: {epochs}")
+    print(f"  Total epochs: {epochs}")
+    if start_epoch > 0:
+        print(f"  Starting from epoch: {start_epoch + 1} (resumed from checkpoint)")
+        print(f"  Remaining epochs: {epochs - start_epoch}")
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {optimizer.param_groups[0]['lr']}")
     print(f"  Mixed precision: {use_amp}")
