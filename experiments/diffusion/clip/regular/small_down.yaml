@@ -70,7 +70,7 @@ training:
   scheduler:
     type: cosine
   cfg_dropout_rate: 0.1
-  guidance_scale: 3.0
+  guidance_scale: 5.0
   loss:
     type: MSELoss
     key: pred_noise
