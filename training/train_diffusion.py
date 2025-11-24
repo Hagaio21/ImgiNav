@@ -703,12 +703,13 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     except StopIteration:
         return
     
-    num_steps = model.scheduler.num_steps
+    # Use 50 steps for DDIM sampling (DDIM is designed for fewer steps)
+    ddim_steps = 50
     
     # ============================================================================
     # Part 1: Generate unconditioned samples (4x4 grid)
     # ============================================================================
-    print(f"  [SAMPLING] Generating 16 unconditioned samples (4x4 grid) using DDIM ({num_steps} steps)...")
+    print(f"  [SAMPLING] Generating 16 unconditioned samples (4x4 grid) using DDIM ({ddim_steps} steps)...")
     
     sampling_seed = 42 + epoch
     torch.manual_seed(sampling_seed)
@@ -718,7 +719,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     with torch.no_grad():
         unconditioned_output = model.sample(
             batch_size=16,  # Keep 4x4 grid for unconditioned
-            num_steps=num_steps,
+            num_steps=ddim_steps,
             method="ddim",
             eta=0.0,
             cond=None,
@@ -871,13 +872,14 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             print("  Warning: Decoder did not produce RGB output for targets")
             target_rgb = None
     
-    # Generate conditioned samples using DDIM
-    print(f"  [SAMPLING] Generating {batch_size} conditioned samples using DDIM ({num_steps} steps)...")
+    # Generate conditioned samples using DDIM (50 steps)
+    ddim_steps = 50
+    print(f"  [SAMPLING] Generating {batch_size} conditioned samples using DDIM ({ddim_steps} steps)...")
     
     with torch.no_grad():
         conditioned_output = model.sample(
             batch_size=batch_size,
-            num_steps=num_steps,
+            num_steps=ddim_steps,
             method="ddim",
             eta=0.0,
             cond=cond,
