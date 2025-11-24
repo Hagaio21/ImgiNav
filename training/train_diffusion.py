@@ -143,19 +143,11 @@ def compute_loss(
     cfg_dropped = False
     if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
         if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
-            # Replace with zero tensors instead of None to avoid embedding_proj errors
-            # If embedding_proj exists, it requires at least one non-None input
+            # When dropping condition, set both to zeros_like if they exist (do NOT set to None)
             if text_emb is not None:
                 text_emb = torch.zeros_like(text_emb)
-            elif pov_emb is not None:
-                # If text_emb was None but pov_emb exists, create zero text_emb matching pov_emb batch size
-                text_emb = torch.zeros((pov_emb.shape[0], 384), device=pov_emb.device, dtype=pov_emb.dtype)
-            
             if pov_emb is not None:
                 pov_emb = torch.zeros_like(pov_emb)
-            elif text_emb is not None:
-                # If pov_emb was None but text_emb exists, create zero pov_emb matching text_emb batch size
-                pov_emb = torch.zeros((text_emb.shape[0], 512), device=text_emb.device, dtype=text_emb.dtype)
             
             cfg_dropped = True
     
@@ -759,39 +751,13 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # CRITICAL: Use zero tensors instead of None for unconditioned sampling, matching training logic
     # This ensures embedding_proj receives proper tensors even for unconditional generation
     unconditioned_batch_size = 16
-    if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
-        # Try to infer embedding dimensions from batch if available, otherwise use defaults
-        text_dim = 384  # Default CLIP text embedding dimension
-        pov_dim = 512   # Default POV embedding dimension
-        
-        # Try to get dimensions from batch
-        if "text_emb" in batch:
-            sample_text_emb = batch["text_emb"]
-            if isinstance(sample_text_emb, torch.Tensor):
-                if sample_text_emb.dim() > 1:
-                    text_dim = sample_text_emb.flatten(start_dim=1).shape[1]
-                else:
-                    text_dim = sample_text_emb.shape[0] if sample_text_emb.dim() == 1 else 384
-        
-        if "pov_emb" in batch:
-            sample_pov_emb = batch["pov_emb"]
-            if isinstance(sample_pov_emb, torch.Tensor):
-                if sample_pov_emb.dim() > 1:
-                    pov_dim = sample_pov_emb.flatten(start_dim=1).shape[1]
-                else:
-                    pov_dim = sample_pov_emb.shape[0] if sample_pov_emb.dim() == 1 else 512
-        
-        # Get dtype from model parameters for consistency
-        param_dtype = next(model.parameters()).dtype
-        
-        # Create zero tensors matching the expected dimensions
-        unconditioned_text_emb = torch.zeros((unconditioned_batch_size, text_dim), device=device_obj, dtype=param_dtype)
-        unconditioned_pov_emb = torch.zeros((unconditioned_batch_size, pov_dim), device=device_obj, dtype=param_dtype)
-        print(f"  [SAMPLING] Using zero tensors for unconditioned embeddings: text_emb={unconditioned_text_emb.shape}, pov_emb={unconditioned_pov_emb.shape}")
-    else:
-        # No embedding_proj, can use None
-        unconditioned_text_emb = None
-        unconditioned_pov_emb = None
+    # Get dtype from model parameters for consistency
+    param_dtype = next(model.parameters()).dtype
+    
+    # Create zero tensors with explicit dimensions: 384 for text, 512 for POV
+    dummy_text = torch.zeros((unconditioned_batch_size, 384), device=device_obj, dtype=param_dtype)
+    dummy_pov = torch.zeros((unconditioned_batch_size, 512), device=device_obj, dtype=param_dtype)
+    print(f"  [SAMPLING] Using zero tensors for unconditioned embeddings: text_emb={dummy_text.shape}, pov_emb={dummy_pov.shape}")
     
     with torch.no_grad():
         unconditioned_output = model.sample(
@@ -801,8 +767,8 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             eta=0.0,
             cond=None,
             guidance_scale=1.0,
-            text_emb=unconditioned_text_emb,
-            pov_emb=unconditioned_pov_emb,
+            text_emb=dummy_text,
+            pov_emb=dummy_pov,
             device=device_obj,
             verbose=False
         )

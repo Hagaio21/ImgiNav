@@ -68,7 +68,7 @@ training:
   sample_interval: 10
   use_amp: true
   max_grad_norm: 0.5
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 8
   scheduler:
     type: cosine
   cfg_dropout_rate: 0.15
