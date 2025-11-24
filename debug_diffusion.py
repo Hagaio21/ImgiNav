@@ -16,6 +16,9 @@ import numpy as np
 from PIL import Image
 import sys
 import matplotlib.pyplot as plt
+import json
+import os
+import gc
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -37,7 +40,11 @@ from models.autoencoder import Autoencoder
 
 
 def vae_round_trip_test(vae_model, dataloader, device_obj, output_path):
-    """Test 1: VAE Round Trip - encode and decode a batch using VAE separately."""
+    """Test 1: VAE Round Trip - encode and decode a batch using VAE separately.
+    
+    Returns:
+        dict: Metrics including mse, latent_mean, latent_std
+    """
     print("\n" + "="*60)
     print("Test 1: VAE Round Trip (Separate VAE Test)")
     print("="*60)
@@ -143,6 +150,14 @@ def vae_round_trip_test(vae_model, dataloader, device_obj, output_path):
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Saved VAE round trip comparison to {output_path}")
+    
+    # Return metrics
+    return {
+        "vae_reconstruction_mse": mse,
+        "latent_mean": latents.mean().item(),
+        "latent_std": latent_std,
+        "latent_shape": list(latents.shape)
+    }
 
 
 def noise_schedule_test(model, dataloader, device_obj, output_path):
@@ -244,20 +259,176 @@ def noise_schedule_test(model, dataloader, device_obj, output_path):
     print(f"Saved noise schedule visualization to {output_path}")
 
 
-def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
-    """Test 3: Overfit Test - train on a single batch for 100 iterations using same logic as training."""
+def get_memory_stats(device_obj):
+    """Get current memory statistics."""
+    if device_obj.type == "cuda":
+        allocated = torch.cuda.memory_allocated(device_obj) / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved(device_obj) / 1024**3  # GB
+        max_allocated = torch.cuda.max_memory_allocated(device_obj) / 1024**3  # GB
+        return {
+            "allocated_gb": allocated,
+            "reserved_gb": reserved,
+            "max_allocated_gb": max_allocated
+        }
+    else:
+        return {
+            "allocated_gb": 0,
+            "reserved_gb": 0,
+            "max_allocated_gb": 0
+        }
+
+
+def test_batch_size(model, dataset, device_obj, loss_fn, config, max_batch_size=64):
+    """Test different batch sizes to find optimal memory usage.
+    
+    Returns:
+        dict: Results with batch sizes and memory usage
+    """
     print("\n" + "="*60)
-    print("Test 3: Overfit Test")
+    print("Batch Size Memory Test")
+    print("="*60)
+    
+    if device_obj.type != "cuda":
+        print("Memory testing only available for CUDA devices")
+        return None
+    
+    # Get training settings
+    use_amp = config.get("training", {}).get("use_amp", False)
+    
+    results = []
+    batch_sizes_to_test = [1, 2, 4, 8, 16, 32, 64]
+    batch_sizes_to_test = [bs for bs in batch_sizes_to_test if bs <= max_batch_size]
+    
+    model.eval()
+    
+    for batch_size in batch_sizes_to_test:
+        print(f"\nTesting batch size: {batch_size}")
+        
+        try:
+            # Clear cache
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            # Reset peak memory stats
+            torch.cuda.reset_peak_memory_stats(device_obj)
+            
+            # Create dataloader with this batch size
+            dataloader = dataset.make_dataloader(
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=device_obj.type == "cuda",
+            )
+            
+            # Get a batch
+            batch = next(iter(dataloader))
+            batch = move_batch_to_device(batch, device_obj)
+            
+            # Get latents
+            latents = batch.get("latent")
+            if latents is None:
+                if "rgb" in batch and model._has_encoder:
+                    with torch.no_grad():
+                        encoder_out = model.encoder(batch["rgb"])
+                        if "latent" in encoder_out:
+                            latents = encoder_out["latent"]
+                        elif "mu" in encoder_out:
+                            latents = encoder_out["mu"]
+                else:
+                    print(f"  ⚠ Cannot test batch size {batch_size}: no latents available")
+                    continue
+            
+            # Forward pass
+            num_steps = model.scheduler.num_steps
+            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
+            noise = model.scheduler.randn_like(latents)
+            
+            cond = None
+            
+            # Forward pass with memory tracking
+            if use_amp:
+                with torch.amp.autocast('cuda'):
+                    with torch.no_grad():
+                        _ = model.denoise(latents, t, cond=cond)
+            else:
+                with torch.no_grad():
+                    _ = model.denoise(latents, t, cond=cond)
+            
+            # Get memory stats
+            stats = get_memory_stats(device_obj)
+            stats["batch_size"] = batch_size
+            stats["success"] = True
+            
+            results.append(stats)
+            print(f"  ✓ Success: {stats['max_allocated_gb']:.2f} GB peak memory")
+            
+            # Clean up
+            del batch, latents, t, noise
+            torch.cuda.empty_cache()
+            
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"  ✗ Out of memory at batch size {batch_size}")
+                stats = {
+                    "batch_size": batch_size,
+                    "success": False,
+                    "error": "out_of_memory",
+                    "max_allocated_gb": torch.cuda.max_memory_allocated(device_obj) / 1024**3
+                }
+                results.append(stats)
+                torch.cuda.empty_cache()
+                break
+            else:
+                print(f"  ✗ Error at batch size {batch_size}: {e}")
+                break
+    
+    # Find optimal batch size (largest successful)
+    optimal_batch_size = None
+    if results:
+        successful = [r for r in results if r.get("success", False)]
+        if successful:
+            optimal_batch_size = max(successful, key=lambda x: x["batch_size"])["batch_size"]
+    
+    return {
+        "results": results,
+        "optimal_batch_size": optimal_batch_size,
+        "max_successful_memory_gb": max([r["max_allocated_gb"] for r in results if r.get("success", False)], default=0)
+    }
+
+
+def overfit_test_subset(model, dataset, device_obj, loss_fn, optimizer, config, num_samples=128):
+    """Enhanced Overfit Test - train on a small subset (32 or 128 samples) to track training curve shape.
+    
+    Returns:
+        dict: Metrics including initial_loss, final_loss, loss_reduction, losses (list), 
+              early_optimization_speed, curve_metrics
+    """
+    print("\n" + "="*60)
+    print(f"Test 3: Enhanced Overfit Test (Subset: {num_samples} samples)")
     print("="*60)
     
     model.train()
     
-    # Get a single batch and keep it (same as training)
-    batch = next(iter(dataloader))
-    batch = move_batch_to_device(batch, device_obj)
+    # Create a small subset dataloader
+    subset_dataloader = dataset.make_dataloader(
+        batch_size=min(32, num_samples),  # Use reasonable batch size
+        shuffle=True,
+        num_workers=0,
+        pin_memory=device_obj.type == "cuda",
+    )
     
-    batch_size = batch.get("latent", batch.get("rgb", torch.empty(1))).shape[0]
-    print(f"Training on batch of size: {batch_size}")
+    # Collect samples up to num_samples
+    all_batches = []
+    total_samples = 0
+    for batch in subset_dataloader:
+        batch = move_batch_to_device(batch, device_obj)
+        all_batches.append(batch)
+        batch_size = batch.get("latent", batch.get("rgb", torch.empty(1))).shape[0]
+        total_samples += batch_size
+        if total_samples >= num_samples:
+            break
+    
+    print(f"Training on {total_samples} samples across {len(all_batches)} batches")
     
     # Get training settings from config (same as training script)
     use_amp = config.get("training", {}).get("use_amp", False)
@@ -277,15 +448,19 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
     if use_amp and device_obj.type == "cuda":
         scaler = create_grad_scaler(use_amp, device_obj)
     
-    losses = []
-    
     # Initialize optimizer (zero gradients)
     optimizer.zero_grad()
     
-    num_iterations = 1000
+    num_iterations = 500  # Fewer iterations for subset test
     print(f"Running overfit test for {num_iterations} iterations...")
     
+    losses = []
+    early_losses = []  # First 50 iterations for early optimization speed
+    
     for iteration in range(num_iterations):
+        # Cycle through batches
+        batch = all_batches[iteration % len(all_batches)]
+        
         # Get latents (same logic as train_epoch)
         latents = batch.get("latent")
         if latents is None:
@@ -376,8 +551,12 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
         loss_val = total_loss_val.detach().item() * gradient_accumulation_steps
         losses.append(loss_val)
         
-        # Print every 100 steps
-        if (iteration + 1) % 100 == 0:
+        # Track early optimization (first 50 iterations)
+        if iteration < 50:
+            early_losses.append(loss_val)
+        
+        # Print every 50 steps
+        if (iteration + 1) % 50 == 0:
             print(f"  Iteration {iteration + 1:4d}/{num_iterations}: Loss = {loss_val:.6f}")
     
     # Ensure gradients are zeroed at the end
@@ -388,7 +567,31 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
     final_loss = losses[-1]
     reduction = (initial_loss - final_loss) / initial_loss * 100
     
+    # Calculate early optimization speed (loss reduction in first 50 iterations)
+    if len(early_losses) >= 10:
+        early_initial = early_losses[0]
+        early_final = early_losses[-1]
+        early_reduction = (early_initial - early_final) / early_initial * 100 if early_initial > 0 else 0
+        early_speed = early_reduction / len(early_losses)  # % reduction per iteration
+    else:
+        early_reduction = 0
+        early_speed = 0
+    
+    # Calculate curve shape metrics
+    # Exponential decay fit: loss = a * exp(-b * iteration)
+    if len(losses) > 10:
+        iterations = np.arange(len(losses))
+        log_losses = np.log(np.array(losses) + 1e-8)
+        # Linear fit to log space gives exponential decay
+        coeffs = np.polyfit(iterations[:len(losses)//2], log_losses[:len(losses)//2], 1)
+        decay_rate = -coeffs[0]  # Positive means decreasing
+    else:
+        decay_rate = 0
+    
     print(f"\nLoss reduction: {initial_loss:.6f} -> {final_loss:.6f} ({reduction:.1f}% reduction)")
+    print(f"Early optimization (first 50 iters): {early_losses[0]:.6f} -> {early_losses[-1]:.6f} ({early_reduction:.1f}% reduction)")
+    print(f"Early optimization speed: {early_speed:.4f}% per iteration")
+    print(f"Decay rate (exponential fit): {decay_rate:.6f}")
     
     if final_loss < initial_loss * 0.5:
         print(f"✓ Loss decreased significantly (final < 50% of initial)")
@@ -397,22 +600,65 @@ def overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config):
     else:
         print(f"✗ WARNING: Loss did not decrease! This may indicate a training issue.")
     
-    # Plot loss curve
-    plt.figure(figsize=(10, 6))
-    plt.plot(losses)
-    plt.xlabel("Iteration")
-    plt.ylabel("Loss")
-    plt.title("Overfit Test: Loss vs Iteration")
-    plt.grid(True)
+    # Plot loss curve with early region highlighted
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # Full curve
+    axes[0].plot(losses, label='Loss')
+    axes[0].axvspan(0, min(50, len(losses)), alpha=0.2, color='green', label='Early optimization region')
+    axes[0].set_xlabel("Iteration")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_title("Full Training Curve")
+    axes[0].legend()
+    axes[0].grid(True)
+    axes[0].set_yscale('log')
+    
+    # Early region zoom
+    if early_losses:
+        axes[1].plot(early_losses, 'o-', label='Early Loss', markersize=4)
+        axes[1].set_xlabel("Iteration")
+        axes[1].set_ylabel("Loss")
+        axes[1].set_title("Early Optimization (First 50 Iterations)")
+        axes[1].legend()
+        axes[1].grid(True)
+        axes[1].set_yscale('log')
+    
+    plt.tight_layout()
     plt.savefig("debug_overfit_loss.png", dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Saved loss curve to debug_overfit_loss.png")
+    
+    # Return metrics
+    return {
+        "initial_loss": initial_loss,
+        "final_loss": final_loss,
+        "loss_reduction_percent": reduction,
+        "losses": losses,
+        "num_iterations": num_iterations,
+        "early_optimization": {
+            "initial_loss": early_losses[0] if early_losses else initial_loss,
+            "final_loss": early_losses[-1] if early_losses else final_loss,
+            "reduction_percent": early_reduction,
+            "speed_per_iteration": early_speed,
+            "losses": early_losses
+        },
+        "curve_metrics": {
+            "decay_rate": decay_rate,
+            "is_decreasing": final_loss < initial_loss,
+            "convergence_rate": reduction / num_iterations if num_iterations > 0 else 0
+        }
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(description="Debug diffusion training pipeline")
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for debug results (default: current directory)")
     args = parser.parse_args()
+    
+    # Set output directory
+    output_dir = Path(args.output_dir) if args.output_dir else Path.cwd()
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     # Load config
     print(f"Loading config from {args.config}")
@@ -549,27 +795,65 @@ def main():
     else:
         print("[VAE] WARNING: No autoencoder config found, skipping VAE round trip test")
     
+    # Collect metrics
+    metrics = {}
+    
     if vae_model is not None:
-        vae_round_trip_test(vae_model, dataloader, device_obj, "debug_vae_reconstruction.png")
+        vae_output_path = output_dir / "debug_vae_reconstruction.png"
+        vae_metrics = vae_round_trip_test(vae_model, dataloader, device_obj, str(vae_output_path))
+        metrics["vae_round_trip"] = vae_metrics
     else:
         print("[VAE] Skipping VAE round trip test (VAE not available)")
+        metrics["vae_round_trip"] = None
     
     # Run Test 2: Noise Schedule
-    noise_schedule_test(model, dataloader, device_obj, "debug_forward_process.png")
+    noise_output_path = output_dir / "debug_forward_process.png"
+    noise_schedule_test(model, dataloader, device_obj, str(noise_output_path))
+    
+    # Run Test: Batch Size Memory Test
+    print("\n[BATCH_SIZE_TEST] Testing batch sizes for memory optimization...")
+    batch_size_metrics = test_batch_size(model, dataset, device_obj, None, config)
+    metrics["batch_size_test"] = batch_size_metrics
     
     # Run Test 3: Overfit Test
     print("\n[OVERFIT] Setting up optimizer and loss...")
     loss_fn = build_loss(config)
     optimizer = build_optimizer(model, config)
-    overfit_test(model, dataloader, device_obj, loss_fn, optimizer, config)
+    
+    # Get memory stats before overfit test
+    memory_before = get_memory_stats(device_obj)
+    
+    # Temporarily change to output_dir for overfit test plots
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(output_dir)
+        # Use enhanced overfit test with subset
+        overfit_metrics = overfit_test_subset(model, dataset, device_obj, loss_fn, optimizer, config, num_samples=128)
+    finally:
+        os.chdir(original_cwd)
+    
+    # Get memory stats after overfit test
+    memory_after = get_memory_stats(device_obj)
+    overfit_metrics["memory_before_gb"] = memory_before["allocated_gb"]
+    overfit_metrics["memory_after_gb"] = memory_after["allocated_gb"]
+    overfit_metrics["peak_memory_gb"] = memory_after["max_allocated_gb"]
+    
+    metrics["overfit_test"] = overfit_metrics
+    
+    # Save metrics to JSON
+    metrics_path = output_dir / "debug_metrics.json"
+    with open(metrics_path, 'w') as f:
+        json.dump(metrics, f, indent=2)
+    print(f"\nSaved metrics to {metrics_path}")
     
     print("\n" + "="*60)
     print("All debug tests completed!")
     print("="*60)
     print("Generated files:")
-    print("  - debug_vae_reconstruction.png")
-    print("  - debug_forward_process.png")
-    print("  - debug_overfit_loss.png")
+    print(f"  - {output_dir / 'debug_vae_reconstruction.png'}")
+    print(f"  - {output_dir / 'debug_forward_process.png'}")
+    print(f"  - {output_dir / 'debug_overfit_loss.png'}")
+    print(f"  - {metrics_path}")
 
 
 if __name__ == "__main__":
