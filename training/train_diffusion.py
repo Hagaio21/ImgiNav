@@ -461,7 +461,7 @@ def train_epoch(
 
 def eval_epoch(
     model, dataloader, scheduler, loss_fn, 
-    device, use_amp=False, taxonomy=None, compute_eval_metrics=True
+    device, use_amp=False, taxonomy=None, compute_eval_metrics=True, guidance_scale=1.0
 ):
     """Evaluate for one epoch using CompositeLoss."""
     model.eval()
@@ -518,14 +518,11 @@ def eval_epoch(
             if compute_eval_metrics and batch_idx == 0:
                 try:
                     with torch.no_grad():
-                        # Re-compute forward pass to get latents (or extract from outputs if stored)
-                        # For efficiency, only compute on a small subset (4x4 = 16 samples)
+                        # Generate conditioned samples for evaluation (like in save_samples)
+                        # For efficiency, only compute on a small subset
                         eval_batch_size = min(16, batch_size)
                         
-                        # Get latents for evaluation subset
-                        eval_latents = latents[:eval_batch_size]
-                        eval_t = t[:eval_batch_size]
-                        eval_noise = noise[:eval_batch_size]
+                        # Get conditioning from batch
                         eval_text_emb = batch.get("text_emb", None)
                         eval_pov_emb = batch.get("pov_emb", None)
                         
@@ -538,35 +535,49 @@ def eval_epoch(
                             if eval_pov_emb.dim() > 1:
                                 eval_pov_emb = eval_pov_emb.flatten(start_dim=1)
                         
-                        # Forward pass to get predicted latents
-                        eval_outputs = model(eval_latents, eval_t, cond=None, noise=eval_noise, 
-                                           text_emb=eval_text_emb, pov_emb=eval_pov_emb)
+                        # Get target latents for comparison
+                        target_latents = latents[:eval_batch_size]
                         
-                        # Predict clean latents
-                        alpha_bars = model.scheduler.alpha_bars.to(device_obj)
-                        alpha_bar = alpha_bars[eval_t].view(-1, 1, 1, 1)
-                        noisy_latents_eval = alpha_bar.sqrt() * eval_latents + (1 - alpha_bar).sqrt() * eval_noise
-                        pred_latents_eval = (noisy_latents_eval - (1 - alpha_bar).sqrt() * eval_outputs["pred_noise"]) / alpha_bar.sqrt().clamp(min=1e-8)
-                        pred_latents_eval = torch.clamp(pred_latents_eval, -6.0, 6.0)
-                        gt_latents_eval = eval_latents
+                        # Generate conditioned samples using full sampling process
+                        num_steps = model.scheduler.num_steps
                         
-                        # Decode latents to images
-                        pred_decoded = model.decoder({"latent": pred_latents_eval})
-                        gt_decoded = model.decoder({"latent": gt_latents_eval})
+                        conditioned_output = model.sample(
+                            batch_size=eval_batch_size,
+                            num_steps=num_steps,
+                            method="ddpm",
+                            eta=1.0,
+                            cond=None,
+                            guidance_scale=guidance_scale,
+                            text_emb=eval_text_emb,
+                            pov_emb=eval_pov_emb,
+                            device=device_obj,
+                            verbose=False
+                        )
                         
-                        pred_images = pred_decoded.get("rgb", None)
-                        gt_images = gt_decoded.get("rgb", None)
-                        
-                        if pred_images is not None and gt_images is not None:
-                            # Normalize to [0, 1] if needed
+                        # Decode generated samples
+                        if "rgb" in conditioned_output:
+                            pred_images = conditioned_output["rgb"]
                             if pred_images.min() < 0:
                                 pred_images = (pred_images + 1.0) / 2.0
+                            pred_images = torch.clamp(pred_images, 0.0, 1.0)
+                        else:
+                            pred_decoded = model.decoder({"latent": conditioned_output["latent"]})
+                            pred_images = pred_decoded.get("rgb", None)
+                            if pred_images is not None:
+                                if pred_images.min() < 0:
+                                    pred_images = (pred_images + 1.0) / 2.0
+                                pred_images = torch.clamp(pred_images, 0.0, 1.0)
+                        
+                        # Decode target latents to get ground truth images
+                        gt_decoded = model.decoder({"latent": target_latents})
+                        gt_images = gt_decoded.get("rgb", None)
+                        if gt_images is not None:
                             if gt_images.min() < 0:
                                 gt_images = (gt_images + 1.0) / 2.0
-                            pred_images = torch.clamp(pred_images, 0.0, 1.0)
                             gt_images = torch.clamp(gt_images, 0.0, 1.0)
-                            
-                            # Compute evaluation metrics
+                        
+                        if pred_images is not None and gt_images is not None:
+                            # Compute evaluation metrics between conditioned samples and targets
                             eval_metrics = compute_evaluation_metrics(
                                 pred_images, gt_images, eval_text_emb, eval_pov_emb,
                                 taxonomy=taxonomy, device=device_obj,
@@ -1482,9 +1493,13 @@ def main():
             elif hasattr(train_loader.dataset, 'taxonomy'):
                 taxonomy = train_loader.dataset.taxonomy
             
+            # Get guidance_scale from config for evaluation
+            guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
+            
             val_loss, val_logs = eval_epoch(
                 model, val_loader, scheduler, loss_fn,
-                device_obj, use_amp=use_amp, taxonomy=taxonomy, compute_eval_metrics=True
+                device_obj, use_amp=use_amp, taxonomy=taxonomy, compute_eval_metrics=True,
+                guidance_scale=guidance_scale
             )
             print(f"Val Loss: {val_loss:.6f}")
             for k, v in val_logs.items():
