@@ -144,11 +144,35 @@ def compute_loss(
     if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
         if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
             # Replace with zero tensors instead of None to avoid embedding_proj errors
+            # If embedding_proj exists, it requires at least one non-None input
             if text_emb is not None:
                 text_emb = torch.zeros_like(text_emb)
+            elif pov_emb is not None:
+                # If text_emb was None but pov_emb exists, create zero text_emb matching pov_emb batch size
+                text_emb = torch.zeros((pov_emb.shape[0], 384), device=pov_emb.device, dtype=pov_emb.dtype)
+            
             if pov_emb is not None:
                 pov_emb = torch.zeros_like(pov_emb)
+            elif text_emb is not None:
+                # If pov_emb was None but text_emb exists, create zero pov_emb matching text_emb batch size
+                pov_emb = torch.zeros((text_emb.shape[0], 512), device=text_emb.device, dtype=text_emb.dtype)
+            
             cfg_dropped = True
+    
+    # CRITICAL: Ensure at least one embedding is not None if embedding_proj exists
+    # This prevents embedding_proj from raising ValueError("At least one of text_emb or pov_emb must be provided")
+    if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
+        if text_emb is None and pov_emb is None:
+            # Both are None - create zero tensors with appropriate batch size from latents
+            batch_size = latents.shape[0]
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=latents.dtype)
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=latents.dtype)
+        elif text_emb is None and pov_emb is not None:
+            # text_emb is None but pov_emb exists - create zero text_emb
+            text_emb = torch.zeros((pov_emb.shape[0], 384), device=pov_emb.device, dtype=pov_emb.dtype)
+        elif pov_emb is None and text_emb is not None:
+            # pov_emb is None but text_emb exists - create zero pov_emb
+            pov_emb = torch.zeros((text_emb.shape[0], 512), device=text_emb.device, dtype=text_emb.dtype)
     
     # Forward pass through model
     outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
@@ -732,16 +756,53 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(sampling_seed)
     
+    # CRITICAL: Use zero tensors instead of None for unconditioned sampling, matching training logic
+    # This ensures embedding_proj receives proper tensors even for unconditional generation
+    unconditioned_batch_size = 16
+    if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
+        # Try to infer embedding dimensions from batch if available, otherwise use defaults
+        text_dim = 384  # Default CLIP text embedding dimension
+        pov_dim = 512   # Default POV embedding dimension
+        
+        # Try to get dimensions from batch
+        if "text_emb" in batch:
+            sample_text_emb = batch["text_emb"]
+            if isinstance(sample_text_emb, torch.Tensor):
+                if sample_text_emb.dim() > 1:
+                    text_dim = sample_text_emb.flatten(start_dim=1).shape[1]
+                else:
+                    text_dim = sample_text_emb.shape[0] if sample_text_emb.dim() == 1 else 384
+        
+        if "pov_emb" in batch:
+            sample_pov_emb = batch["pov_emb"]
+            if isinstance(sample_pov_emb, torch.Tensor):
+                if sample_pov_emb.dim() > 1:
+                    pov_dim = sample_pov_emb.flatten(start_dim=1).shape[1]
+                else:
+                    pov_dim = sample_pov_emb.shape[0] if sample_pov_emb.dim() == 1 else 512
+        
+        # Get dtype from model parameters for consistency
+        param_dtype = next(model.parameters()).dtype
+        
+        # Create zero tensors matching the expected dimensions
+        unconditioned_text_emb = torch.zeros((unconditioned_batch_size, text_dim), device=device_obj, dtype=param_dtype)
+        unconditioned_pov_emb = torch.zeros((unconditioned_batch_size, pov_dim), device=device_obj, dtype=param_dtype)
+        print(f"  [SAMPLING] Using zero tensors for unconditioned embeddings: text_emb={unconditioned_text_emb.shape}, pov_emb={unconditioned_pov_emb.shape}")
+    else:
+        # No embedding_proj, can use None
+        unconditioned_text_emb = None
+        unconditioned_pov_emb = None
+    
     with torch.no_grad():
         unconditioned_output = model.sample(
-            batch_size=16,  # Keep 4x4 grid for unconditioned
+            batch_size=unconditioned_batch_size,  # Keep 4x4 grid for unconditioned
             num_steps=ddim_steps,
             method="ddim",
             eta=0.0,
             cond=None,
             guidance_scale=1.0,
-            text_emb=None,
-            pov_emb=None,
+            text_emb=unconditioned_text_emb,
+            pov_emb=unconditioned_pov_emb,
             device=device_obj,
             verbose=False
         )
@@ -865,11 +926,23 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # No type-based conditioning - only using control signals (text_emb, pov_emb)
     cond = None
     
+    # CRITICAL: Replace None with torch.zeros_like to avoid embedding_proj errors
     # Ensure embeddings are 1D (flatten if needed)
     if text_emb is not None:
         if text_emb.dim() > 1:
             text_emb = text_emb.flatten(start_dim=1)
+    elif pov_emb is not None:
+        # Create zero tensor matching pov_emb shape for text_emb
+        text_emb = torch.zeros_like(pov_emb)
+        if text_emb.dim() > 1:
+            text_emb = text_emb.flatten(start_dim=1)
+    
     if pov_emb is not None:
+        if pov_emb.dim() > 1:
+            pov_emb = pov_emb.flatten(start_dim=1)
+    elif text_emb is not None:
+        # Create zero tensor matching text_emb shape for pov_emb
+        pov_emb = torch.zeros_like(text_emb)
         if pov_emb.dim() > 1:
             pov_emb = pov_emb.flatten(start_dim=1)
     
