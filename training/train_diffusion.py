@@ -430,14 +430,16 @@ def eval_epoch(
             # Compute evaluation metrics if requested (only on first batch to avoid overhead)
             if compute_eval_metrics and batch_idx == 0:
                 metrics_start_time = time.time()
-                print(f"[EVAL] [METRICS] Computing metrics on batch {batch_idx}...")
+                print(f"[EVAL] [METRICS] Computing metrics on batch {batch_idx}...", flush=True)
                 try:
                     with torch.no_grad():
                         # Generate conditioned samples for evaluation (like in save_samples)
                         # For efficiency, only compute on a small subset (reduced to 4 for speed)
                         eval_batch_size = min(4, batch_size)
+                        print(f"[EVAL] [METRICS] Using eval_batch_size={eval_batch_size} for metrics computation", flush=True)
                         
                         # Get conditioning from batch
+                        print(f"[EVAL] [METRICS] Extracting conditioning from batch...", flush=True)
                         eval_text_emb = batch.get("text_emb", None)
                         eval_pov_emb = batch.get("pov_emb", None)
                         
@@ -445,17 +447,19 @@ def eval_epoch(
                             eval_text_emb = eval_text_emb[:eval_batch_size]
                             if eval_text_emb.dim() > 1:
                                 eval_text_emb = eval_text_emb.flatten(start_dim=1)
+                            print(f"[EVAL] [METRICS] Text embeddings shape: {eval_text_emb.shape}", flush=True)
                         if eval_pov_emb is not None:
                             eval_pov_emb = eval_pov_emb[:eval_batch_size]
                             if eval_pov_emb.dim() > 1:
                                 eval_pov_emb = eval_pov_emb.flatten(start_dim=1)
+                            print(f"[EVAL] [METRICS] POV embeddings shape: {eval_pov_emb.shape}", flush=True)
                         
                         # Get target latents for comparison
                         target_latents = latents[:eval_batch_size]
                         
                         # Extract the latent shape from target latents to ensure generated latents match
                         current_latent_shape = target_latents.shape[1:]  # Get (Channels, Height, Width)
-                        print(f"  [EVAL] [METRICS] Target latent shape: {target_latents.shape}, using shape {current_latent_shape} for generation")
+                        print(f"[EVAL] [METRICS] Target latent shape: {target_latents.shape}, using shape {current_latent_shape} for generation", flush=True)
                         
                         # CRITICAL: Generate completely new images using FULL sampling process
                         # This performs the complete DDIM reverse process: noise -> denoised image
@@ -463,7 +467,7 @@ def eval_epoch(
                         # model.sample() starts from random noise and performs num_steps denoising steps
                         num_steps = model.scheduler.num_steps
                         
-                        print(f"  [EVAL] [METRICS] Generating {eval_batch_size} samples using DDIM sampling (50 steps) with latent shape {current_latent_shape}...")
+                        print(f"[EVAL] [METRICS] Starting DDIM sampling: {eval_batch_size} samples, 50 steps, shape {current_latent_shape}...", flush=True)
                         sample_start_time = time.time()
                         
                         conditioned_output = model.sample(
@@ -481,7 +485,7 @@ def eval_epoch(
                         )
                         
                         sample_time = time.time() - sample_start_time
-                        print(f"  [EVAL] [METRICS] Sampling completed in {sample_time:.2f}s. Generated latents shape: {conditioned_output.get('latent', 'N/A').shape if 'latent' in conditioned_output else 'N/A'}")
+                        print(f"[EVAL] [METRICS] Sampling completed in {sample_time:.2f}s. Generated latents shape: {conditioned_output.get('latent', 'N/A').shape if 'latent' in conditioned_output else 'N/A'}", flush=True)
                         
                         # Verify that generated latents are different from target latents
                         if "latent" in conditioned_output:
@@ -495,17 +499,19 @@ def eval_epoch(
                             print(f"  [DEBUG] Latent comparison: mean abs diff={latent_diff:.6f}")
                         
                         # Decode generated samples
-                        print(f"  [EVAL] [METRICS] Decoding generated samples...")
-                        print(f"  [EVAL] [METRICS] Latent shape: {conditioned_output['latent'].shape if 'latent' in conditioned_output else 'N/A'}")
+                        print(f"[EVAL] [METRICS] Decoding generated samples...", flush=True)
+                        print(f"[EVAL] [METRICS] Latent shape: {conditioned_output['latent'].shape if 'latent' in conditioned_output else 'N/A'}", flush=True)
                         decode_start_time = time.time()
                         # Note: model.sample() may return rgb already normalized to [0, 1]
                         if "rgb" in conditioned_output:
+                            print(f"[EVAL] [METRICS] Using RGB from sample output directly", flush=True)
                             pred_images = conditioned_output["rgb"].clone()
                             # Ensure in [0, 1] range
                             if pred_images.min() < -0.1:  # Likely in [-1, 1] range
                                 pred_images = (pred_images + 1.0) / 2.0
                             pred_images = torch.clamp(pred_images, 0.0, 1.0)
                         else:
+                            print(f"[EVAL] [METRICS] Decoding latents through decoder...", flush=True)
                             pred_decoded = model.decoder({"latent": conditioned_output["latent"]})
                             pred_images = pred_decoded.get("rgb", None)
                             if pred_images is not None:
@@ -516,11 +522,11 @@ def eval_epoch(
                         
                         # Check and log actual decoder output size
                         if pred_images is not None:
-                            print(f"  [EVAL] [METRICS] Decoder output shape: {pred_images.shape}")
+                            print(f"[EVAL] [METRICS] Decoder output shape: {pred_images.shape}", flush=True)
                             # Only resize if sizes don't match (shouldn't normally be needed)
                             if pred_images.shape[-1] != 256 or pred_images.shape[-2] != 256:
-                                print(f"  [EVAL] [METRICS] WARNING: Decoder output size {pred_images.shape[-2]}x{pred_images.shape[-1]} != expected 256x256")
-                                print(f"  [EVAL] [METRICS] Resizing pred images to 256x256")
+                                print(f"[EVAL] [METRICS] WARNING: Decoder output size {pred_images.shape[-2]}x{pred_images.shape[-1]} != expected 256x256", flush=True)
+                                print(f"[EVAL] [METRICS] Resizing pred images to 256x256", flush=True)
                                 pred_images = torch.nn.functional.interpolate(
                                     pred_images, 
                                     size=(256, 256), 
@@ -529,17 +535,17 @@ def eval_epoch(
                                 )
                         
                         decode_time = time.time() - decode_start_time
-                        print(f"  [EVAL] [METRICS] Generated samples decoded in {decode_time:.2f}s")
+                        print(f"[EVAL] [METRICS] Generated samples decoded in {decode_time:.2f}s", flush=True)
                         
                         # Decode target latents to get ground truth images
-                        print(f"  [EVAL] [METRICS] Decoding target latents...")
-                        print(f"  [EVAL] [METRICS] Target latent shape: {target_latents.shape}")
+                        print(f"[EVAL] [METRICS] Decoding target latents...", flush=True)
+                        print(f"[EVAL] [METRICS] Target latent shape: {target_latents.shape}", flush=True)
                         gt_decode_start_time = time.time()
                         # These are the actual ground truth latents from the dataset
                         gt_decoded = model.decoder({"latent": target_latents})
                         gt_images = gt_decoded.get("rgb", None)
                         if gt_images is not None:
-                            print(f"  [EVAL] [METRICS] GT decoder output shape: {gt_images.shape}")
+                            print(f"[EVAL] [METRICS] GT decoder output shape: {gt_images.shape}", flush=True)
                             # Decoder typically outputs in [-1, 1] range
                             if gt_images.min() < -0.1:
                                 gt_images = (gt_images + 1.0) / 2.0
@@ -547,8 +553,8 @@ def eval_epoch(
                             
                             # Only resize if sizes don't match (shouldn't normally be needed)
                             if gt_images.shape[-1] != 256 or gt_images.shape[-2] != 256:
-                                print(f"  [EVAL] [METRICS] WARNING: GT decoder output size {gt_images.shape[-2]}x{gt_images.shape[-1]} != expected 256x256")
-                                print(f"  [EVAL] [METRICS] Resizing GT images to 256x256")
+                                print(f"[EVAL] [METRICS] WARNING: GT decoder output size {gt_images.shape[-2]}x{gt_images.shape[-1]} != expected 256x256", flush=True)
+                                print(f"[EVAL] [METRICS] Resizing GT images to 256x256", flush=True)
                                 gt_images = torch.nn.functional.interpolate(
                                     gt_images, 
                                     size=(256, 256), 
@@ -557,7 +563,7 @@ def eval_epoch(
                                 )
                         
                         gt_decode_time = time.time() - gt_decode_start_time
-                        print(f"  [EVAL] [METRICS] Target latents decoded in {gt_decode_time:.2f}s")
+                        print(f"[EVAL] [METRICS] Target latents decoded in {gt_decode_time:.2f}s", flush=True)
                         
                         # CRITICAL: Verify we have different images
                         if pred_images is not None and gt_images is not None:
@@ -600,36 +606,42 @@ def eval_epoch(
                             # Compute evaluation metrics between conditioned samples and targets
                             # IMPORTANT: pred_images = GENERATED (from model.sample()), gt_images = TARGETS (from dataset)
                             # Verify order is correct before computing metrics
-                            print(f"  [EVAL] [METRICS] Computing evaluation metrics (CLIP, mIoU)...")
-                            print(f"    pred_images shape: {pred_images.shape}, mean: {pred_images.mean().item():.3f}")
-                            print(f"    gt_images shape: {gt_images.shape}, mean: {gt_images.mean().item():.3f}")
+                            print(f"[EVAL] [METRICS] Computing evaluation metrics (CLIP, mIoU)...", flush=True)
+                            print(f"[EVAL] [METRICS]   pred_images shape: {pred_images.shape}, mean: {pred_images.mean().item():.3f}", flush=True)
+                            print(f"[EVAL] [METRICS]   gt_images shape: {gt_images.shape}, mean: {gt_images.mean().item():.3f}", flush=True)
                             
                             metrics_comp_start_time = time.time()
+                            print(f"[EVAL] [METRICS] Calling compute_evaluation_metrics()...", flush=True)
                             # CRITICAL: Ensure we're passing them in the correct order
                             # pred_images = generated (should be noise-like if model is untrained)
                             # gt_images = targets (should be real floor plans)
                             # Compute evaluation metrics (FID disabled for speed - requires 100+ samples)
-                            eval_metrics = compute_evaluation_metrics(
-                                pred_images,  # GENERATED images (from model.sample())
-                                gt_images,    # TARGET images (from dataset)
-                                eval_text_emb, eval_pov_emb,
-                                taxonomy=taxonomy, device=device_obj,
-                                compute_clip=True, compute_fid=False, compute_miou=True  # FID disabled - too few samples
-                            )
+                            try:
+                                eval_metrics = compute_evaluation_metrics(
+                                    pred_images,  # GENERATED images (from model.sample())
+                                    gt_images,    # TARGET images (from dataset)
+                                    eval_text_emb, eval_pov_emb,
+                                    taxonomy=taxonomy, device=device_obj,
+                                    compute_clip=True, compute_fid=False, compute_miou=True  # FID disabled - too few samples
+                                )
+                                print(f"[EVAL] [METRICS] compute_evaluation_metrics() returned successfully", flush=True)
+                            except Exception as e:
+                                print(f"[EVAL] [METRICS] ERROR in compute_evaluation_metrics(): {e}", flush=True)
+                                raise
                             
                             metrics_comp_time = time.time() - metrics_comp_start_time
-                            print(f"  [EVAL] [METRICS] Metrics computation completed in {metrics_comp_time:.2f}s")
+                            print(f"[EVAL] [METRICS] Metrics computation completed in {metrics_comp_time:.2f}s", flush=True)
                             
                             # Add pixel MSE to metrics for debugging
                             eval_metrics["pixel_mse"] = pixel_mse
                             
                             # Print metric values for debugging
-                            print(f"  [EVAL] [METRICS] Computed metrics:")
+                            print(f"[EVAL] [METRICS] Computed metrics:", flush=True)
                             for k, v in eval_metrics.items():
-                                print(f"    {k}: {v:.6f}")
+                                print(f"[EVAL] [METRICS]   {k}: {v:.6f}", flush=True)
                             
                             metrics_compute_time = time.time() - metrics_start_time
-                            print(f"  [EVAL] [METRICS] Total metrics computation time: {metrics_compute_time:.2f}s")
+                            print(f"[EVAL] [METRICS] Total metrics computation time: {metrics_compute_time:.2f}s", flush=True)
                             
                             # Add to logs (weighted by eval batch size)
                             for k, v in eval_metrics.items():
@@ -639,8 +651,11 @@ def eval_epoch(
                 except Exception as e:
                     # Silently fail if evaluation metrics computation failed
                     import warnings
+                    import traceback
                     metrics_compute_time = time.time() - metrics_start_time if 'metrics_start_time' in locals() else 0.0
-                    print(f"  [EVAL] [METRICS] Metrics computation failed after {metrics_compute_time:.2f}s: {e}")
+                    print(f"[EVAL] [METRICS] Metrics computation failed after {metrics_compute_time:.2f}s: {e}", flush=True)
+                    print(f"[EVAL] [METRICS] Traceback:", flush=True)
+                    print(traceback.format_exc(), flush=True)
                     warnings.warn(f"Evaluation metrics computation failed: {e}")
             
             for k, v in logs.items():
@@ -658,12 +673,12 @@ def eval_epoch(
     avg_logs = {k: v / total_samples for k, v in log_dict.items()}
     
     elapsed_time = time.time() - start_time
-    print(f"[EVAL] Evaluation completed in {elapsed_time:.2f}s ({elapsed_time/60:.2f} min)")
-    print(f"[EVAL] Breakdown: Loss={loss_compute_time:.2f}s ({loss_compute_time/elapsed_time*100:.1f}%)", end="")
+    print(f"[EVAL] Evaluation completed in {elapsed_time:.2f}s ({elapsed_time/60:.2f} min)", flush=True)
+    print(f"[EVAL] Breakdown: Loss={loss_compute_time:.2f}s ({loss_compute_time/elapsed_time*100:.1f}%)", end="", flush=True)
     if compute_eval_metrics:
-        print(f", Metrics={metrics_compute_time:.2f}s ({metrics_compute_time/elapsed_time*100:.1f}%)")
+        print(f", Metrics={metrics_compute_time:.2f}s ({metrics_compute_time/elapsed_time*100:.1f}%)", flush=True)
     else:
-        print()
+        print(flush=True)
     
     return avg_loss, avg_logs
 
