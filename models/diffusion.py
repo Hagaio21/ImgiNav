@@ -486,8 +486,10 @@ class DiffusionModel(BaseModel):
                 
                 if saved_decoder_config:
                     if "autoencoder" in merged_config:
+                        # Preserve checkpoint and other fields from original autoencoder config
                         merged_config["autoencoder"] = {
-                            "decoder": saved_decoder_config,
+                            **merged_config["autoencoder"],  # Preserve all original fields (checkpoint, etc.)
+                            "decoder": saved_decoder_config,  # Override decoder with saved config
                             "frozen": merged_config["autoencoder"].get("frozen", False)
                         }
                     else:
