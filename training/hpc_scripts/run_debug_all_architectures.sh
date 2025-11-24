@@ -3,7 +3,7 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/debug_all_arch.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/debug_all_arch.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=16000]"
+#BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
 #BSUB -W 12:00
 #BSUB -q gpuv100
