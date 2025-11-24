@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 DEBUG_SCRIPT="${BASE_DIR}/debug_diffusion.py"
@@ -14,6 +17,12 @@ CONFIGS=(
     "experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
     "experiments/diffusion/clip/regular_scenes/large_bottleneck.yaml"
 )
+
+# Validate debug script exists
+if [ ! -f "${DEBUG_SCRIPT}" ]; then
+  echo "ERROR: Debug script not found: ${DEBUG_SCRIPT}" >&2
+  exit 1
+fi
 
 # =============================================================================
 # MODULES
@@ -43,13 +52,17 @@ else
   }
 fi
 
+# =============================================================================
+# RUN
+# =============================================================================
 echo "=============================================================================="
 echo "Debugging Diffusion Training Pipeline"
 echo "=============================================================================="
 echo "Running debug tests for ${#CONFIGS[@]} model sizes"
-echo "Date: $(date)"
+echo "Working directory: ${BASE_DIR}"
 echo "Python: $(which python)"
 echo "Conda env: ${CONDA_DEFAULT_ENV:-unknown}"
+echo "Start: $(date)"
 echo "=============================================================================="
 
 cd "${BASE_DIR}"
@@ -64,7 +77,7 @@ for config in "${CONFIGS[@]}"; do
     
     # Extract model size from config path
     model_size=$(basename "${config}" | sed 's/_bottleneck.yaml//' | sed 's/.*_//')
-    exp_name=$(python3 -c "
+    exp_name=$(python -c "
 import yaml
 import re
 try:
@@ -93,7 +106,16 @@ except:
     mkdir -p "${output_dir}"
     
     # Run debug script
+    echo "Running: python ${DEBUG_SCRIPT} ${config_path}"
     python "${DEBUG_SCRIPT}" "${config_path}" 2>&1 | tee "${output_dir}/debug_${model_size}.log"
+    
+    EXIT_CODE=${PIPESTATUS[0]}
+    
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "WARNING: Debug test failed for ${model_size} model (exit code: ${EXIT_CODE})"
+    else
+        echo "✓ Debug test completed successfully for ${model_size} model"
+    fi
     
     # Move generated debug images to output directory
     if [ -f "${BASE_DIR}/debug_vae_reconstruction.png" ]; then
@@ -110,7 +132,16 @@ except:
     echo ""
 done
 
+echo ""
 echo "=============================================================================="
 echo "All debug tests completed!"
+echo "End: $(date)"
+echo "=============================================================================="
+echo ""
+echo "Debug results saved to:"
+for config in "${CONFIGS[@]}"; do
+    model_size=$(basename "${config}" | sed 's/_bottleneck.yaml//' | sed 's/.*_//')
+    echo "  - ${BASE_DIR}/debug_outputs/${model_size}/"
+done
 echo "=============================================================================="
 

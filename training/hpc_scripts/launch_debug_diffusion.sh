@@ -25,13 +25,14 @@ echo "==========================================================================
 
 # Submit job to HPC queue
 # Using gpul40s queue with 1 GPU, moderate resources for debugging
+# Note: Debug tests run sequentially, so we need enough time for all 3 models
 bsub -J "debug_diffusion" \
     -o "${BASE_DIR}/training/hpc_scripts/logs/debug_diffusion.%J.out" \
     -e "${BASE_DIR}/training/hpc_scripts/logs/debug_diffusion.%J.err" \
     -n 2 \
     -R "rusage[mem=16000]" \
     -gpu "num=1" \
-    -W 4:00 \
+    -W 6:00 \
     -q gpul40s \
     bash "${DEBUG_SCRIPT}"
 
