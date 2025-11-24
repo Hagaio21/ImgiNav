@@ -441,6 +441,10 @@ def compute_evaluation_metrics(
     """
     metrics = {}
     
+    # Store reference to compute_fid function before parameter shadows it
+    # Access the function from globals to avoid parameter shadowing
+    compute_fid_func = globals()['compute_fid']
+    
     if device is None:
         device = pred_images.device if isinstance(pred_images, torch.Tensor) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -457,7 +461,7 @@ def compute_evaluation_metrics(
             if pred_features is not None and gt_features is not None:
                 # Note: This is a per-batch FID, not the full dataset FID
                 # For accurate FID, you need to accumulate features across all validation batches
-                fid_score = compute_fid(gt_features, pred_features)
+                fid_score = compute_fid_func(gt_features, pred_features)
                 if np.isfinite(fid_score):
                     metrics["fid"] = fid_score
         except Exception as e:
