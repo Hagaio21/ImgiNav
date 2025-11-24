@@ -560,17 +560,22 @@ def eval_epoch(
                         # Get target latents for comparison
                         target_latents = latents[:eval_batch_size]
                         
+                        # Extract the latent shape from target latents to ensure generated latents match
+                        current_latent_shape = target_latents.shape[1:]  # Get (Channels, Height, Width)
+                        print(f"  [EVAL] [METRICS] Target latent shape: {target_latents.shape}, using shape {current_latent_shape} for generation")
+                        
                         # CRITICAL: Generate completely new images using FULL sampling process
                         # This performs the complete DDPM reverse process: noise -> denoised image
                         # We do NOT use single-step denoised latents from the training forward pass!
                         # model.sample() starts from random noise and performs num_steps denoising steps
                         num_steps = model.scheduler.num_steps
                         
-                        print(f"  [EVAL] [METRICS] Generating {eval_batch_size} samples using DDIM sampling (50 steps)...")
+                        print(f"  [EVAL] [METRICS] Generating {eval_batch_size} samples using DDIM sampling (50 steps) with latent shape {current_latent_shape}...")
                         sample_start_time = time.time()
                         
                         conditioned_output = model.sample(
                             batch_size=eval_batch_size,
+                            latent_shape=current_latent_shape,  # Force matching resolution with dataset
                             num_steps=50,  # Reduced from 100 to 50 for faster evaluation
                             method="ddim",
                             eta=0.0,
