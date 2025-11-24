@@ -305,12 +305,51 @@ class DiffusionModel(BaseModel):
         
         history = [] if return_history else None
         
+        # Prepare conditioning signal for conditional pass
         if self.embedding_proj is not None and (text_emb is not None or pov_emb is not None):
             conditioning_signal = self.embedding_proj(text_emb, pov_emb)
+            
+            # For CFG, prepare unconditional (zero) conditioning signal
+            # This must match what was used during training: zero embeddings passed through embedding_proj
+            # During training, CFG dropout sets both text_emb and pov_emb to zeros_like (if they exist)
+            # or creates zero tensors (if they don't exist), then passes both through embedding_proj
+            use_cfg = guidance_scale > 1.0
+            if use_cfg:
+                # Create zero embeddings matching the conditional embeddings
+                # Get dtype and device from existing embeddings or model parameters
+                if text_emb is not None:
+                    batch_size_cfg = text_emb.shape[0]
+                    device_cfg = text_emb.device
+                    dtype_cfg = text_emb.dtype
+                    zero_text_emb = torch.zeros_like(text_emb)
+                elif pov_emb is not None:
+                    batch_size_cfg = pov_emb.shape[0]
+                    device_cfg = pov_emb.device
+                    dtype_cfg = pov_emb.dtype
+                    zero_text_emb = torch.zeros((batch_size_cfg, 384), device=device_cfg, dtype=dtype_cfg)
+                else:
+                    # Fallback: use batch_size and device from function args
+                    batch_size_cfg = batch_size
+                    device_cfg = device
+                    param_dtype = next(self.embedding_proj.parameters()).dtype
+                    dtype_cfg = param_dtype
+                    zero_text_emb = torch.zeros((batch_size_cfg, 384), device=device_cfg, dtype=dtype_cfg)
+                
+                # Create zero pov_emb (always needed for embedding_proj)
+                if pov_emb is not None:
+                    zero_pov_emb = torch.zeros_like(pov_emb)
+                else:
+                    zero_pov_emb = torch.zeros((batch_size_cfg, 512), device=device_cfg, dtype=dtype_cfg)
+                
+                # Project zero embeddings through embedding_proj to get the same projected zero signal as training
+                # This matches training behavior where zero embeddings are passed through the projection
+                unconditional_signal = self.embedding_proj(zero_text_emb, zero_pov_emb)
+            else:
+                unconditional_signal = None
         else:
             conditioning_signal = None
-        
-        use_cfg = guidance_scale > 1.0 and conditioning_signal is not None
+            unconditional_signal = None
+            use_cfg = False
         
         for i, t in enumerate(timesteps):
             if verbose and (i % max(1, len(timesteps) // 10) == 0 or i == len(timesteps) - 1):
@@ -322,8 +361,10 @@ class DiffusionModel(BaseModel):
                 self.unet.eval()
                 
                 if use_cfg:
+                    # Conditional prediction with actual conditioning signal
                     cond_pred = self.unet(latents, t_batch, cond, conditioning_signal=conditioning_signal)
-                    uncond_pred = self.unet(latents, t_batch, cond, conditioning_signal=None)
+                    # Unconditional prediction with projected zero signal (matches training)
+                    uncond_pred = self.unet(latents, t_batch, cond, conditioning_signal=unconditional_signal)
                     pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
                 else:
                     pred_noise = self.unet(latents, t_batch, cond, conditioning_signal=conditioning_signal)
