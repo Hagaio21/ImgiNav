@@ -559,6 +559,12 @@ def compute_evaluation_metrics(
                     pred_img = pred_images[i].cpu()
                     gt_img = gt_images[i].cpu()
                     
+                    # Validate shapes match for this pair
+                    if pred_img.shape != gt_img.shape:
+                        raise ValueError(
+                            f"Image shape mismatch at index {i}: pred_img {pred_img.shape} vs gt_img {gt_img.shape}"
+                        )
+                    
                     # Normalize to [0, 1] if needed
                     if pred_img.max() > 1.1:
                         pred_img = pred_img / 255.0
@@ -581,16 +587,43 @@ def compute_evaluation_metrics(
                 # Get CLIP features for both
                 # IMPORTANT: pred_features = features from GENERATED images
                 #           gt_features = features from TARGET images
+                # Process images one at a time to avoid batch size mismatches from padding
+                pred_features_list = []
+                gt_features_list = []
+                
                 with torch.no_grad():
-                    pred_inputs = clip_processor(images=pred_pil, return_tensors="pt", padding=True)
-                    pred_inputs = {k: v.to(device) for k, v in pred_inputs.items()}
-                    pred_features = clip_model.get_image_features(**pred_inputs)
-                    pred_features = F.normalize(pred_features, p=2, dim=1)
-                    
-                    gt_inputs = clip_processor(images=gt_pil, return_tensors="pt", padding=True)
-                    gt_inputs = {k: v.to(device) for k, v in gt_inputs.items()}
-                    gt_features = clip_model.get_image_features(**gt_inputs)
-                    gt_features = F.normalize(gt_features, p=2, dim=1)
+                    for i in range(B):
+                        # Process pred image
+                        pred_inputs = clip_processor(images=[pred_pil[i]], return_tensors="pt", padding=True)
+                        pred_inputs = {k: v.to(device) for k, v in pred_inputs.items()}
+                        pred_feat = clip_model.get_image_features(**pred_inputs)
+                        pred_feat = F.normalize(pred_feat, p=2, dim=1)
+                        pred_features_list.append(pred_feat)
+                        
+                        # Process gt image
+                        gt_inputs = clip_processor(images=[gt_pil[i]], return_tensors="pt", padding=True)
+                        gt_inputs = {k: v.to(device) for k, v in gt_inputs.items()}
+                        gt_feat = clip_model.get_image_features(**gt_inputs)
+                        gt_feat = F.normalize(gt_feat, p=2, dim=1)
+                        gt_features_list.append(gt_feat)
+                
+                # Concatenate features
+                pred_features = torch.cat(pred_features_list, dim=0)  # [B, D]
+                gt_features = torch.cat(gt_features_list, dim=0)  # [B, D]
+                
+                # Validate batch sizes match
+                if pred_features.shape[0] != gt_features.shape[0]:
+                    raise ValueError(
+                        f"CLIP feature batch size mismatch: pred_features {pred_features.shape[0]} vs "
+                        f"gt_features {gt_features.shape[0]}. This may indicate an issue with image processing."
+                    )
+                
+                # Ensure feature dimensions match
+                if pred_features.shape[1] != gt_features.shape[1]:
+                    # Pad or truncate to match (shouldn't happen, but be safe)
+                    min_dim = min(pred_features.shape[1], gt_features.shape[1])
+                    pred_features = pred_features[:, :min_dim]
+                    gt_features = gt_features[:, :min_dim]
                 
                 # Compute cosine similarity between pred (GENERATED) and gt (TARGET) image features
                 # For bad generated images, this should be LOW (close to 0)
@@ -821,6 +854,7 @@ def compute_evaluation_metrics(
         all_density_diffs = []
         all_class_ious = []
         all_pixel_class_l1 = []
+        all_centroid_distances = []
         
         B = pred_images.shape[0]
         for i in range(B):
@@ -876,6 +910,47 @@ def compute_evaluation_metrics(
             # Calculate L1 distance (sum of absolute differences)
             pixel_class_l1 = np.abs(pred_hist - gt_hist).sum()
             all_pixel_class_l1.append(pixel_class_l1)
+            
+            # Compute centroid_distance metric: Euclidean distance between class centroids
+            # This verifies spatial structure by measuring how well object positions match
+            H, W = pred_cat_ids.shape
+            
+            # Get classes present in both pred and GT (skip background/0)
+            pred_classes = set(np.unique(pred_cat_ids))
+            gt_classes = set(np.unique(gt_cat_ids))
+            common_classes = (pred_classes & gt_classes) - {0}  # Exclude background
+            
+            centroid_distances = []
+            for cls_id in common_classes:
+                # Get pixel coordinates for this class in pred
+                pred_mask = (pred_cat_ids == cls_id)
+                pred_y_coords, pred_x_coords = np.where(pred_mask)
+                
+                # Get pixel coordinates for this class in GT
+                gt_mask = (gt_cat_ids == cls_id)
+                gt_y_coords, gt_x_coords = np.where(gt_mask)
+                
+                # Skip if either has no pixels (shouldn't happen, but be safe)
+                if len(pred_y_coords) == 0 or len(gt_y_coords) == 0:
+                    continue
+                
+                # Calculate center of mass (mean X, mean Y)
+                pred_centroid_x = np.mean(pred_x_coords)
+                pred_centroid_y = np.mean(pred_y_coords)
+                gt_centroid_x = np.mean(gt_x_coords)
+                gt_centroid_y = np.mean(gt_y_coords)
+                
+                # Compute Euclidean distance between centroids
+                centroid_dist = np.sqrt((pred_centroid_x - gt_centroid_x)**2 + 
+                                        (pred_centroid_y - gt_centroid_y)**2)
+                centroid_distances.append(centroid_dist)
+            
+            # Average centroid distances for this image (or 0 if no common classes)
+            if len(centroid_distances) > 0:
+                mean_centroid_error = np.mean(centroid_distances)
+            else:
+                mean_centroid_error = 0.0  # No common classes to compare
+            all_centroid_distances.append(mean_centroid_error)
             
             # Convert category IDs to super-category IDs, then to super-category colors
             def convert_to_super_colors(cat_id_map):
@@ -953,6 +1028,10 @@ def compute_evaluation_metrics(
             # Pixel class L1 metric - L1 distance between normalized class ID histograms
             if len(all_pixel_class_l1) > 0:
                 metrics["pixel_class_l1"] = float(np.mean(all_pixel_class_l1))
+            
+            # Centroid distance metric - mean Euclidean distance between class centroids
+            if len(all_centroid_distances) > 0:
+                metrics["centroid_distance"] = float(np.mean(all_centroid_distances))
             
             print(f"  Layout metrics computed: coverage_diff={metrics['coverage_diff']:.6f}, class_iou={metrics['class_iou']:.4f}")
         else:
