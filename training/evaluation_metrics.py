@@ -501,10 +501,35 @@ def compute_evaluation_metrics(
     # Since layouts are geometric, mIoU between generated and ground truth segmentation maps
     # provides a much more accurate assessment of spatial correctness than pixel-wise MSE.
     # It measures how well the model preserves object boundaries and spatial relationships.
-    if compute_miou and taxonomy is not None:
+    if compute_miou:
         try:
+            # Try to get taxonomy - use provided one or load from default path
+            from common.taxonomy import Taxonomy
+            taxonomy_obj = taxonomy
+            if taxonomy_obj is None:
+                # Try to load from default path
+                DEFAULT_TAXONOMY_PATH = "/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
+                taxonomy_path = DEFAULT_TAXONOMY_PATH
+                if not Path(taxonomy_path).exists():
+                    # Try relative path as fallback
+                    rel_path = Path("config/taxonomy.json")
+                    if rel_path.exists():
+                        taxonomy_path = str(rel_path)
+                    else:
+                        raise FileNotFoundError(f"Taxonomy not found at {DEFAULT_TAXONOMY_PATH} or {rel_path}")
+                taxonomy_obj = Taxonomy(taxonomy_path)
+            elif not isinstance(taxonomy_obj, Taxonomy):
+                # If taxonomy is a string/Path, load it
+                if isinstance(taxonomy_obj, (str, Path)):
+                    taxonomy_path = str(taxonomy_obj)
+                    if not Path(taxonomy_path).exists():
+                        raise FileNotFoundError(f"Taxonomy path does not exist: {taxonomy_path}")
+                    taxonomy_obj = Taxonomy(taxonomy_path)
+                else:
+                    raise TypeError(f"taxonomy must be a Taxonomy instance, str, Path, or None, got {type(taxonomy_obj)}")
+            
             from data_preparation.utils.layout_analysis import LayoutSegmentor
-            segmentor = LayoutSegmentor(taxonomy, mode="category")
+            segmentor = LayoutSegmentor(taxonomy_obj, mode="category")
             
             ious = []
             B = pred_images.shape[0]

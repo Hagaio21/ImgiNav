@@ -2,7 +2,7 @@ experiment:
   name: diff_clip_regular_scenes_small_bottleneck
   phase: diffusion_training
   save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_regular_scenes_small_bottleneck
-  epochs_target: 300
+  epochs_target: 1000
 
 dataset:
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_latents.csv
@@ -59,7 +59,7 @@ training:
   batch_size: 48  # Small: 48²×2×3, with downs+bottleneck attention
   num_workers: 4
   shuffle: true
-  epochs: 300
+  epochs: 1000
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
