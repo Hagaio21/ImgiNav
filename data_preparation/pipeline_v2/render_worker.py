@@ -667,8 +667,9 @@ def main():
         from data_preparation.pipeline_v2.graph_builder import build_room_graph_from_layout as build_graph
         layout_seg_path = layouts_seg_dir / f"{scene_id}.png"
         if layout_seg_path.exists():
+            # Use "scene" as room name for scene-level graphs
             build_graph(
-                scene_id, "0", layout_seg_path, taxonomy, graphs_dir
+                scene_id, "scene", layout_seg_path, taxonomy, graphs_dir
             )
             print("Graphs built successfully")
     except Exception as e:
