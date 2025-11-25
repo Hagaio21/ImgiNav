@@ -213,11 +213,11 @@ fi
 
 # 7) Check required dependencies
 echo "Checking Python dependencies..."
-python -c "import trimesh, pyrender, numpy, scipy, PIL" || {
+python -c "import trimesh, open3d, numpy, scipy, PIL" || {
   echo "ERROR: Required Python packages not available" >&2
   echo "Trying to import individually to identify missing package..." >&2
   python -c "import trimesh" || echo "  - trimesh missing" >&2
-  python -c "import pyrender" || echo "  - pyrender missing" >&2
+  python -c "import open3d" || echo "  - open3d missing" >&2
   python -c "import numpy" || echo "  - numpy missing" >&2
   python -c "import scipy" || echo "  - scipy missing" >&2
   python -c "import PIL" || echo "  - PIL missing" >&2
@@ -227,6 +227,12 @@ echo "All dependencies available"
 
 # 8) Process each scene in the shard
 echo "Starting processing at $(date)"
+
+# Runtime fixes (like old pipeline)
+export XDG_RUNTIME_DIR=/tmp/$USER
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 echo "Changing to project directory: ${PROJECT_ROOT}/ImgiNav"
 cd "${PROJECT_ROOT}/ImgiNav" || {
