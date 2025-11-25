@@ -50,8 +50,33 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
     """
     print(f"Loading scene from OBJ: {obj_path}")
     # Load with process=False to preserve textures and materials
-    # OBJ files need a resolver to find MTL and texture files in the same directory
-    resolver = trimesh.visual.resolvers.FilePathResolver(obj_path.parent)
+    # OBJ files need a resolver to find MTL and texture files in materials/ folder
+    geometry_dir = obj_path.parent
+    materials_dir = geometry_dir / "materials"
+    
+    # Create resolver that checks materials/ folder first, then geometry/ folder
+    class MultiPathResolver:
+        def __init__(self, base_dir, materials_dir):
+            self.base_dir = Path(base_dir)
+            self.materials_dir = Path(materials_dir)
+        
+        def get(self, name):
+            # Remove "materials/" prefix if present (from updated MTL file)
+            clean_name = name.replace("materials/", "")
+            
+            # Check materials/ folder first
+            materials_path = self.materials_dir / clean_name
+            if materials_path.exists():
+                return str(materials_path)
+            
+            # Fallback to base directory
+            base_path = self.base_dir / clean_name
+            if base_path.exists():
+                return str(base_path)
+            
+            return None
+    
+    resolver = MultiPathResolver(geometry_dir, materials_dir)
     scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
                        force='scene', resolver=resolver)
     

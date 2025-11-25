@@ -5,6 +5,8 @@ This is fast and should be done first, before rendering.
 """
 
 import json
+import re
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Dict
@@ -15,6 +17,77 @@ import trimesh.visual.material
 
 from common.taxonomy import Taxonomy
 from data_preparation.pipeline_v2.scene_loader import load_front_scene, extract_rooms_from_scene
+
+
+def _organize_material_files(obj_path: Path, materials_dir: Path):
+    """
+    Organize MTL and texture files created by OBJ export into materials/ folder.
+    Updates OBJ and MTL file paths to reference materials/ folder.
+    
+    Args:
+        obj_path: Path to OBJ file
+        materials_dir: Directory to move materials to (geometry/materials/)
+    """
+    obj_dir = obj_path.parent
+    obj_name = obj_path.stem
+    
+    # Find MTL file (usually same name as OBJ)
+    mtl_path = obj_dir / f"{obj_name}.mtl"
+    if not mtl_path.exists():
+        # Try alternative naming
+        mtl_path = obj_dir / f"{obj_name}_materials.mtl"
+        if not mtl_path.exists():
+            print(f"  WARNING: MTL file not found for {obj_path.name}")
+            return
+    
+    # Read MTL file to find texture references
+    texture_files = []
+    with open(mtl_path, 'r') as f:
+        mtl_content = f.read()
+        # Find all texture file references (map_Kd, map_Ka, map_Ks, etc.)
+        texture_pattern = r'map_\w+\s+([^\s\n]+)'
+        for match in re.finditer(texture_pattern, mtl_content):
+            texture_path = match.group(1)
+            # Handle both absolute and relative paths
+            if Path(texture_path).is_absolute():
+                texture_files.append(Path(texture_path))
+            else:
+                texture_files.append(obj_dir / texture_path)
+    
+    # Move MTL file to materials/
+    new_mtl_path = materials_dir / mtl_path.name
+    shutil.move(str(mtl_path), str(new_mtl_path))
+    print(f"  Moved MTL file to: {new_mtl_path}")
+    
+    # Move texture files to materials/ (MTL references stay as filename only since they're in same folder)
+    for texture_path in texture_files:
+        if texture_path.exists():
+            new_texture_path = materials_dir / texture_path.name
+            shutil.move(str(texture_path), str(new_texture_path))
+            print(f"  Moved texture to: {new_texture_path}")
+    
+    # MTL content doesn't need updating - textures are referenced by filename only
+    # (they're in the same materials/ folder as the MTL file)
+    updated_mtl_content = mtl_content
+    
+    # Write updated MTL file
+    with open(new_mtl_path, 'w') as f:
+        f.write(updated_mtl_content)
+    
+    # Update OBJ file to reference MTL in materials/ folder
+    with open(obj_path, 'r') as f:
+        obj_content = f.read()
+    
+    # Update mtllib reference
+    obj_content = re.sub(
+        r'mtllib\s+[^\s\n]+',
+        f'mtllib materials/{mtl_path.name}',
+        obj_content
+    )
+    
+    with open(obj_path, 'w') as f:
+        f.write(obj_content)
+    print(f"  Updated OBJ file to reference MTL in materials/ folder")
 
 
 def create_scene_without_ceilings(trimesh_scene: trimesh.Scene) -> trimesh.Scene:
@@ -160,10 +233,16 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     # Save regular OBJ with textures (no ceilings) - OBJ preserves textures via MTL files
     print("Saving scene geometry...")
     obj_path = geometry_dir / f"{scene_id}.obj"
+    materials_dir = geometry_dir / "materials"
+    materials_dir.mkdir(parents=True, exist_ok=True)
+    
     # Export as OBJ (trimesh will create MTL file for textures)
     try:
         scene_no_ceiling.export(obj_path, file_type="obj")
         print(f"  Saved scene geometry: {obj_path}")
+        
+        # Organize material files (MTL and textures) into materials/ folder
+        _organize_material_files(obj_path, materials_dir)
     except Exception as e:
         print(f"  WARNING: OBJ export failed: {e}")
         import traceback
