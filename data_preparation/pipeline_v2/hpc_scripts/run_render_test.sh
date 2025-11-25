@@ -182,13 +182,19 @@ mkdir -p "${OUTPUT_DIR}"
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   # shellcheck disable=SC1091
   source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate scenefactor || {
-    echo "WARNING: Failed to activate scenefactor environment" >&2
+  conda activate imginav || {
+    echo "WARNING: Failed to activate imginav, trying scenefactor..." >&2
+    conda activate scenefactor || {
+      echo "WARNING: Failed to activate scenefactor environment" >&2
+    }
   }
 elif [ -x "$HOME/miniconda3/bin/conda" ]; then
   eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
-  conda activate scenefactor || {
-    echo "WARNING: Failed to activate scenefactor environment" >&2
+  conda activate imginav || {
+    echo "WARNING: Failed to activate imginav, trying scenefactor..." >&2
+    conda activate scenefactor || {
+      echo "WARNING: Failed to activate scenefactor environment" >&2
+    }
   }
 fi
 
