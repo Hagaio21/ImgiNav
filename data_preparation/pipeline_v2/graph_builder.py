@@ -16,6 +16,7 @@ project_root = script_dir.parent.parent  # Go up from pipeline_v2 -> data_prepar
 sys.path.insert(0, str(project_root))
 
 from data_preparation.build_graphs import build_room_graph_from_layout as _build_room_graph
+from data_preparation.utils.text_utils import graph2text
 from common.taxonomy import Taxonomy
 
 
@@ -23,6 +24,7 @@ def build_room_graph_from_layout(scene_id: str, room_id: str, layout_path: Path,
                                  taxonomy: Taxonomy, output_dir: Path):
     """
     Build room graph from segmentation layout image.
+    Generates JSON, text, and visualization files.
     
     Args:
         scene_id: Scene identifier
@@ -43,17 +45,34 @@ def build_room_graph_from_layout(scene_id: str, room_id: str, layout_path: Path,
         scene_id, room_id, layout_path, color_to_label, taxonomy=taxonomy
     )
     
-    # Move graph files to output directory if they were created elsewhere
+    # Define expected output file paths (relative to layout_path)
     graph_json = layout_path.parent / f"{scene_id}_{room_id}_graph.json"
     graph_txt = layout_path.parent / f"{scene_id}_{room_id}_graph.txt"
     graph_vis = layout_path.parent / f"{scene_id}_{room_id}_graph_vis.png"
     
+    # Move graph files to output directory if they were created elsewhere
     if graph_json.exists() and graph_json.parent != output_dir:
         shutil.move(str(graph_json), str(output_dir / graph_json.name))
+        graph_json = output_dir / graph_json.name
+    
     if graph_txt.exists() and graph_txt.parent != output_dir:
         shutil.move(str(graph_txt), str(output_dir / graph_txt.name))
+        graph_txt = output_dir / graph_txt.name
+    
     if graph_vis.exists() and graph_vis.parent != output_dir:
         shutil.move(str(graph_vis), str(output_dir / graph_vis.name))
+        graph_vis = output_dir / graph_vis.name
+    
+    # Ensure text file is generated (fallback if original function didn't create it)
+    if graph_json.exists() and not graph_txt.exists():
+        try:
+            text = graph2text(graph_json, taxonomy)
+            if text:
+                graph_txt = output_dir / f"{scene_id}_{room_id}_graph.txt"
+                graph_txt.write_text(text, encoding="utf-8")
+                print(f"✔ Generated graph text file: {graph_txt}", flush=True)
+        except Exception as e:
+            print(f"  [warn] Failed to generate text file for {graph_json}: {e}", flush=True)
     
     return result
 

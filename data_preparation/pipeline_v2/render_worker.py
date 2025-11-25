@@ -46,7 +46,7 @@ def trimesh_to_pyrender_scene(trimesh_scene: trimesh.Scene,
     """
     pyrender_scene = pyrender.Scene()
     
-    for node_name, node in trimesh_scene.graph.nodes_geometry:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         geometry = trimesh_scene.geometry[node_name]
         
         # Check if ceiling should be hidden
@@ -251,7 +251,7 @@ def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
     
     # Calculate bounds
     all_vertices = []
-    for node_name, node in trimesh_scene.graph.nodes_geometry:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         geometry = trimesh_scene.geometry[node_name]
         if isinstance(geometry, trimesh.Trimesh):
             transform = trimesh_scene.graph.get(node_name)[0]
@@ -272,7 +272,7 @@ def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
     max_size = max(size[0], size[1])
     
     # Add meshes with colored materials
-    for node_name, node in trimesh_scene.graph.nodes_geometry:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         geometry = trimesh_scene.geometry[node_name]
         metadata = getattr(geometry, 'metadata', {})
         
@@ -331,7 +331,7 @@ def find_floor_meshes(trimesh_scene: trimesh.Scene, taxonomy: Taxonomy) -> List[
     floor_ids = [taxonomy.data.get("category2id", {}).get("floor", 0),
                  taxonomy.data.get("label2id", {}).get("floor", 0)]
     
-    for node_name, node in trimesh_scene.graph.nodes_geometry:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         geometry = trimesh_scene.geometry[node_name]
         metadata = getattr(geometry, 'metadata', {})
         
@@ -424,7 +424,7 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     
     # Calculate scene center for camera target
     all_vertices = []
-    for node_name, node in trimesh_scene.graph.nodes_geometry:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         geometry = trimesh_scene.geometry[node_name]
         if isinstance(geometry, trimesh.Trimesh):
             transform = trimesh_scene.graph.get(node_name)[0]
@@ -441,7 +441,7 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
             camera_target = camera_pos + np.array([0, 0, -1])
     
     # Add meshes with colored materials
-    for node_name, node in trimesh_scene.graph.nodes_geometry:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         geometry = trimesh_scene.geometry[node_name]
         if isinstance(geometry, trimesh.Trimesh):
             metadata = getattr(geometry, 'metadata', {})
@@ -623,7 +623,7 @@ def main():
     
     # Get furniture bboxes for collision checking
     furniture_bboxes = []
-    for node_name, node in trimesh_scene.graph.nodes_geometry:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         geometry = trimesh_scene.geometry[node_name]
         metadata = getattr(geometry, 'metadata', {})
         if not metadata.get('is_ceiling', False) and metadata.get('label', '') not in ['floor', 'wall']:
