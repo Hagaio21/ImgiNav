@@ -105,9 +105,10 @@ embedding_projection:
   combine_method: average     # How to combine text + POV in CLIP space
 
 unet:
-  type: UnetWithAttention
+  type: UnetWithAttention  # Unified class (also accepts "Unet" for backward compatibility)
   base_channels: 48
   depth: 3
+  use_attention: true        # Set to false for standard blocks (old Unet behavior)
   enable_cross_attention: true
   attention_at:              # Where to apply cross-attention
     - downs

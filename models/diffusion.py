@@ -6,7 +6,7 @@ import yaml
 from models.components.base_model import BaseModel
 from models.autoencoder import Autoencoder
 from models.decoder import Decoder
-from models.components.unet import Unet, UnetWithAttention
+from models.components.unet import UnetWithAttention
 from models.components.scheduler import SCHEDULER_REGISTRY
 from models.components.embedding_projection import EmbeddingToSpatial, CLIPEmbeddingToSpatial
 
@@ -133,10 +133,20 @@ class DiffusionModel(BaseModel):
             unet_cfg = unet_cfg.copy()
             unet_cfg["conditioning_channels"] = conditioning_channels
         
+        # Unified UnetWithAttention class handles both "unet" and "unetwithattention" types
+        # If type is "unet" (old name), it's mapped to UnetWithAttention with use_attention=False
+        # If type is "unetwithattention" or "unet_with_attention", ensure use_attention is set
         if unet_type in ("unetwithattention", "unet_with_attention"):
-            self.unet = UnetWithAttention.from_config(unet_cfg)
-        else:
-            self.unet = Unet.from_config(unet_cfg)
+            unet_cfg = unet_cfg.copy()
+            if "use_attention" not in unet_cfg:
+                unet_cfg["use_attention"] = True
+        elif unet_type == "unet":
+            # Old "Unet" type - map to UnetWithAttention with use_attention=False
+            unet_cfg = unet_cfg.copy()
+            if "use_attention" not in unet_cfg:
+                unet_cfg["use_attention"] = False
+        
+        self.unet = UnetWithAttention.from_config(unet_cfg)
         
         # Freeze UNet if requested
         if unet_cfg.get("frozen", False):

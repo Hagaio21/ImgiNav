@@ -284,24 +284,6 @@ class Taxonomy:
         
         return color_to_label
 
-    def get_color_to_class_dict(self, class_ids: list[int]) -> dict:
-        """
-        Get RGB tuple -> class index mapping for given IDs.
-        
-        Args:
-            class_ids: List of IDs (can be any mix of label/title/category/super IDs)
-        
-        Returns:
-            dict mapping (R, G, B) tuple -> class_index (0 to len(class_ids)-1)
-        """
-        rgb_to_class = {}
-        for class_idx, val in enumerate(class_ids):
-            # Resolve to super ID or use directly if already super/wall
-            sid = self.resolve_super(val) if val not in self.super_id_to_color else val
-            if sid and sid in self.super_id_to_color:
-                rgb_to_class[self.super_id_to_color[sid]] = class_idx
-        return rgb_to_class
-
     def get_room_mappings(self) -> tuple[dict, dict]:
         """
         Get room ID mappings as tuple (id2room, room2id).

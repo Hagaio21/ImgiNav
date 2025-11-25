@@ -19,32 +19,12 @@ from utils.geometry_utils import load_room_meta, extract_frame_from_meta
 from common.utils import create_progress_tracker, safe_mkdir
 from common.taxonomy import Taxonomy
 from utils.geometry_utils import (
-    world_to_local_coords, points_to_image_coords
+    world_to_local_coords, points_to_image_coords, draw_point
 )
 from utils.layout_analysis import count_distinct_colors
 # We'll use our own numpy-based function instead
 
 TAXONOMY = None
-
-
-def draw_point(canvas: np.ndarray, x: int, y: int, color: np.ndarray, size: int = 1):
-    """Draw a point on the canvas."""
-    half = size // 2
-    x0, x1 = max(x - half, 0), min(x + half, canvas.shape[1] - 1)
-    y0, y1 = max(y - half, 0), min(y + half, canvas.shape[0] - 1)
-    
-    # Ensure color is a proper numpy array
-    if isinstance(color, (tuple, list)):
-        color = np.array(color, dtype=np.uint8)
-    elif color.ndim == 1 and color.shape[0] == 3:
-        # Color is (3,) - explicitly assign to each channel
-        canvas[y0:y1 + 1, x0:x1 + 1, 0] = color[0]
-        canvas[y0:y1 + 1, x0:x1 + 1, 1] = color[1]
-        canvas[y0:y1 + 1, x0:x1 + 1, 2] = color[2]
-        return
-    
-    # For multi-dimensional color arrays, assign directly
-    canvas[y0:y1 + 1, x0:x1 + 1] = color
 
 
 def compute_whiteness_ratio(canvas: np.ndarray, white_threshold: int = 230) -> float:
