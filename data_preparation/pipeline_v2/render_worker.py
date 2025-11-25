@@ -4,8 +4,36 @@ Render worker for 3D-FRONT scenes.
 Renders top-down layouts and perspective POVs using pyrender.
 """
 
-import argparse
+# Set EGL platform for headless rendering BEFORE any OpenGL imports
 import os
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
+
+# Workaround for PyOpenGL bytes/string issue with EGL
+# This must be done before importing pyrender/OpenGL
+try:
+    from OpenGL import extensions
+    # Patch the ExtensionQuerier to handle bytes/string mismatch
+    # The error occurs when specifier is bytes but self.prefix is str (or vice versa)
+    original_call = extensions.ExtensionQuerier.__call__
+    def patched_call(self, specifier):
+        # Ensure both are the same type for startswith
+        if isinstance(specifier, bytes) and isinstance(self.prefix, str):
+            # specifier is bytes, prefix is str - convert specifier to str
+            specifier_str = specifier.decode('utf-8', errors='ignore')
+            return specifier_str.startswith(self.prefix)
+        elif isinstance(specifier, str) and isinstance(self.prefix, bytes):
+            # specifier is str, prefix is bytes - convert prefix to str
+            prefix_str = self.prefix.decode('utf-8', errors='ignore')
+            return specifier.startswith(prefix_str)
+        else:
+            # Both same type, use original
+            return original_call(self, specifier)
+    extensions.ExtensionQuerier.__call__ = patched_call
+except (ImportError, AttributeError):
+    # If patching fails, continue anyway - might work with different PyOpenGL version
+    pass
+
+import argparse
 import random
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -16,7 +44,6 @@ import trimesh
 from PIL import Image
 
 import sys
-from pathlib import Path
 
 # Add project root to path for imports
 # __file__ is at: .../ImgiNav/data_preparation/pipeline_v2/render_worker.py
@@ -27,9 +54,6 @@ sys.path.insert(0, str(project_root))
 
 from common.taxonomy import Taxonomy
 from data_preparation.pipeline_v2.scene_loader import load_front_scene
-
-# Set EGL platform for headless rendering
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 
 def trimesh_to_pyrender_scene(trimesh_scene: trimesh.Scene, 

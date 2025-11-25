@@ -9,6 +9,16 @@
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
+
+# Configure for CPU-only software rendering (no GPU)
+# EGL with Mesa software rendering for headless CPU nodes
+export PYOPENGL_PLATFORM=egl
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+# Ensure Mesa software rendering is used
+export MESA_GL_VERSION_OVERRIDE=3.3
+export MESA_GLSL_VERSION_OVERRIDE=330
+
 # Pipeline v2: Render 3D-FRONT scenes to layouts and POVs
 # Job array with maximum 20 jobs
 
