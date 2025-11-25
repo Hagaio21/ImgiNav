@@ -31,7 +31,7 @@ PROJECT_ROOT="/work3/s233249/ImgiNav"
 
 N_SHARDS=2                                           # Must match [1-2] above
 MAX_SCENES=10                                        # Limit to 10 scenes for testing
-PYTHON_SCRIPT="${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/render_worker.py"
+PYTHON_SCRIPT="${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/render_layouts.py"
 # =============================================================================
 
 # Create logs directory
@@ -268,7 +268,6 @@ while IFS= read -r JSON_PATH; do
     --future_root "${MODEL_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
-    --skip_povs \
     --seed 42 \
     --hpc || {
     echo "ERROR: Failed to process scene ${SCENE_ID}" >&2

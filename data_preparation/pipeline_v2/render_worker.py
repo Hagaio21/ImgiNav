@@ -40,12 +40,7 @@ from common.taxonomy import Taxonomy
 from data_preparation.pipeline_v2.scene_loader import load_front_scene, extract_rooms_from_scene
 from data_preparation.pipeline_v2.renderer import (
     render_layout_rgb,
-    render_layout_seg,
-    render_pov,
-    render_pov_seg,
-    sample_camera_positions_from_corners,
-    get_scene_bounds,
-    find_floor_meshes
+    render_layout_seg
 )
 
 # Set Open3D verbosity to errors only
