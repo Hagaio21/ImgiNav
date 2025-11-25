@@ -58,8 +58,33 @@ if [ ! -d "${SCENES_ROOT}" ]; then
     exit 1
 fi
 
-# Find first JSON file
-SCENE_JSON=$(find "${SCENES_ROOT}" -type f -name '*.json' 2>/dev/null | sort | head -1)
+# Find first JSON file (handle SIGPIPE from head gracefully)
+# Use set +e temporarily around the pipe to avoid SIGPIPE errors
+set +e
+FIND_RESULT=$(find "${SCENES_ROOT}" -type f -name '*.json' 2>/dev/null)
+FIND_EXIT=$?
+set -e
+
+if [ ${FIND_EXIT} -ne 0 ]; then
+    echo "ERROR: find command failed with exit code ${FIND_EXIT}" >&2
+    exit 1
+fi
+
+# Sort and get first result (handle pipe errors - head may cause SIGPIPE)
+set +e
+SCENE_JSON=$(echo "${FIND_RESULT}" | sort | head -1)
+HEAD_EXIT=$?
+set -e
+
+# Exit code 141 is SIGPIPE from head, which is OK - we got the result
+if [ ${HEAD_EXIT} -ne 0 ] && [ ${HEAD_EXIT} -ne 141 ]; then
+    echo "WARNING: head command exited with code ${HEAD_EXIT}" >&2
+fi
+
+if [ -z "${SCENE_JSON}" ] || [ ! -f "${SCENE_JSON}" ]; then
+    echo "ERROR: No scene JSON files found in ${SCENES_ROOT}" >&2
+    exit 1
+fi
 
 if [ -z "${SCENE_JSON}" ]; then
     echo "ERROR: No scene JSON files found in ${SCENES_ROOT}" >&2
