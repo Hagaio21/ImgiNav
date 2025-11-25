@@ -292,10 +292,14 @@ def main():
         
         # Room RGB layout
         try:
-            # Get room metadata if available
-            room_metadata = None
-            if scene_metadata and 'rooms' in scene_metadata and room_name in scene_metadata['rooms']:
-                room_metadata = {'scene_bounds': scene_metadata['rooms'][room_name].get('bounds', {})}
+            # Get room metadata if available - must include up_direction from scene
+            if not scene_metadata or 'up_direction' not in scene_metadata:
+                raise ValueError(f"Cannot render room {room_name}: scene_metadata missing 'up_direction'")
+            
+            room_metadata = {'up_direction': scene_metadata['up_direction']}
+            if 'rooms' in scene_metadata and room_name in scene_metadata['rooms']:
+                room_metadata['scene_bounds'] = scene_metadata['rooms'][room_name].get('bounds', {})
+            
             room_layout_rgb = render_layout_rgb(room_scene, hide_ceilings=True, width=256, height=256,
                                                clip_top_meters=1.0, scene_metadata=room_metadata)
             room_layout_rgb_path = layouts_rgb_dir / f"{scene_id}_{safe_room_name}_room.png"
@@ -311,10 +315,14 @@ def main():
         
         # Room segmentation layout
         try:
-            # Get room metadata if available
-            room_metadata = None
-            if scene_metadata and 'rooms' in scene_metadata and room_name in scene_metadata['rooms']:
-                room_metadata = {'scene_bounds': scene_metadata['rooms'][room_name].get('bounds', {})}
+            # Get room metadata if available - must include up_direction from scene
+            if not scene_metadata or 'up_direction' not in scene_metadata:
+                raise ValueError(f"Cannot render room {room_name}: scene_metadata missing 'up_direction'")
+            
+            room_metadata = {'up_direction': scene_metadata['up_direction']}
+            if 'rooms' in scene_metadata and room_name in scene_metadata['rooms']:
+                room_metadata['scene_bounds'] = scene_metadata['rooms'][room_name].get('bounds', {})
+            
             room_layout_seg = render_layout_seg(room_scene, taxonomy, hide_ceilings=True, width=256, height=256,
                                                clip_top_meters=1.0, scene_metadata=room_metadata)
             room_layout_seg_path = layouts_seg_dir / f"{scene_id}_{safe_room_name}_room.png"

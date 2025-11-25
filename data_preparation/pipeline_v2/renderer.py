@@ -257,10 +257,23 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     Returns:
         RGB image as numpy array (H, W, 3)
     """
-    # Get up axis from metadata if available
-    up_axis = 1  # Default Y-up
-    if scene_metadata and 'up_axis' in scene_metadata:
-        up_axis = scene_metadata['up_axis']
+    # Get up direction from metadata - REQUIRED, no defaults
+    if not scene_metadata:
+        raise ValueError("scene_metadata is required for render_layout_rgb")
+    
+    up_direction_info = scene_metadata.get('up_direction')
+    if not up_direction_info:
+        raise ValueError("scene_metadata must contain 'up_direction' field")
+    
+    up_axis = up_direction_info.get('up_axis')
+    if up_axis is None:
+        raise ValueError("scene_metadata['up_direction'] must contain 'up_axis' field")
+    
+    up_vector = up_direction_info.get('up_vector')
+    if up_vector is None:
+        raise ValueError("scene_metadata['up_direction'] must contain 'up_vector' field")
+    
+    up_vector = np.array(up_vector, dtype=np.float64)
     
     # Get scene bounds
     min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings=hide_ceilings)
@@ -343,9 +356,7 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
         return np.ones((height, width, 3), dtype=np.uint8) * 255
     
     # Set up camera for orthographic top-down view
-    # Calculate up vector from metadata
-    up_vector = np.zeros(3)
-    up_vector[up_axis] = 1.0
+    # Use up_vector directly from metadata (already extracted above)
     
     # Calculate camera distance to fit max_size in view
     # For orthographic: distance = (target_size / 2) * (focal_length / (image_size / 2))
@@ -358,20 +369,56 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     # Calculate camera distance to fit max_size in view
     camera_distance = (max_size / 2.0) * focal_length / (image_size / 2.0)
     
-    # Position camera along the up direction, looking down
-    camera_height_pos = max_bounds[up_axis] + camera_distance
+    # Position camera above the scene along the up direction from metadata
+    # Place camera at the scene center horizontally, but above the scene vertically
+    # Calculate the height above the scene along the up axis
+    camera_height_above_scene = max_bounds[up_axis] + camera_distance
+    
+    # Start with scene center
     eye = center.copy().astype(np.float64)
-    eye[up_axis] = camera_height_pos
+    # Move camera to the correct height along the up axis (above the scene)
+    eye[up_axis] = camera_height_above_scene
+    
     center_point = center.astype(np.float64)
     
-    # Find a horizontal axis to use as the camera's "up" in the image
+    # Compute view direction (from eye to center, which is opposite to up_vector)
+    # For top-down view, we're looking straight down along -up_vector
+    view_dir = center_point - eye
+    view_dir = view_dir / np.linalg.norm(view_dir)
+    
+    # Find a horizontal axis perpendicular to up_vector for camera's "up" in the image
+    # Use scene dimensions to choose the most appropriate horizontal axis
     scene_size_arr = np.array([max_bounds[0] - min_bounds[0], 
                                max_bounds[1] - min_bounds[1], 
-                               max_bounds[2] - min_bounds[2]])
-    scene_size_arr[up_axis] = 0
-    horizontal_axis = int(np.argmax(scene_size_arr))
-    camera_up = np.zeros(3, dtype=np.float64)
-    camera_up[horizontal_axis] = 1.0
+                               max_bounds[2] - min_bounds[2]], dtype=np.float64)
+    
+    # Find axes that are not the up_axis
+    horizontal_axes = [i for i in range(3) if i != up_axis]
+    
+    # Choose the horizontal axis with the largest scene dimension for stability
+    horizontal_sizes = [scene_size_arr[i] for i in horizontal_axes]
+    best_horizontal_idx = horizontal_axes[np.argmax(horizontal_sizes)]
+    
+    # Create a vector along the best horizontal axis
+    temp_vec = np.zeros(3, dtype=np.float64)
+    temp_vec[best_horizontal_idx] = 1.0
+    
+    # Compute a vector perpendicular to up_vector using cross product
+    # This gives us a horizontal direction in the scene (camera's "up" in image)
+    camera_up = np.cross(up_vector, temp_vec)
+    if np.linalg.norm(camera_up) < 1e-6:
+        # If up_vector is parallel to temp_vec, use the other horizontal axis
+        other_horizontal_idx = horizontal_axes[1] if horizontal_axes[0] == best_horizontal_idx else horizontal_axes[0]
+        temp_vec = np.zeros(3, dtype=np.float64)
+        temp_vec[other_horizontal_idx] = 1.0
+        camera_up = np.cross(up_vector, temp_vec)
+    
+    camera_up = camera_up / np.linalg.norm(camera_up)
+    
+    # Ensure camera_up is perpendicular to view direction
+    # Project camera_up onto the plane perpendicular to view_dir
+    camera_up = camera_up - np.dot(camera_up, view_dir) * view_dir
+    camera_up = camera_up / np.linalg.norm(camera_up)
     
     # Set up camera parameters
     cx, cy = width / 2.0, height / 2.0
@@ -380,21 +427,38 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     pin = o3d.camera.PinholeCameraParameters()
     pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
     
-    def look_at(eye_, center_, up_):
-        # Match old pipeline's look_at function exactly
-        f = center_ - eye_
-        f = f / np.linalg.norm(f)
-        upn = up_ / np.linalg.norm(up_)
-        s = np.cross(f, upn)
-        s = s / np.linalg.norm(s)
-        u = np.cross(s, f)
-        R = np.array([[s[0], u[0], -f[0]],
-                     [s[1], u[1], -f[1]],
-                     [s[2], u[2], -f[2]]])
-        t = eye_
-        return np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
+    # Build camera transformation matrix directly
+    # For top-down view: camera looks down from eye to center
+    # Forward direction (camera's -Z axis) = normalized view direction (from eye to center)
+    forward = view_dir  # Already normalized: (center - eye) / ||center - eye||
     
-    pin.extrinsic = look_at(eye, center_point, camera_up)
+    # Right direction (camera's X axis) = cross(forward, camera_up)
+    # This ensures right is perpendicular to both forward and camera_up
+    right = np.cross(forward, camera_up)
+    if np.linalg.norm(right) < 1e-6:
+        # If forward and camera_up are parallel, use a different approach
+        # Find any vector perpendicular to forward
+        if abs(forward[0]) < 0.9:
+            temp = np.array([1, 0, 0], dtype=np.float64)
+        else:
+            temp = np.array([0, 1, 0], dtype=np.float64)
+        right = np.cross(forward, temp)
+    right = right / np.linalg.norm(right)
+    
+    # Recompute up (camera's Y axis) = cross(right, forward) to ensure orthogonality
+    camera_up_final = np.cross(right, forward)
+    camera_up_final = camera_up_final / np.linalg.norm(camera_up_final)
+    
+    # Build rotation matrix: [right, up, -forward] (OpenGL/Open3D convention)
+    # Columns are: right (X), up (Y), -forward (Z)
+    R = np.array([[right[0], camera_up_final[0], -forward[0]],
+                  [right[1], camera_up_final[1], -forward[1]],
+                  [right[2], camera_up_final[2], -forward[2]]], dtype=np.float64)
+    
+    # Build transformation matrix: [R | t] where t = -R @ eye
+    # This transforms world coordinates to camera coordinates
+    t = -R @ eye
+    pin.extrinsic = np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
     
     ctr = vis.get_view_control()
     ctr.convert_from_pinhole_camera_parameters(pin)
@@ -446,10 +510,23 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     Returns:
         Segmentation image as numpy array (H, W, 3)
     """
-    # Get up axis from metadata if available
-    up_axis = 1  # Default Y-up
-    if scene_metadata and 'up_axis' in scene_metadata:
-        up_axis = scene_metadata['up_axis']
+    # Get up direction from metadata - REQUIRED, no defaults
+    if not scene_metadata:
+        raise ValueError("scene_metadata is required for render_layout_seg")
+    
+    up_direction_info = scene_metadata.get('up_direction')
+    if not up_direction_info:
+        raise ValueError("scene_metadata must contain 'up_direction' field")
+    
+    up_axis = up_direction_info.get('up_axis')
+    if up_axis is None:
+        raise ValueError("scene_metadata['up_direction'] must contain 'up_axis' field")
+    
+    up_vector = up_direction_info.get('up_vector')
+    if up_vector is None:
+        raise ValueError("scene_metadata['up_direction'] must contain 'up_vector' field")
+    
+    up_vector = np.array(up_vector, dtype=np.float64)
     
     # Get scene bounds
     min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings=hide_ceilings)
@@ -552,28 +629,65 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
         return np.ones((height, width, 3), dtype=np.uint8) * 255
     
     # Set up camera for orthographic top-down view (same as RGB)
-    up_vector = np.zeros(3)
-    up_vector[up_axis] = 1.0
+    # Use up_vector directly from metadata (already extracted above)
     
     fov_degrees = 1.0
     fov_rad = math.radians(fov_degrees)
     image_size = min(width, height)
     focal_length = (image_size / 2.0) / math.tan(fov_rad / 2.0)
     
+    # Calculate camera distance to fit max_size in view
     camera_distance = (max_size / 2.0) * focal_length / (image_size / 2.0)
     
-    camera_height_pos = max_bounds[up_axis] + camera_distance
+    # Position camera above the scene along the up direction from metadata
+    # Place camera at the scene center horizontally, but above the scene vertically
+    # Calculate the height above the scene along the up axis
+    camera_height_above_scene = max_bounds[up_axis] + camera_distance
+    
+    # Start with scene center
     eye = center.copy().astype(np.float64)
-    eye[up_axis] = camera_height_pos
+    # Move camera to the correct height along the up axis (above the scene)
+    eye[up_axis] = camera_height_above_scene
+    
     center_point = center.astype(np.float64)
     
+    # Compute view direction (from eye to center, which is opposite to up_vector)
+    view_dir = center_point - eye
+    view_dir = view_dir / np.linalg.norm(view_dir)
+    
+    # Find a horizontal axis perpendicular to up_vector for camera's "up" in the image
+    # Use scene dimensions to choose the most appropriate horizontal axis
     scene_size_arr = np.array([max_bounds[0] - min_bounds[0], 
                                max_bounds[1] - min_bounds[1], 
-                               max_bounds[2] - min_bounds[2]])
-    scene_size_arr[up_axis] = 0
-    horizontal_axis = int(np.argmax(scene_size_arr))
-    camera_up = np.zeros(3, dtype=np.float64)
-    camera_up[horizontal_axis] = 1.0
+                               max_bounds[2] - min_bounds[2]], dtype=np.float64)
+    
+    # Find axes that are not the up_axis
+    horizontal_axes = [i for i in range(3) if i != up_axis]
+    
+    # Choose the horizontal axis with the largest scene dimension for stability
+    horizontal_sizes = [scene_size_arr[i] for i in horizontal_axes]
+    best_horizontal_idx = horizontal_axes[np.argmax(horizontal_sizes)]
+    
+    # Create a vector along the best horizontal axis
+    temp_vec = np.zeros(3, dtype=np.float64)
+    temp_vec[best_horizontal_idx] = 1.0
+    
+    # Compute a vector perpendicular to up_vector using cross product
+    # This gives us a horizontal direction in the scene
+    camera_up = np.cross(up_vector, temp_vec)
+    if np.linalg.norm(camera_up) < 1e-6:
+        # If up_vector is parallel to temp_vec, use the other horizontal axis
+        other_horizontal_idx = horizontal_axes[1] if horizontal_axes[0] == best_horizontal_idx else horizontal_axes[0]
+        temp_vec = np.zeros(3, dtype=np.float64)
+        temp_vec[other_horizontal_idx] = 1.0
+        camera_up = np.cross(up_vector, temp_vec)
+    
+    camera_up = camera_up / np.linalg.norm(camera_up)
+    
+    # Ensure camera_up is perpendicular to view direction
+    # Project camera_up onto the plane perpendicular to view_dir
+    camera_up = camera_up - np.dot(camera_up, view_dir) * view_dir
+    camera_up = camera_up / np.linalg.norm(camera_up)
     
     cx, cy = width / 2.0, height / 2.0
     fx = fy = focal_length
@@ -581,20 +695,38 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     pin = o3d.camera.PinholeCameraParameters()
     pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
     
-    def look_at(eye_, center_, up_):
-        f = center_ - eye_
-        f = f / np.linalg.norm(f)
-        upn = up_ / np.linalg.norm(up_)
-        s = np.cross(f, upn)
-        s = s / np.linalg.norm(s)
-        u = np.cross(s, f)
-        R = np.array([[s[0], u[0], -f[0]],
-                     [s[1], u[1], -f[1]],
-                     [s[2], u[2], -f[2]]])
-        t = eye_
-        return np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
+    # Build camera transformation matrix directly
+    # For top-down view: camera looks down from eye to center
+    # Forward direction (camera's -Z axis) = normalized view direction (from eye to center)
+    forward = view_dir  # Already normalized: (center - eye) / ||center - eye||
     
-    pin.extrinsic = look_at(eye, center_point, camera_up)
+    # Right direction (camera's X axis) = cross(forward, camera_up)
+    # This ensures right is perpendicular to both forward and camera_up
+    right = np.cross(forward, camera_up)
+    if np.linalg.norm(right) < 1e-6:
+        # If forward and camera_up are parallel, use a different approach
+        # Find any vector perpendicular to forward
+        if abs(forward[0]) < 0.9:
+            temp = np.array([1, 0, 0], dtype=np.float64)
+        else:
+            temp = np.array([0, 1, 0], dtype=np.float64)
+        right = np.cross(forward, temp)
+    right = right / np.linalg.norm(right)
+    
+    # Recompute up (camera's Y axis) = cross(right, forward) to ensure orthogonality
+    camera_up_final = np.cross(right, forward)
+    camera_up_final = camera_up_final / np.linalg.norm(camera_up_final)
+    
+    # Build rotation matrix: [right, up, -forward] (OpenGL/Open3D convention)
+    # Columns are: right (X), up (Y), -forward (Z)
+    R = np.array([[right[0], camera_up_final[0], -forward[0]],
+                  [right[1], camera_up_final[1], -forward[1]],
+                  [right[2], camera_up_final[2], -forward[2]]], dtype=np.float64)
+    
+    # Build transformation matrix: [R | t] where t = -R @ eye
+    # This transforms world coordinates to camera coordinates
+    t = -R @ eye
+    pin.extrinsic = np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
     
     ctr = vis.get_view_control()
     ctr.convert_from_pinhole_camera_parameters(pin)

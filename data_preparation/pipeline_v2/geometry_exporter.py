@@ -16,7 +16,7 @@ import trimesh
 import trimesh.visual.material
 
 from common.taxonomy import Taxonomy
-from data_preparation.pipeline_v2.scene_loader import load_front_scene, extract_rooms_from_scene
+from data_preparation.pipeline_v2.scene_loader import load_front_scene, extract_rooms_from_scene, parse_transform
 
 
 def _organize_material_files(obj_path: Path, materials_dir: Path):
@@ -314,7 +314,7 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     # Generate comprehensive metadata
     print("  Generating scene metadata...")
     scene_metadata = generate_scene_metadata(
-        scene_id, trimesh_scene, room_scenes, scene_no_ceiling, taxonomy
+        scene_id, scene_json, trimesh_scene, room_scenes, scene_no_ceiling, taxonomy
     )
     
     metadata_path = geometry_dir / f"{scene_id}_metadata.json"
@@ -325,94 +325,123 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     return scene_metadata
 
 
-def detect_up_direction(trimesh_scene: trimesh.Scene) -> Dict:
+def detect_up_direction(scene_json: Path) -> Dict:
     """
-    Detect the up direction by finding floor and ceiling meshes.
-    The axis with the largest difference between floor and ceiling is the up axis.
+    Extract the up direction from the scene JSON file geometry.
+    Uses floor and ceiling mesh normals from the JSON to determine the up direction.
     
     Args:
-        trimesh_scene: Full scene (must include ceilings for this calculation)
+        scene_json: Path to 3D-FRONT JSON file
         
     Returns:
         Dictionary with 'up_axis' (0=X, 1=Y, 2=Z), 'up_vector' ([1,0,0], [0,1,0], or [0,0,1]),
         'floor_center', 'ceiling_center', and 'vertical_separation'
     """
+    # Load JSON file
+    with open(scene_json, "r", encoding="utf-8") as f:
+        scene_data = json.load(f)
+    
+    # Build architectural mesh lookup dict {uid: mesh_data}
+    arch_map = {m['uid']: m for m in scene_data.get('mesh', [])}
+    
+    floor_normals = []
+    ceiling_normals = []
     floor_positions = []
     ceiling_positions = []
     
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
-                    continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
-            
-            if not isinstance(geometry, trimesh.Trimesh):
+    # Iterate through rooms and find floor/ceiling meshes from JSON
+    for room in scene_data.get("scene", {}).get("room", []):
+        for child in room.get("children", []):
+            ref_id = child.get("ref")
+            if not ref_id or ref_id not in arch_map:
                 continue
             
-            metadata = getattr(geometry, 'metadata', {})
-            label = metadata.get('label', '').lower()
-            is_ceiling = metadata.get('is_ceiling', False)
+            arch = arch_map[ref_id]
+            arch_type = arch.get("type", "")
             
-            # Get world-space vertices
-            vertices_world = trimesh.transform_points(geometry.vertices, transform)
-            mesh_center = vertices_world.mean(axis=0)
+            # Get transform from child
+            transform = parse_transform(child)
             
-            if label == 'floor' or (label == '' and not is_ceiling and 'floor' in str(geometry_name).lower()):
-                floor_positions.append(mesh_center)
-            elif label == 'ceiling' or is_ceiling:
-                ceiling_positions.append(mesh_center)
-        except (KeyError, ValueError, IndexError):
-            continue
+            # Get mesh vertices and normals from JSON
+            if "xyz" in arch:
+                vertices = np.array(arch["xyz"], dtype=np.float64).reshape(-1, 3)
+                # Transform vertices to world space
+                vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
+                vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                mesh_center = vertices_world.mean(axis=0)
+                
+                if "Floor" in arch_type:
+                    floor_positions.append(mesh_center)
+                    # Extract normal from JSON (floor normal points up)
+                    if "normal" in arch and arch["normal"]:
+                        normals = np.array(arch["normal"], dtype=np.float64).reshape(-1, 3)
+                        # Transform normals (only rotation, no translation)
+                        normals_world = (transform[:3, :3] @ normals.T).T
+                        # Average normal for this floor
+                        avg_normal = normals_world.mean(axis=0)
+                        avg_normal = avg_normal / (np.linalg.norm(avg_normal) + 1e-10)
+                        floor_normals.append(avg_normal)
+                elif "Ceiling" in arch_type:
+                    ceiling_positions.append(mesh_center)
+                    # Extract normal from JSON (ceiling normal points down)
+                    if "normal" in arch and arch["normal"]:
+                        normals = np.array(arch["normal"], dtype=np.float64).reshape(-1, 3)
+                        # Transform normals (only rotation, no translation)
+                        normals_world = (transform[:3, :3] @ normals.T).T
+                        # Average normal for this ceiling
+                        avg_normal = normals_world.mean(axis=0)
+                        avg_normal = avg_normal / (np.linalg.norm(avg_normal) + 1e-10)
+                        ceiling_normals.append(avg_normal)
     
-    if len(floor_positions) == 0 or len(ceiling_positions) == 0:
-        # Fallback: assume Y-up (3D-FRONT convention)
-        print(f"WARNING: Could not detect up direction (floor={len(floor_positions)}, ceiling={len(ceiling_positions)}), assuming Y-up")
-        return {
-            'up_axis': 1,  # Y-axis
-            'up_vector': [0, 1, 0],
-            'floor_center': None,
-            'ceiling_center': None,
-            'vertical_separation': None
-        }
+    # Use floor normals to determine up direction (REQUIRED)
+    if len(floor_normals) == 0:
+        raise ValueError(f"No floor meshes with normals found in JSON file: {scene_json}")
     
-    # Calculate average positions
-    floor_center = np.array(floor_positions).mean(axis=0)
-    ceiling_center = np.array(ceiling_positions).mean(axis=0)
+    # Floor normals point up, so average them to get up direction
+    avg_floor_normal = np.array(floor_normals).mean(axis=0)
+    avg_floor_normal = avg_floor_normal / (np.linalg.norm(avg_floor_normal) + 1e-10)
+    up_vector = avg_floor_normal
     
-    # Calculate separation along each axis
-    separation = ceiling_center - floor_center
-    abs_separation = np.abs(separation)
+    # Find the dominant axis
+    abs_up = np.abs(up_vector)
+    up_axis = int(np.argmax(abs_up))
     
-    # The axis with the largest separation is the up axis
-    up_axis = int(np.argmax(abs_separation))
+    # Ensure up_vector points in positive direction along the dominant axis
+    if up_vector[up_axis] < 0:
+        up_vector = -up_vector
     
-    # Determine up direction (positive or negative)
-    if separation[up_axis] > 0:
-        up_vector = np.zeros(3)
-        up_vector[up_axis] = 1.0
+    # Normalize to unit vector
+    up_vector = up_vector / (np.linalg.norm(up_vector) + 1e-10)
+    
+    # Calculate centers and separation for metadata
+    if len(floor_positions) > 0 and len(ceiling_positions) > 0:
+        floor_center = np.array(floor_positions).mean(axis=0).tolist()
+        ceiling_center = np.array(ceiling_positions).mean(axis=0).tolist()
+        separation = np.array(ceiling_center) - np.array(floor_center)
+        vertical_separation = float(np.abs(separation[up_axis]))
     else:
-        up_vector = np.zeros(3)
-        up_vector[up_axis] = -1.0
+        floor_center = None
+        ceiling_center = None
+        vertical_separation = None
     
-    print(f"Detected up direction: axis={up_axis} ({['X', 'Y', 'Z'][up_axis]}), "
-          f"vector={up_vector}, separation={abs_separation[up_axis]:.2f}")
-    print(f"  Floor center: {floor_center}")
-    print(f"  Ceiling center: {ceiling_center}")
+    print(f"Extracted up direction from floor normals in JSON: axis={up_axis} ({['X', 'Y', 'Z'][up_axis]}), "
+          f"vector={up_vector.tolist()}")
+    if floor_center is not None:
+        print(f"  Floor center: {floor_center}")
+        print(f"  Ceiling center: {ceiling_center}")
+        print(f"  Vertical separation: {vertical_separation:.2f}")
     
     return {
         'up_axis': int(up_axis),
         'up_vector': up_vector.tolist(),
-        'floor_center': floor_center.tolist(),
-        'ceiling_center': ceiling_center.tolist(),
-        'vertical_separation': float(abs_separation[up_axis])
+        'floor_center': floor_center,
+        'ceiling_center': ceiling_center,
+        'vertical_separation': vertical_separation
     }
 
 
 def generate_scene_metadata(scene_id: str,
+                            scene_json: Path,
                             trimesh_scene: trimesh.Scene, 
                             room_scenes: Dict[str, trimesh.Scene],
                             scene_no_ceiling: trimesh.Scene,
@@ -530,8 +559,8 @@ def generate_scene_metadata(scene_id: str,
         
         return result
     
-    # Detect up direction using floor and ceiling meshes
-    up_direction_info = detect_up_direction(trimesh_scene)
+    # Extract up direction from scene JSON geometry
+    up_direction_info = detect_up_direction(scene_json)
     
     # Get scene bounds (without ceilings)
     try:
