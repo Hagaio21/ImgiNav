@@ -5,7 +5,7 @@ This module contains all neural network model definitions, including autoencoder
 ## Overview
 
 The `models` module is organized into several submodules:
-- **Core Models**: Autoencoder, Diffusion, ControlNet
+- **Core Models**: Autoencoder, Diffusion
 - **Components**: UNet, Encoder, Decoder, Heads, Schedulers, Blocks
 - **Datasets**: Data loading and preprocessing
 - **Losses**: Loss function implementations
@@ -18,14 +18,11 @@ models/
 ├── encoder.py              # Encoder network
 ├── decoder.py              # Decoder network
 ├── diffusion.py            # Diffusion model
-├── controlnet_diffusion.py # ControlNet diffusion model
 ├── components/             # Reusable model components
 │   ├── unet.py            # UNet architecture
 │   ├── blocks.py          # Building blocks (ResNet, Attention, etc.)
 │   ├── heads.py           # Output heads (RGB, Segmentation, Classification)
 │   ├── scheduler.py       # Noise schedulers (Linear, Cosine, Quadratic)
-│   ├── controlnet.py      # ControlNet adapter
-│   ├── fusion.py          # Feature fusion mechanisms
 │   └── base_model.py      # Base model class
 ├── datasets/               # Dataset implementations
 │   ├── datasets.py        # Main dataset classes
@@ -158,8 +155,6 @@ Reusable building blocks:
 
 Output heads for multi-task learning:
 - `RGBHead`: RGB reconstruction head
-- `SegmentationHead`: Semantic segmentation head
-- `ClassificationHead`: Classification head
 
 ### Schedulers (`components/scheduler.py`)
 

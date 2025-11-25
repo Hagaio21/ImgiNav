@@ -41,8 +41,8 @@ class Unet(BaseComponent):
 
         self.final = nn.Conv2d(prev_ch, out_ch, 1)
 
-    def forward(self, x_t, t, cond=None):
-        """Forward pass. cond parameter is ignored (kept for API compatibility)."""
+    def forward(self, x_t, t, cond=None, conditioning_signal=None):
+        """Forward pass. cond parameter is deprecated and ignored (kept for API compatibility)."""
         t_emb = self.time_mlp(t.float())
         skips = []
 
@@ -125,25 +125,6 @@ class Unet(BaseComponent):
             "dropout": self._init_kwargs.get("dropout", 0.0),
         })
         return cfg
-
-
-# Backward compatibility: Keep DualUNet as an alias for Unet
-# This allows old checkpoints to load without breaking
-class DualUNet(Unet):
-    """
-    Deprecated: DualUNet is now an alias for Unet.
-    
-    This class is kept for backward compatibility with old checkpoints.
-    Use Unet instead for new code. The migration script can convert old checkpoints.
-    """
-    def _build(self):
-        # Remove conditioning-related kwargs before building
-        kwargs = self._init_kwargs.copy()
-        kwargs.pop("cond_channels", None)
-        kwargs.pop("fusion_mode", None)
-        kwargs.pop("cond_mult", None)
-        self._init_kwargs = kwargs
-        super()._build()
 
 
 class UnetWithAttention(BaseComponent):

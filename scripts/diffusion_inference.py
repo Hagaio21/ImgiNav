@@ -10,7 +10,7 @@ from torchvision.utils import save_image
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from models.diffusion import LatentDiffusion
+from models.diffusion import DiffusionModel
 
 
 def save_samples(samples: torch.Tensor, output_path: Path, nrow: int = 4):
@@ -59,13 +59,15 @@ def main():
     
     diffusion_cfg["autoencoder"] = {"config": ae_config, "checkpoint": ae_checkpoint}
     
-    diffusion = LatentDiffusion.from_config(diffusion_cfg, device=device)
+    from training.utils import load_config
+    config = load_config(diff_config)
+    diffusion = DiffusionModel.from_config(config, device=device)
     
     state = torch.load(diff_checkpoint, map_location=device)
     loaded_state = state.get("state_dict", state.get("model", state))
     if loaded_state and list(loaded_state.keys())[0].startswith('module.'):
         loaded_state = {k[7:]: v for k, v in loaded_state.items()}
-    diffusion.backbone.load_state_dict(loaded_state, strict=False)
+    diffusion.load_state_dict(loaded_state, strict=False)
     
     diffusion.eval()
     

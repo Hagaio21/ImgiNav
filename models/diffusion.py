@@ -6,7 +6,7 @@ import yaml
 from models.components.base_model import BaseModel
 from models.autoencoder import Autoencoder
 from models.decoder import Decoder
-from models.components.unet import Unet, DualUNet, UnetWithAttention  # DualUNet for backward compatibility
+from models.components.unet import Unet, UnetWithAttention
 from models.components.scheduler import SCHEDULER_REGISTRY
 from models.components.embedding_projection import EmbeddingToSpatial, CLIPEmbeddingToSpatial
 
@@ -133,9 +133,7 @@ class DiffusionModel(BaseModel):
             unet_cfg = unet_cfg.copy()
             unet_cfg["conditioning_channels"] = conditioning_channels
         
-        if unet_type in ("dualunet", "dual_unet"):
-            self.unet = DualUNet.from_config(unet_cfg)
-        elif unet_type in ("unetwithattention", "unet_with_attention"):
+        if unet_type in ("unetwithattention", "unet_with_attention"):
             self.unet = UnetWithAttention.from_config(unet_cfg)
         else:
             self.unet = Unet.from_config(unet_cfg)
@@ -262,7 +260,7 @@ class DiffusionModel(BaseModel):
 
         result = self.scheduler.add_noise(latents, noise, t, return_scaled_noise=True)
         noisy_latents, noise_used = result
-        pred_noise = self.unet(noisy_latents, t, cond, conditioning_signal=conditioning_signal)
+        pred_noise = self.unet(noisy_latents, t, cond=None, conditioning_signal=conditioning_signal)
 
         device_obj = noisy_latents.device
         alpha_bars = self.scheduler.alpha_bars.to(device_obj)
@@ -362,12 +360,12 @@ class DiffusionModel(BaseModel):
                 
                 if use_cfg:
                     # Conditional prediction with actual conditioning signal
-                    cond_pred = self.unet(latents, t_batch, cond, conditioning_signal=conditioning_signal)
+                    cond_pred = self.unet(latents, t_batch, cond=None, conditioning_signal=conditioning_signal)
                     # Unconditional prediction with projected zero signal (matches training)
-                    uncond_pred = self.unet(latents, t_batch, cond, conditioning_signal=unconditional_signal)
+                    uncond_pred = self.unet(latents, t_batch, cond=None, conditioning_signal=unconditional_signal)
                     pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
                 else:
-                    pred_noise = self.unet(latents, t_batch, cond, conditioning_signal=conditioning_signal)
+                    pred_noise = self.unet(latents, t_batch, cond=None, conditioning_signal=conditioning_signal)
             
             if method == "ddim":
                 alpha_bars = self.scheduler.alpha_bars.to(device)

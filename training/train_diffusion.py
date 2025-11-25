@@ -310,10 +310,6 @@ def train_epoch(
                     optimizer.step()
                 
                 optimizer.zero_grad()
-                
-                # Update EMA after optimizer step
-                if hasattr(model, 'update_ema'):
-                    model.update_ema()
             else:
                 # Still need to zero grad on first iteration if not already done
                 if batch_idx == 0:

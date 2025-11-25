@@ -1,50 +1,24 @@
 from .base_loss import (
     LOSS_REGISTRY,
     LossComponent,
-    L1Loss,
     MSELoss,
-    ClassWeightedMSELoss,
     ColorWeightedMSELoss,
     KLDLoss,
     LatentStandardizationLoss,
-    CrossEntropyLoss,
-    PerceptualLoss,
     LatentStructuralLossAE,
     CompositeLoss,
 )
-from .semantic_loss import SemanticLoss
-from .diffusion_losses import SNRWeightedNoiseLoss, DiscriminatorLoss, LatentStructuralLoss
 from .clip_loss import CLIPLoss
-from .advanced_losses import (
-    FrequencyDomainLoss,
-    CharbonnierLoss,
-    FeatureMatchingLoss,
-    ConsistencyLoss,
-    StyleLoss,
-)
 
 __all__ = [
     "LOSS_REGISTRY",
     "LossComponent",
-    "L1Loss",
     "MSELoss",
-    "ClassWeightedMSELoss",
     "ColorWeightedMSELoss",
     "KLDLoss",
     "LatentStandardizationLoss",
-    "CrossEntropyLoss",
-    "PerceptualLoss",
     "LatentStructuralLossAE",
     "CompositeLoss",
-    "SemanticLoss",
-    "SNRWeightedNoiseLoss",
-    "DiscriminatorLoss",
-    "LatentStructuralLoss",
     "CLIPLoss",
-    "FrequencyDomainLoss",
-    "CharbonnierLoss",
-    "FeatureMatchingLoss",
-    "ConsistencyLoss",
-    "StyleLoss",
 ]
 

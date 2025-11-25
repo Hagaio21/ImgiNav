@@ -75,7 +75,7 @@ class BaseComponent(nn.Module):
         payload = torch.load(path, map_location=map_location)
         config = payload.get("config")
         model = cls.from_config(config) if config else cls()
-        # Use strict=False for backward compatibility (e.g., DualUNet -> Unet migration)
+        # Use strict=False for backward compatibility
         model.load_state_dict(payload["state_dict"], strict=False)
         return model
 

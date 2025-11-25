@@ -49,29 +49,7 @@ class RGBHead(DecoderHead):
         super()._build()
 
 
-class SegmentationHead(DecoderHead):
-    def _build(self):
-        num_classes = self._init_kwargs.get("num_classes", 21)
-        self._init_kwargs["out_channels"] = num_classes
-        self._init_kwargs["final_activation"] = "softmax"
-        super()._build()
-
-
-class ClassificationHead(BaseComponent):
-    def _build(self):
-        in_ch = self._init_kwargs.get("in_channels", 64)
-        num_classes = self._init_kwargs.get("num_classes", 1000)
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(in_ch, num_classes)
-
-    def forward(self, x):
-        x = self.pool(x).flatten(1)
-        return self.fc(x)
-
-
 HEAD_REGISTRY = {
     "DecoderHead": DecoderHead,
     "RGBHead": RGBHead,
-    "SegmentationHead": SegmentationHead,
-    "ClassificationHead": ClassificationHead,
 }

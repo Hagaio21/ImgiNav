@@ -139,17 +139,7 @@ class UpBlock(nn.Module):
 
 
 class SelfAttentionBlock(nn.Module):
-    """
-    Self-attention block for UNet with optional cross-attention support for conditioning signals.
-    Applies self-attention to capture long-range spatial dependencies.
-    Can optionally use cross-attention with conditioning signals as keys/values.
-    
-    Args:
-        channels: Number of input/output channels
-        num_heads: Number of attention heads (default: channels // 32, min 1)
-        norm_groups: Number of groups for GroupNorm (default: 8)
-        enable_cross_attention: If True, enables cross-attention with conditioning signals (default: False)
-    """
+
     def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False, conditioning_channels=None):
         super().__init__()
         self.channels = channels
@@ -327,7 +317,6 @@ class ResidualBlockWithAttention(nn.Module):
             h = self.attention(h, conditioning_signal=conditioning_signal)
 
         return h + self.skip(x)
-
 
 class DownBlockWithAttention(nn.Module):
     """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""

@@ -67,11 +67,18 @@ def check_manifest(manifest_path):
         print(f"Missing columns: {', '.join(missing_cols)}")
         print()
         print("You need to create embeddings first using:")
-        print("  python training/embed_controlnet_dataset.py \\")
-        print("    --ae-checkpoint <vae_checkpoint> \\")
-        print("    --ae-config <vae_config> \\")
-        print("    --input-manifest <input_manifest> \\")
-        print("    --output-manifest <output_manifest>")
+        print("  python data_preparation/create_embeddings.py --type layout \\")
+        print("    --manifest <input_manifest> \\")
+        print("    --output <output_manifest> \\")
+        print("    --autoencoder-config <vae_config> \\")
+        print("    --autoencoder-checkpoint <vae_checkpoint>")
+        print()
+        print("  python data_preparation/create_embeddings.py --type pov \\")
+        print("    --manifest <input_manifest> --output <output_manifest>")
+        print()
+        print("  python data_preparation/create_embeddings.py --type graph \\")
+        print("    --manifest <input_manifest> --output <output_manifest> \\")
+        print("    --taxonomy config/taxonomy.json")
         return False
     else:
         print("=" * 60)
@@ -87,7 +94,7 @@ if __name__ == "__main__":
         print("Usage: python scripts/check_manifest_for_clip.py <manifest_path>")
         print()
         print("Example:")
-        print("  python scripts/check_manifest_for_clip.py /work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv")
+        print("  python scripts/check_manifest_for_clip.py /path/to/manifest.csv")
         sys.exit(1)
     
     manifest_path = sys.argv[1]

@@ -79,14 +79,14 @@ def main():
     
     parser.add_argument(
         "--old-path",
-        default="/work3/s233249/ImgiNav/datasets/controlnet/layouts",
-        help="Old path to replace (default: /work3/s233249/ImgiNav/datasets/controlnet/layouts)"
+        required=True,
+        help="Old path to replace (e.g., 'layouts' or full path)"
     )
     
     parser.add_argument(
         "--new-path",
-        default="/work3/s233249/ImgiNav/datasets/controlnet/layouts_recolored",
-        help="New path (default: /work3/s233249/ImgiNav/datasets/controlnet/layouts_recolored)"
+        required=True,
+        help="New path (e.g., 'layouts_recolored' or full path)"
     )
     
     parser.add_argument(

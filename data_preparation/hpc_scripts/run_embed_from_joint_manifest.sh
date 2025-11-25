@@ -113,15 +113,11 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo " Output manifest: ${OUTPUT_MANIFEST}"
     echo "=============================================================="
     
-    # Submit next job: Create ControlNet manifest
+    # Embedding complete - no next job needed
     echo ""
-    echo "[INFO] Submitting next job: Create ControlNet manifest..."
-    # Use PROJECT_ROOT that's already defined in this script
-    NEXT_SCRIPT="${PROJECT_ROOT}/ImgiNav/data_preparation/hpc_scripts/run_create_controlnet_manifest_new_layouts.sh"
-    if [ -f "${NEXT_SCRIPT}" ]; then
-        bsub < "${NEXT_SCRIPT}"
-        echo "[INFO] Next job submitted successfully"
-    else
+    echo "[INFO] Embedding from joint manifest complete"
+    echo "[INFO] Next step: Use create_embeddings.py to create additional embeddings if needed"
+    if false; then
         echo "[WARN] Next job script not found: ${NEXT_SCRIPT}"
     fi
 else

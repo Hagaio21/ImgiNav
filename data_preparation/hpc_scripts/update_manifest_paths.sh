@@ -24,14 +24,12 @@ echo "[INFO] LSF Job $LSB_JOBID started on $(hostname)."
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 SCRIPT_PATH="${BASE_DIR}/data_preparation/update_manifest_paths.py"
 
-# Manifests to update
-MANIFEST_SEG="/work3/s233249/ImgiNav/datasets/controlnet/manifest_seg.csv"
-MANIFEST_TEX="/work3/s233249/ImgiNav/datasets/controlnet/manifest_tex.csv"
+# Manifests to update (customize as needed)
 SHARED_EMBEDDINGS_MANIFEST="/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv"
 
-# Paths
-OLD_PATH="/work3/s233249/ImgiNav/datasets/controlnet/layouts"
-NEW_PATH="/work3/s233249/ImgiNav/datasets/controlnet/layouts_recolored"
+# Paths (customize as needed)
+OLD_PATH="${OLD_PATH:-/path/to/old/layouts}"
+NEW_PATH="${NEW_PATH:-/path/to/new/layouts}"
 
 # ----------------------------------------------------------------------
 # Check files
@@ -63,32 +61,6 @@ echo "=============================================================="
 echo " Old path: ${OLD_PATH}"
 echo " New path: ${NEW_PATH}"
 echo "=============================================================="
-
-# Update manifest_seg.csv
-if [ -f "${MANIFEST_SEG}" ]; then
-    echo ""
-    echo "[INFO] Updating ${MANIFEST_SEG}..."
-    python "${SCRIPT_PATH}" \
-        --manifest "${MANIFEST_SEG}" \
-        --old-path "${OLD_PATH}" \
-        --new-path "${NEW_PATH}" \
-        --backup
-else
-    echo "[WARN] Manifest not found: ${MANIFEST_SEG}"
-fi
-
-# Update manifest_tex.csv
-if [ -f "${MANIFEST_TEX}" ]; then
-    echo ""
-    echo "[INFO] Updating ${MANIFEST_TEX}..."
-    python "${SCRIPT_PATH}" \
-        --manifest "${MANIFEST_TEX}" \
-        --old-path "${OLD_PATH}" \
-        --new-path "${NEW_PATH}" \
-        --backup
-else
-    echo "[WARN] Manifest not found: ${MANIFEST_TEX}"
-fi
 
 # Update shared embeddings manifest
 if [ -f "${SHARED_EMBEDDINGS_MANIFEST}" ]; then
