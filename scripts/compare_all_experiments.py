@@ -17,7 +17,13 @@ import json
 from collections import defaultdict
 
 # Set style
-plt.style.use('seaborn-v0_8-darkgrid' if 'seaborn-v0_8-darkgrid' in plt.style.available else 'default')
+try:
+    plt.style.use('seaborn-v0_8-darkgrid')
+except:
+    try:
+        plt.style.use('seaborn-darkgrid')
+    except:
+        plt.style.use('default')
 
 
 def find_experiment_metrics(base_dir):
