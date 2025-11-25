@@ -382,10 +382,20 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     eye = center.copy().astype(np.float64) + up_vector * camera_height_above_scene
     center_point = center.astype(np.float64)
     
+    # Debug: Print camera position info
+    print(f"DEBUG: Camera positioning:")
+    print(f"  Scene center: {center}")
+    print(f"  Up vector: {up_vector}")
+    print(f"  Camera height above scene: {camera_height_above_scene:.2f}")
+    print(f"  Camera eye position: {eye}")
+    print(f"  Camera target (center): {center_point}")
+    
     # Compute view direction (from eye to center, which is opposite to up_vector)
     # For top-down view, we're looking straight down along -up_vector
     view_dir = center_point - eye
     view_dir = view_dir / np.linalg.norm(view_dir)
+    print(f"  View direction (normalized): {view_dir}")
+    print(f"  View direction should be opposite to up_vector: {-up_vector / np.linalg.norm(up_vector)}")
     
     # Find a horizontal axis perpendicular to up_vector for camera's "up" in the image
     # Use scene dimensions to choose the most appropriate horizontal axis
@@ -450,19 +460,36 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     camera_up_final = np.cross(right, forward)
     camera_up_final = camera_up_final / np.linalg.norm(camera_up_final)
     
-    # Build rotation matrix: [right, up, -forward] (OpenGL/Open3D convention)
-    # Columns are: right (X), up (Y), -forward (Z)
-    R = np.array([[right[0], camera_up_final[0], -forward[0]],
-                  [right[1], camera_up_final[1], -forward[1]],
-                  [right[2], camera_up_final[2], -forward[2]]], dtype=np.float64)
+    # Build transformation matrix using look_at format (matching render_worker.py)
+    # This matches the format used in the working render_worker.py
+    def look_at(eye_, center_, up_):
+        f = center_ - eye_
+        f = f / (np.linalg.norm(f) + 1e-12)
+        upn = up_ / (np.linalg.norm(up_) + 1e-12)
+        l = np.cross(upn, f)
+        l = l / (np.linalg.norm(l) + 1e-12)
+        u2 = np.cross(f, l)
+        M = np.eye(4, dtype=np.float64)
+        M[0, :3] = l
+        M[1, :3] = u2
+        M[2, :3] = f
+        T = np.eye(4, dtype=np.float64)
+        T[:3, 3] = -eye_
+        return M @ T
     
-    # Build transformation matrix: [R | t] where t = -R @ eye
-    # This transforms world coordinates to camera coordinates
-    t = -R @ eye
-    pin.extrinsic = np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
+    # Use camera_up_final as the up direction for look_at
+    pin.extrinsic = look_at(eye, center_point, camera_up_final)
+    
+    # Debug: Print camera position info
+    print(f"DEBUG: Camera positioning:")
+    print(f"  Scene center: {center}")
+    print(f"  Up vector from metadata: {up_vector}")
+    print(f"  Camera eye position: {eye}")
+    print(f"  Camera target (center): {center_point}")
+    print(f"  Camera up for look_at: {camera_up_final}")
     
     ctr = vis.get_view_control()
-    ctr.convert_from_pinhole_camera_parameters(pin)
+    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
     
     # Set background color (dark gray for RGB)
     opt = vis.get_render_option()
@@ -719,19 +746,28 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     camera_up_final = np.cross(right, forward)
     camera_up_final = camera_up_final / np.linalg.norm(camera_up_final)
     
-    # Build rotation matrix: [right, up, -forward] (OpenGL/Open3D convention)
-    # Columns are: right (X), up (Y), -forward (Z)
-    R = np.array([[right[0], camera_up_final[0], -forward[0]],
-                  [right[1], camera_up_final[1], -forward[1]],
-                  [right[2], camera_up_final[2], -forward[2]]], dtype=np.float64)
+    # Build transformation matrix using look_at format (matching render_worker.py)
+    # This matches the format used in the working render_worker.py
+    def look_at(eye_, center_, up_):
+        f = center_ - eye_
+        f = f / (np.linalg.norm(f) + 1e-12)
+        upn = up_ / (np.linalg.norm(up_) + 1e-12)
+        l = np.cross(upn, f)
+        l = l / (np.linalg.norm(l) + 1e-12)
+        u2 = np.cross(f, l)
+        M = np.eye(4, dtype=np.float64)
+        M[0, :3] = l
+        M[1, :3] = u2
+        M[2, :3] = f
+        T = np.eye(4, dtype=np.float64)
+        T[:3, 3] = -eye_
+        return M @ T
     
-    # Build transformation matrix: [R | t] where t = -R @ eye
-    # This transforms world coordinates to camera coordinates
-    t = -R @ eye
-    pin.extrinsic = np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
+    # Use camera_up_final as the up direction for look_at
+    pin.extrinsic = look_at(eye, center_point, camera_up_final)
     
     ctr = vis.get_view_control()
-    ctr.convert_from_pinhole_camera_parameters(pin)
+    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
     
     # Set background color (white for segmentation)
     opt = vis.get_render_option()
@@ -1101,13 +1137,22 @@ def sample_camera_positions_from_corners(trimesh_scene: trimesh.Scene,
     # Convert to 3D positions using up_vector
     valid_positions = []
     for corner_2d in corners[:num_povs]:
-        # Start with room center
-        pos = room_center.copy()
-        # Move horizontally along h1 and h2 axes
-        pos[h1] = corner_2d[0]
-        pos[h2] = corner_2d[1]
-        # Move to camera height along up_vector direction
-        pos = pos + up_vec * (camera_height_along_up - np.dot(pos - room_center, up_vec))
+        # Build position: set horizontal coordinates (h1, h2) and height along up_vec
+        # Start with horizontal position
+        pos = np.zeros(3, dtype=np.float64)
+        pos[h1] = corner_2d[0]  # Horizontal axis 1 coordinate
+        pos[h2] = corner_2d[1]  # Horizontal axis 2 coordinate
+        
+        # Calculate the component of pos along up_vec
+        pos_along_up = np.dot(pos, up_vec)
+        # Calculate room_center's component along up_vec
+        center_along_up = np.dot(room_center, up_vec)
+        
+        # We want the position to be at camera_height_along_up along up_vec
+        # Adjust pos so its projection onto up_vec equals camera_height_along_up
+        # Remove current up_vec component and add desired one
+        pos = pos - pos_along_up * up_vec  # Remove up_vec component
+        pos = pos + up_vec * camera_height_along_up  # Add desired height along up_vec
         
         # Validate position is not inside furniture (simple bbox check)
         # For now, just add all corners - can add ray-casting later if needed
