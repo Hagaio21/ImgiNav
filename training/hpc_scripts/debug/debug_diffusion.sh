@@ -13,12 +13,12 @@ DEBUG_SCRIPT="${BASE_DIR}/debug_diffusion.py"
 
 # Configs for all combinations: 3 model sizes × 2 dataset types (rooms/scenes)
 CONFIGS=(
-    "experiments/diffusion/clip/regular_rooms/small_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_rooms/medium_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_rooms/large_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_scenes/small_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_scenes/large_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/small_down_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/medium_down_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/large_down_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_scenes/small_down_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_scenes/medium_down_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_scenes/large_down_bottleneck.yaml"
 )
 
 # Validate debug script exists

@@ -9,7 +9,7 @@ TRAIN_SCRIPT="${SCRIPT_DIR}/../run_train_diff_clip.sh"
 CONFIGS=(
     "experiments/diffusion/clip/regular_rooms/medium_all.yaml"
     "experiments/diffusion/clip/regular_scenes/medium_all.yaml"
-    "experiments/diffusion/clip/regular/medium_all.yaml"
+    "experiments/diffusion/clip/regular/both_medium_all.yaml"
 )
 
 echo "=============================================================================="

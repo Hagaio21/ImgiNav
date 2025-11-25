@@ -7,9 +7,9 @@ BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 TRAIN_SCRIPT="${SCRIPT_DIR}/../run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/spatial/small_all.yaml"
-    "experiments/diffusion/clip/spatial/medium_all.yaml"
-    "experiments/diffusion/clip/spatial/large_all.yaml"
+    "experiments/diffusion/clip/spatial/both_small_all.yaml"
+    "experiments/diffusion/clip/spatial/both_medium_all.yaml"
+    "experiments/diffusion/clip/spatial/both_large_all.yaml"
 )
 
 echo "=============================================================================="

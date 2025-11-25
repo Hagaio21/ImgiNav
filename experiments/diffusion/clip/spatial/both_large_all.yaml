@@ -1,14 +1,13 @@
 experiment:
-  name: diff_clip_regular_small_down
+  name: diff_clip_spatial_both_large_all
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_regular_small_down
+  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_spatial_both_large_all
   epochs_target: 1000
 
 dataset:
-  # Manifest with latents from non-spatial CLIP VAE (from shared_embeddings)
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_latents.csv
   outputs:
-    latent: latent_path_vae_clip  # Column from shared embeddings manifest
+    latent: latent_path_vae_clip_spatial
     text_emb: graph_embedding_path
     pov_emb: pov_embedding_path
   filters:
@@ -17,7 +16,7 @@ dataset:
   return_path: false
 
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/clip/vae_clip/checkpoints/vae_clip_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/clip/vae_clip_spatial/checkpoints/vae_clip_spatial_checkpoint_best.pt
   frozen: true
 
 latent_clamp_min: -6.0
@@ -26,7 +25,7 @@ scale_factor: 1.0
 
 embedding_projection:
   type: CLIPEmbeddingToSpatial
-  output_channels: 48    # Matches UNet base_channels
+  output_channels: 128
   spatial_size: [16, 16]
   combine_method: average
 
@@ -34,16 +33,18 @@ unet:
   type: UnetWithAttention
   in_channels: 4
   out_channels: 4
-  base_channels: 48       # Small model
-  depth: 3                # 32→16→8 (bottleneck at 8x8)
+  base_channels: 128
+  depth: 4
   num_res_blocks: 2
   time_dim: 256
   norm_groups: 8
   dropout: 0.1
   use_attention: true
-  attention_heads: 2
+  attention_heads: 8
   attention_at:
-    - downs               # Attention only in down path
+    - downs
+    - bottleneck
+    - ups
   enable_cross_attention: true
   use_ema: false
 
@@ -54,7 +55,7 @@ scheduler:
 training:
   seed: 4242
   train_split: 0.8
-  batch_size: 4
+  batch_size: 32
   num_workers: 4
   shuffle: true
   epochs: 1000
@@ -66,7 +67,7 @@ training:
   sample_interval: 10
   use_amp: true
   max_grad_norm: 0.5
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 4
   scheduler:
     type: cosine
   cfg_dropout_rate: 0.1

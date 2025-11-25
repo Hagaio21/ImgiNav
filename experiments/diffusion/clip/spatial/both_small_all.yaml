@@ -1,13 +1,13 @@
 experiment:
-  name: diff_clip_regular_small_bottleneck
+  name: diff_clip_spatial_both_small_all
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_regular_small_bottleneck
+  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_spatial_both_small_all
   epochs_target: 1000
 
 dataset:
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_latents.csv
   outputs:
-    latent: latent_path_vae_clip
+    latent: latent_path_vae_clip_spatial
     text_emb: graph_embedding_path
     pov_emb: pov_embedding_path
   filters:
@@ -16,7 +16,7 @@ dataset:
   return_path: false
 
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/clip/vae_clip/checkpoints/vae_clip_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/clip/vae_clip_spatial/checkpoints/vae_clip_spatial_checkpoint_best.pt
   frozen: true
 
 latent_clamp_min: -6.0
@@ -42,7 +42,9 @@ unet:
   use_attention: true
   attention_heads: 2
   attention_at:
+    - downs
     - bottleneck
+    - ups
   enable_cross_attention: true
   use_ema: false
 
