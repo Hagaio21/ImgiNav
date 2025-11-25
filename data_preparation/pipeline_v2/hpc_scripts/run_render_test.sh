@@ -31,6 +31,19 @@ mkdir -p "${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs"
 
 IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
 TMPDIR_LOCAL="${TMPDIR:-/tmp}"
+
+# Ensure temp directory exists and is writable
+if [ ! -d "${TMPDIR_LOCAL}" ] || [ ! -w "${TMPDIR_LOCAL}" ]; then
+  echo "WARNING: TMPDIR ${TMPDIR_LOCAL} not accessible, using /tmp instead" >&2
+  TMPDIR_LOCAL="/tmp"
+fi
+
+# Create temp directory if it doesn't exist
+mkdir -p "${TMPDIR_LOCAL}" || {
+  echo "ERROR: Cannot create or access temp directory: ${TMPDIR_LOCAL}" >&2
+  exit 1
+}
+
 ALL_LIST="${TMPDIR_LOCAL}/all_scenes_pipeline_v2_test.$$"
 SHARD_PREFIX="${TMPDIR_LOCAL}/scenes_shard_pipeline_v2_test_"
 SHARD_TXT=""                                        # will set below
@@ -48,6 +61,7 @@ if [ ! -d "${SCENES_ROOT}" ]; then
 fi
 
 echo "SCENES_ROOT exists, searching for JSON files..."
+echo "Searching in: ${SCENES_ROOT}"
 FIND_RESULT=$(find "${SCENES_ROOT}" -type f -name '*.json' 2>&1)
 FIND_EXIT=$?
 
@@ -57,20 +71,39 @@ if [ ${FIND_EXIT} -ne 0 ]; then
   exit 1
 fi
 
-JSON_COUNT=$(echo "${FIND_RESULT}" | wc -l)
+JSON_COUNT=$(echo "${FIND_RESULT}" | grep -v '^$' | wc -l)
 echo "Found ${JSON_COUNT} JSON files (before limiting)"
 
 if [ ${JSON_COUNT} -eq 0 ]; then
   echo "ERROR: No JSON files found in ${SCENES_ROOT}" >&2
   echo "Trying to list directory contents..." >&2
+  echo "Top-level contents:" >&2
   ls -la "${SCENES_ROOT}" | head -20 >&2
+  echo "" >&2
+  echo "Looking for subdirectories..." >&2
+  find "${SCENES_ROOT}" -maxdepth 2 -type d | head -10 >&2
+  echo "" >&2
+  echo "Looking for any JSON files recursively (showing first 5):" >&2
+  find "${SCENES_ROOT}" -type f -name '*.json' 2>&1 | head -5 >&2
   exit 1
 fi
 
-echo "${FIND_RESULT}" | sort | head -n ${MAX_SCENES} > "${ALL_LIST}" || {
+echo "Sample of found files (first 3):"
+echo "${FIND_RESULT}" | head -3
+
+echo "${FIND_RESULT}" | grep -v '^$' | sort | head -n ${MAX_SCENES} > "${ALL_LIST}" || {
   echo "ERROR: Failed to write scene list to ${ALL_LIST}" >&2
+  echo "Temp directory: ${TMPDIR_LOCAL}" >&2
+  echo "Temp directory exists: $([ -d "${TMPDIR_LOCAL}" ] && echo 'yes' || echo 'no')" >&2
+  echo "Temp directory writable: $([ -w "${TMPDIR_LOCAL}" ] && echo 'yes' || echo 'no')" >&2
+  echo "Disk space:" >&2
+  df -h "${TMPDIR_LOCAL}" >&2
   exit 1
 }
+
+echo "Wrote ${MAX_SCENES} scene paths to ${ALL_LIST}"
+echo "First few lines of scene list:"
+head -3 "${ALL_LIST}"
 
 TOTAL_SCENES=$(wc -l < "${ALL_LIST}")
 echo "Found ${TOTAL_SCENES} total scene files (limited to ${MAX_SCENES} for testing)"
