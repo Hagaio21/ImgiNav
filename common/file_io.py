@@ -44,12 +44,3 @@ def write_json(path: Path, data: Any, indent: int = 2) -> None:
     path.write_text(json.dumps(data, indent=indent, ensure_ascii=False), encoding='utf-8')
 
 
-def read_yaml(path: Path) -> Any:
-    """Read YAML file and return parsed object."""
-    import yaml
-
-    path = Path(path)
-    with open(path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
-
-

@@ -4,17 +4,10 @@ from .utils import (
     write_json,
     create_progress_tracker,
     load_config_with_profile,
-    ensure_columns_exist
 )
 from .taxonomy import (
     Taxonomy,
-    load_valid_colors,
     build_taxonomy,
-    build_taxonomy_full,
-    build_room_taxonomy,
-    assign_colors,
-    assign_colors_golden_ratio,
-    generate_palette_for_labels
 )
 
 __all__ = [
@@ -23,14 +16,7 @@ __all__ = [
     'write_json',
     'create_progress_tracker',
     'load_config_with_profile',
-    'ensure_columns_exist',
     # Taxonomy
     'Taxonomy',
-    'load_valid_colors',
     'build_taxonomy',
-    'build_taxonomy_full',
-    'build_room_taxonomy',
-    'assign_colors',
-    'assign_colors_golden_ratio',
-    'generate_palette_for_labels',
 ]

@@ -1,11 +1,12 @@
 # Unused Functions Report
 
-This report documents all functions that are declared/imported but not being used in the codebase.
+This report documents all functions that were declared/imported but not being used in the codebase.
 
 ## Summary
 
 - **Total unused functions found**: 12
 - **Critical bug fixed**: 1 (missing `NumpySafeLoader` definition)
+- **Status**: ✅ All unused functions have been removed
 
 ## Unused Functions by Module
 
@@ -81,20 +82,36 @@ These functions are exported in `common/__init__.py` for external use, but are n
 - **Fix**: Added class definition `class NumpySafeLoader(yaml.SafeLoader):` before its usage
 - **Status**: ✅ Fixed
 
-## Recommendations
+## Actions Taken
 
-1. **Remove unused functions** if they're not needed for future use:
-   - `extract_tensor_from_batch` (common/utils.py)
-   - `is_augmented_path` (common/utils.py)
-   - `read_yaml` (common/file_io.py) - unless YAML reading is planned
-   - `weighted_sample` (common/weighting.py)
+✅ **All unused functions have been removed:**
 
-2. **Consider removing from `__init__.py` exports** if not intended for external use:
-   - Functions in `common/taxonomy.py` that are only used internally
-   - `ensure_columns_exist` from `common/utils.py`
+1. **Removed from `common/utils.py`:**
+   - `extract_tensor_from_batch()` - ✅ Removed
+   - `is_augmented_path()` - ✅ Removed
+   - `ensure_columns_exist()` - ✅ Removed
 
-3. **Keep exported functions** if they're part of a public API that may be used in the future:
-   - Functions exported in `common/__init__.py` might be intended for external scripts or notebooks
+2. **Removed from `common/file_io.py`:**
+   - `read_yaml()` - ✅ Removed
+
+3. **Removed from `common/weighting.py`:**
+   - `weighted_sample()` - ✅ Removed
+
+4. **Removed from `common/taxonomy.py`:**
+   - `load_valid_colors()` - ✅ Removed
+   - `generate_palette_for_labels()` - ✅ Removed
+   - `assign_colors_golden_ratio()` - ✅ Removed (only used by removed function)
+
+5. **Removed from `common/__init__.py` exports:**
+   - `ensure_columns_exist` - ✅ Removed from exports
+   - `load_valid_colors` - ✅ Removed from exports
+   - `generate_palette_for_labels` - ✅ Removed from exports
+   - `assign_colors_golden_ratio` - ✅ Removed from exports
+   - `build_taxonomy_full` - ✅ Removed from exports (used internally only)
+   - `build_room_taxonomy` - ✅ Removed from exports (used internally only)
+   - `assign_colors` - ✅ Removed from exports (used internally only)
+
+**Note:** Functions like `build_taxonomy_full`, `build_room_taxonomy`, and `assign_colors` are kept in the file as they are used internally by `build_taxonomy()`, but removed from public exports since they're not used externally.
 
 ## Notes
 

@@ -60,12 +60,6 @@ def load_config_with_profile(config_path: str = None, profile: str = None) -> Di
     return data
 
 
-def ensure_columns_exist(df, required_columns: List[str], source: str = "dataframe"):
-    missing = [col for col in required_columns if col not in df.columns]
-    if missing:
-        raise RuntimeError(f"Missing columns {missing} in {source}")
-
-
 def set_seeds(seed: int = 42):
     """Set random seeds for reproducibility."""
     import random
@@ -75,50 +69,3 @@ def set_seeds(seed: int = 42):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-
-
-def extract_tensor_from_batch(batch, device=None, key="layout"):
-    """
-    Extract tensor from various batch types.
-    
-    Args:
-        batch: Can be dict, list/tuple, or tensor
-        device: Optional device to move tensor to
-        key: Key to extract from dict (default: "layout")
-    
-    Returns:
-        torch.Tensor: Extracted tensor
-    """
-    import torch
-    
-    if isinstance(batch, dict):
-        tensor = batch[key]
-    elif isinstance(batch, (list, tuple)):
-        tensor = batch[0]
-    elif torch.is_tensor(batch):
-        tensor = batch
-    else:
-        raise TypeError(f"Unexpected batch type: {type(batch)}")
-    
-    if device is not None:
-        tensor = tensor.to(device)
-    
-    return tensor
-
-
-def is_augmented_path(path_str):
-    """Check if a path string indicates an augmented image.
-    
-    Args:
-        path_str: Path string to check
-    
-    Returns:
-        True if path appears to be augmented, False otherwise
-    """
-    if path_str is None or (isinstance(path_str, float) and str(path_str).lower() == 'nan'):
-        return True  # Treat NaN as augmented to filter out
-    
-    path_str = str(path_str).lower()
-    aug_patterns = ["_rot", "_mirror", "_aug", "rot90", "rot180", "rot270", 
-                   "mirror_rot", "augmented"]
-    return any(pattern in path_str for pattern in aug_patterns)

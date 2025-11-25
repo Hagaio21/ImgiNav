@@ -5,7 +5,7 @@ This module contains shared utility functions and classes used throughout the Im
 ## Overview
 
 The `common` module provides:
-- File I/O utilities for reading/writing manifests, JSON, and YAML files
+- File I/O utilities for reading/writing manifests and JSON files
 - Taxonomy management for scene understanding and classification
 - General utility functions for configuration loading, progress tracking, and directory management
 
@@ -19,8 +19,6 @@ File I/O utilities for handling various file formats.
 - `create_manifest(rows, output, fieldnames)` - Write rows to CSV manifest
 - `read_json(path)` - Read JSON files
 - `write_json(path, data, indent)` - Write data to JSON files
-- `read_yaml(path)` - Read YAML files
-- `write_yaml(path, data)` - Write data to YAML files
 
 **Usage:**
 ```python
@@ -86,7 +84,7 @@ config = load_config_with_profile("config/experiment.yaml", profile="production"
 
 - `pathlib` - Path handling
 - `json` - JSON parsing
-- `yaml` (via `pyyaml`) - YAML parsing
+- `yaml` (via `pyyaml`) - YAML parsing (used in `load_config_with_profile` for YAML config files)
 - `csv` - CSV manifest handling
 
 ## Notes

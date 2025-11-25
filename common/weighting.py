@@ -164,32 +164,3 @@ def apply_weights_to_dataframe(
     return df
 
 
-def weighted_sample(
-    df: pd.DataFrame,
-    n: int,
-    weight_column: str = "sample_weight",
-    random_state: int = 42,
-    replace: bool = False
-) -> pd.DataFrame:
-    """
-    Perform weighted sampling from a DataFrame.
-    
-    Args:
-        df: DataFrame to sample from
-        n: Number of samples to draw
-        weight_column: Column name containing weights
-        random_state: Random seed
-        replace: Whether to sample with replacement
-    
-    Returns:
-        Sampled DataFrame
-    """
-    if weight_column not in df.columns:
-        raise ValueError(f"Weight column '{weight_column}' not found in DataFrame")
-    
-    if len(df) < n and not replace:
-        print(f"Warning: Requested {n} samples but only {len(df)} available. Using all samples.")
-        n = len(df)
-    
-    return df.sample(n=n, weights=weight_column, replace=replace, random_state=random_state).reset_index(drop=True)
-

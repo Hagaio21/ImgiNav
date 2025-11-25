@@ -414,23 +414,6 @@ class Taxonomy:
 
         return None
 
-def load_valid_colors(taxonomy_path: str | Path, include_background: bool = True):
-
-    tax = Taxonomy(taxonomy_path)
-    
-    valid_ids = [
-        1001, 1002, 1003, 1004, 1005,
-        1006, 1007, 1008, 1009,  # super categories
-        2051, 2052, 2053         # ceiling, floor, wall
-    ]
-
-    if include_background:
-        tax.data["id2color"]["9000"] = [255, 255, 255]
-        valid_ids.append(9000)
-
-    filtered = {str(i): tax.data["id2color"][str(i)] for i in valid_ids if str(i) in tax.data["id2color"]}
-    return filtered, valid_ids
-
 def _make_flat_mapping(items, base=0, unknown_name="Unknown"):
     """Return mapping {name: id} with explicit 0 reserved for Unknown."""
     items = sorted(list(items))
@@ -625,40 +608,6 @@ def assign_colors(super2id: dict, category2id: dict, category2super: dict):
             id2color[str(cid)] = col
 
     return id2color
-
-
-def assign_colors_golden_ratio(label2id: dict) -> dict:
-
-    import colorsys
-    
-    ids = sorted(int(v) for v in label2id.values())
-    palette = {}
-    phi = 0.61803398875  # golden ratio
-    
-    for i, lid in enumerate(ids):
-        h = (lid * phi) % 1.0
-        r, g, b = colorsys.hsv_to_rgb(h, 0.65, 0.95)
-        palette[str(lid)] = [int(r*255), int(g*255), int(b*255)]
-    
-    return palette
-
-
-def generate_palette_for_labels(json_path: Path) -> bool:
-
-    data = json.loads(json_path.read_text(encoding="utf-8"))
-    
-    if "id2color" in data:
-        print("id2color already exists, skipping.")
-        return False
-    
-    if "label2id" not in data:
-        raise ValueError(f"'label2id' not found in {json_path}")
-    
-    palette = assign_colors_golden_ratio(data["label2id"])
-    data["id2color"] = palette
-    write_json(data, json_path)
-    print(f"✔ Added id2color to {json_path}")
-    return True
 
 
 def build_taxonomy(model_info_path: str, scenes_dir: str, out_path: str) -> None:
