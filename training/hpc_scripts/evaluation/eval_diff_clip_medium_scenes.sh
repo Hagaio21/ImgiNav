@@ -4,7 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-CONFIG="${BASE_DIR}/experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
+CONFIG="${BASE_DIR}/experiments/diffusion/clip/regular_scenes/medium_down_bottleneck.yaml"
 
 cd "${BASE_DIR}"
 

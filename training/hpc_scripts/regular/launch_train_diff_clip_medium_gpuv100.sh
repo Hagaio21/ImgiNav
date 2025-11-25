@@ -7,8 +7,8 @@ BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 TRAIN_SCRIPT="${SCRIPT_DIR}/../run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular_rooms/medium_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_rooms/medium_down_bottleneck.yaml"
+    "experiments/diffusion/clip/regular_scenes/medium_down_bottleneck.yaml"
 )
 
 echo "=============================================================================="

@@ -12,7 +12,7 @@ set -euo pipefail
 
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 PYTHON_SCRIPT="${BASE_DIR}/training/train_diffusion.py"
-CONFIG="${BASE_DIR}/experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
+CONFIG="${BASE_DIR}/experiments/diffusion/clip/regular_scenes/medium_down_bottleneck.yaml"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 mkdir -p "${LOG_DIR}"
