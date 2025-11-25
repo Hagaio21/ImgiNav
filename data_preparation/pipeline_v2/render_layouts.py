@@ -87,9 +87,8 @@ def main():
     output_dir = Path(args.output_dir)
     layouts_rgb_dir = output_dir / "layouts" / "rgb"
     layouts_seg_dir = output_dir / "layouts" / "seg"
-    graphs_dir = output_dir / "graphs"
     
-    for d in [layouts_rgb_dir, layouts_seg_dir, graphs_dir]:
+    for d in [layouts_rgb_dir, layouts_seg_dir]:
         d.mkdir(parents=True, exist_ok=True)
     
     # Extract rooms from scene
@@ -163,42 +162,9 @@ def main():
             traceback.print_exc()
             continue
     
-    # Build graphs from segmentation layouts
-    print("Building graphs...")
-    from data_preparation.pipeline_v2.graph_builder import build_room_graph_from_layout as build_graph
-    
-    # Scene-level graph
-    try:
-        scene_layout_seg_path = layouts_seg_dir / f"{scene_id}_scene.png"
-        if scene_layout_seg_path.exists():
-            build_graph(
-                scene_id, "scene", scene_layout_seg_path, taxonomy, graphs_dir
-            )
-            print("  Scene graph built successfully")
-    except Exception as e:
-        print(f"  Warning: Failed to build scene graph: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Room-level graphs
-    for room_name, room_scene in room_scenes.items():
-        safe_room_name = room_name.replace(" ", "_").replace("/", "_").lower()
-        try:
-            room_layout_seg_path = layouts_seg_dir / f"{scene_id}_{safe_room_name}_room.png"
-            if room_layout_seg_path.exists():
-                build_graph(
-                    scene_id, room_name, room_layout_seg_path, taxonomy, graphs_dir
-                )
-                print(f"  Room graph built for {room_name}")
-        except Exception as e:
-            print(f"  Warning: Failed to build graph for room {room_name}: {e}")
-            import traceback
-            traceback.print_exc()
-    
     print(f"Completed layout rendering for scene: {scene_id}")
     print(f"  Scene layouts: RGB and segmentation")
     print(f"  Room layouts: {len(room_scenes)} rooms (RGB and segmentation each)")
-    print(f"  Graphs: 1 scene graph + {len(room_scenes)} room graphs")
     
     # Stop Xvfb if we started it
     if VFB is not None:
