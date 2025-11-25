@@ -102,24 +102,45 @@ if [ ${TOTAL_SCENES} -eq 0 ]; then
   exit 1
 fi
 
-# 2) Split into shards
+# 2) Split into balanced shards using GNU split
 echo "Splitting into ${N_SHARDS} shards..."
-split -a 2 -n l/${IDX}/${N_SHARDS} "${ALL_LIST}" "${SHARD_PREFIX}" || {
-  echo "ERROR: split command failed" >&2
+echo "Input file: ${ALL_LIST}"
+echo "Input file size: $(wc -l < "${ALL_LIST}") lines"
+echo "Shard prefix: ${SHARD_PREFIX}"
+
+split -d -n l/${N_SHARDS} "${ALL_LIST}" "${SHARD_PREFIX}" || {
+  echo "ERROR: Failed to split scene list" >&2
+  echo "Split command: split -d -n l/${N_SHARDS} ${ALL_LIST} ${SHARD_PREFIX}" >&2
   exit 1
 }
 
-SHARD_TXT="${SHARD_PREFIX}$(printf "%02d" $((IDX - 1)))"
+echo "Split completed, checking shard files..."
+ls -lh "${SHARD_PREFIX}"* 2>&1 || echo "No shard files found" >&2
+
+# 3) Pick this task's shard file
+SUFFIX=$(printf "%02d" $((IDX-1)))
+SHARD_TXT="${SHARD_PREFIX}${SUFFIX}"
+
+echo "Looking for shard file: ${SHARD_TXT}"
+
 if [ ! -f "${SHARD_TXT}" ]; then
-  echo "ERROR: Shard file not found: ${SHARD_TXT}" >&2
-  exit 1
+  echo "ERROR: shard file does not exist: ${SHARD_TXT}" >&2
+  echo "Available shard files:" >&2
+  ls -la "${SHARD_PREFIX}"* >&2 || echo "No shard files found" >&2
+  exit 2
+fi
+
+if [ ! -s "${SHARD_TXT}" ]; then
+  echo "ERROR: shard ${IDX} is empty (file: ${SHARD_TXT})." >&2
+  exit 2
 fi
 
 SHARD_COUNT=$(wc -l < "${SHARD_TXT}")
 echo "Task ${IDX}/${N_SHARDS}: processing ${SHARD_COUNT} scenes"
 echo "Shard file: ${SHARD_TXT}"
+echo "First scene in shard: $(head -1 "${SHARD_TXT}")"
 
-# 3) Activate conda environment
+# 4) Activate conda environment
 echo "Activating conda environment..."
 if command -v conda &> /dev/null; then
   if conda env list | grep -q "^imginav "; then
@@ -135,7 +156,7 @@ if command -v conda &> /dev/null; then
   fi
 fi
 
-# 4) Check Python dependencies
+# 5) Check Python dependencies
 echo "Checking Python dependencies..."
 python -c "import trimesh, numpy, json" || {
   echo "ERROR: Required Python packages not available" >&2
@@ -143,7 +164,7 @@ python -c "import trimesh, numpy, json" || {
 }
 echo "All dependencies available"
 
-# 5) Process each scene in the shard
+# 6) Process each scene in the shard
 echo "Starting processing at $(date)"
 cd "${PROJECT_ROOT}/ImgiNav" || {
   echo "ERROR: Failed to change to project directory" >&2
