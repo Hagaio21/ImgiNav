@@ -4,20 +4,29 @@ Render worker for 3D-FRONT scenes.
 Renders top-down layouts and perspective POVs using pyrender.
 """
 
-# Use Xvfb (virtual display) for headless rendering on CPU-only nodes
-# This is more reliable than EGL for CPU-only HPC environments
+# Force EGL platform for headless rendering BEFORE any OpenGL imports
 import os
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
-# Try to import xvfbwrapper
+# Workaround for PyOpenGL bytes/string issue with EGL
+# This must be done before importing pyrender/OpenGL
 try:
-    from xvfbwrapper import Xvfb
-    XVFB_AVAILABLE = True
-except ImportError:
-    Xvfb = None
-    XVFB_AVAILABLE = False
-
-# Global variable to hold Xvfb instance
-VFB = None
+    from OpenGL import extensions
+    # Patch the ExtensionQuerier to handle bytes/string mismatch
+    original_call = extensions.ExtensionQuerier.__call__
+    def patched_call(self, specifier):
+        # Ensure both are the same type for startswith
+        if isinstance(specifier, bytes) and isinstance(self.prefix, str):
+            specifier_str = specifier.decode('utf-8', errors='ignore')
+            return specifier_str.startswith(self.prefix)
+        elif isinstance(specifier, str) and isinstance(self.prefix, bytes):
+            prefix_str = self.prefix.decode('utf-8', errors='ignore')
+            return specifier.startswith(prefix_str)
+        else:
+            return original_call(self, specifier)
+    extensions.ExtensionQuerier.__call__ = patched_call
+except (ImportError, AttributeError):
+    pass
 
 import argparse
 import random
@@ -28,6 +37,10 @@ import numpy as np
 import pyrender
 import trimesh
 from PIL import Image
+
+# Global variable to hold Xvfb instance (not used with EGL, but kept for compatibility)
+VFB = None
+XVFB_AVAILABLE = False
 
 import sys
 
@@ -731,49 +744,14 @@ def main():
     
     args = parser.parse_args()
     
-    # Start Xvfb if needed (HPC mode or no display)
-    global VFB
-    use_xvfb = args.hpc or ('DISPLAY' not in os.environ)
+    # Check if we have a display (should be set by xvfb-run)
+    display = os.environ.get('DISPLAY', 'NOT SET')
+    print(f"Display: {display}")
+    print(f"Software rendering: LIBGL_ALWAYS_SOFTWARE={os.environ.get('LIBGL_ALWAYS_SOFTWARE', 'NOT SET')}")
     
-    print(f"Display check: DISPLAY={os.environ.get('DISPLAY', 'NOT SET')}")
-    print(f"Xvfb available: {XVFB_AVAILABLE}, use_xvfb: {use_xvfb}")
-    
-    if use_xvfb and XVFB_AVAILABLE:
-        try:
-            print("Attempting to start Xvfb...")
-            VFB = Xvfb(width=1024, height=768, colordepth=24)
-            VFB.start()
-            os.environ['DISPLAY'] = f':{VFB.new_display}'
-            print(f"✓ Started Xvfb virtual display: {os.environ['DISPLAY']}")
-            
-            # Verify Xvfb is working by checking if we can connect to it
-            import subprocess
-            try:
-                result = subprocess.run(['xdpyinfo', '-display', os.environ['DISPLAY']], 
-                                      capture_output=True, timeout=5)
-                if result.returncode == 0:
-                    print(f"✓ Verified Xvfb display is working")
-                else:
-                    print(f"Warning: xdpyinfo check failed: {result.stderr.decode()}")
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                print("Warning: Could not verify Xvfb (xdpyinfo not available)")
-        except Exception as e:
-            print(f"ERROR: Failed to start Xvfb: {e}")
-            import traceback
-            traceback.print_exc()
-            print("Cannot continue without display")
-            raise RuntimeError(f"Cannot render without display. Xvfb failed: {e}")
-    elif use_xvfb and not XVFB_AVAILABLE:
-        print("ERROR: Xvfb requested but xvfbwrapper not available.")
-        print("Install with: pip install xvfbwrapper")
-        print("Or use system xvfb-run to wrap the script")
-        if 'DISPLAY' not in os.environ:
-            raise RuntimeError("Cannot render without display. Install xvfbwrapper or use xvfb-run.")
-    
-    # Final check
-    if 'DISPLAY' not in os.environ:
-        raise RuntimeError("No DISPLAY environment variable set. Cannot render.")
-    print(f"Using DISPLAY: {os.environ['DISPLAY']}")
+    if display == 'NOT SET':
+        print("WARNING: DISPLAY not set. Rendering may fail.")
+        print("Make sure to run with xvfb-run or set DISPLAY environment variable.")
     
     # Set random seed
     random.seed(args.seed)

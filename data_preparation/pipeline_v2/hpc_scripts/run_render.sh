@@ -252,14 +252,14 @@ while IFS= read -r JSON_PATH; do
   SCENE_ID=$(basename "${JSON_PATH}" .json)
   echo "Processing scene: ${SCENE_ID}"
   
-  python "${PYTHON_SCRIPT}" \
+  # Use xvfb-run to create virtual display for rendering
+  xvfb-run -a -s "-screen 0 1024x768x24" python "${PYTHON_SCRIPT}" \
     --scene_json "${JSON_PATH}" \
     --future_root "${MODEL_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
     --num_povs 6 \
-    --seed 42 \
-    --hpc || {
+    --seed 42 || {
     echo "ERROR: Failed to process scene ${SCENE_ID}" >&2
     continue
   }
