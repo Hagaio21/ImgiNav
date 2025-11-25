@@ -94,20 +94,24 @@ def render_layout_rgb(pyrender_scene: pyrender.Scene,
     Returns:
         RGB image array (H, W, 3) uint8
     """
-    # Calculate scene bounds
+    # Calculate scene bounds from mesh primitives
     bounds = []
     for node in pyrender_scene.mesh_nodes:
         mesh = node.mesh
-        if mesh.positions.shape[0] > 0:
-            # Transform vertices to world space
-            vertices = mesh.positions
-            transform = node.matrix
-            if transform is not None:
-                vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
-            else:
-                vertices_world = vertices
-            bounds.append(vertices_world)
+        transform = node.matrix
+        
+        # Access vertices through primitives
+        for primitive in mesh.primitives:
+            if hasattr(primitive, 'positions') and primitive.positions is not None:
+                vertices = primitive.positions
+                if len(vertices) > 0:
+                    # Transform vertices to world space
+                    if transform is not None:
+                        vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
+                        vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    else:
+                        vertices_world = vertices
+                    bounds.append(vertices_world)
     
     if not bounds:
         # Default bounds if no geometry
@@ -187,15 +191,19 @@ def render_layout_seg(pyrender_scene: pyrender.Scene,
     bounds = []
     for node in pyrender_scene.mesh_nodes:
         mesh = node.mesh
-        if mesh.positions.shape[0] > 0:
-            vertices = mesh.positions
-            transform = node.matrix
-            if transform is not None:
-                vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
-            else:
-                vertices_world = vertices
-            bounds.append(vertices_world)
+        transform = node.matrix
+        
+        # Access vertices through primitives
+        for primitive in mesh.primitives:
+            if hasattr(primitive, 'positions') and primitive.positions is not None:
+                vertices = primitive.positions
+                if len(vertices) > 0:
+                    if transform is not None:
+                        vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
+                        vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    else:
+                        vertices_world = vertices
+                    bounds.append(vertices_world)
     
     if not bounds:
         min_bounds = np.array([-5, -5, 0])
@@ -630,19 +638,23 @@ def render_pov(pyrender_scene: pyrender.Scene,
         RGB image array
     """
     if camera_target is None:
-        # Calculate scene center
+        # Calculate scene center from mesh primitives
         bounds = []
         for node in pyrender_scene.mesh_nodes:
             mesh = node.mesh
-            if mesh.positions.shape[0] > 0:
-                vertices = mesh.positions
-                transform = node.matrix
-                if transform is not None:
-                    vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                else:
-                    vertices_world = vertices
-                bounds.append(vertices_world)
+            transform = node.matrix
+            
+            # Access vertices through primitives
+            for primitive in mesh.primitives:
+                if hasattr(primitive, 'positions') and primitive.positions is not None:
+                    vertices = primitive.positions
+                    if len(vertices) > 0:
+                        if transform is not None:
+                            vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
+                            vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                        else:
+                            vertices_world = vertices
+                        bounds.append(vertices_world)
         
         if bounds:
             all_vertices = np.vstack(bounds)
