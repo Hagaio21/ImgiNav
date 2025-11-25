@@ -130,7 +130,8 @@ def create_segmented_scene(trimesh_scene: trimesh.Scene, taxonomy: Taxonomy) -> 
 def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonomy, 
                          output_dir: Path) -> Dict:
     """
-    Export scene geometry to GLB files and metadata JSON.
+    Export scene geometry to OBJ files (textured and segmented) and metadata JSON.
+    OBJ format preserves textures (via MTL files) and vertex colors.
     
     Args:
         scene_json: Path to 3D-FRONT JSON file
@@ -156,31 +157,31 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     print("Removing ceilings from scene...")
     scene_no_ceiling = create_scene_without_ceilings(trimesh_scene)
     
-    # Save regular GLB with textures (no ceilings)
+    # Save regular OBJ with textures (no ceilings) - OBJ preserves textures via MTL files
     print("Saving scene geometry...")
-    glb_path = geometry_dir / f"{scene_id}.glb"
-    # Export with textures embedded (trimesh should handle this automatically)
+    obj_path = geometry_dir / f"{scene_id}.obj"
+    # Export as OBJ (trimesh will create MTL file for textures)
     try:
-        scene_no_ceiling.export(glb_path, file_type="glb")
-        print(f"  Saved scene geometry: {glb_path}")
+        scene_no_ceiling.export(obj_path, file_type="obj")
+        print(f"  Saved scene geometry: {obj_path}")
     except Exception as e:
-        print(f"  WARNING: GLB export failed: {e}")
+        print(f"  WARNING: OBJ export failed: {e}")
         import traceback
         traceback.print_exc()
-        # Try exporting with minimal processing
-        try:
-            scene_no_ceiling.export(glb_path, file_type="glb")
-            print(f"  Saved scene geometry (fallback): {glb_path}")
-        except Exception as e2:
-            print(f"  ERROR: GLB export completely failed: {e2}")
-            raise
+        raise
     
-    # Create and save segmented GLB (no ceilings)
-    print("  Creating segmented GLB...")
+    # Create and save segmented OBJ (no ceilings) - OBJ preserves vertex colors
+    print("  Creating segmented OBJ...")
     seg_scene = create_segmented_scene(trimesh_scene, taxonomy)
-    seg_glb_path = geometry_dir / f"{scene_id}_seg.glb"
-    seg_scene.export(seg_glb_path, file_type="glb")
-    print(f"  Saved segmented geometry: {seg_glb_path}")
+    seg_obj_path = geometry_dir / f"{scene_id}_seg.obj"
+    try:
+        seg_scene.export(seg_obj_path, file_type="obj")
+        print(f"  Saved segmented geometry: {seg_obj_path}")
+    except Exception as e:
+        print(f"  WARNING: Segmented OBJ export failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     # Generate comprehensive metadata
     print("  Generating scene metadata...")

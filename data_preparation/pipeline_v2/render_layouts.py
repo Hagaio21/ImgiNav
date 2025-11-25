@@ -42,13 +42,18 @@ from data_preparation.pipeline_v2.renderer import render_layout_rgb, render_layo
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
 
-def load_scene_from_glb(glb_path: Path) -> trimesh.Scene:
+def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
     """
-    Load scene from GLB file.
-    GLB files preserve the scene graph and geometry, including metadata.
+    Load scene from OBJ file.
+    OBJ files preserve textures (via MTL files) and vertex colors.
+    Use process=False and maintain_order=True to preserve textures and materials.
     """
-    print(f"Loading scene from GLB: {glb_path}")
-    scene = trimesh.load(str(glb_path), file_type='glb')
+    print(f"Loading scene from OBJ: {obj_path}")
+    # Load with process=False to preserve textures and materials
+    # OBJ files need a resolver to find MTL and texture files in the same directory
+    resolver = trimesh.visual.resolvers.FilePathResolver(obj_path.parent)
+    scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
+                       force='scene', resolver=resolver)
     
     if not isinstance(scene, trimesh.Scene):
         # If it's a single mesh, wrap it in a scene
@@ -57,14 +62,14 @@ def load_scene_from_glb(glb_path: Path) -> trimesh.Scene:
             new_scene.add_geometry(scene)
             scene = new_scene
         else:
-            raise ValueError(f"GLB file did not load as a scene or mesh: {type(scene)}")
+            raise ValueError(f"OBJ file did not load as a scene or mesh: {type(scene)}")
     
     return scene
 
 
-def extract_rooms_from_glb_scene(trimesh_scene: trimesh.Scene, scene_metadata: Dict) -> Dict[str, trimesh.Scene]:
+def extract_rooms_from_obj_scene(trimesh_scene: trimesh.Scene, scene_metadata: Dict) -> Dict[str, trimesh.Scene]:
     """
-    Extract room scenes from GLB using room bounds from metadata file.
+    Extract room scenes from OBJ using room bounds from metadata file.
     Matches meshes to rooms by checking if mesh center is within room bounds.
     """
     if scene_metadata is None or 'rooms' not in scene_metadata:
@@ -72,16 +77,6 @@ def extract_rooms_from_glb_scene(trimesh_scene: trimesh.Scene, scene_metadata: D
         return {'scene': trimesh_scene}
     
     room_scenes = {}
-    
-    # Build a set of furniture positions from metadata for each room (for more precise matching)
-    room_furniture_positions = {}
-    for room_name, room_info in scene_metadata['rooms'].items():
-        furniture_positions = []
-        if 'furniture' in room_info:
-            for furniture in room_info['furniture']:
-                if 'position' in furniture:
-                    furniture_positions.append(np.array(furniture['position']))
-        room_furniture_positions[room_name] = furniture_positions
     
     # Extract rooms using bounds from metadata
     for room_name, room_info in scene_metadata['rooms'].items():
@@ -94,7 +89,6 @@ def extract_rooms_from_glb_scene(trimesh_scene: trimesh.Scene, scene_metadata: D
         
         room_min = np.array(room_bounds['min'])
         room_max = np.array(room_bounds['max'])
-        furniture_positions = room_furniture_positions.get(room_name, [])
         
         for node_name in trimesh_scene.graph.nodes_geometry:
             try:
@@ -148,14 +142,14 @@ def extract_rooms_from_glb_scene(trimesh_scene: trimesh.Scene, scene_metadata: D
             print(f"  Extracted room '{room_name}': {len(room_scene.graph.nodes_geometry)} meshes")
     
     if len(room_scenes) == 0:
-        print("Warning: Could not extract rooms from GLB, using full scene")
+        print("Warning: Could not extract rooms from OBJ, using full scene")
         room_scenes['scene'] = trimesh_scene
     
     return room_scenes
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Render scene layouts from GLB files using Open3D")
+    parser = argparse.ArgumentParser(description="Render scene layouts from OBJ files using Open3D")
     parser.add_argument("--scene_id", required=True, help="Scene ID (e.g., 002c110c-9bbc-4ab4-affa-4225fb127bad)")
     parser.add_argument("--output_dir", required=True, help="Output dataset root directory (must contain geometry/ folder)")
     parser.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
@@ -192,10 +186,10 @@ def main():
     output_dir = Path(args.output_dir)
     geometry_dir = output_dir / "geometry"
     
-    # Load GLB file
-    glb_path = geometry_dir / f"{scene_id}.glb"
-    if not glb_path.exists():
-        raise FileNotFoundError(f"GLB file not found: {glb_path}. Run geometry export first.")
+    # Load OBJ file (textured version)
+    obj_path = geometry_dir / f"{scene_id}.obj"
+    if not obj_path.exists():
+        raise FileNotFoundError(f"OBJ file not found: {obj_path}. Run geometry export first.")
     
     # Load metadata (required for room extraction)
     metadata_path = geometry_dir / f"{scene_id}_metadata.json"
@@ -207,9 +201,9 @@ def main():
         scene_metadata = json.load(f)
     print(f"Loaded metadata from: {metadata_path}")
     
-    # Load scene from GLB
-    print(f"Loading scene from GLB: {scene_id}")
-    trimesh_scene = load_scene_from_glb(glb_path)
+    # Load scene from OBJ
+    print(f"Loading scene from OBJ: {scene_id}")
+    trimesh_scene = load_scene_from_obj(obj_path)
     
     # Create output directories
     output_dir = Path(args.output_dir)
@@ -219,9 +213,9 @@ def main():
     for d in [layouts_rgb_dir, layouts_seg_dir]:
         d.mkdir(parents=True, exist_ok=True)
     
-    # Extract rooms from GLB scene using metadata
-    print("Extracting rooms from GLB scene using metadata...")
-    room_scenes = extract_rooms_from_glb_scene(trimesh_scene, scene_metadata)
+    # Extract rooms from OBJ scene using metadata
+    print("Extracting rooms from OBJ scene using metadata...")
+    room_scenes = extract_rooms_from_obj_scene(trimesh_scene, scene_metadata)
     print(f"  Found {len(room_scenes)} rooms: {list(room_scenes.keys())}")
     
     # Scene-level Layout Pass: RGB
