@@ -5,6 +5,7 @@ Separate script for POV rendering to speed up the pipeline.
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -32,59 +33,26 @@ o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
     """
     Load scene from OBJ file.
-    OBJ files preserve textures (via MTL files) and vertex colors.
-    Use process=False and maintain_order=True to preserve textures and materials.
     """
     print(f"Loading scene from OBJ: {obj_path}")
-    geometry_dir = obj_path.parent
-    materials_dir = geometry_dir / "materials"
     
-    # Check if OBJ file exists and is not empty
-    if not obj_path.exists():
-        raise FileNotFoundError(f"OBJ file not found: {obj_path}")
+    # Simply load the OBJ file - trimesh will handle MTL files automatically
+    # Use the directory containing the OBJ as the base for resolving relative paths
+    scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True)
     
-    if obj_path.stat().st_size == 0:
-        raise ValueError(f"OBJ file is empty: {obj_path}")
-    
-    # Use trimesh's built-in FilePathResolver pointing to geometry directory
-    # This allows it to resolve "materials/xxx.mtl" relative to the geometry dir
-    # The OBJ file has "mtllib materials/xxx.mtl" which is relative to geometry/
-    try:
-        resolver = trimesh.visual.resolvers.FilePathResolver(geometry_dir)
-        scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
-                           resolver=resolver)
-        
-        if scene is None:
-            scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
-                               force='scene', resolver=resolver)
-    except Exception as e:
-        # Fallback: try without resolver (might work if no MTL file is needed)
-        try:
-            print(f"  Warning: Loading with resolver failed, trying without resolver...")
-            scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True)
-            if scene is None:
-                scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
-                                   force='scene')
-        except Exception as e2:
-            raise ValueError(f"Failed to load OBJ file {obj_path}:\n"
-                           f"  With resolver: {e}\n"
-                           f"  Without resolver: {e2}")
+    if scene is None:
+        scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, force='scene')
     
     if scene is None:
         raise ValueError(f"OBJ file loaded as None: {obj_path}")
     
     if not isinstance(scene, trimesh.Scene):
-        # If it's a single mesh, wrap it in a scene
         if isinstance(scene, trimesh.Trimesh):
             new_scene = trimesh.Scene()
             new_scene.add_geometry(scene)
             scene = new_scene
         else:
             raise ValueError(f"OBJ file did not load as a scene or mesh: {type(scene)}")
-    
-    # Validate scene has geometry
-    if len(scene.geometry) == 0:
-        raise ValueError(f"OBJ file has no geometry: {obj_path}")
     
     return scene
 
