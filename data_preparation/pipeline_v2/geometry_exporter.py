@@ -273,24 +273,47 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
         scene_no_ceiling.export(temp_obj_path, file_type="obj")
         print(f"  Exported scene geometry to: {temp_obj_path}")
         
+        # Verify OBJ file was created and has content
+        if not temp_obj_path.exists():
+            raise ValueError(f"OBJ file was not created: {temp_obj_path}")
+        if temp_obj_path.stat().st_size == 0:
+            raise ValueError(f"OBJ file is empty: {temp_obj_path}")
+        
+        # Read OBJ content to find actual MTL filename
+        with open(temp_obj_path, 'r') as f:
+            obj_content = f.read()
+        
+        # Find the actual MTL filename that trimesh created
+        mtl_match = re.search(r'mtllib\s+([^\s\n]+)', obj_content)
+        if mtl_match:
+            actual_mtl_name = mtl_match.group(1)
+            print(f"  Found MTL reference: {actual_mtl_name}")
+        else:
+            # No MTL file referenced (scene has no materials)
+            actual_mtl_name = None
+            print(f"  No MTL file referenced (scene may have no materials)")
+        
         # Move OBJ file to geometry/ folder, leaving all materials in materials/
         shutil.move(str(temp_obj_path), str(obj_path))
         print(f"  Moved OBJ to geometry folder: {obj_path}")
         
-        # Update OBJ file to reference MTL in materials/ folder
-        with open(obj_path, 'r') as f:
-            obj_content = f.read()
-        
-        # Update mtllib reference to point to materials/ folder
-        obj_content = re.sub(
-            r'mtllib\s+[^\s\n]+',
-            f'mtllib materials/{scene_id}.mtl',
-            obj_content
-        )
-        
-        with open(obj_path, 'w') as f:
-            f.write(obj_content)
-        print(f"  Updated OBJ file to reference MTL in materials/ folder")
+        # Update OBJ file to reference MTL in materials/ folder (if MTL exists)
+        if actual_mtl_name:
+            # Update mtllib reference to point to materials/ folder
+            obj_content = re.sub(
+                r'mtllib\s+[^\s\n]+',
+                f'mtllib materials/{actual_mtl_name}',
+                obj_content
+            )
+            
+            with open(obj_path, 'w') as f:
+                f.write(obj_content)
+            print(f"  Updated OBJ file to reference MTL in materials/ folder")
+        else:
+            # No MTL to reference, just write the content as-is
+            with open(obj_path, 'w') as f:
+                f.write(obj_content)
+            print(f"  OBJ file has no MTL reference (no materials)")
     except Exception as e:
         print(f"  WARNING: OBJ export failed: {e}")
         import traceback

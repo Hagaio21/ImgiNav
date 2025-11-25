@@ -139,94 +139,51 @@ python data_preparation/pipeline_v2/export_geometry.py \
 
 echo ""
 
-# Steps 2-4: Run in parallel (layouts, POVs, graphs)
+# Steps 2-4: Run sequentially (layouts, POVs, graphs)
 echo "=========================================="
-echo "Steps 2-4: Running layouts, POVs, and graphs in parallel"
+echo "Steps 2-4: Running layouts, POVs, and graphs sequentially"
 echo "=========================================="
 
-# Create log files for each parallel process
-LOG_DIR="${OUTPUT_DIR}/test_logs"
-mkdir -p "${LOG_DIR}"
-
-LAYOUT_LOG="${LOG_DIR}/${SCENE_ID}_layouts.log"
-POV_LOG="${LOG_DIR}/${SCENE_ID}_povs.log"
-GRAPH_LOG="${LOG_DIR}/${SCENE_ID}_graphs.log"
-
-# Start all three processes in background
-echo "Starting layout rendering..."
+# Step 2: Layout rendering
+echo ""
+echo "Step 2: Rendering layouts..."
 python data_preparation/pipeline_v2/render_layouts.py \
     --scene_id "${SCENE_ID}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
     --seed 42 \
-    --hpc > "${LAYOUT_LOG}" 2>&1 &
-LAYOUT_PID=$!
+    --hpc || {
+    echo "ERROR: Layout rendering failed" >&2
+    exit 1
+}
+echo "✓ Layout rendering completed"
 
-echo "Starting POV rendering..."
+# Step 3: POV rendering
+echo ""
+echo "Step 3: Rendering POVs..."
 python data_preparation/pipeline_v2/render_povs.py \
     --scene_id "${SCENE_ID}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
     --num_povs 6 \
     --seed 42 \
-    --hpc > "${POV_LOG}" 2>&1 &
-POV_PID=$!
+    --hpc || {
+    echo "ERROR: POV rendering failed" >&2
+    exit 1
+}
+echo "✓ POV rendering completed"
 
-echo "Starting graph building..."
+# Step 4: Graph building
+echo ""
+echo "Step 4: Building graphs..."
 python data_preparation/pipeline_v2/build_graphs_from_metadata.py \
     --scene_id "${SCENE_ID}" \
     --output_dir "${OUTPUT_DIR}" \
-    --taxonomy "${TAXONOMY_FILE}" > "${GRAPH_LOG}" 2>&1 &
-GRAPH_PID=$!
-
-echo "All three processes started (PIDs: layouts=${LAYOUT_PID}, povs=${POV_PID}, graphs=${GRAPH_PID})"
-echo "Waiting for all processes to complete..."
-
-# Wait for all background processes
-FAILED=0
-
-wait ${LAYOUT_PID}
-LAYOUT_EXIT=$?
-if [ ${LAYOUT_EXIT} -ne 0 ]; then
-    echo "ERROR: Layout rendering failed (exit code: ${LAYOUT_EXIT})" >&2
-    echo "Check log: ${LAYOUT_LOG}" >&2
-    tail -50 "${LAYOUT_LOG}" >&2
-    FAILED=1
-else
-    echo "✓ Layout rendering completed"
-fi
-
-wait ${POV_PID}
-POV_EXIT=$?
-if [ ${POV_EXIT} -ne 0 ]; then
-    echo "ERROR: POV rendering failed (exit code: ${POV_EXIT})" >&2
-    echo "Check log: ${POV_LOG}" >&2
-    tail -50 "${POV_LOG}" >&2
-    FAILED=1
-else
-    echo "✓ POV rendering completed"
-fi
-
-wait ${GRAPH_PID}
-GRAPH_EXIT=$?
-if [ ${GRAPH_EXIT} -ne 0 ]; then
-    echo "ERROR: Graph building failed (exit code: ${GRAPH_EXIT})" >&2
-    echo "Check log: ${GRAPH_LOG}" >&2
-    tail -50 "${GRAPH_LOG}" >&2
-    FAILED=1
-else
-    echo "✓ Graph building completed"
-fi
-
-echo ""
-
-if [ ${FAILED} -eq 1 ]; then
-    echo "=========================================="
-    echo "Pipeline test completed with ERRORS"
-    echo "=========================================="
-    echo "Check logs in: ${LOG_DIR}"
+    --taxonomy "${TAXONOMY_FILE}" || {
+    echo "ERROR: Graph building failed" >&2
     exit 1
-fi
+}
+echo "✓ Graph building completed"
 
 echo "=========================================="
 echo "Pipeline test completed successfully!"

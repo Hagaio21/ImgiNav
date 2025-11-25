@@ -73,10 +73,24 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
         raise ValueError(f"OBJ file is empty: {obj_path}")
     
     try:
+        # Try loading without forcing scene first (in case it's a single mesh)
         scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
-                           force='scene', resolver=resolver)
+                           resolver=resolver)
+        
+        # If None, try with force='scene'
+        if scene is None:
+            scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
+                               force='scene', resolver=resolver)
     except Exception as e:
-        raise ValueError(f"Failed to load OBJ file {obj_path}: {e}")
+        # Try loading without resolver as fallback
+        try:
+            print(f"  Warning: Loading with resolver failed, trying without resolver...")
+            scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True)
+            if scene is None:
+                scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
+                                   force='scene')
+        except Exception as e2:
+            raise ValueError(f"Failed to load OBJ file {obj_path}: {e} (fallback also failed: {e2})")
     
     if scene is None:
         raise ValueError(f"OBJ file loaded as None: {obj_path}")
