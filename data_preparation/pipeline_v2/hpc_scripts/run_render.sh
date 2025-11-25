@@ -17,6 +17,11 @@ export GALLIUM_DRIVER=llvmpipe
 # Ensure Mesa software rendering is used
 export MESA_GL_VERSION_OVERRIDE=3.3
 export MESA_GLSL_VERSION_OVERRIDE=330
+# Additional Mesa settings for Xvfb compatibility
+export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+export LIBGL_ALWAYS_INDIRECT=1
+# Disable hardware acceleration checks
+export __GLX_VENDOR_LIBRARY_NAME=mesa
 
 # Pipeline v2: Render 3D-FRONT scenes to layouts and POVs
 # Job array with maximum 20 jobs
@@ -253,7 +258,8 @@ while IFS= read -r JSON_PATH; do
   echo "Processing scene: ${SCENE_ID}"
   
   # Use xvfb-run to create virtual display for rendering
-  xvfb-run -a -s "-screen 0 1024x768x24" python "${PYTHON_SCRIPT}" \
+  # -a: auto display number, -s: server args with GLX extension
+  xvfb-run -a -s "-screen 0 1024x768x24 +extension GLX +render -noreset" python "${PYTHON_SCRIPT}" \
     --scene_json "${JSON_PATH}" \
     --future_root "${MODEL_DIR}" \
     --output_dir "${OUTPUT_DIR}" \

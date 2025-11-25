@@ -148,8 +148,17 @@ def render_layout_rgb(pyrender_scene: pyrender.Scene,
     light_pose[2, 3] = center[2] + max_size
     pyrender_scene.add(light, pose=light_pose)
     
-    # Render
-    renderer = pyrender.OffscreenRenderer(width, height)
+    # Render - with error handling for GL context issues
+    try:
+        renderer = pyrender.OffscreenRenderer(width, height)
+    except Exception as e:
+        error_msg = str(e)
+        print(f"ERROR: Failed to create OffscreenRenderer: {error_msg}")
+        print(f"Display: {os.environ.get('DISPLAY', 'NOT SET')}")
+        print(f"LIBGL_ALWAYS_SOFTWARE: {os.environ.get('LIBGL_ALWAYS_SOFTWARE', 'NOT SET')}")
+        print(f"GALLIUM_DRIVER: {os.environ.get('GALLIUM_DRIVER', 'NOT SET')}")
+        raise
+    
     color, depth = renderer.render(pyrender_scene)
     renderer.delete()
     
