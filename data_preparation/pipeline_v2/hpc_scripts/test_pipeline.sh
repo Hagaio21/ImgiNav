@@ -1,16 +1,42 @@
 #!/bin/bash
-# Test script to run the full pipeline v2 on a single scene
-# Discovers scenes and tests on the first one found
-# Usage: ./test_pipeline.sh [optional_scene_id]
+#BSUB -J test_pipeline
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/test_pipeline_%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/test_pipeline_%J.err
+#BSUB -n 8
+#BSUB -R "rusage[mem=8000]"
+#BSUB -W 4:00
+#BSUB -q hpc
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
-# Configuration
+# Configure for CPU-only software rendering (no GPU)
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export MESA_GL_VERSION_OVERRIDE=3.3
+export MESA_GLSL_VERSION_OVERRIDE=330
+
+# Pipeline v2: Test full pipeline on a single scene
+# Discovers scenes and tests on the first one found
+
+# =============================================================================
+# CONFIGURATION - YOUR PATHS
+# =============================================================================
 SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
 MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model"
 TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/dataset_v2_test"
 PROJECT_ROOT="/work3/s233249/ImgiNav"
+# =============================================================================
+
+# Create logs directory
+mkdir -p "${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs"
+
+# Runtime fixes (like old pipeline)
+export XDG_RUNTIME_DIR=/tmp/$USER
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 echo "=========================================="
 echo "Pipeline v2 Test - Scene Discovery"
@@ -19,48 +45,59 @@ echo "Scenes root: ${SCENES_ROOT}"
 echo "Output directory: ${OUTPUT_DIR}"
 echo ""
 
-# Discover scenes
-if [ $# -ge 1 ]; then
-    # User provided scene ID
-    SCENE_ID=$1
-    echo "Using provided scene ID: ${SCENE_ID}"
-    SCENE_JSON=$(find "${SCENES_ROOT}" -type f -name "${SCENE_ID}.json" | head -1)
-    
-    if [ -z "${SCENE_JSON}" ]; then
-        echo "ERROR: Scene JSON file not found for ${SCENE_ID}"
-        echo "Searched in: ${SCENES_ROOT}"
-        exit 1
-    fi
-else
-    # Discover scenes automatically
-    echo "Discovering scenes in ${SCENES_ROOT}..."
-    if [ ! -d "${SCENES_ROOT}" ]; then
-        echo "ERROR: SCENES_ROOT directory does not exist: ${SCENES_ROOT}" >&2
-        exit 1
-    fi
-    
-    # Find all JSON files
-    SCENE_FILES=$(find "${SCENES_ROOT}" -type f -name '*.json' 2>/dev/null | sort | head -1)
-    
-    if [ -z "${SCENE_FILES}" ]; then
-        echo "ERROR: No scene JSON files found in ${SCENES_ROOT}" >&2
-        exit 1
-    fi
-    
-    SCENE_JSON="${SCENE_FILES}"
-    SCENE_ID=$(basename "${SCENE_JSON}" .json)
-    echo "Found scene: ${SCENE_ID}"
-fi
-
-echo "Scene JSON: ${SCENE_JSON}"
-echo "Scene ID: ${SCENE_ID}"
-echo ""
-
 # Change to project directory
 cd "${PROJECT_ROOT}/ImgiNav" || {
-    echo "ERROR: Failed to change to project directory"
+    echo "ERROR: Failed to change to project directory" >&2
     exit 1
 }
+
+# Discover scenes
+echo "Discovering scenes in ${SCENES_ROOT}..."
+if [ ! -d "${SCENES_ROOT}" ]; then
+    echo "ERROR: SCENES_ROOT directory does not exist: ${SCENES_ROOT}" >&2
+    exit 1
+fi
+
+# Find first JSON file
+SCENE_JSON=$(find "${SCENES_ROOT}" -type f -name '*.json' 2>/dev/null | sort | head -1)
+
+if [ -z "${SCENE_JSON}" ]; then
+    echo "ERROR: No scene JSON files found in ${SCENES_ROOT}" >&2
+    exit 1
+fi
+
+SCENE_ID=$(basename "${SCENE_JSON}" .json)
+echo "Found scene: ${SCENE_ID}"
+echo "Scene JSON: ${SCENE_JSON}"
+echo ""
+
+# Robust conda activation
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate imginav || {
+        echo "WARNING: Failed to activate imginav, trying scenefactor..." >&2
+        conda activate scenefactor || {
+            echo "WARNING: Failed to activate scenefactor environment" >&2
+        }
+    }
+elif [ -x "$HOME/miniconda3/bin/conda" ]; then
+    eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
+    conda activate imginav || {
+        echo "WARNING: Failed to activate imginav, trying scenefactor..." >&2
+        conda activate scenefactor || {
+            echo "WARNING: Failed to activate scenefactor environment" >&2
+        }
+    }
+fi
+
+# Check dependencies
+echo "Checking Python dependencies..."
+python -c "import trimesh, open3d, numpy, PIL, json" || {
+    echo "ERROR: Required Python packages not available" >&2
+    exit 1
+}
+echo "All dependencies available"
+echo ""
 
 # Step 1: Export geometry
 echo "=========================================="
@@ -71,7 +108,7 @@ python data_preparation/pipeline_v2/export_geometry.py \
     --future_root "${MODEL_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" || {
-    echo "ERROR: Geometry export failed"
+    echo "ERROR: Geometry export failed" >&2
     exit 1
 }
 
@@ -96,7 +133,8 @@ python data_preparation/pipeline_v2/render_layouts.py \
     --scene_id "${SCENE_ID}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
-    --seed 42 > "${LAYOUT_LOG}" 2>&1 &
+    --seed 42 \
+    --hpc > "${LAYOUT_LOG}" 2>&1 &
 LAYOUT_PID=$!
 
 echo "Starting POV rendering..."
@@ -105,7 +143,8 @@ python data_preparation/pipeline_v2/render_povs.py \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
     --num_povs 6 \
-    --seed 42 > "${POV_LOG}" 2>&1 &
+    --seed 42 \
+    --hpc > "${POV_LOG}" 2>&1 &
 POV_PID=$!
 
 echo "Starting graph building..."
@@ -124,8 +163,9 @@ FAILED=0
 wait ${LAYOUT_PID}
 LAYOUT_EXIT=$?
 if [ ${LAYOUT_EXIT} -ne 0 ]; then
-    echo "ERROR: Layout rendering failed (exit code: ${LAYOUT_EXIT})"
-    echo "Check log: ${LAYOUT_LOG}"
+    echo "ERROR: Layout rendering failed (exit code: ${LAYOUT_EXIT})" >&2
+    echo "Check log: ${LAYOUT_LOG}" >&2
+    tail -50 "${LAYOUT_LOG}" >&2
     FAILED=1
 else
     echo "✓ Layout rendering completed"
@@ -134,8 +174,9 @@ fi
 wait ${POV_PID}
 POV_EXIT=$?
 if [ ${POV_EXIT} -ne 0 ]; then
-    echo "ERROR: POV rendering failed (exit code: ${POV_EXIT})"
-    echo "Check log: ${POV_LOG}"
+    echo "ERROR: POV rendering failed (exit code: ${POV_EXIT})" >&2
+    echo "Check log: ${POV_LOG}" >&2
+    tail -50 "${POV_LOG}" >&2
     FAILED=1
 else
     echo "✓ POV rendering completed"
@@ -144,8 +185,9 @@ fi
 wait ${GRAPH_PID}
 GRAPH_EXIT=$?
 if [ ${GRAPH_EXIT} -ne 0 ]; then
-    echo "ERROR: Graph building failed (exit code: ${GRAPH_EXIT})"
-    echo "Check log: ${GRAPH_LOG}"
+    echo "ERROR: Graph building failed (exit code: ${GRAPH_EXIT})" >&2
+    echo "Check log: ${GRAPH_LOG}" >&2
+    tail -50 "${GRAPH_LOG}" >&2
     FAILED=1
 else
     echo "✓ Graph building completed"
