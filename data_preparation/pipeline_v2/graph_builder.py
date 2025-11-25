@@ -8,8 +8,12 @@ import sys
 import shutil
 from pathlib import Path
 
-# Add parent directory to path to import from data_preparation
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path for imports
+# __file__ is at: .../ImgiNav/data_preparation/pipeline_v2/graph_builder.py
+# Project root is: .../ImgiNav/
+script_dir = Path(__file__).resolve().parent
+project_root = script_dir.parent.parent  # Go up from pipeline_v2 -> data_preparation -> ImgiNav
+sys.path.insert(0, str(project_root))
 
 from data_preparation.build_graphs import build_room_graph_from_layout as _build_room_graph
 from common.taxonomy import Taxonomy

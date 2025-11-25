@@ -63,7 +63,7 @@ class ManifestDataset(BaseComponent, Dataset):
         """
         Apply filters to DataFrame using operator mapping for cleaner code.
         
-        Raises ValueError if any filter column doesn't exist in the DataFrame.
+        Skips filters for columns that don't exist in the DataFrame (with a warning).
         """
         # Operator mapping for filter suffixes
         OPERATOR_MAP = {
@@ -74,9 +74,12 @@ class ManifestDataset(BaseComponent, Dataset):
             "__ne": operator.ne,
         }
         
-        # Validate all filter columns exist before processing
+        # Track missing columns to warn about
         missing_columns = []
-        for key in filters.keys():
+        filters_to_apply = {}
+        
+        # Validate filter columns and collect valid filters
+        for key, value in filters.items():
             # Extract column name (remove operator suffix if present)
             col = key
             for suffix in OPERATOR_MAP.keys():
@@ -86,16 +89,16 @@ class ManifestDataset(BaseComponent, Dataset):
             
             if col not in df.columns:
                 missing_columns.append(f"'{col}' (from filter '{key}')")
+            else:
+                filters_to_apply[key] = value
         
+        # Warn about missing columns but continue
         if missing_columns:
-            available_cols = list(df.columns)
-            raise ValueError(
-                f"Filter column(s) not found in manifest: {', '.join(missing_columns)}. "
-                f"Available columns: {available_cols}"
-            )
+            print(f"[WARNING] Skipping filter(s) for missing column(s): {', '.join(missing_columns)}")
+            print(f"[WARNING] Available columns: {list(df.columns)}")
         
-        # Apply filters
-        for key, value in filters.items():
+        # Apply only valid filters
+        for key, value in filters_to_apply.items():
             # Check for operator suffix
             op_func = None
             col = key

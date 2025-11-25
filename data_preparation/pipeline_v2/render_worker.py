@@ -18,11 +18,15 @@ from PIL import Image
 import sys
 from pathlib import Path
 
-# Add pipeline_v2 to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path for imports
+# __file__ is at: .../ImgiNav/data_preparation/pipeline_v2/render_worker.py
+# Project root is: .../ImgiNav/
+script_dir = Path(__file__).resolve().parent
+project_root = script_dir.parent.parent  # Go up from pipeline_v2 -> data_preparation -> ImgiNav
+sys.path.insert(0, str(project_root))
 
 from common.taxonomy import Taxonomy
-from scene_loader import load_front_scene
+from data_preparation.pipeline_v2.scene_loader import load_front_scene
 
 # Set EGL platform for headless rendering
 os.environ['PYOPENGL_PLATFORM'] = 'egl'
@@ -660,7 +664,7 @@ def main():
     # Build graphs from segmentation layout
     print("Building graphs...")
     try:
-        from graph_builder import build_room_graph_from_layout as build_graph
+        from data_preparation.pipeline_v2.graph_builder import build_room_graph_from_layout as build_graph
         layout_seg_path = layouts_seg_dir / f"{scene_id}.png"
         if layout_seg_path.exists():
             build_graph(
