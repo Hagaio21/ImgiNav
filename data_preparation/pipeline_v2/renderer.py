@@ -30,130 +30,93 @@ def trimesh_to_o3d_mesh(trimesh_mesh: trimesh.Trimesh, transform: np.ndarray = N
     
     Args:
         trimesh_mesh: Input trimesh mesh
-        transform: 4x4 transformation matrix (optional, can be None if vertices already in world space)
-        use_texture: If True, try to use textures/materials
-        apply_transform: If False, don't apply transform (for GLB files where transforms are already baked)
+        transform: 4x4 transformation matrix (optional)
+        use_texture: Whether to attempt texture loading
+        apply_transform: Whether to apply transform to vertices (set False if vertices already transformed)
         
     Returns:
         Open3D TriangleMesh
     """
+    # Apply transform to vertices if needed
+    if transform is not None and apply_transform:
+        if not np.allclose(transform, np.eye(4)):
+            vertices_hom = np.column_stack([trimesh_mesh.vertices, np.ones(len(trimesh_mesh.vertices))])
+            vertices_transformed = (transform @ vertices_hom.T).T[:, :3]
+        else:
+            vertices_transformed = trimesh_mesh.vertices
+    else:
+        vertices_transformed = trimesh_mesh.vertices
+    
     # Create Open3D mesh
     o3d_mesh = o3d.geometry.TriangleMesh()
-    o3d_mesh.vertices = o3d.utility.Vector3dVector(trimesh_mesh.vertices.astype(np.float64))
-    o3d_mesh.triangles = o3d.utility.Vector3iVector(trimesh_mesh.faces.astype(np.int32))
+    o3d_mesh.vertices = o3d.utility.Vector3dVector(vertices_transformed.astype(np.float64))
+    o3d_mesh.triangles = o3d.utility.Vector3iVector(trimesh_mesh.faces)
     
-    # Apply transform to vertices (if needed)
-    if apply_transform and transform is not None and not np.allclose(transform, np.eye(4)):
-        vertices_hom = np.column_stack([trimesh_mesh.vertices, np.ones(len(trimesh_mesh.vertices))])
-        vertices_world = (transform @ vertices_hom.T).T[:, :3]
-        o3d_mesh.vertices = o3d.utility.Vector3dVector(vertices_world.astype(np.float64))
-    
-    # Handle textures/materials if available
-    has_texture = False
-    if use_texture:
-        # Try multiple ways to get texture from trimesh
-        texture_image = None
-        uv_coords = None
-        
-        # Debug: check what visual attributes are available
-        visual_attrs = [attr for attr in dir(trimesh_mesh.visual) if not attr.startswith('_')]
-        
-        # Method 1: Check visual.material.image
-        if hasattr(trimesh_mesh.visual, 'material') and trimesh_mesh.visual.material is not None:
-            material = trimesh_mesh.visual.material
-            material_attrs = [attr for attr in dir(material) if not attr.startswith('_')]
-            
-            # Check for image attribute
-            if hasattr(material, 'image') and material.image is not None:
-                texture_image = material.image
-                print(f"DEBUG: Found texture in material.image")
-            
-            # Check for baseColorTexture (glTF/GLB format)
-            if texture_image is None:
-                if hasattr(material, 'baseColorTexture') and material.baseColorTexture is not None:
-                    texture_image = material.baseColorTexture
-                    print(f"DEBUG: Found texture in material.baseColorTexture")
-                elif hasattr(material, 'image') and material.image is not None:
-                    # Sometimes it's stored differently
-                    texture_image = material.image
-                    print(f"DEBUG: Found texture in material.image (second check)")
-        
-        # Method 2: Check visual.uv (needed for texture mapping)
-        if hasattr(trimesh_mesh.visual, 'uv') and trimesh_mesh.visual.uv is not None:
-            uv_coords = trimesh_mesh.visual.uv
-            print(f"DEBUG: Found UV coordinates: shape={uv_coords.shape}")
-        elif hasattr(trimesh_mesh.visual, 'vertex_attributes'):
-            # Sometimes UVs are in vertex_attributes
-            if 'uv' in trimesh_mesh.visual.vertex_attributes:
-                uv_coords = trimesh_mesh.visual.vertex_attributes['uv']
-                print(f"DEBUG: Found UV coordinates in vertex_attributes")
-        
-        if texture_image is None:
-            print(f"DEBUG: No texture found. Visual attrs: {visual_attrs[:5]}...")
-        
-        # Apply texture if we found one
-        if texture_image is not None:
+    # Try to load texture
+    texture_loaded = False
+    if use_texture and hasattr(trimesh_mesh.visual, 'material'):
+        material = trimesh_mesh.visual.material
+        if hasattr(material, 'image') and material.image is not None:
             try:
-                # Convert PIL image to numpy
-                if hasattr(texture_image, 'convert'):
-                    img_array = np.asarray(texture_image.convert('RGB'))
-                else:
-                    img_array = np.asarray(texture_image)
-                
-                # Get UV coordinates (can be per-vertex or per-face)
-                if uv_coords is not None:
-                    if len(uv_coords) == len(trimesh_mesh.vertices):
-                        # Per-vertex UVs: map to triangles
-                        triangle_uvs = uv_coords[trimesh_mesh.faces].reshape(-1, 2)
-                    elif len(uv_coords) == len(trimesh_mesh.faces):
-                        # Per-face UVs: already correct
-                        triangle_uvs = uv_coords.reshape(-1, 2)
-                    else:
-                        # Try to use face indices to map UVs
-                        triangle_uvs = uv_coords[trimesh_mesh.faces].reshape(-1, 2)
-                    
-                    # Create texture
-                    o3d_texture = o3d.geometry.Image(img_array.astype(np.uint8))
-                    o3d_mesh.triangle_uvs = o3d.utility.Vector2dVector(triangle_uvs.astype(np.float64))
-                    # Material IDs are not needed - Open3D will use the first texture automatically
-                    # o3d_mesh.triangle_material_ids = ...  # Not needed, removed Vector1iVector which doesn't exist
-                    o3d_mesh.textures = [o3d_texture]
-                    has_texture = True
-                    print(f"DEBUG: Applied texture to mesh (texture size: {img_array.shape}, UVs: {len(triangle_uvs)})")
+                # Convert PIL image to numpy array
+                if hasattr(material.image, 'size'):
+                    img_array = np.asarray(material.image)
+                    if len(img_array.shape) == 3:
+                        # Convert RGB to BGR for Open3D
+                        img_bgr = img_array[:, :, ::-1].copy()
+                        o3d_mesh.textures = [o3d.geometry.Image(img_bgr.astype(np.uint8))]
+                        
+                        # Apply UV coordinates if available
+                        if hasattr(trimesh_mesh.visual, 'uv') and trimesh_mesh.visual.uv is not None:
+                            uv_coords = trimesh_mesh.visual.uv
+                            if len(uv_coords) == len(trimesh_mesh.vertices):
+                                o3d_mesh.triangle_uvs = o3d.utility.Vector2dVector(uv_coords.astype(np.float64))
+                                texture_loaded = True
             except Exception as e:
-                print(f"DEBUG: Failed to apply texture: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"  Warning: Failed to load texture: {e}")
     
-    # If no texture, use vertex colors
-    if not has_texture and hasattr(trimesh_mesh.visual, 'vertex_colors') and trimesh_mesh.visual.vertex_colors is not None:
-        vcolors = trimesh_mesh.visual.vertex_colors
-        if len(vcolors.shape) == 2 and vcolors.shape[1] >= 3:
-            # Convert to 0-1 range if needed
-            if vcolors.max() > 1.0:
-                vcolors = vcolors.astype(np.float32) / 255.0
-            else:
-                vcolors = vcolors.astype(np.float32)
-            o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(vcolors[:, :3].astype(np.float64))
+    # If no texture, try vertex colors
+    if not texture_loaded:
+        if hasattr(trimesh_mesh.visual, 'vertex_colors') and trimesh_mesh.visual.vertex_colors is not None:
+            vertex_colors = trimesh_mesh.visual.vertex_colors
+            if len(vertex_colors) == len(trimesh_mesh.vertices):
+                # Convert to float [0, 1]
+                if vertex_colors.dtype == np.uint8:
+                    colors_float = vertex_colors.astype(np.float64) / 255.0
+                else:
+                    colors_float = vertex_colors.astype(np.float64)
+                # Ensure 3 channels
+                if colors_float.shape[1] >= 3:
+                    o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(colors_float[:, :3])
+        elif hasattr(trimesh_mesh.visual, 'material'):
+            material = trimesh_mesh.visual.material
+            if hasattr(material, 'main_color') and material.main_color is not None:
+                color = np.array(material.main_color[:3]) / 255.0 if len(material.main_color) >= 3 else np.array([0.5, 0.5, 0.5])
+                o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
+                    np.tile(color, (len(trimesh_mesh.vertices), 1))
+                )
     
-    # Compute normals (important for lighting)
-    o3d_mesh.compute_vertex_normals()
-    
-    # Make mesh double-sided to avoid backface culling issues
-    # Duplicate faces with reversed winding order
-    if len(o3d_mesh.triangles) > 0:
-        triangles = np.asarray(o3d_mesh.triangles)
-        reversed_triangles = triangles[:, [0, 2, 1]]  # Reverse winding
-        all_triangles = np.vstack([triangles, reversed_triangles])
-        o3d_mesh.triangles = o3d.utility.Vector3iVector(all_triangles)
-        o3d_mesh.compute_vertex_normals()  # Recompute normals
+    # Make mesh double-sided to prevent backface culling issues
+    o3d_mesh.triangles = o3d.utility.Vector3iVector(
+        np.vstack([o3d_mesh.triangles, o3d_mesh.triangles[:, ::-1]])
+    )
     
     return o3d_mesh
 
 
-def get_scene_bounds(trimesh_scene: trimesh.Scene, hide_ceilings: bool = True) -> Tuple[np.ndarray, np.ndarray]:
-    """Get scene bounding box."""
+def get_scene_bounds(trimesh_scene: trimesh.Scene, hide_ceilings: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Get bounding box of scene, optionally excluding ceilings.
+    
+    Args:
+        trimesh_scene: Input trimesh scene
+        hide_ceilings: Whether to exclude ceiling meshes
+        
+    Returns:
+        Tuple of (min_bounds, max_bounds) as 3D numpy arrays
+    """
     all_vertices = []
+    
     for node_name in trimesh_scene.graph.nodes_geometry:
         try:
             transform, geometry_name = trimesh_scene.graph.get(node_name)
@@ -176,27 +139,29 @@ def get_scene_bounds(trimesh_scene: trimesh.Scene, hide_ceilings: bool = True) -
             continue
     
     if not all_vertices:
-        min_bounds = np.array([-5, -5, 0])
-        max_bounds = np.array([5, 5, 3])
-    else:
-        all_vertices = np.vstack(all_vertices)
-        min_bounds = all_vertices.min(axis=0)
-        max_bounds = all_vertices.max(axis=0)
+        return np.array([0, 0, 0]), np.array([1, 1, 1])
+    
+    all_vertices = np.vstack(all_vertices)
+    min_bounds = all_vertices.min(axis=0)
+    max_bounds = all_vertices.max(axis=0)
     
     return min_bounds, max_bounds
 
 
-def clip_mesh_above_height(mesh: trimesh.Trimesh, transform: np.ndarray, 
-                          max_height: float, up_axis: int = 1) -> Optional[trimesh.Trimesh]:
+def clip_mesh_above_height(mesh: trimesh.Trimesh, max_height: float, 
+                           transform: Optional[np.ndarray] = None,
+                           up_axis: int = 1,
+                           floor_threshold: Optional[float] = None) -> Optional[trimesh.Trimesh]:
     """
-    Clip mesh to remove parts above max_height (in world coordinates).
-    Uses simple vertex/face filtering to avoid boolean operations.
+    Clip mesh above a certain height along the up axis.
+    Simple approach: keep faces where ALL vertices are below threshold.
     
     Args:
-        mesh: Input trimesh mesh
-        transform: 4x4 transformation matrix
-        max_height: Maximum height coordinate along up_axis
-        up_axis: Axis index for up direction (0=X, 1=Y, 2=Z, default=1 for Y-up)
+        mesh: Input mesh
+        max_height: Maximum height (along up_axis) to keep
+        transform: Optional transform to apply before clipping
+        up_axis: Which axis is up (0=X, 1=Y, 2=Z)
+        floor_threshold: If provided, meshes below this height are considered floor and not clipped
         
     Returns:
         Clipped mesh or None if completely above threshold
@@ -207,6 +172,13 @@ def clip_mesh_above_height(mesh: trimesh.Trimesh, transform: np.ndarray,
         vertices_world = (transform @ vertices_hom.T).T[:, :3]
     else:
         vertices_world = mesh.vertices
+    
+    # Check if this is a floor mesh (skip clipping)
+    if floor_threshold is not None:
+        min_height = vertices_world[:, up_axis].min()
+        if min_height < floor_threshold:
+            # This is likely a floor mesh, don't clip it
+            return mesh
     
     # Check if any vertices are below threshold along the up axis
     below_mask = vertices_world[:, up_axis] <= max_height
@@ -258,288 +230,113 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
                       clip_top_meters: float = 0.5,
                       scene_metadata: Optional[Dict] = None) -> np.ndarray:
     """
-    Render top-down RGB layout using Open3D with orthographic projection.
-    Clips top portion of structure to make pathways visible.
+    Render top-down layout RGB image using orthographic projection.
     
     Args:
-        trimesh_scene: trimesh scene
-        hide_ceilings: If True, exclude ceiling meshes
+        trimesh_scene: Input trimesh scene
+        hide_ceilings: Whether to hide ceiling meshes
         width: Image width
         height: Image height
-        clip_top_meters: Height in meters to clip from top (default 1.0)
+        clip_top_meters: How many meters to clip from the top
+        scene_metadata: Optional scene metadata (for up_axis detection)
         
     Returns:
-        RGB image array (H, W, 3) uint8
+        RGB image as numpy array (H, W, 3)
     """
-    # Use metadata if available, otherwise compute bounds
-    if scene_metadata is not None and 'scene_bounds' in scene_metadata:
-        scene_bounds = scene_metadata['scene_bounds']
-        if scene_bounds.get('min') and scene_bounds.get('max'):
-            min_bounds = np.array(scene_bounds['min'])
-            max_bounds = np.array(scene_bounds['max'])
-        else:
-            min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
-    else:
-        min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    # Get up axis from metadata if available
+    up_axis = 1  # Default Y-up
+    if scene_metadata and 'up_axis' in scene_metadata:
+        up_axis = scene_metadata['up_axis']
     
-    # Detect up direction BEFORE clipping calculation
-    if scene_metadata is not None and 'up_direction' in scene_metadata:
-        up_direction = scene_metadata['up_direction']
-        up_axis = up_direction.get('up_axis', 1)  # Default to Y
-        up_vector = np.array(up_direction.get('up_vector', [0, 1, 0]), dtype=np.float64)
-    else:
-        # Fallback: assume Y-up (3D-FRONT convention)
-        up_axis = 1
-        up_vector = np.array([0, 1, 0], dtype=np.float64)
+    # Get scene bounds
+    min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings=hide_ceilings)
+    center = (min_bounds + max_bounds) / 2
     
-    # Calculate clipping height (0.5 meters from top) - mandatory
-    # Safety check: never clip below the bottom 1/3rd of room height to guarantee floor is never removed
+    # Calculate clipping height
+    clip_height = max_bounds[up_axis] - clip_top_meters
+    
+    # Calculate room height for floor threshold
     room_height = max_bounds[up_axis] - min_bounds[up_axis]
-    min_safe_clip_height = min_bounds[up_axis] + (room_height / 3.0)  # Bottom 1/3rd is always safe
-    clip_height = max_bounds[up_axis] - clip_top_meters  # Clip from top along up_axis
-    if clip_height < min_safe_clip_height:
-        clip_height = min_safe_clip_height
-        print(f"WARNING: Clipping height adjusted to preserve floor. Using min_safe_clip_height = {clip_height:.2f}")
-    
-    # Calculate floor threshold - meshes below this are considered floor and should not be clipped
     floor_threshold = min_bounds[up_axis] + (room_height * 0.1)  # Bottom 10% is floor
     
-    # Process geometry - handle both scene graph (GLB) and single mesh (PLY)
-    all_vertices = []
-    processed_geometries = []
-    
-    # Check if we have a scene graph (GLB) or just geometry (PLY)
-    has_scene_graph = len(trimesh_scene.graph.nodes_geometry) > 0
-    
-    if has_scene_graph:
-        # GLB format: use scene graph with transforms
-        for node_name in trimesh_scene.graph.nodes_geometry:
-            try:
-                transform, geometry_name = trimesh_scene.graph.get(node_name)
-                
-                # Get geometry
-                if geometry_name in trimesh_scene.geometry:
-                    geometry = trimesh_scene.geometry[geometry_name]
-                elif node_name in trimesh_scene.geometry:
-                    geometry = trimesh_scene.geometry[node_name]
-                else:
-                    continue
-                
-                if isinstance(geometry, trimesh.Trimesh):
-                    metadata = getattr(geometry, 'metadata', {})
-                    if hide_ceilings and metadata.get('is_ceiling', False):
-                        continue
-                    
-                    # Apply transform to vertices
-                    vertices = geometry.vertices
-                    if not np.allclose(transform, np.eye(4)):
-                        vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                        vertices = (transform @ vertices_hom.T).T[:, :3]
-                    
-                    all_vertices.append(vertices)
-                    processed_geometries.append((geometry, transform, metadata))
-            except (KeyError, ValueError, IndexError, AttributeError):
-                continue
-    else:
-        # PLY format: single merged mesh, already in world space
-        for geometry_name, geometry in trimesh_scene.geometry.items():
-            if isinstance(geometry, trimesh.Trimesh):
-                metadata = getattr(geometry, 'metadata', {})
-                if hide_ceilings and metadata.get('is_ceiling', False):
-                    continue
-                
-                # PLY meshes are already in world space, no transform needed
-                vertices = geometry.vertices
-                all_vertices.append(vertices)
-                processed_geometries.append((geometry, np.eye(4), metadata))
-    
-    if all_vertices:
-        # Use actual geometry from scene graph (with transforms applied)
-        all_vertices = np.vstack(all_vertices)
-        actual_min_bounds = all_vertices.min(axis=0)
-        actual_max_bounds = all_vertices.max(axis=0)
-        center = (actual_min_bounds + actual_max_bounds) / 2
-        actual_size = actual_max_bounds - actual_min_bounds
-        base_max_size = max(actual_size[0], actual_size[2])  # X and Z dimensions for top-down (floor bounding box)
-        # Apply margin to get target view size (margin is the driving parameter)
-        margin = 0.03  # 3% margin
-        max_size = base_max_size * (1.0 + margin)  # Target view size with margin
-        print(f"DEBUG: Using scene graph meshes - center: {center}, size: {actual_size}, base_size: {base_max_size:.2f}, target_size: {max_size:.2f} (margin: {margin*100:.1f}%)")
-    else:
-        # Fallback to metadata bounds
-        center = (min_bounds + max_bounds) / 2
-        size = max_bounds - min_bounds
-        base_max_size = max(size[0], size[2])  # X and Z dimensions for top-down (floor bounding box)
-        # Apply margin to get target view size (margin is the driving parameter)
-        margin = 0.03  # 3% margin
-        max_size = base_max_size * (1.0 + margin)  # Target view size with margin
-        print(f"DEBUG: No geometry found, using metadata bounds - center: {center}, size: {size}, base_size: {base_max_size:.2f}, target_size: {max_size:.2f} (margin: {margin*100:.1f}%)")
+    # Calculate target view size (with 3% margin)
+    base_max_size = max(max_bounds - min_bounds)
+    max_size = base_max_size * 1.03
     
     # Create Open3D visualizer
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=width, height=height)
     
-    # Add meshes with clipping using scene graph method
+    # Add meshes to visualizer
     mesh_count = 0
-    total_geometries = len(processed_geometries)
-    print(f"DEBUG: Processing {total_geometries} geometries from scene graph")
-    print(f"DEBUG: Clipping height set to: {clip_height:.2f} (room height: {room_height:.2f}, min_safe: {min_safe_clip_height:.2f})")
-    
-    for geometry, transform, metadata in processed_geometries:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         try:
-            # Apply transform to vertices (already done above, but need for clipping)
-            vertices = geometry.vertices
-            if not np.allclose(transform, np.eye(4)):
-                vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
             else:
-                vertices_world = vertices
+                geometry = trimesh_scene.geometry[geometry_name]
             
-            # Clip mesh if clipping is enabled
-            faces_to_use = geometry.faces
-            if clip_height is not None:
-                # Check if this is a floor mesh - if so, skip clipping
-                mesh_center_height = vertices_world[:, up_axis].mean()
-                is_floor_mesh = mesh_center_height < floor_threshold
-                
-                if not is_floor_mesh:
-                    # Create temporary mesh with transformed vertices for clipping
-                    temp_mesh = trimesh.Trimesh(vertices=vertices_world, faces=geometry.faces)
-                    clipped_mesh = clip_mesh_above_height(temp_mesh, np.eye(4), clip_height, up_axis=up_axis)
-                    if clipped_mesh is None:
-                        continue
-                    # Use clipped mesh vertices and faces
-                    vertices_world = clipped_mesh.vertices
-                    faces_to_use = clipped_mesh.faces
-            
-            # Create Open3D mesh with transformed vertices
-            o3d_mesh = o3d.geometry.TriangleMesh()
-            o3d_mesh.vertices = o3d.utility.Vector3dVector(vertices_world.astype(np.float64))
-            o3d_mesh.triangles = o3d.utility.Vector3iVector(faces_to_use.astype(np.int32))
-            
-            # Handle textures/materials
-            has_texture = False
-            texture_image = None
-            uv_coords = None
-            
-            # Try to get texture from material
-            if hasattr(geometry.visual, 'material') and geometry.visual.material is not None:
-                material = geometry.visual.material
-                if hasattr(material, 'baseColorTexture') and material.baseColorTexture is not None:
-                    texture_image = material.baseColorTexture
-                elif hasattr(material, 'image') and material.image is not None:
-                    texture_image = material.image
-            
-            # Get UV coordinates
-            if hasattr(geometry.visual, 'uv') and geometry.visual.uv is not None:
-                uv_coords = geometry.visual.uv
-            
-            # Apply texture if found
-            if texture_image is not None and uv_coords is not None:
-                try:
-                    if hasattr(texture_image, 'convert'):
-                        img_array = np.asarray(texture_image.convert('RGB'))
-                    else:
-                        img_array = np.asarray(texture_image)
-                    
-                    if len(uv_coords) == len(geometry.vertices):
-                        triangle_uvs = uv_coords[geometry.faces].reshape(-1, 2)
-                    else:
-                        triangle_uvs = uv_coords.reshape(-1, 2)
-                    
-                    o3d_texture = o3d.geometry.Image(img_array.astype(np.uint8))
-                    o3d_mesh.triangle_uvs = o3d.utility.Vector2dVector(triangle_uvs.astype(np.float64))
-                    o3d_mesh.textures = [o3d_texture]
-                    has_texture = True
-                except Exception:
-                    pass
-            
-            # Make double-sided
-            if len(o3d_mesh.triangles) > 0:
-                triangles = np.asarray(o3d_mesh.triangles)
-                reversed_triangles = triangles[:, [0, 2, 1]]
-                all_triangles = np.vstack([triangles, reversed_triangles])
-                o3d_mesh.triangles = o3d.utility.Vector3iVector(all_triangles)
-            
-            o3d_mesh.compute_vertex_normals()
-            
-            # Check if mesh has vertices
-            if len(o3d_mesh.vertices) == 0:
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
                 continue
             
-            vis.add_geometry(o3d_mesh)
-            mesh_count += 1
-        except (KeyError, ValueError, IndexError, AttributeError) as e:
+            if isinstance(geometry, trimesh.Trimesh):
+                # Clip mesh if needed
+                clipped_mesh = clip_mesh_above_height(
+                    geometry, clip_height, transform, up_axis, floor_threshold
+                )
+                if clipped_mesh is None:
+                    continue
+                
+                # Convert to Open3D mesh (don't apply transform, already in world space from GLB)
+                o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform=None, apply_transform=False)
+                vis.add_geometry(o3d_mesh)
+                mesh_count += 1
+        except (KeyError, ValueError, IndexError) as e:
             continue
     
-    print(f"DEBUG: Added {mesh_count} meshes to visualizer (out of {total_geometries} geometries)")
     if mesh_count == 0:
-        print(f"ERROR: No meshes added to visualizer!")
-        print(f"  Scene bounds: min={min_bounds}, max={max_bounds}")
-        print(f"  Clip height: {clip_height:.2f}")
-        return np.full((height, width, 3), 128, dtype=np.uint8)  # Return gray image if no meshes
+        # Return white image if no meshes
+        vis.destroy_window()
+        return np.ones((height, width, 3), dtype=np.uint8) * 255
     
-    # Set render options with lighting
-    opt = vis.get_render_option()
-    opt.background_color = np.array([0.2, 0.2, 0.25], dtype=np.float32)  # Slightly blue-tinted dark gray for better contrast
-    opt.light_on = True  # Enable lighting for textures
+    # Set up camera for orthographic top-down view
+    # Calculate up vector from metadata
+    up_vector = np.zeros(3)
+    up_vector[up_axis] = 1.0
     
-    # Camera setup: orthographic projection (top-down)
-    # up_axis and up_vector already determined above
-    print(f"Using up direction: axis={up_axis}, vector={up_vector}")
-    
-    # Calculate focal length first (for orthographic projection)
-    desired_fov_rad = np.radians(1.0)  # Very small FOV for orthographic projection
-    fx = fy = (0.5 * min(width, height)) / np.tan(desired_fov_rad / 2.0)
-    
-    # Calculate camera distance to show exactly target_size (max_size) in the image
-    # For pinhole camera: distance = (target_size / 2) * focal_length / (image_size / 2)
-    # Simplified: distance = target_size * focal_length / image_size
+    # Calculate camera distance to fit max_size in view
+    # For orthographic: distance = (target_size / 2) * (focal_length / (image_size / 2))
+    # We want a 1-degree FOV for near-orthographic effect
+    fov_degrees = 1.0
+    fov_rad = math.radians(fov_degrees)
     image_size = min(width, height)
-    camera_distance = (max_size / 2.0) * fx / (image_size / 2.0)
-    print(f"DEBUG: Camera distance: {camera_distance:.2f} (target_size: {max_size:.2f}, focal_length: {fx:.2f}, image_size: {image_size})")
-    # Position camera along the up direction, looking down the negative up direction
-    # Camera above scene looking down along -up_vector
-    camera_offset = up_vector * camera_distance
+    focal_length = (image_size / 2.0) / math.tan(fov_rad / 2.0)
+    
+    # Calculate camera distance to fit max_size in view
+    camera_distance = (max_size / 2.0) * focal_length / (image_size / 2.0)
+    
+    # Position camera along the up direction, looking down
     camera_height_pos = max_bounds[up_axis] + camera_distance
-    eye = center.astype(np.float64) + camera_offset
-    # Ensure camera is definitely above the scene
+    eye = center.copy().astype(np.float64)
     eye[up_axis] = camera_height_pos
     center_point = center.astype(np.float64)
     
-    # For top-down view, the camera's up vector in the image should be perpendicular to the world up
     # Find a horizontal axis to use as the camera's "up" in the image
-    # Use the axis with the second-largest scene dimension
     scene_size_arr = np.array([max_bounds[0] - min_bounds[0], 
                                max_bounds[1] - min_bounds[1], 
                                max_bounds[2] - min_bounds[2]])
-    # Set the up axis dimension to 0 so we don't pick it
     scene_size_arr[up_axis] = 0
     horizontal_axis = int(np.argmax(scene_size_arr))
     camera_up = np.zeros(3, dtype=np.float64)
     camera_up[horizontal_axis] = 1.0
-    up = camera_up
     
-    # Debug: print forward vector to verify direction
-    forward = center_point - eye
-    print(f"DEBUG: Scene bounds - min={min_bounds}, max={max_bounds}")
-    print(f"DEBUG: Scene center={center}")
-    print(f"DEBUG: Up direction - axis={up_axis}, vector={up_vector}")
-    print(f"DEBUG: Camera height={camera_height_pos:.2f} (max_bounds[{up_axis}]={max_bounds[up_axis]:.2f} + distance={camera_distance:.2f})")
-    print(f"DEBUG: Camera eye={eye}")
-    print(f"DEBUG: Camera center_point={center_point}")
-    print(f"DEBUG: Camera up (image orientation)={up}")
-    print(f"DEBUG: Camera forward vector (should point DOWN): {forward}")
-    print(f"DEBUG: Forward vector magnitude: {np.linalg.norm(forward):.2f}")
-    print(f"DEBUG: Forward component along up axis (should be negative): {forward[up_axis]:.2f}")
-    print(f"DEBUG: Camera is ABOVE scene: {eye[up_axis] > max_bounds[up_axis]} (eye[{up_axis}]={eye[up_axis]:.2f} > max_bounds[{up_axis}]={max_bounds[up_axis]:.2f})")
-    
-    # Focal length already calculated above for camera distance
+    # Set up camera parameters
     cx, cy = width / 2.0, height / 2.0
-    
-    print(f"DEBUG: Orthographic FOV: 1.0 degrees, focal length: {fx:.2f}")
-    
-    print(f"DEBUG: Camera intrinsics - fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
+    fx = fy = focal_length
     
     pin = o3d.camera.PinholeCameraParameters()
     pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
@@ -547,28 +344,29 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     def look_at(eye_, center_, up_):
         # Match old pipeline's look_at function exactly
         f = center_ - eye_
-        f = f / (np.linalg.norm(f) + 1e-12)
-        upn = up_ / (np.linalg.norm(up_) + 1e-12)
-        l = np.cross(upn, f)  # Note: upn cross f (not f cross upn)
-        l = l / (np.linalg.norm(l) + 1e-12)
-        u2 = np.cross(f, l)
-        M = np.eye(4, dtype=np.float64)
-        M[0, :3] = l
-        M[1, :3] = u2
-        M[2, :3] = f  # Note: positive f (not -f)
-        T = np.eye(4, dtype=np.float64)
-        T[:3, 3] = -eye_
-        return M @ T
+        f = f / np.linalg.norm(f)
+        upn = up_ / np.linalg.norm(up_)
+        s = np.cross(f, upn)
+        s = s / np.linalg.norm(s)
+        u = np.cross(s, f)
+        R = np.array([[s[0], u[0], -f[0]],
+                     [s[1], u[1], -f[1]],
+                     [s[2], u[2], -f[2]]])
+        t = eye_
+        return np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
     
-    pin.extrinsic = look_at(eye, center_point, up)
+    pin.extrinsic = look_at(eye, center_point, camera_up)
     
     ctr = vis.get_view_control()
-    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
+    ctr.convert_from_pinhole_camera_parameters(pin)
+    
+    # Set background color (dark gray for RGB)
+    opt = vis.get_render_option()
+    opt.background_color = np.array([0.2, 0.2, 0.25])
     
     # Render
     vis.poll_events()
     vis.update_renderer()
-    time.sleep(0.1)
     
     # Capture image
     import tempfile
@@ -578,18 +376,12 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     vis.capture_screen_image(tmp_path, do_render=True)
     vis.destroy_window()
     
-    # Read and resize if needed
     img = Image.open(tmp_path)
     if img.size != (width, height):
         img = img.resize((width, height), Image.Resampling.LANCZOS)
     img_np = np.asarray(img)
     
-    # Clean up
     os.unlink(tmp_path)
-    
-    # Flip vertically for POV (Open3D captures upside down)
-    if 'pov' in str(inspect.stack()[1].function).lower():
-        img_np = np.flipud(img_np)
     
     return img_np
 
@@ -601,218 +393,106 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
                       clip_top_meters: float = 0.5,
                       scene_metadata: Optional[Dict] = None) -> np.ndarray:
     """
-    Render top-down segmentation layout with taxonomy colors.
-    Uses orthographic projection and clips top portion.
+    Render top-down layout segmentation image using orthographic projection.
+    
+    Args:
+        trimesh_scene: Input trimesh scene
+        taxonomy: Taxonomy object for coloring
+        hide_ceilings: Whether to hide ceiling meshes
+        width: Image width
+        height: Image height
+        clip_top_meters: How many meters to clip from the top
+        scene_metadata: Optional scene metadata (for up_axis detection)
+        
+    Returns:
+        Segmentation image as numpy array (H, W, 3)
     """
-    # Use metadata if available, otherwise compute bounds
-    if scene_metadata is not None and 'scene_bounds' in scene_metadata:
-        scene_bounds = scene_metadata['scene_bounds']
-        if scene_bounds.get('min') and scene_bounds.get('max'):
-            min_bounds = np.array(scene_bounds['min'])
-            max_bounds = np.array(scene_bounds['max'])
-        else:
-            min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
-    else:
-        min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    # Get up axis from metadata if available
+    up_axis = 1  # Default Y-up
+    if scene_metadata and 'up_axis' in scene_metadata:
+        up_axis = scene_metadata['up_axis']
     
-    # Detect up direction BEFORE clipping calculation
-    if scene_metadata is not None and 'up_direction' in scene_metadata:
-        up_direction = scene_metadata['up_direction']
-        up_axis = up_direction.get('up_axis', 1)  # Default to Y
-        up_vector = np.array(up_direction.get('up_vector', [0, 1, 0]), dtype=np.float64)
-    else:
-        # Fallback: assume Y-up (3D-FRONT convention)
-        up_axis = 1
-        up_vector = np.array([0, 1, 0], dtype=np.float64)
+    # Get scene bounds
+    min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings=hide_ceilings)
+    center = (min_bounds + max_bounds) / 2
     
-    # Calculate clipping height (0.5 meters from top) - mandatory
-    # Safety check: never clip below the bottom 1/3rd of room height to guarantee floor is never removed
+    # Calculate clipping height
+    clip_height = max_bounds[up_axis] - clip_top_meters
+    
+    # Calculate room height for floor threshold
     room_height = max_bounds[up_axis] - min_bounds[up_axis]
-    min_safe_clip_height = min_bounds[up_axis] + (room_height / 3.0)  # Bottom 1/3rd is always safe
-    clip_height = max_bounds[up_axis] - clip_top_meters  # Clip from top along up_axis
-    if clip_height < min_safe_clip_height:
-        clip_height = min_safe_clip_height
-        print(f"WARNING: Clipping height adjusted to preserve floor. Using min_safe_clip_height = {clip_height:.2f}")
-    
-    # Calculate floor threshold - meshes below this are considered floor and should not be clipped
     floor_threshold = min_bounds[up_axis] + (room_height * 0.1)  # Bottom 10% is floor
     
-    # Process geometry - handle both scene graph (GLB) and single mesh (PLY)
-    all_vertices = []
-    processed_geometries = []
+    # Calculate target view size (with 3% margin)
+    base_max_size = max(max_bounds - min_bounds)
+    max_size = base_max_size * 1.03
     
-    # Check if we have a scene graph (GLB) or just geometry (PLY)
-    has_scene_graph = len(trimesh_scene.graph.nodes_geometry) > 0
-    
-    if has_scene_graph:
-        # GLB format: use scene graph with transforms
-        for node_name in trimesh_scene.graph.nodes_geometry:
-            try:
-                transform, geometry_name = trimesh_scene.graph.get(node_name)
-                
-                # Get geometry
-                if geometry_name in trimesh_scene.geometry:
-                    geometry = trimesh_scene.geometry[geometry_name]
-                elif node_name in trimesh_scene.geometry:
-                    geometry = trimesh_scene.geometry[node_name]
-                else:
-                    continue
-                
-                if isinstance(geometry, trimesh.Trimesh):
-                    metadata = getattr(geometry, 'metadata', {})
-                    if hide_ceilings and metadata.get('is_ceiling', False):
-                        continue
-                    
-                    # Apply transform to vertices
-                    vertices = geometry.vertices
-                    if not np.allclose(transform, np.eye(4)):
-                        vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                        vertices = (transform @ vertices_hom.T).T[:, :3]
-                    
-                    all_vertices.append(vertices)
-                    processed_geometries.append((geometry, transform, metadata))
-            except (KeyError, ValueError, IndexError, AttributeError):
-                continue
-    else:
-        # PLY format: single merged mesh, already in world space
-        for geometry_name, geometry in trimesh_scene.geometry.items():
-            if isinstance(geometry, trimesh.Trimesh):
-                metadata = getattr(geometry, 'metadata', {})
-                if hide_ceilings and metadata.get('is_ceiling', False):
-                    continue
-                
-                # PLY meshes are already in world space, no transform needed
-                vertices = geometry.vertices
-                all_vertices.append(vertices)
-                processed_geometries.append((geometry, np.eye(4), metadata))
-    
-    if all_vertices:
-        # Use actual geometry from scene graph (with transforms applied)
-        all_vertices = np.vstack(all_vertices)
-        actual_min_bounds = all_vertices.min(axis=0)
-        actual_max_bounds = all_vertices.max(axis=0)
-        center = (actual_min_bounds + actual_max_bounds) / 2
-        actual_size = actual_max_bounds - actual_min_bounds
-        base_max_size = max(actual_size[0], actual_size[2])  # X and Z dimensions for top-down (floor bounding box)
-        # Apply margin to get target view size (margin is the driving parameter)
-        margin = 0.03  # 3% margin
-        max_size = base_max_size * (1.0 + margin)  # Target view size with margin
-        print(f"DEBUG: Using scene graph meshes - center: {center}, size: {actual_size}, base_size: {base_max_size:.2f}, target_size: {max_size:.2f} (margin: {margin*100:.1f}%)")
-    else:
-        # Fallback to metadata bounds
-        center = (min_bounds + max_bounds) / 2
-        size = max_bounds - min_bounds
-        base_max_size = max(size[0], size[2])  # X and Z dimensions for top-down (floor bounding box)
-        # Apply margin to get target view size (margin is the driving parameter)
-        margin = 0.03  # 3% margin
-        max_size = base_max_size * (1.0 + margin)  # Target view size with margin
-        print(f"DEBUG: No geometry found, using metadata bounds - center: {center}, size: {size}, base_size: {base_max_size:.2f}, target_size: {max_size:.2f} (margin: {margin*100:.1f}%)")
-    
+    # Create Open3D visualizer
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=width, height=height)
     
-    # Add meshes with taxonomy colors and clipping using scene graph method
+    # Add meshes with taxonomy colors
     mesh_count = 0
-    total_geometries = len(processed_geometries)
-    print(f"DEBUG: Processing {total_geometries} geometries from scene graph")
-    print(f"DEBUG: Clipping height set to: {clip_height:.2f} (room height: {room_height:.2f}, min_safe: {min_safe_clip_height:.2f})")
-    
-    for geometry, transform, metadata in processed_geometries:
+    for node_name in trimesh_scene.graph.nodes_geometry:
         try:
-            # Apply transform to vertices
-            vertices = geometry.vertices
-            if not np.allclose(transform, np.eye(4)):
-                vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
             else:
-                vertices_world = vertices
+                geometry = trimesh_scene.geometry[geometry_name]
             
-            # Clip mesh if clipping is enabled
-            faces_to_use = geometry.faces
-            if clip_height is not None:
-                # Check if this is a floor mesh - if so, skip clipping
-                mesh_center_height = vertices_world[:, up_axis].mean()
-                is_floor_mesh = mesh_center_height < floor_threshold
-                
-                if not is_floor_mesh:
-                    # Create temporary mesh with transformed vertices for clipping
-                    temp_mesh = trimesh.Trimesh(vertices=vertices_world, faces=geometry.faces)
-                    clipped_mesh = clip_mesh_above_height(temp_mesh, np.eye(4), clip_height, up_axis=up_axis)
-                    if clipped_mesh is None:
-                        continue
-                    # Use clipped mesh vertices and faces
-                    vertices_world = clipped_mesh.vertices
-                    faces_to_use = clipped_mesh.faces
-            
-            # Create Open3D mesh with transformed vertices
-            o3d_mesh = o3d.geometry.TriangleMesh()
-            o3d_mesh.vertices = o3d.utility.Vector3dVector(vertices_world.astype(np.float64))
-            o3d_mesh.triangles = o3d.utility.Vector3iVector(faces_to_use.astype(np.int32))
-            
-            # Apply segmentation colors
-            category_id = metadata.get('category_id', 0)
-            color_rgb = taxonomy.get_color(category_id, mode="category")
-            if color_rgb is None:
-                color_rgb = (127, 127, 127)
-            
-            num_vertices = len(vertices_world)
-            seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
-            o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
-                np.tile(seg_color, (num_vertices, 1))
-            )
-            
-            # Make double-sided
-            if len(o3d_mesh.triangles) > 0:
-                triangles = np.asarray(o3d_mesh.triangles)
-                reversed_triangles = triangles[:, [0, 2, 1]]
-                all_triangles = np.vstack([triangles, reversed_triangles])
-                o3d_mesh.triangles = o3d.utility.Vector3iVector(all_triangles)
-            
-            o3d_mesh.compute_vertex_normals()
-            
-            # Check if mesh has vertices
-            if len(o3d_mesh.vertices) == 0:
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
                 continue
             
-            vis.add_geometry(o3d_mesh)
-            mesh_count += 1
-        except (KeyError, ValueError, IndexError, AttributeError):
+            if isinstance(geometry, trimesh.Trimesh):
+                # Clip mesh if needed
+                clipped_mesh = clip_mesh_above_height(
+                    geometry, clip_height, transform, up_axis, floor_threshold
+                )
+                if clipped_mesh is None:
+                    continue
+                
+                category_id = metadata.get('category_id', 0)
+                color_rgb = taxonomy.get_color(category_id, mode="category")
+                if color_rgb is None:
+                    color_rgb = (127, 127, 127)
+                
+                # Convert to Open3D mesh (don't apply transform, already in world space from GLB)
+                o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform=None, apply_transform=False)
+                num_vertices = len(o3d_mesh.vertices)
+                seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
+                o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
+                    np.tile(seg_color, (num_vertices, 1))
+                )
+                vis.add_geometry(o3d_mesh)
+                mesh_count += 1
+        except (KeyError, ValueError, IndexError):
             continue
     
-    print(f"DEBUG: Added {mesh_count} meshes to visualizer (out of {total_geometries} geometries)")
     if mesh_count == 0:
-        print(f"ERROR: No meshes added to visualizer!")
-        print(f"  Scene bounds: min={min_bounds}, max={max_bounds}")
-        print(f"  Clip height: {clip_height:.2f}")
-        return np.full((height, width, 3), 255, dtype=np.uint8)  # Return white image if no meshes
+        # Return white image if no meshes
+        vis.destroy_window()
+        return np.ones((height, width, 3), dtype=np.uint8) * 255
     
-    opt = vis.get_render_option()
-    opt.background_color = np.array([1.0, 1.0, 1.0], dtype=np.float32)  # White background for segmentation
-    opt.light_on = True
+    # Set up camera for orthographic top-down view (same as RGB)
+    up_vector = np.zeros(3)
+    up_vector[up_axis] = 1.0
     
-    # Camera setup: orthographic projection (same as RGB)
-    # up_axis and up_vector already determined above
-    print(f"Using up direction: axis={up_axis}, vector={up_vector}")
-    
-    # Calculate focal length first (for orthographic projection)
-    desired_fov_rad = np.radians(1.0)  # Very small FOV for orthographic projection
-    fx = fy = (0.5 * min(width, height)) / np.tan(desired_fov_rad / 2.0)
-    
-    # Calculate camera distance to show exactly target_size (max_size) in the image
-    # For pinhole camera: distance = (target_size / 2) * focal_length / (image_size / 2)
-    # Simplified: distance = target_size * focal_length / image_size
+    fov_degrees = 1.0
+    fov_rad = math.radians(fov_degrees)
     image_size = min(width, height)
-    camera_distance = (max_size / 2.0) * fx / (image_size / 2.0)
-    print(f"DEBUG: Camera distance: {camera_distance:.2f} (target_size: {max_size:.2f}, focal_length: {fx:.2f}, image_size: {image_size})")
-    # Position camera along the up direction, looking down the negative up direction
-    camera_offset = up_vector * camera_distance
+    focal_length = (image_size / 2.0) / math.tan(fov_rad / 2.0)
+    
+    camera_distance = (max_size / 2.0) * focal_length / (image_size / 2.0)
+    
     camera_height_pos = max_bounds[up_axis] + camera_distance
-    eye = center.astype(np.float64) + camera_offset
-    # Ensure camera is definitely above the scene
+    eye = center.copy().astype(np.float64)
     eye[up_axis] = camera_height_pos
     center_point = center.astype(np.float64)
     
-    # Find a horizontal axis to use as the camera's "up" in the image
     scene_size_arr = np.array([max_bounds[0] - min_bounds[0], 
                                max_bounds[1] - min_bounds[1], 
                                max_bounds[2] - min_bounds[2]])
@@ -820,53 +500,40 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     horizontal_axis = int(np.argmax(scene_size_arr))
     camera_up = np.zeros(3, dtype=np.float64)
     camera_up[horizontal_axis] = 1.0
-    up = camera_up
     
-    # Debug: print forward vector to verify direction
-    forward = center_point - eye
-    print(f"DEBUG: Camera forward vector (should point DOWN): {forward}")
-    print(f"DEBUG: Forward vector magnitude: {np.linalg.norm(forward):.2f}")
-    print(f"DEBUG: Forward Y component (should be negative for looking down): {forward[1]:.2f}")
-    
-    # Orthographic-like: calculate focal length
-    # For top-down view, we want the entire scene to fit in the image
-    # Focal length already calculated above for camera distance
     cx, cy = width / 2.0, height / 2.0
-    
-    print(f"DEBUG: Orthographic FOV: 1.0 degrees, focal length: {fx:.2f}")
+    fx = fy = focal_length
     
     pin = o3d.camera.PinholeCameraParameters()
     pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
     
     def look_at(eye_, center_, up_):
-        # Match old pipeline's look_at function exactly
         f = center_ - eye_
-        f = f / (np.linalg.norm(f) + 1e-12)
-        upn = up_ / (np.linalg.norm(up_) + 1e-12)
-        l = np.cross(upn, f)  # Note: upn cross f (not f cross upn)
-        l = l / (np.linalg.norm(l) + 1e-12)
-        u2 = np.cross(f, l)
-        M = np.eye(4, dtype=np.float64)
-        M[0, :3] = l
-        M[1, :3] = u2
-        M[2, :3] = f  # Note: positive f (not -f)
-        T = np.eye(4, dtype=np.float64)
-        T[:3, 3] = -eye_
-        return M @ T
+        f = f / np.linalg.norm(f)
+        upn = up_ / np.linalg.norm(up_)
+        s = np.cross(f, upn)
+        s = s / np.linalg.norm(s)
+        u = np.cross(s, f)
+        R = np.array([[s[0], u[0], -f[0]],
+                     [s[1], u[1], -f[1]],
+                     [s[2], u[2], -f[2]]])
+        t = eye_
+        return np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
     
-    pin.extrinsic = look_at(eye, center_point, up)
-    
-    print(f"DEBUG: Camera setup - eye={eye}, center={center_point}, up={up}")
-    print(f"DEBUG: Scene center={center}, max_size={max_size:.2f}, camera_distance={camera_distance:.2f}")
-    print(f"DEBUG: Camera intrinsics - fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
+    pin.extrinsic = look_at(eye, center_point, camera_up)
     
     ctr = vis.get_view_control()
-    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
+    ctr.convert_from_pinhole_camera_parameters(pin)
     
+    # Set background color (white for segmentation)
+    opt = vis.get_render_option()
+    opt.background_color = np.array([1.0, 1.0, 1.0])
+    
+    # Render
     vis.poll_events()
     vis.update_renderer()
-    time.sleep(0.1)
     
+    # Capture image
     import tempfile
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
         tmp_path = tmp_file.name
@@ -885,15 +552,26 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
 
 
 def render_pov(trimesh_scene: trimesh.Scene,
-               camera_pos: np.ndarray,
-               hide_ceilings: bool = False,
-               camera_target: Optional[np.ndarray] = None,
-               width: int = 256,
-               height: int = 256,
-               fov: float = 70.0) -> np.ndarray:
+                camera_pos: np.ndarray,
+                hide_ceilings: bool = False,
+                camera_target: Optional[np.ndarray] = None,
+                width: int = 256,
+                height: int = 256,
+                fov: float = 70.0) -> np.ndarray:
     """
-    Render perspective POV from camera position.
-    Fixed coordinate system: Y-up.
+    Render POV RGB image from a camera position.
+    
+    Args:
+        trimesh_scene: Input trimesh scene
+        camera_pos: Camera position (x, y, z)
+        hide_ceilings: Whether to hide ceiling meshes
+        camera_target: Target point to look at (defaults to scene center)
+        width: Image width
+        height: Image height
+        fov: Field of view in degrees
+        
+    Returns:
+        RGB image as numpy array (H, W, 3)
     """
     if camera_target is None:
         min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings=False)
@@ -904,7 +582,7 @@ def render_pov(trimesh_scene: trimesh.Scene,
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=width, height=height)
     
-    # Add meshes
+    # Add meshes with textures
     for node_name in trimesh_scene.graph.nodes_geometry:
         try:
             transform, geometry_name = trimesh_scene.graph.get(node_name)
@@ -925,51 +603,45 @@ def render_pov(trimesh_scene: trimesh.Scene,
         except (KeyError, ValueError, IndexError):
             continue
     
-    opt = vis.get_render_option()
-    opt.background_color = np.array([0, 0, 0], dtype=np.float32)
-    opt.light_on = True  # Enable lighting for textures
+    # Set up camera
+    eye = np.asarray(camera_pos, dtype=np.float64)
+    center = np.asarray(camera_target, dtype=np.float64)
+    up = np.array([0, 1, 0], dtype=np.float64)  # Y-up
     
-    # Camera setup: perspective
-    # 3D-FRONT uses Z-up, so camera_pos is (x, y, z) where y is height
-    fx = (0.5 * width) / math.tan(math.radians(fov) / 2.0)
-    fy = fx
+    fov_rad = math.radians(fov)
+    fx = fy = (width / 2.0) / math.tan(fov_rad / 2.0)
     cx, cy = width / 2.0, height / 2.0
     
     pin = o3d.camera.PinholeCameraParameters()
     pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
     
     def look_at(eye_, center_, up_):
-        # Match old pipeline's look_at function exactly
         f = center_ - eye_
-        f = f / (np.linalg.norm(f) + 1e-12)
-        upn = up_ / (np.linalg.norm(up_) + 1e-12)
-        l = np.cross(upn, f)  # Note: upn cross f (not f cross upn)
-        l = l / (np.linalg.norm(l) + 1e-12)
-        u2 = np.cross(f, l)
-        M = np.eye(4, dtype=np.float64)
-        M[0, :3] = l
-        M[1, :3] = u2
-        M[2, :3] = f  # Note: positive f (not -f)
-        T = np.eye(4, dtype=np.float64)
-        T[:3, 3] = -eye_
-        return M @ T
+        f = f / np.linalg.norm(f)
+        upn = up_ / np.linalg.norm(up_)
+        s = np.cross(f, upn)
+        s = s / np.linalg.norm(s)
+        u = np.cross(s, f)
+        R = np.array([[s[0], u[0], -f[0]],
+                     [s[1], u[1], -f[1]],
+                     [s[2], u[2], -f[2]]])
+        t = eye_
+        return np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
     
-    # 3D-FRONT coordinate system: X-right, Y-up (height), Z-forward
-    # Open3D uses Y-up, so we need to convert
-    # camera_pos is (x, y, z) in 3D-FRONT coords -> (x, y, z) in Open3D
-    pin.extrinsic = look_at(
-        camera_pos.astype(np.float64),
-        camera_target.astype(np.float64),
-        np.array([0, 1, 0], dtype=np.float64)  # Y-up
-    )
+    pin.extrinsic = look_at(eye, center, up)
     
     ctr = vis.get_view_control()
-    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
+    ctr.convert_from_pinhole_camera_parameters(pin)
     
+    # Set background color
+    opt = vis.get_render_option()
+    opt.background_color = np.array([0.2, 0.2, 0.25])
+    
+    # Render
     vis.poll_events()
     vis.update_renderer()
-    time.sleep(0.1)
     
+    # Capture image
     import tempfile
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
         tmp_path = tmp_file.name
@@ -1037,47 +709,46 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
                 vis.add_geometry(o3d_mesh)
         except (KeyError, ValueError, IndexError):
             continue
+
+    # Set up camera
+    eye = np.asarray(camera_pos, dtype=np.float64)
+    center = np.asarray(camera_target, dtype=np.float64)
+    up = np.array([0, 1, 0], dtype=np.float64)  # Y-up
     
-    opt = vis.get_render_option()
-    opt.background_color = np.array([0, 0, 0], dtype=np.float32)
-    
-    fx = (0.5 * width) / math.tan(math.radians(fov) / 2.0)
-    fy = fx
+    fov_rad = math.radians(fov)
+    fx = fy = (width / 2.0) / math.tan(fov_rad / 2.0)
     cx, cy = width / 2.0, height / 2.0
     
     pin = o3d.camera.PinholeCameraParameters()
     pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
     
     def look_at(eye_, center_, up_):
-        # Match old pipeline's look_at function exactly
         f = center_ - eye_
-        f = f / (np.linalg.norm(f) + 1e-12)
-        upn = up_ / (np.linalg.norm(up_) + 1e-12)
-        l = np.cross(upn, f)  # Note: upn cross f (not f cross upn)
-        l = l / (np.linalg.norm(l) + 1e-12)
-        u2 = np.cross(f, l)
-        M = np.eye(4, dtype=np.float64)
-        M[0, :3] = l
-        M[1, :3] = u2
-        M[2, :3] = f  # Note: positive f (not -f)
-        T = np.eye(4, dtype=np.float64)
-        T[:3, 3] = -eye_
-        return M @ T
+        f = f / np.linalg.norm(f)
+        upn = up_ / np.linalg.norm(up_)
+        s = np.cross(f, upn)
+        s = s / np.linalg.norm(s)
+        u = np.cross(s, f)
+        R = np.array([[s[0], u[0], -f[0]],
+                     [s[1], u[1], -f[1]],
+                     [s[2], u[2], -f[2]]])
+        t = eye_
+        return np.vstack([np.hstack([R, t.reshape(3, 1)]), [0, 0, 0, 1]])
     
-    # 3D-FRONT coordinate system: X-right, Y-up (height), Z-forward
-    pin.extrinsic = look_at(
-        camera_pos.astype(np.float64),
-        camera_target.astype(np.float64),
-        np.array([0, 1, 0], dtype=np.float64)  # Y-up
-    )
+    pin.extrinsic = look_at(eye, center, up)
     
     ctr = vis.get_view_control()
-    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
+    ctr.convert_from_pinhole_camera_parameters(pin)
     
+    # Set background color
+    opt = vis.get_render_option()
+    opt.background_color = np.array([1.0, 1.0, 1.0])
+    
+    # Render
     vis.poll_events()
     vis.update_renderer()
-    time.sleep(0.1)
     
+    # Capture image
     import tempfile
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
         tmp_path = tmp_file.name
@@ -1094,3 +765,78 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     
     return img_np
 
+
+def sample_camera_positions_from_corners(trimesh_scene: trimesh.Scene,
+                                         room_min: np.ndarray,
+                                         room_max: np.ndarray,
+                                         room_center: np.ndarray,
+                                         num_attempts: int = 20,
+                                         num_povs: int = 6,
+                                         up_axis: int = 1,
+                                         eye_height: float = 1.6,
+                                         margin: float = 0.5) -> list:
+    """
+    Sample camera positions from room corners looking toward the center.
+    Places cameras at corners of the room bounding box, looking inward.
+    
+    Args:
+        trimesh_scene: trimesh scene for validation
+        room_min: Minimum bounds of the room (3D array)
+        room_max: Maximum bounds of the room (3D array)
+        room_center: Center of the room (3D array) - camera target
+        num_attempts: Maximum number of attempts to find valid positions
+        num_povs: Number of camera positions to generate
+        up_axis: Which axis is up (0=X, 1=Y, 2=Z)
+        eye_height: Camera eye height offset from floor (in meters)
+        margin: Margin from walls (in meters)
+        
+    Returns:
+        List of camera positions (x, y, z) as numpy arrays
+    """
+    room_min = np.asarray(room_min)
+    room_max = np.asarray(room_max)
+    room_center = np.asarray(room_center)
+    
+    # Calculate room dimensions
+    room_size = room_max - room_min
+    
+    # Determine horizontal axes (not the up axis)
+    horizontal_axes = [i for i in range(3) if i != up_axis]
+    h1, h2 = horizontal_axes[0], horizontal_axes[1]
+    
+    # Calculate floor height (minimum along up axis)
+    floor_height = room_min[up_axis]
+    camera_height = floor_height + eye_height
+    
+    # Generate corner positions in horizontal plane
+    corners = []
+    if num_povs >= 4:
+        # Four main corners
+        corners.append([room_min[h1] + margin, camera_height, room_min[h2] + margin])
+        corners.append([room_max[h1] - margin, camera_height, room_min[h2] + margin])
+        corners.append([room_min[h1] + margin, camera_height, room_max[h2] - margin])
+        corners.append([room_max[h1] - margin, camera_height, room_max[h2] - margin])
+    
+    # Add midpoints if we need more POVs
+    if num_povs > 4:
+        mid_h1 = (room_min[h1] + room_max[h1]) / 2
+        mid_h2 = (room_min[h2] + room_max[h2]) / 2
+        
+        corners.append([room_min[h1] + margin, camera_height, mid_h2])  # Left wall center
+        corners.append([room_max[h1] - margin, camera_height, mid_h2])  # Right wall center
+        corners.append([mid_h1, camera_height, room_min[h2] + margin])  # Bottom wall center
+        corners.append([mid_h1, camera_height, room_max[h2] - margin])  # Top wall center
+    
+    # Convert to 3D positions with correct up axis
+    valid_positions = []
+    for corner_2d in corners[:num_povs]:
+        pos = np.zeros(3)
+        pos[h1] = corner_2d[0]
+        pos[up_axis] = corner_2d[1]  # Camera height
+        pos[h2] = corner_2d[2]
+        
+        # Validate position is not inside furniture (simple bbox check)
+        # For now, just add all corners - can add ray-casting later if needed
+        valid_positions.append(pos)
+    
+    return valid_positions[:num_povs]

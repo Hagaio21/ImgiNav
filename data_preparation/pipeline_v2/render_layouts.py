@@ -77,8 +77,22 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
             return None
     
     resolver = MultiPathResolver(geometry_dir, materials_dir)
-    scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
-                       force='scene', resolver=resolver)
+    
+    # Check if OBJ file exists and is not empty
+    if not obj_path.exists():
+        raise FileNotFoundError(f"OBJ file not found: {obj_path}")
+    
+    if obj_path.stat().st_size == 0:
+        raise ValueError(f"OBJ file is empty: {obj_path}")
+    
+    try:
+        scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
+                           force='scene', resolver=resolver)
+    except Exception as e:
+        raise ValueError(f"Failed to load OBJ file {obj_path}: {e}")
+    
+    if scene is None:
+        raise ValueError(f"OBJ file loaded as None: {obj_path}")
     
     if not isinstance(scene, trimesh.Scene):
         # If it's a single mesh, wrap it in a scene
@@ -88,6 +102,10 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
             scene = new_scene
         else:
             raise ValueError(f"OBJ file did not load as a scene or mesh: {type(scene)}")
+    
+    # Validate scene has geometry
+    if len(scene.geometry) == 0:
+        raise ValueError(f"OBJ file has no geometry: {obj_path}")
     
     return scene
 

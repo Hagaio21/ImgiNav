@@ -64,6 +64,7 @@ def _organize_material_files(obj_path: Path, materials_dir: Path):
     print(f"  Moved MTL file to: {new_mtl_path}")
     
     # Move texture files to materials/ (only if they're in obj_dir or its subdirectories)
+    moved_textures = set()
     for texture_path in texture_files:
         if texture_path.exists():
             # Only move if texture is in or under obj_dir (don't move external textures)
@@ -72,11 +73,29 @@ def _organize_material_files(obj_path: Path, materials_dir: Path):
                 # Get just the filename
                 texture_name = texture_path.name
                 new_texture_path = materials_dir / texture_name
-                shutil.move(str(texture_path), str(new_texture_path))
-                print(f"  Moved texture to: {new_texture_path}")
+                if not new_texture_path.exists():  # Don't overwrite if already moved
+                    shutil.move(str(texture_path), str(new_texture_path))
+                    moved_textures.add(texture_name)
+                    print(f"  Moved texture to: {new_texture_path}")
             except ValueError:
                 # Texture is outside obj_dir, skip it
                 print(f"  WARNING: Texture {texture_path} is outside geometry folder, skipping move")
+    
+    # Also find any image files in geometry/ that might have been created by trimesh
+    # (trimesh sometimes creates texture files with different names)
+    image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tga', '.tiff']
+    for ext in image_extensions:
+        for img_file in obj_dir.glob(f'*{ext}'):
+            # Skip if it's already in materials/ or if we already moved it
+            if img_file.parent == materials_dir:
+                continue
+            if img_file.name in moved_textures:
+                continue
+            # Move any image files found in geometry/ to materials/
+            new_img_path = materials_dir / img_file.name
+            if not new_img_path.exists():
+                shutil.move(str(img_file), str(new_img_path))
+                print(f"  Moved image file to: {new_img_path}")
     
     # MTL content doesn't need updating - textures are referenced by filename only
     # (they're in the same materials/ folder as the MTL file)
@@ -242,17 +261,36 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     
     # Save regular OBJ with textures (no ceilings) - OBJ preserves textures via MTL files
     print("Saving scene geometry...")
-    obj_path = geometry_dir / f"{scene_id}.obj"
     materials_dir = geometry_dir / "materials"
     materials_dir.mkdir(parents=True, exist_ok=True)
     
-    # Export as OBJ (trimesh will create MTL file for textures)
+    # Export OBJ to materials/ folder first (so all materials are saved there)
+    temp_obj_path = materials_dir / f"{scene_id}.obj"
+    obj_path = geometry_dir / f"{scene_id}.obj"
+    
+    # Export as OBJ (trimesh will create MTL file and textures in materials/ folder)
     try:
-        scene_no_ceiling.export(obj_path, file_type="obj")
-        print(f"  Saved scene geometry: {obj_path}")
+        scene_no_ceiling.export(temp_obj_path, file_type="obj")
+        print(f"  Exported scene geometry to: {temp_obj_path}")
         
-        # Organize material files (MTL and textures) into materials/ folder
-        _organize_material_files(obj_path, materials_dir)
+        # Move OBJ file to geometry/ folder, leaving all materials in materials/
+        shutil.move(str(temp_obj_path), str(obj_path))
+        print(f"  Moved OBJ to geometry folder: {obj_path}")
+        
+        # Update OBJ file to reference MTL in materials/ folder
+        with open(obj_path, 'r') as f:
+            obj_content = f.read()
+        
+        # Update mtllib reference to point to materials/ folder
+        obj_content = re.sub(
+            r'mtllib\s+[^\s\n]+',
+            f'mtllib materials/{scene_id}.mtl',
+            obj_content
+        )
+        
+        with open(obj_path, 'w') as f:
+            f.write(obj_content)
+        print(f"  Updated OBJ file to reference MTL in materials/ folder")
     except Exception as e:
         print(f"  WARNING: OBJ export failed: {e}")
         import traceback
@@ -264,6 +302,7 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     seg_scene = create_segmented_scene(trimesh_scene, taxonomy)
     seg_obj_path = geometry_dir / f"{scene_id}_seg.obj"
     try:
+        # Export segmented OBJ directly to geometry/ (no materials needed for vertex colors)
         seg_scene.export(seg_obj_path, file_type="obj")
         print(f"  Saved segmented geometry: {seg_obj_path}")
     except Exception as e:
