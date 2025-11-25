@@ -29,7 +29,7 @@ bsub -J "compare_experiments" \
     -n 1 \
     -R "rusage[mem=4000]" \
     -W 2:00 \
-    -q gpuv100 \
+    -q hpc \
     bash "${COMPARE_SCRIPT}"
 
 echo ""
