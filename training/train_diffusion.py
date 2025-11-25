@@ -879,13 +879,9 @@ def main():
         best_val_loss = extra_state.get("best_val_loss", float("inf"))
         training_history = extra_state.get("training_history", [])
         
-        if not training_history and metrics_csv_path.exists():
-            try:
-                df = pd.read_csv(metrics_csv_path)
-                df_filtered = df[df['epoch'] < (start_epoch + 1)]
-                training_history = df_filtered.to_dict('records')
-            except Exception:
-                pass
+        if not training_history:
+            from training.utils import load_training_history_from_csv
+            training_history = load_training_history_from_csv(metrics_csv_path, start_epoch)
         
         # Check if we need to continue training beyond the checkpoint
         epochs = config["training"].get("epochs", 100)

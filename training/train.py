@@ -446,15 +446,9 @@ def main():
         training_history = extra_state.get("training_history", [])
         
         # If checkpoint doesn't have training_history, try loading from CSV
-        if not training_history and metrics_csv_path.exists():
-            try:
-                df = pd.read_csv(metrics_csv_path)
-                # Filter out epochs >= start_epoch + 1 to avoid duplicates
-                # (start_epoch is 0-indexed, CSV epochs are 1-indexed)
-                df_filtered = df[df['epoch'] < (start_epoch + 1)]
-                training_history = df_filtered.to_dict('records')
-            except Exception:
-                pass
+        if not training_history:
+            from training.utils import load_training_history_from_csv
+            training_history = load_training_history_from_csv(metrics_csv_path, start_epoch)
     else:
         # Build components
         model = build_model(config)

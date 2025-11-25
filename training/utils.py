@@ -33,8 +33,10 @@ def set_deterministic(seed: int = 42, strict_determinism: bool = False):
         torch.use_deterministic_algorithms(True, warn_only=True)
 
 
+
+
 class NumpySafeLoader(yaml.SafeLoader):
-    """Custom YAML loader that handles numpy scalar types."""
+    """YAML loader that safely handles numpy scalar types."""
     pass
 
 
@@ -438,3 +440,28 @@ def build_scheduler(optimizer, config, last_epoch=-1, max_steps=None):
     
     return scheduler
 
+
+def load_training_history_from_csv(metrics_csv_path, start_epoch):
+    """
+    Load training history from CSV file if checkpoint doesn't have it.
+    
+    Args:
+        metrics_csv_path: Path to metrics CSV file
+        start_epoch: Starting epoch (0-indexed)
+    
+    Returns:
+        List of training history records (empty list if CSV doesn't exist or can't be loaded)
+    """
+    import pandas as pd
+    
+    if not metrics_csv_path.exists():
+        return []
+    
+    try:
+        df = pd.read_csv(metrics_csv_path)
+        # Filter out epochs >= start_epoch + 1 to avoid duplicates
+        # (start_epoch is 0-indexed, CSV epochs are 1-indexed)
+        df_filtered = df[df['epoch'] < (start_epoch + 1)]
+        return df_filtered.to_dict('records')
+    except Exception:
+        return []
