@@ -1,19 +1,19 @@
 #!/bin/bash
 # Launch script for rooms-only experiments with text/graph conditioning only (no POV)
-# Runs small, medium, and large sizes with full cross attention
+# Runs small, medium, and large sizes with down+bottleneck cross attention
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular_rooms/small_all_text_only.yaml"
-    "experiments/diffusion/clip/regular_rooms/medium_all_text_only.yaml"
-    "experiments/diffusion/clip/regular_rooms/large_all_text_only.yaml"
+    "experiments/diffusion/clip/regular_rooms/small_down_bottleneck_text_only.yaml"
+    "experiments/diffusion/clip/regular_rooms/medium_down_bottleneck_text_only.yaml"
+    "experiments/diffusion/clip/regular_rooms/large_down_bottleneck_text_only.yaml"
 )
 
 echo "=============================================================================="
-echo "Launching Rooms-Only Experiments (Text/Graph Only, Full Cross Attention)"
+echo "Launching Rooms-Only Experiments (Text/Graph Only, Down+Bottleneck Attention)"
 echo "=============================================================================="
 echo "Submitting ${#CONFIGS[@]} jobs..."
 

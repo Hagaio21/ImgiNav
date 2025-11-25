@@ -1,7 +1,7 @@
 experiment:
-  name: diff_clip_regular_rooms_medium_all_text_only
+  name: diff_clip_regular_rooms_small_down_bottleneck_text_only
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_regular_rooms_medium_all_text_only
+  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_regular_rooms_small_down_bottleneck_text_only
   epochs_target: 1000
 
 dataset:
@@ -27,7 +27,7 @@ scale_factor: 1.0
 
 embedding_projection:
   type: CLIPEmbeddingToSpatial
-  output_channels: 64
+  output_channels: 48
   spatial_size: [32, 32]  # Increased for better conditioning
   combine_method: average
 
@@ -35,18 +35,17 @@ unet:
   type: UnetWithAttention
   in_channels: 4
   out_channels: 4
-  base_channels: 64
-  depth: 4
+  base_channels: 48
+  depth: 3
   num_res_blocks: 2
   time_dim: 256
   norm_groups: 8
   dropout: 0.1
   use_attention: true
-  attention_heads: 4
+  attention_heads: 2
   attention_at:
     - downs
-    - bottleneck
-    - ups              # Attention at all locations (full cross attention)
+    - bottleneck              # Attention at downs and bottleneck only
   enable_cross_attention: true
   use_ema: false
 
@@ -57,7 +56,7 @@ scheduler:
 training:
   seed: 2024
   train_split: 0.8
-  batch_size: 16  # Medium: 64²×4×4, attention at all levels uses more memory
+  batch_size: 4
   num_workers: 4
   shuffle: true
   epochs: 1000
