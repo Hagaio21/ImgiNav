@@ -172,232 +172,183 @@ def compute_room_center_from_bboxes(bboxes: List[Tuple[int, int, int, int]]) -> 
     return (center_x, center_y)
 
 
-def visualize_graph(img: np.ndarray, room_center: Tuple[int, int],
-                   nodes: List[Dict], edges: List[Dict], out_path: Path):
-    """
-    Create visualization of graph overlaid on layout image.
-    
-    Args:
-        img: Original segmentation layout image (RGB)
-        room_center: (x, y) room center
-        nodes: List of node dicts
-        edges: List of edge dicts
-        out_path: Output path for visualization PNG
-    """
-    h, w = img.shape[:2]
-    
-    # Create visualization on white background
-    vis = np.ones((h, w, 3), dtype=np.uint8) * 255
-    
-    # Draw the original image with transparency
-    alpha = 0.3
-    vis = cv2.addWeighted(img, alpha, vis, 1 - alpha, 0)
-    
-    # Draw edges first
-    for e in edges:
-        if e.get("distance_relation") is None:
-            continue
-        
-        a = next((n for n in nodes if n["id"] == e["obj_a"]), None)
-        b = next((n for n in nodes if n["id"] == e["obj_b"]), None)
-        if not a or not b:
-            continue
-        
-        ca = tuple(map(int, a["center"]))
-        cb = tuple(map(int, b["center"]))
-        cv2.line(vis, ca, cb, (0, 0, 0), 1, cv2.LINE_AA)
-        
-        # Label edge
-        mid = ((np.array(ca) + np.array(cb)) / 2).astype(int)
-        text = f"({e.get('distance_relation', '')}, {e.get('direction_relation', '')})"
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
-        cv2.rectangle(vis, (mid[0] - 2, mid[1] - th - 2), 
-                     (mid[0] + tw + 2, mid[1] + 2), (255, 255, 255), -1)
-        cv2.putText(vis, text, tuple(mid), cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.3, (0, 0, 0), 1, cv2.LINE_AA)
-    
-    # Draw room center
-    cv2.circle(vis, room_center, 12, (0, 0, 0), -1, cv2.LINE_AA)
-    cv2.circle(vis, room_center, 12, (255, 255, 255), 1, cv2.LINE_AA)
-    
-    # Draw nodes with bounding boxes
-    for n in nodes:
-        center = tuple(map(int, n["center"]))
-        bbox = n.get("bbox")
-        node_color = tuple(map(int, n.get("color", (128, 128, 128))))
-        
-        # Draw bounding box if available
-        if bbox:
-            x, y, w, h = bbox
-            cv2.rectangle(vis, (x, y), (x + w, y + h), node_color, 2)
-        
-        # Draw center point
-        cv2.circle(vis, center, 6, node_color, -1, cv2.LINE_AA)
-        cv2.circle(vis, center, 6, (0, 0, 0), 1, cv2.LINE_AA)
-        
-        # Add label
-        label = n["label"]
-        (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-        text_x = center[0] - tw // 2
-        text_y = center[1] + 20
-        
-        overlay = vis.copy()
-        cv2.rectangle(overlay, (text_x - 2, text_y - th - 2), 
-                     (text_x + tw + 2, text_y + baseline), (255, 255, 255), -1)
-        cv2.addWeighted(overlay, 0.8, vis, 0.2, 0, vis)
-        cv2.putText(vis, label, (text_x, text_y), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1, cv2.LINE_AA)
-    
-    # Convert back to BGR for saving
-    vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(str(out_path), vis_bgr)
-    print(f"  ↳ saved visualization {out_path}", flush=True)
 
 
-def build_room_graph_from_layout(scene_id: str, room_name: str, layout_path: Path,
-                                 taxonomy: Taxonomy, output_dir: Path):
+def build_room_graph_from_metadata(scene_id: str, room_name: str, room_metadata: Dict,
+                                   taxonomy: Taxonomy, output_dir: Path):
     """
-    Build room graph from segmentation layout image using a new approach:
-    - Connected components for object detection
-    - Bounding boxes for spatial relationships
-    - No clustering, no point clouds
+    Build room graph from metadata (furniture positions, room center, etc.).
+    This is faster and doesn't require layout images.
     
     Args:
         scene_id: Scene identifier
         room_name: Room name (e.g., "scene", "bedroom", "livingroom")
-        layout_path: Path to segmentation layout image
+        room_metadata: Room metadata dict from scene metadata JSON
         taxonomy: Taxonomy object
         output_dir: Directory to save graph files
     """
-    # Load segmentation image
-    img = cv2.imread(str(layout_path))
-    if img is None:
-        print(f"[warn] cannot read {layout_path}", flush=True)
+    if 'furniture' not in room_metadata or len(room_metadata['furniture']) == 0:
+        print(f"  [warn] No furniture in room {room_name}", flush=True)
         return None
     
-    # Convert BGR to RGB
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    h, w = img.shape[:2]
+    # Get room bounds for coordinate normalization
+    room_bounds = room_metadata.get('bounds', {})
+    if 'min' not in room_bounds or 'max' not in room_bounds:
+        print(f"  [warn] No bounds for room {room_name}", flush=True)
+        return None
     
-    # Get color to label mapping from taxonomy
-    color_to_label = taxonomy.get_color_to_label_dict()
+    room_min = np.array(room_bounds['min'])
+    room_max = np.array(room_bounds['max'])
+    room_center_3d = np.array(room_metadata.get('center', (room_min + room_max) / 2))
+    room_size = room_max - room_min
     
-    # Find all unique colors in image (excluding white background)
-    unique_colors = np.unique(img.reshape(-1, 3), axis=0)
+    # Project 3D positions to 2D (top-down view: use X and Z, ignore Y/height)
+    # For layout view, we use X and Z coordinates
+    up_axis = 1  # Y is typically up in 3D-FRONT
+    horizontal_axes = [0, 2]  # X and Z
     
-    # Build nodes from connected components
+    # Build nodes from furniture metadata
     nodes = []
     node_id = 0
-    all_bboxes = []
+    all_positions_2d = []
     
-    for color in unique_colors:
-        color_t = tuple(int(c) for c in color)
+    for furniture in room_metadata['furniture']:
+        position_3d = np.array(furniture['position'])
+        position_2d = position_3d[horizontal_axes]  # [x, z] coordinates
         
-        # Skip white background
-        if color_t == (255, 255, 255):
-            continue
+        # Normalize to image coordinates (0-255 for 256x256 image)
+        # Map room bounds to image coordinates
+        normalized_x = ((position_2d[0] - room_min[horizontal_axes[0]]) / room_size[horizontal_axes[0]]) * 255
+        normalized_z = ((position_2d[1] - room_min[horizontal_axes[1]]) / room_size[horizontal_axes[1]]) * 255
         
-        # Check if this color is in taxonomy
-        if color_t not in color_to_label:
-            continue
-        
-        label_info = color_to_label[color_t]
-        
-        # Find connected components for this color
-        components = find_connected_components(img, color_t)
-        
-        print(f"  Color {color_t} ({label_info['label']}): {len(components)} instances", flush=True)
-        
-        for comp in components:
-            node_key = f"{label_info['label']}_{node_id}"
-            centroid = comp['centroid']
-            bbox = comp['bbox']
+        # Create bounding box from furniture bounds
+        furniture_bounds = furniture.get('bounds', {})
+        if 'min' in furniture_bounds and 'max' in furniture_bounds:
+            bbox_min = np.array(furniture_bounds['min'])[horizontal_axes]
+            bbox_max = np.array(furniture_bounds['max'])[horizontal_axes]
             
-            nodes.append({
-                "id": node_key,
-                "label": label_info["label"],
-                "label_id": label_info["label_id"],
-                "center": list(centroid),
-                "bbox": bbox,
-                "area": int(comp['area']),
-                "color": color_t
-            })
+            # Normalize bbox to image coordinates
+            bbox_x = ((bbox_min[0] - room_min[horizontal_axes[0]]) / room_size[horizontal_axes[0]]) * 255
+            bbox_z = ((bbox_min[1] - room_min[horizontal_axes[1]]) / room_size[horizontal_axes[1]]) * 255
+            bbox_w = ((bbox_max[0] - bbox_min[0]) / room_size[horizontal_axes[0]]) * 255
+            bbox_h = ((bbox_max[1] - bbox_min[1]) / room_size[horizontal_axes[1]]) * 255
             
-            all_bboxes.append(bbox)
-            node_id += 1
+            bbox = (int(bbox_x), int(bbox_z), int(bbox_w), int(bbox_h))
+        else:
+            # Fallback: create small bbox around position
+            bbox_size = 10  # pixels
+            bbox = (int(normalized_x - bbox_size/2), int(normalized_z - bbox_size/2), bbox_size, bbox_size)
+        
+        category_id = furniture.get('category_id', 0)
+        category_name = furniture.get('category_name', 'unknown')
+        label = furniture.get('label', 'unknown')
+        
+        # Get label_id from taxonomy
+        label_id = taxonomy.data.get('label2id', {}).get(label, 0)
+        
+        node_key = f"{label}_{node_id}"
+        nodes.append({
+            "id": node_key,
+            "label": label,
+            "label_id": label_id,
+            "center": [int(normalized_x), int(normalized_z)],
+            "bbox": bbox,
+            "area": int(bbox[2] * bbox[3]),  # width * height
+            "position_3d": position_3d.tolist(),
+            "category_id": category_id,
+            "category_name": category_name
+        })
+        
+        all_positions_2d.append([normalized_x, normalized_z])
+        node_id += 1
     
     print(f"  Total nodes created: {len(nodes)}", flush=True)
     
     if len(nodes) == 0:
-        print(f"  [warn] No objects found in layout", flush=True)
+        print(f"  [warn] No objects found in room metadata", flush=True)
         return None
     
-    # Compute room center from bounding boxes
-    room_center = compute_room_center_from_bboxes(all_bboxes)
+    # Compute room center in 2D
+    if all_positions_2d:
+        room_center_2d = np.array(all_positions_2d).mean(axis=0)
+    else:
+        room_center_2d = np.array([128, 128])  # Center of 256x256 image
     
-    # Build edges based on bounding box distances
+    # Build edges based on 2D distances
     edges = []
-    image_diagonal = np.sqrt(h * h + w * w)
+    image_diagonal = np.sqrt(256 * 256 + 256 * 256)  # 256x256 image
     near_threshold = 0.1 * image_diagonal  # 10% of image diagonal
     by_threshold = 0.05 * image_diagonal   # 5% of image diagonal
     
     for i, a in enumerate(nodes):
-        bbox_a = a["bbox"]
-        center_a = tuple(a["center"])
+        center_a = np.array(a["center"])
         label_a = a["label"].lower()
         
         for j, b in enumerate(nodes):
             if j <= i:
                 continue
             
-            bbox_b = b["bbox"]
-            center_b = tuple(b["center"])
+            center_b = np.array(b["center"])
             label_b = b["label"].lower()
             
-            # Compute distance between bounding boxes
-            distance = compute_bbox_distance(bbox_a, bbox_b)
+            # Compute 2D distance
+            dist_2d = np.linalg.norm(center_b - center_a)
             
-            # Determine proximity relation
-            distance_relation = None
-            if "structure" in label_a or "structure" in label_b:
-                if distance < by_threshold:
-                    distance_relation = "by"
-            else:
-                if distance < near_threshold:
-                    distance_relation = "near"
+            # Determine relationship
+            relation = None
+            if dist_2d < near_threshold:
+                relation = "near"
+            elif dist_2d < by_threshold:
+                relation = "by"
             
-            # Compute directional relation
-            dir_a_to_b, dir_b_to_a = compute_spatial_relation(
-                center_a, center_b, room_center
-            )
-            
-            edges.append({
-                "obj_a": a["id"],
-                "obj_b": b["id"],
-                "distance_relation": distance_relation,
-                "direction_relation": dir_a_to_b
-            })
-            edges.append({
-                "obj_a": b["id"],
-                "obj_b": a["id"],
-                "distance_relation": distance_relation,
-                "direction_relation": dir_b_to_a
-            })
+            if relation:
+                # Compute angle from room center
+                vec_a = center_a - room_center_2d
+                vec_b = center_b - room_center_2d
+                
+                angle_a = np.arctan2(vec_a[1], vec_a[0])
+                angle_b = np.arctan2(vec_b[1], vec_b[0])
+                angle_diff = angle_b - angle_a
+                
+                # Normalize angle to [-pi, pi]
+                while angle_diff > np.pi:
+                    angle_diff -= 2 * np.pi
+                while angle_diff < -np.pi:
+                    angle_diff += 2 * np.pi
+                
+                # Determine directional relation
+                if abs(angle_diff) < np.pi / 6:  # ~30 degrees
+                    direction = "right_of" if angle_diff > 0 else "left_of"
+                elif abs(angle_diff - np.pi / 2) < np.pi / 6:
+                    direction = "behind"
+                elif abs(angle_diff + np.pi / 2) < np.pi / 6:
+                    direction = "in_front_of"
+                else:
+                    direction = relation
+                
+                edges.append({
+                    "source": a["id"],
+                    "target": b["id"],
+                    "relation": direction,
+                    "distance": float(dist_2d)
+                })
     
-    # Build graph structure
+    # Create graph structure
     graph = {
         "scene_id": scene_id,
         "room_name": room_name,
-        "room_center": list(room_center),
+        "room_center": room_center_2d.tolist(),
         "nodes": nodes,
         "edges": edges
     }
     
-    # Generate output filenames using room_name
+    # Save graph files
     safe_room_name = room_name.replace(" ", "_").replace("/", "_").lower()
-    graph_json = output_dir / f"{scene_id}_{safe_room_name}_graph.json"
-    graph_txt = output_dir / f"{scene_id}_{safe_room_name}_graph.txt"
-    graph_vis = output_dir / f"{scene_id}_{safe_room_name}_graph_vis.png"
+    graphs_dir = output_dir / "graphs"
+    graphs_dir.mkdir(parents=True, exist_ok=True)
+    
+    graph_json = graphs_dir / f"{scene_id}_{safe_room_name}_graph.json"
+    graph_txt = graphs_dir / f"{scene_id}_{safe_room_name}_graph.txt"
     
     # Save JSON
     write_json(graph, graph_json)
@@ -412,7 +363,215 @@ def build_room_graph_from_layout(scene_id: str, room_name: str, layout_path: Pat
     except Exception as e:
         print(f"  [warn] Failed to generate text for {graph_json}: {e}", flush=True)
     
-    # Generate visualization
-    visualize_graph(img, room_center, nodes, edges, graph_vis)
+    return graph
+
+
+def build_scene_graph_from_metadata(scene_id: str, scene_metadata: Dict,
+                                    taxonomy: Taxonomy, output_dir: Path):
+    """
+    Build scene-level graph from metadata (all furniture positions across all rooms).
+    This is faster and doesn't require layout images.
+    
+    Args:
+        scene_id: Scene identifier
+        scene_metadata: Full scene metadata dict from scene metadata JSON
+        taxonomy: Taxonomy object
+        output_dir: Directory to save graph files
+    """
+    # Collect all furniture from all rooms
+    all_furniture = []
+    scene_bounds = scene_metadata.get('bounds', {})
+    
+    if 'min' not in scene_bounds or 'max' not in scene_bounds:
+        print(f"  [warn] No bounds for scene", flush=True)
+        return None
+    
+    scene_min = np.array(scene_bounds['min'])
+    scene_max = np.array(scene_bounds['max'])
+    scene_center_3d = np.array(scene_metadata.get('center', (scene_min + scene_max) / 2))
+    scene_size = scene_max - scene_min
+    
+    # Collect furniture from all rooms
+    for room_name, room_info in scene_metadata.get('rooms', {}).items():
+        room_furniture = room_info.get('furniture', [])
+        for furniture in room_furniture:
+            # Add room name to furniture info
+            furniture_with_room = furniture.copy()
+            furniture_with_room['room_name'] = room_name
+            all_furniture.append(furniture_with_room)
+    
+    if len(all_furniture) == 0:
+        print(f"  [warn] No furniture in scene", flush=True)
+        return None
+    
+    # Project 3D positions to 2D (top-down view: use X and Z, ignore Y/height)
+    up_axis = 1  # Y is typically up in 3D-FRONT
+    horizontal_axes = [0, 2]  # X and Z
+    
+    # Build nodes from furniture metadata
+    nodes = []
+    node_id = 0
+    all_positions_2d = []
+    
+    for furniture in all_furniture:
+        position_3d = np.array(furniture['position'])
+        position_2d = position_3d[horizontal_axes]  # [x, z] coordinates
+        
+        # Normalize to image coordinates (0-255 for 256x256 image)
+        normalized_x = ((position_2d[0] - scene_min[horizontal_axes[0]]) / scene_size[horizontal_axes[0]]) * 255
+        normalized_z = ((position_2d[1] - scene_min[horizontal_axes[1]]) / scene_size[horizontal_axes[1]]) * 255
+        
+        # Create bounding box from furniture bounds
+        furniture_bounds = furniture.get('bounds', {})
+        if 'min' in furniture_bounds and 'max' in furniture_bounds:
+            bbox_min = np.array(furniture_bounds['min'])[horizontal_axes]
+            bbox_max = np.array(furniture_bounds['max'])[horizontal_axes]
+            
+            # Normalize bbox to image coordinates
+            bbox_x = ((bbox_min[0] - scene_min[horizontal_axes[0]]) / scene_size[horizontal_axes[0]]) * 255
+            bbox_z = ((bbox_min[1] - scene_min[horizontal_axes[1]]) / scene_size[horizontal_axes[1]]) * 255
+            bbox_w = ((bbox_max[0] - bbox_min[0]) / scene_size[horizontal_axes[0]]) * 255
+            bbox_h = ((bbox_max[1] - bbox_min[1]) / scene_size[horizontal_axes[1]]) * 255
+            
+            bbox = (int(bbox_x), int(bbox_z), int(bbox_w), int(bbox_h))
+        else:
+            # Fallback: create small bbox around position
+            bbox_size = 10  # pixels
+            bbox = (int(normalized_x - bbox_size/2), int(normalized_z - bbox_size/2), bbox_size, bbox_size)
+        
+        category_id = furniture.get('category_id', 0)
+        category_name = furniture.get('category_name', 'unknown')
+        label = furniture.get('label', 'unknown')
+        room_name = furniture.get('room_name', 'unknown')
+        
+        # Get label_id from taxonomy
+        label_id = taxonomy.data.get('label2id', {}).get(label, 0)
+        
+        node_key = f"{label}_{node_id}"
+        nodes.append({
+            "id": node_key,
+            "label": label,
+            "label_id": label_id,
+            "center": [int(normalized_x), int(normalized_z)],
+            "bbox": bbox,
+            "area": int(bbox[2] * bbox[3]),  # width * height
+            "position_3d": position_3d.tolist(),
+            "category_id": category_id,
+            "category_name": category_name,
+            "room_name": room_name
+        })
+        
+        all_positions_2d.append([normalized_x, normalized_z])
+        node_id += 1
+    
+    print(f"  Total nodes created: {len(nodes)}", flush=True)
+    
+    if len(nodes) == 0:
+        print(f"  [warn] No objects found in scene metadata", flush=True)
+        return None
+    
+    # Compute scene center in 2D
+    if all_positions_2d:
+        scene_center_2d = np.array(all_positions_2d).mean(axis=0)
+    else:
+        scene_center_2d = np.array([128, 128])  # Center of 256x256 image
+    
+    # Build edges based on 2D distances
+    edges = []
+    image_diagonal = np.sqrt(256 * 256 + 256 * 256)  # 256x256 image
+    near_threshold = 0.1 * image_diagonal  # 10% of image diagonal
+    by_threshold = 0.05 * image_diagonal   # 5% of image diagonal
+    
+    for i, a in enumerate(nodes):
+        center_a = np.array(a["center"])
+        label_a = a["label"].lower()
+        room_a = a.get("room_name", "unknown")
+        
+        for j, b in enumerate(nodes):
+            if j <= i:
+                continue
+            
+            center_b = np.array(b["center"])
+            label_b = b["label"].lower()
+            room_b = b.get("room_name", "unknown")
+            
+            # Compute 2D distance
+            dist_2d = np.linalg.norm(center_b - center_a)
+            
+            # Determine relationship
+            relation = None
+            if dist_2d < near_threshold:
+                relation = "near"
+            elif dist_2d < by_threshold:
+                relation = "by"
+            
+            if relation:
+                # Compute angle from scene center
+                vec_a = center_a - scene_center_2d
+                vec_b = center_b - scene_center_2d
+                
+                angle_a = np.arctan2(vec_a[1], vec_a[0])
+                angle_b = np.arctan2(vec_b[1], vec_b[0])
+                angle_diff = angle_b - angle_a
+                
+                # Normalize angle to [-pi, pi]
+                while angle_diff > np.pi:
+                    angle_diff -= 2 * np.pi
+                while angle_diff < -np.pi:
+                    angle_diff += 2 * np.pi
+                
+                # Determine directional relation
+                if abs(angle_diff) < np.pi / 6:  # ~30 degrees
+                    direction = "right_of" if angle_diff > 0 else "left_of"
+                elif abs(angle_diff - np.pi / 2) < np.pi / 6:
+                    direction = "behind"
+                elif abs(angle_diff + np.pi / 2) < np.pi / 6:
+                    direction = "in_front_of"
+                else:
+                    direction = relation
+                
+                # Add room information to edge if objects are in different rooms
+                edge_data = {
+                    "source": a["id"],
+                    "target": b["id"],
+                    "relation": direction,
+                    "distance": float(dist_2d)
+                }
+                
+                if room_a != room_b:
+                    edge_data["cross_room"] = True
+                    edge_data["source_room"] = room_a
+                    edge_data["target_room"] = room_b
+                
+                edges.append(edge_data)
+    
+    # Create graph structure
+    graph = {
+        "scene_id": scene_id,
+        "room_name": "scene",
+        "room_center": scene_center_2d.tolist(),
+        "nodes": nodes,
+        "edges": edges
+    }
+    
+    # Save graph files
+    graphs_dir = output_dir / "graphs"
+    graphs_dir.mkdir(parents=True, exist_ok=True)
+    
+    graph_json = graphs_dir / f"{scene_id}_scene_graph.json"
+    graph_txt = graphs_dir / f"{scene_id}_scene_graph.txt"
+    
+    # Save JSON
+    write_json(graph, graph_json)
+    print(f"✔ wrote {graph_json}", flush=True)
+    
+    # Generate text version
+    try:
+        text = graph2text(graph_json, taxonomy)
+        if text:
+            graph_txt.write_text(text, encoding="utf-8")
+            print(f"✔ wrote {graph_txt}", flush=True)
+    except Exception as e:
+        print(f"  [warn] Failed to generate text for {graph_json}: {e}", flush=True)
     
     return graph
