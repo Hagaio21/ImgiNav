@@ -11,9 +11,9 @@ The manifest will include:
 
 Usage:
     python data_preparation/collect_new_layouts.py \
-        --layout_dir /work3/s233249/ImgiNav/datasets/layout_new \
-        --output /work3/s233249/ImgiNav/datasets/layouts_new.csv \
-        --data_root /work3/s233249/ImgiNav/datasets
+        --layout_dir <BASE_DIR>/datasets/layout_new \
+        --output <BASE_DIR>/datasets/layouts_new.csv \
+        --data_root <BASE_DIR>/datasets
 """
 
 import argparse
@@ -25,50 +25,7 @@ from tqdm import tqdm
 from PIL import Image
 
 from utils.layout_analysis import count_distinct_colors
-
-
-def parse_layout_filename(filename: str) -> Tuple[str, str, str]:
-    """
-    Parse layout filename to extract scene_id, type, and room_id.
-    
-    Formats:
-    - Room: {scene_id}_{room_id}_room_seg_layout.png
-      Example: eff72f0f-049a-47b3-8685-b1b6af535435_3021_room_seg_layout.png
-      scene_id = eff72f0f-049a-47b3-8685-b1b6af535435
-      room_id = 3021 (4 digits, coded type)
-    
-    - Scene: {scene_id}_scene_layout.png
-      Example: eff72f0f-049a-47b3-8685-b1b6af535435_scene_layout.png
-      scene_id = eff72f0f-049a-47b3-8685-b1b6af535435
-      room_id = "scene"
-    
-    Returns:
-        (scene_id, type, room_id)
-    """
-    stem = Path(filename).stem
-    
-    # Check for scene layout: {scene_id}_scene_layout
-    scene_match = re.match(r"^(.+?)_scene_layout$", stem)
-    if scene_match:
-        scene_id = scene_match.group(1)
-        return (scene_id, "scene", "scene")
-    
-    # Check for room layout: {scene_id}_{room_id}_room_seg_layout
-    # The room_id is typically 4 digits (coded type)
-    room_match = re.match(r"^(.+?)_(\d{4})_room_seg_layout$", stem)
-    if room_match:
-        scene_id = room_match.group(1)
-        room_id = room_match.group(2)  # 4-digit room code
-        return (scene_id, "room", room_id)
-    
-    # Fallback: try more flexible pattern for room layouts
-    room_match_flex = re.match(r"^(.+?)_(.+?)_room_seg_layout$", stem)
-    if room_match_flex:
-        scene_id = room_match_flex.group(1)
-        room_id = room_match_flex.group(2)
-        return (scene_id, "room", room_id)
-    
-    raise ValueError(f"Could not parse layout filename: {filename}")
+from utils.file_discovery import parse_layout_filename
 
 
 def check_if_empty(layout_path: Path, min_colors: int = 4) -> bool:

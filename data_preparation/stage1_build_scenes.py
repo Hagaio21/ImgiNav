@@ -3,8 +3,9 @@
 import argparse
 import json
 import sys
+import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,14 @@ from common.utils import (
     safe_mkdir, write_json
 )
 from utils.file_discovery import gather_paths_from_sources, infer_ids_from_path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # --- Global Taxonomy Object ---
 TAXONOMY: Taxonomy = None
@@ -329,6 +338,7 @@ def process_scene(scene_data, model_dir, model_info_map):
                 })
 
             except Exception as e:
+                logger.exception(f"Failed to process model {ref_id} in scene: {e}")
                 failed_models[ref_id] = str(e)
 
     if not scene_objects:
@@ -350,7 +360,7 @@ def process_scene(scene_data, model_dir, model_info_map):
 def process_one_scene(
     scene_path: Path, model_dir: Path, model_info_file: Path, out_root: Path,
     args: argparse.Namespace
-) -> bool:
+) -> Tuple[bool, Optional[str]]:
     scene_id = infer_ids_from_path(scene_path)
     if isinstance(scene_id, tuple):
         scene_id = scene_id[0]
@@ -381,13 +391,18 @@ def process_one_scene(
         scene, model_dir, model_info_map)
 
     if point_cloud is None or point_cloud.size == 0:
-        print(f"[WARN] No points sampled for scene {scene_id}")
-        return False
+        error_msg = f"No points sampled for scene {scene_id}"
+        logger.warning(error_msg)
+        return False, error_msg
 
     # Delegate all saving to export_outputs
-    export_outputs(scene_id, out_dir, textured_scene, meshes_info, point_cloud, args, TAXONOMY)
-
-    return True
+    try:
+        export_outputs(scene_id, out_dir, textured_scene, meshes_info, point_cloud, args, TAXONOMY)
+        return True, None
+    except Exception as e:
+        error_msg = f"Failed to export outputs for scene {scene_id}: {e}"
+        logger.exception(error_msg)
+        return False, error_msg
 
 
 # ---------------------------------------------------------------------
@@ -438,15 +453,44 @@ def main():
 
     progress = create_progress_tracker(len(scene_paths), "scenes")
     success_count = 0
+    failed_scenes = []
+    
     for i, scene_path in enumerate(scene_paths, 1):
         try:
-            success = process_one_scene(scene_path, Path(args.model_dir),
-                                        Path(args.model_info), out_root, args)
+            success, error_msg = process_one_scene(scene_path, Path(args.model_dir),
+                                                   Path(args.model_info), out_root, args)
             if success:
                 success_count += 1
-            progress(i, scene_path.name, success)
+                progress(i, scene_path.name, True)
+            else:
+                failed_scenes.append({
+                    "scene_id": scene_path.stem,
+                    "scene_path": str(scene_path),
+                    "error": error_msg or "Unknown error"
+                })
+                progress(i, f"failed {scene_path.name}: {error_msg or 'Unknown error'}", False)
         except Exception as e:
+            error_msg = f"Exception processing scene {scene_path.name}: {e}"
+            logger.exception(error_msg)
+            failed_scenes.append({
+                "scene_id": scene_path.stem,
+                "scene_path": str(scene_path),
+                "error": str(e)
+            })
             progress(i, f"failed {scene_path.name}: {e}", False)
+    
+    # Write failed scenes manifest if any failures occurred
+    if failed_scenes:
+        failed_manifest_path = out_root / "failed_scenes.csv"
+        try:
+            import csv
+            with open(failed_manifest_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=["scene_id", "scene_path", "error"])
+                writer.writeheader()
+                writer.writerows(failed_scenes)
+            logger.info(f"Wrote failed scenes manifest to {failed_manifest_path} ({len(failed_scenes)} failures)")
+        except Exception as e:
+            logger.error(f"Failed to write failed scenes manifest: {e}")
 
     print(f"\nSuccessfully processed {success_count}/{len(scene_paths)} scenes")
 

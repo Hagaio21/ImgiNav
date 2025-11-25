@@ -15,55 +15,75 @@ class DiffusionModel(BaseModel):
     """Minimal end-to-end diffusion model for training."""
 
     def _build(self):
-        ae_cfg = self._init_kwargs.get("autoencoder", None)
-        decoder_cfg = self._init_kwargs.get("decoder", None)
-        unet_cfg = self._init_kwargs.get("unet", {})
-        sched_cfg = self._init_kwargs.get("scheduler", {})
-
-        if ae_cfg:
-            ae_checkpoint = ae_cfg.get("checkpoint")
-            encoder_cfg = ae_cfg.get("encoder", {}) if isinstance(ae_cfg, dict) else {}
-            self._is_vae = isinstance(encoder_cfg, dict) and encoder_cfg.get("variational", False)
-            
-            if ae_checkpoint:
-                autoencoder = Autoencoder.load_checkpoint(ae_checkpoint, map_location="cpu")
-                self.decoder = autoencoder.decoder
-                if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
-                    self._is_vae = getattr(autoencoder.encoder, 'variational', False)
-            else:
-                decoder_subcfg = ae_cfg.get("decoder")
-                if decoder_subcfg:
-                    decoder_subcfg = decoder_subcfg.copy()
-                    decoder_subcfg.pop("checkpoint", None)
-                    self.decoder = Decoder.from_config(decoder_subcfg)
-                else:
-                    raise ValueError("Cannot build decoder: no checkpoint path and no decoder config in autoencoder config")
-            
-            self.encoder = None
+        # Check for dependency injection first (encoder/decoder objects passed directly)
+        encoder = self._init_kwargs.get("encoder", None)
+        decoder = self._init_kwargs.get("decoder", None)
+        
+        if decoder is not None:
+            # Dependency injection: use provided decoder
+            self.decoder = decoder
+            self.encoder = encoder  # May be None
             self.autoencoder = None
-            self._has_encoder = False
-            if ae_cfg.get("frozen", False):
-                self.decoder.freeze()
-        elif decoder_cfg:
-            decoder_checkpoint = decoder_cfg.get("checkpoint")
-            self._is_vae = False
-            if decoder_checkpoint:
-                autoencoder = Autoencoder.load_checkpoint(decoder_checkpoint, map_location="cpu")
-                self.decoder = autoencoder.decoder
-                if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
-                    self._is_vae = getattr(autoencoder.encoder, 'variational', False)
-            else:
-                decoder_cfg_copy = decoder_cfg.copy()
-                decoder_cfg_copy.pop("checkpoint", None)
-                self.decoder = Decoder.from_config(decoder_cfg_copy)
+            self._has_encoder = encoder is not None
+            self._is_vae = (encoder is not None and 
+                          hasattr(encoder, 'variational') and 
+                          encoder.variational)
             
-            self.encoder = None
-            self.autoencoder = None
-            self._has_encoder = False
-            if decoder_cfg.get("frozen", False):
+            # Freeze if requested
+            if self._init_kwargs.get("frozen", False):
                 self.decoder.freeze()
         else:
-            raise ValueError("DiffusionModel requires either 'autoencoder' or 'decoder' config")
+            # Fall back to config-based loading (backward compatibility)
+            ae_cfg = self._init_kwargs.get("autoencoder", None)
+            decoder_cfg = self._init_kwargs.get("decoder", None)
+            
+            if ae_cfg:
+                ae_checkpoint = ae_cfg.get("checkpoint")
+                encoder_cfg = ae_cfg.get("encoder", {}) if isinstance(ae_cfg, dict) else {}
+                self._is_vae = isinstance(encoder_cfg, dict) and encoder_cfg.get("variational", False)
+                
+                if ae_checkpoint:
+                    autoencoder = Autoencoder.load_checkpoint(ae_checkpoint, map_location="cpu")
+                    self.decoder = autoencoder.decoder
+                    if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
+                        self._is_vae = getattr(autoencoder.encoder, 'variational', False)
+                else:
+                    decoder_subcfg = ae_cfg.get("decoder")
+                    if decoder_subcfg:
+                        decoder_subcfg = decoder_subcfg.copy()
+                        decoder_subcfg.pop("checkpoint", None)
+                        self.decoder = Decoder.from_config(decoder_subcfg)
+                    else:
+                        raise ValueError("Cannot build decoder: no checkpoint path and no decoder config in autoencoder config")
+                
+                self.encoder = None
+                self.autoencoder = None
+                self._has_encoder = False
+                if ae_cfg.get("frozen", False):
+                    self.decoder.freeze()
+            elif decoder_cfg:
+                decoder_checkpoint = decoder_cfg.get("checkpoint")
+                self._is_vae = False
+                if decoder_checkpoint:
+                    autoencoder = Autoencoder.load_checkpoint(decoder_checkpoint, map_location="cpu")
+                    self.decoder = autoencoder.decoder
+                    if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
+                        self._is_vae = getattr(autoencoder.encoder, 'variational', False)
+                else:
+                    decoder_cfg_copy = decoder_cfg.copy()
+                    decoder_cfg_copy.pop("checkpoint", None)
+                    self.decoder = Decoder.from_config(decoder_cfg_copy)
+                
+                self.encoder = None
+                self.autoencoder = None
+                self._has_encoder = False
+                if decoder_cfg.get("frozen", False):
+                    self.decoder.freeze()
+            else:
+                raise ValueError("DiffusionModel requires either 'encoder'/'decoder' objects (dependency injection) or 'autoencoder'/'decoder' config")
+        
+        unet_cfg = self._init_kwargs.get("unet", {})
+        sched_cfg = self._init_kwargs.get("scheduler", {})
 
         # Build embedding projection
         embedding_proj_cfg = self._init_kwargs.get("embedding_projection", None)
@@ -78,26 +98,40 @@ class DiffusionModel(BaseModel):
             # Load CLIP projections from VAE if using CLIPEmbeddingToSpatial
             embedding_proj_type = embedding_proj_cfg.get("type", "EmbeddingToSpatial")
             if embedding_proj_type == "CLIPEmbeddingToSpatial":
-                if not ae_cfg or not ae_cfg.get("checkpoint"):
-                    raise ValueError(
-                        "CLIPEmbeddingToSpatial requires autoencoder.checkpoint to load CLIP projections. "
-                        "This experiment requires CLIP projections from the VAE."
-                    )
+                # Try to get CLIP projections from injected autoencoder first
+                clip_projections = None
+                if hasattr(self, 'autoencoder') and self.autoencoder is not None:
+                    if hasattr(self.autoencoder, 'clip_projections') and self.autoencoder.clip_projections is not None:
+                        clip_projections = self.autoencoder.clip_projections
                 
-                try:
-                    autoencoder = Autoencoder.load_checkpoint(ae_cfg.get("checkpoint"), map_location="cpu")
-                    if not hasattr(autoencoder, 'clip_projections') or autoencoder.clip_projections is None:
+                # Fall back to loading from checkpoint if not injected
+                if clip_projections is None:
+                    ae_cfg = self._init_kwargs.get("autoencoder", None)
+                    if not ae_cfg or not ae_cfg.get("checkpoint"):
                         raise ValueError(
-                            f"VAE checkpoint {ae_cfg.get('checkpoint')} does not have CLIP projections. "
-                            "This experiment requires a VAE trained with CLIP projections."
+                            "CLIPEmbeddingToSpatial requires either an injected autoencoder with CLIP projections "
+                            "or autoencoder.checkpoint to load CLIP projections. "
+                            "This experiment requires CLIP projections from the VAE."
                         )
-                    embedding_proj_cfg["clip_projections"] = autoencoder.clip_projections
-                    print("✓ Loaded CLIP projections from VAE checkpoint for embedding projection")
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to load CLIP projections from VAE checkpoint: {e}\n"
-                        "This experiment requires CLIP projections. Cannot proceed without them."
-                    ) from e
+                    
+                    try:
+                        autoencoder = Autoencoder.load_checkpoint(ae_cfg.get("checkpoint"), map_location="cpu")
+                        if not hasattr(autoencoder, 'clip_projections') or autoencoder.clip_projections is None:
+                            raise ValueError(
+                                f"VAE checkpoint {ae_cfg.get('checkpoint')} does not have CLIP projections. "
+                                "This experiment requires a VAE trained with CLIP projections."
+                            )
+                        clip_projections = autoencoder.clip_projections
+                        print("✓ Loaded CLIP projections from VAE checkpoint for embedding projection")
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"Failed to load CLIP projections from VAE checkpoint: {e}\n"
+                            "This experiment requires CLIP projections. Cannot proceed without them."
+                        ) from e
+                else:
+                    print("✓ Using CLIP projections from injected autoencoder for embedding projection")
+                
+                embedding_proj_cfg["clip_projections"] = clip_projections
             
             # Create embedding projection
             if embedding_proj_type == "CLIPEmbeddingToSpatial":

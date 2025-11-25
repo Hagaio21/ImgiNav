@@ -9,6 +9,12 @@ from .taxonomy import (
     Taxonomy,
     build_taxonomy,
 )
+from .env_config import (
+    ProjectConfig,
+    BASE_DIR,
+    HF_CACHE_DIR,
+    CACHE_DIR,
+)
 
 __all__ = [
     # Utils
@@ -19,4 +25,9 @@ __all__ = [
     # Taxonomy
     'Taxonomy',
     'build_taxonomy',
+    # Environment Config
+    'ProjectConfig',
+    'BASE_DIR',
+    'HF_CACHE_DIR',
+    'CACHE_DIR',
 ]

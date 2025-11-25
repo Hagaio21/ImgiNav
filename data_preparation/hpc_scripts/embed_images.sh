@@ -14,7 +14,7 @@ export MKL_INTERFACE_LAYER=LP64
 # ----------------------------------------------------------------------
 # Configuration
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-SCRIPT_PATH="${BASE_DIR}/data_preparation/create_embeddings.py"
+SCRIPT_PATH="${BASE_DIR}/scripts/embed_manifest.py"
 LOG_DIR="${BASE_DIR}/data_preparation/hpc_scripts/logs"
 
 # Autoencoder config and checkpoint (needed to encode images to latents)
@@ -80,7 +80,6 @@ echo "Note: Latents will be saved in datasets/augmented/latents/"
 echo ""
 
 python "${SCRIPT_PATH}" \
-    --type layout \
     --manifest "${IMAGES_MANIFEST}" \
     --output-manifest "${OUTPUT_MANIFEST}" \
     --autoencoder-config "${AUTOENCODER_CONFIG}" \

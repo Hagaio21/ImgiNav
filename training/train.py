@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.autoencoder import Autoencoder
 from models.datasets.datasets import ManifestDataset
+from training.engine import Trainer
 from training.utils import (
     set_deterministic,
     load_config,
@@ -34,6 +35,7 @@ from training.utils import (
     build_dataset,
     build_loss,
     build_optimizer,
+    build_scheduler,
     get_device,
     to_device,
     move_batch_to_device,
@@ -95,233 +97,35 @@ def compute_latent_statistics(all_latents):
     return stats
 
 
-def save_vae_metadata(output_dir, exp_name, latent_stats):
-    """
-    Save VAE metadata file with latent statistics for scale_factor and clamp values.
-    
-    Args:
-        output_dir: Output directory path
-        exp_name: Experiment name
-        latent_stats: Dictionary with latent statistics (from compute_latent_statistics)
-    """
-    if not latent_stats or len(latent_stats) == 0:
-        return
-    
-    import json
-    import numpy as np
-    
-    # Extract statistics
-    latent_std = latent_stats.get("LatentStats_Std", None)
-    latent_mean = latent_stats.get("LatentStats_Mean", 0.0)
-    latent_min = latent_stats.get("LatentStats_Min", None)
-    latent_max = latent_stats.get("LatentStats_Max", None)
-    
-    # Calculate scale_factor (1.0 / std to normalize to unit variance)
-    scale_factor = 1.0 / latent_std if latent_std and latent_std > 0 else 1.0
-    
-    # Calculate clamp values (based on std: typically ±6σ covers 99.7% of data)
-    # Or use actual min/max if available
-    if latent_min is not None and latent_max is not None:
-        # Use actual min/max with some margin
-        clamp_min = latent_min - 0.5  # Small margin
-        clamp_max = latent_max + 0.5  # Small margin
+# Step functions for Trainer
+def ae_step_fn(model, batch, batch_idx, loss_fn, trainer):
+    """Step function for autoencoder training - computes loss only (Trainer handles backward/step)."""
+    # Forward pass with AMP if enabled
+    if trainer.use_amp:
+        with torch.amp.autocast('cuda'):
+            outputs = model(batch["rgb"])
+            loss, logs = loss_fn(outputs, batch)
     else:
-        # Fallback to std-based clamping (±6σ)
-        clamp_min = -6.0
-        clamp_max = 6.0
-    
-    # Extract per-channel stats if available
-    per_channel_mean = None
-    per_channel_std = None
-    per_channel_min = None
-    per_channel_max = None
-    
-    if "LatentStats_MeanPerCh" in latent_stats:
-        per_channel_mean = json.loads(latent_stats["LatentStats_MeanPerCh"])
-    if "LatentStats_StdPerCh" in latent_stats:
-        per_channel_std = json.loads(latent_stats["LatentStats_StdPerCh"])
-    if "LatentStats_MinPerCh" in latent_stats:
-        per_channel_min = json.loads(latent_stats["LatentStats_MinPerCh"])
-    if "LatentStats_MaxPerCh" in latent_stats:
-        per_channel_max = json.loads(latent_stats["LatentStats_MaxPerCh"])
-    
-    # Build metadata dictionary
-    metadata = {
-        "experiment_name": exp_name,
-        "latent_statistics": {
-            "global": {
-                "mean": float(latent_mean),
-                "std": float(latent_std) if latent_std else None,
-                "min": float(latent_min) if latent_min is not None else None,
-                "max": float(latent_max) if latent_max is not None else None,
-            },
-            "per_channel": {
-                "mean": per_channel_mean,
-                "std": per_channel_std,
-                "min": per_channel_min,
-                "max": per_channel_max,
-            } if per_channel_mean is not None else None,
-        },
-        "recommended_values": {
-            "scale_factor": float(scale_factor),
-            "latent_clamp_min": float(clamp_min),
-            "latent_clamp_max": float(clamp_max),
-        },
-        "notes": {
-            "scale_factor": "1.0 / std, normalizes latents to unit variance",
-            "latent_clamp_min": "Minimum value for clamping latents during diffusion",
-            "latent_clamp_max": "Maximum value for clamping latents during diffusion",
-        }
-    }
-    
-    # Save metadata file
-    metadata_path = output_dir / f"{exp_name}_metadata.json"
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-
-
-def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=False, collect_latents=False):
-    """Train for one epoch."""
-    model.train()
-    total_loss = 0.0
-    total_samples = 0
-    log_dict = {}
-    
-    device_obj = to_device(device)
-    
-    # Collect latents for statistics (if VAE and requested)
-    all_latents = [] if collect_latents else None
-    
-    from models.losses.base_loss import LOSS_REGISTRY
-    CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
-    ClassWeightedMSELossClass = LOSS_REGISTRY.get("ClassWeightedMSELoss")
-    
-    if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-        for sub_loss in loss_fn.losses:
-            if ClassWeightedMSELossClass and isinstance(sub_loss, ClassWeightedMSELossClass):
-                # Get all expected class names from the loss
-                if hasattr(sub_loss, 'class_idx_to_name'):
-                    key = sub_loss.key if hasattr(sub_loss, 'key') else 'rgb'
-                    for class_name in sub_loss.class_idx_to_name.values():
-                        log_key = f"MSE_{key}_{class_name}"
-                        log_dict[log_key] = 0.0
-                    # Also initialize unknown
-                    log_dict[f"MSE_{key}_unknown"] = 0.0
-    
-    # Initialize scaler before loop if using AMP
-    scaler = None
-    if use_amp and device_obj.type == "cuda":
-        scaler = getattr(train_epoch, '_scaler', None)
-        if scaler is None:
-            scaler = create_grad_scaler(use_amp, device_obj)
-            train_epoch._scaler = scaler
-    
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    for batch in pbar:
-        # Move batch to device (non_blocking if using CUDA with pin_memory)
-        batch = move_batch_to_device(batch, device_obj)
-        
         outputs = model(batch["rgb"])
-        
-        if collect_latents and all_latents is not None:
-            if "mu" in outputs:
-                all_latents.append(outputs["mu"].detach().cpu())
-            elif "latent" in outputs:
-                all_latents.append(outputs["latent"].detach().cpu())
-        
         loss, logs = loss_fn(outputs, batch)
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        # Accumulate stats (detach before item() to avoid blocking)
-        batch_size = batch["rgb"].shape[0]
-        loss_val = loss.detach().item()
-        total_loss += loss_val * batch_size
-        total_samples += batch_size
-        
-        # Update logs (detach before item())
-        for k, v in logs.items():
-            if k not in log_dict:
-                log_dict[k] = 0.0
-            log_dict[k] += v.detach().item() * batch_size
-        
-        # Update progress bar
-        pbar.set_postfix({"loss": loss_val, **{k: v/total_samples for k, v in log_dict.items()}})
     
-    avg_loss = total_loss / total_samples
-    avg_logs = {k: v / total_samples for k, v in log_dict.items()}
-    
-    # Compute latent statistics if collected
-    if collect_latents and all_latents and len(all_latents) > 0:
-        latent_stats = compute_latent_statistics(all_latents)
-        avg_logs.update(latent_stats)
-    
-    return avg_loss, avg_logs
+    # Return outputs for latent collection
+    return loss, logs, outputs
 
 
-def eval_epoch(model, dataloader, loss_fn, device, use_amp=False, collect_latents=False):
-    """Evaluate for one epoch."""
-    model.eval()
-    total_loss = 0.0
-    total_samples = 0
-    log_dict = {}
+def ae_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
+    """Step function for autoencoder evaluation - computes loss only."""
+    # Forward pass with AMP if enabled
+    if trainer.use_amp:
+        with torch.amp.autocast('cuda'):
+            outputs = model(batch["rgb"])
+            loss, logs = loss_fn(outputs, batch)
+    else:
+        outputs = model(batch["rgb"])
+        loss, logs = loss_fn(outputs, batch)
     
-    device_obj = to_device(device)
-    
-    # Collect latents for statistics (if VAE and requested)
-    all_latents = [] if collect_latents else None
-    
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Eval", leave=False):
-            # Move batch to device (non_blocking if using CUDA with pin_memory)
-            batch = move_batch_to_device(batch, device_obj)
-            
-            # Forward pass with mixed precision
-            if use_amp and device_obj.type == "cuda":
-                with torch.amp.autocast('cuda'):
-                    outputs = model(batch["rgb"])
-                    loss, logs = loss_fn(outputs, batch)
-                    
-                    # Collect latents for statistics (VAE: mu, AE: latent)
-                    if collect_latents and all_latents is not None:
-                        if "mu" in outputs:
-                            all_latents.append(outputs["mu"].detach().cpu())
-                        elif "latent" in outputs:
-                            all_latents.append(outputs["latent"].detach().cpu())
-            else:
-                outputs = model(batch["rgb"])
-                loss, logs = loss_fn(outputs, batch)
-                
-                # Collect latents for statistics (VAE: mu, AE: latent)
-                if collect_latents and all_latents is not None:
-                    if "mu" in outputs:
-                        all_latents.append(outputs["mu"].detach().cpu())
-                    elif "latent" in outputs:
-                        all_latents.append(outputs["latent"].detach().cpu())
-            
-            # Accumulate stats (detach before item())
-            batch_size = batch["rgb"].shape[0]
-            loss_val = loss.detach().item()
-            total_loss += loss_val * batch_size
-            total_samples += batch_size
-            
-            # Update logs (detach before item())
-            for k, v in logs.items():
-                if k not in log_dict:
-                    log_dict[k] = 0.0
-                log_dict[k] += v.detach().item() * batch_size
-    
-    avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
-    avg_logs = {k: v / total_samples for k, v in log_dict.items()}
-    
-    # Compute latent statistics if collected
-    if collect_latents and all_latents and len(all_latents) > 0:
-        latent_stats = compute_latent_statistics(all_latents)
-        avg_logs.update(latent_stats)
-    
-    return avg_loss, avg_logs
+    # Return outputs for latent collection
+    return loss, logs, outputs
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=8, target_size=256, exp_name=None):
@@ -529,11 +333,26 @@ def main():
         if optimizer_state:
             optimizer.load_state_dict(optimizer_state)
     
+    # Build scheduler if configured
+    scheduler = build_scheduler(optimizer, config.get("training", {}).get("scheduler", None))
+    if should_resume and scheduler:
+        scheduler_state = extra_state.get("scheduler_state")
+        if scheduler_state:
+            scheduler.load_state_dict(scheduler_state)
+    
     # Enable mixed precision training by default (can be disabled in config)
     use_amp = config.get("training", {}).get("use_amp", True)  # Default to True for speedup
-    if use_amp and device_obj.type == "cuda":
-        # Create scaler once for the training function
-        train_epoch._scaler = create_grad_scaler(use_amp, device_obj)
+    
+    # Create Trainer
+    trainer = Trainer(
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        use_amp=use_amp,
+        gradient_accumulation_steps=1,  # AE doesn't use gradient accumulation
+        max_grad_norm=None,  # Can be added to config if needed
+    )
     
     # Training configuration (all from config)
     epochs_to_train = config["training"]["epochs"]  # Additional epochs to train
@@ -562,9 +381,40 @@ def main():
     # Check if model is VAE (variational encoder) to enable latent statistics collection
     is_vae = hasattr(model.encoder, 'variational') and model.encoder.variational
     
+    # Create latent collection function if needed
+    all_latents_train = [] if is_vae else None
+    all_latents_val = [] if is_vae else None
+    
+    def make_collect_fn(all_latents_list):
+        """Create a collect function for latent statistics."""
+        if all_latents_list is None:
+            return None
+        def collect_fn(model, batch, outputs):
+            if "mu" in outputs:
+                all_latents_list.append(outputs["mu"].detach().cpu())
+            elif "latent" in outputs:
+                all_latents_list.append(outputs["latent"].detach().cpu())
+        return collect_fn
+    
     for epoch in range(start_epoch, end_epoch):
+        # Reset latent collections for this epoch
+        if is_vae:
+            all_latents_train.clear()
+            all_latents_val.clear()
+        
         # Training
-        avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp, collect_latents=is_vae)
+        avg_loss, avg_logs = trainer.train_epoch(
+            dataloader=train_loader,
+            loss_fn=loss_fn,
+            epoch=epoch + 1,
+            step_fn=ae_step_fn,
+            collect_fn=make_collect_fn(all_latents_train)
+        )
+        
+        # Compute latent statistics if collected
+        if is_vae and all_latents_train and len(all_latents_train) > 0:
+            latent_stats = compute_latent_statistics(all_latents_train)
+            avg_logs.update(latent_stats)
         
         print(f"Epoch {epoch + 1}/{end_epoch} - Train Loss: {avg_loss:.6f}")
         
@@ -575,9 +425,22 @@ def main():
             **{f"train_{k}": (v if isinstance(v, str) else float(v)) for k, v in avg_logs.items()}
         }
         
+        # Track if this epoch is the best (for checkpoint saving)
+        is_best_this_epoch = False
+        
         # Evaluation (run every epoch if validation set exists)
         if val_loader:
-            val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp, collect_latents=is_vae)
+            val_loss, val_logs = trainer.eval_epoch(
+                dataloader=val_loader,
+                loss_fn=loss_fn,
+                step_fn=ae_eval_step_fn,
+                collect_fn=make_collect_fn(all_latents_val)
+            )
+            
+            # Compute latent statistics if collected
+            if is_vae and all_latents_val and len(all_latents_val) > 0:
+                latent_stats = compute_latent_statistics(all_latents_val)
+                val_logs.update(latent_stats)
             print(f"  Val Loss: {val_loss:.6f}")
             epoch_log["val_loss"] = float(val_loss)
             epoch_log.update({f"val_{k}": (v if isinstance(v, str) else float(v)) for k, v in val_logs.items()})
@@ -587,17 +450,24 @@ def main():
             if improvement > early_stopping_min_delta:
                 best_val_loss = val_loss
                 epochs_without_improvement = 0  # Reset counter on improvement
+                is_best_this_epoch = True
                 
-                # Save best checkpoint immediately (always updated when best is found)
-                best_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
-                model.save_checkpoint(best_path, include_config=True)
+                # Save best checkpoint immediately using Trainer (always updated when best is found)
+                trainer.save_training_checkpoint(
+                    output_dir=output_dir,
+                    exp_name=exp_name,
+                    epoch=epoch + 1,
+                    best_val_loss=best_val_loss,
+                    training_history=training_history,
+                    is_best=True
+                )
                 
                 # Save VAE metadata with latent statistics if available
                 if is_vae and val_logs:
                     # Extract latent statistics from validation logs
                     latent_stats = {k: v for k, v in val_logs.items() if k.startswith("LatentStats_")}
                     if latent_stats:
-                        save_vae_metadata(output_dir, exp_name, latent_stats)
+                        Autoencoder.save_metadata(output_dir, exp_name, latent_stats)
             else:
                 epochs_without_improvement += 1
             
@@ -626,7 +496,7 @@ def main():
         training_history.append(epoch_log)
         
         # Save metrics CSV (overwrite with all epochs so far)
-        save_metrics_csv(training_history, metrics_csv_path)
+        trainer.save_metrics_csv(metrics_csv_path, training_history)
         
         # Create DataFrame for plotting
         df = pd.DataFrame(training_history)
@@ -634,7 +504,12 @@ def main():
         # Plot loss curves (simple train/val loss only)
         plot_loss_curves(df, output_dir, exp_name=exp_name)
         
-        # Save checkpoint at specified interval
+        # Determine if this is the best checkpoint (for latest checkpoint saving)
+        # Best checkpoint is saved immediately when found, so latest checkpoint is_best=False
+        # unless this epoch just became the best (which was already saved above)
+        # Note: is_best_this_epoch is set in the validation block above
+        
+        # Save checkpoint at specified interval (periodic checkpoints)
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
         if should_save:
             checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
@@ -643,11 +518,16 @@ def main():
             checkpoint_files.append(checkpoint_path)
         
         # Always save latest checkpoint (for resume - includes optimizer state)
-        latest_path = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
-        model.save_checkpoint(latest_path, include_config=True,
-                            epoch=epoch + 1, best_val_loss=best_val_loss,
-                            optimizer_state=optimizer.state_dict(),
-                            training_history=training_history)
+        # Note: best checkpoint is already saved above when found, so is_best=False here
+        # (is_best_this_epoch is only True if validation ran and this epoch is best)
+        trainer.save_training_checkpoint(
+            output_dir=output_dir,
+            exp_name=exp_name,
+            epoch=epoch + 1,
+            best_val_loss=best_val_loss,
+            training_history=training_history,
+            is_best=is_best_this_epoch if val_loader else False
+        )
         
         # Clean up old checkpoints if keeping only N
         if keep_checkpoints and len(checkpoint_files) > keep_checkpoints:
@@ -661,13 +541,24 @@ def main():
     
     # Save final VAE metadata if not already saved (use final validation stats)
     if is_vae and val_loader:
-        final_val_loss, final_val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp, collect_latents=True)
+        final_latents = []
+        final_val_loss, final_val_logs = trainer.eval_epoch(
+            dataloader=val_loader,
+            loss_fn=loss_fn,
+            step_fn=ae_eval_step_fn,
+            collect_fn=make_collect_fn(final_latents)
+        )
+        # Compute latent statistics if collected
+        if final_latents and len(final_latents) > 0:
+            latent_stats = compute_latent_statistics(final_latents)
+            final_val_logs.update(latent_stats)
+        
         latent_stats = {k: v for k, v in final_val_logs.items() if k.startswith("LatentStats_")}
         if latent_stats:
             # Check if metadata already exists (from best checkpoint save)
             metadata_path = output_dir / f"{exp_name}_metadata.json"
             if not metadata_path.exists():
-                save_vae_metadata(output_dir, exp_name, latent_stats)
+                Autoencoder.save_metadata(output_dir, exp_name, latent_stats)
 
 
 if __name__ == "__main__":

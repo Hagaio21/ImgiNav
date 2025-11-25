@@ -5,6 +5,7 @@ import pandas as pd
 from pathlib import Path
 import numpy as np
 import sys
+import operator
 from torchvision import transforms
 
 # Add project root to path
@@ -59,45 +60,61 @@ class ManifestDataset(BaseComponent, Dataset):
     # Filtering
     # ------------------------
     def _apply_filters(self, df, filters: dict):
+        """
+        Apply filters to DataFrame using operator mapping for cleaner code.
+        
+        Raises ValueError if any filter column doesn't exist in the DataFrame.
+        """
+        # Operator mapping for filter suffixes
+        OPERATOR_MAP = {
+            "__lt": operator.lt,
+            "__gt": operator.gt,
+            "__le": operator.le,
+            "__ge": operator.ge,
+            "__ne": operator.ne,
+        }
+        
+        # Validate all filter columns exist before processing
+        missing_columns = []
+        for key in filters.keys():
+            # Extract column name (remove operator suffix if present)
+            col = key
+            for suffix in OPERATOR_MAP.keys():
+                if suffix in key:
+                    col = key.replace(suffix, "")
+                    break
+            
+            if col not in df.columns:
+                missing_columns.append(f"'{col}' (from filter '{key}')")
+        
+        if missing_columns:
+            available_cols = list(df.columns)
+            raise ValueError(
+                f"Filter column(s) not found in manifest: {', '.join(missing_columns)}. "
+                f"Available columns: {available_cols}"
+            )
+        
+        # Apply filters
         for key, value in filters.items():
-            if "__lt" in key:
-                col = key.replace("__lt", "")
-                if col not in df.columns:
-                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
-                    continue
-                df = df[df[col] < value]
-            elif "__gt" in key:
-                col = key.replace("__gt", "")
-                if col not in df.columns:
-                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
-                    continue
-                df = df[df[col] > value]
-            elif "__le" in key:
-                col = key.replace("__le", "")
-                if col not in df.columns:
-                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
-                    continue
-                df = df[df[col] <= value]
-            elif "__ge" in key:
-                col = key.replace("__ge", "")
-                if col not in df.columns:
-                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
-                    continue
-                df = df[df[col] >= value]
-            elif "__ne" in key:
-                col = key.replace("__ne", "")
-                if col not in df.columns:
-                    print(f"[WARNING] Filter column '{col}' not found in manifest (filter {key} skipped)")
-                    continue
-                df = df[df[col] != value]
+            # Check for operator suffix
+            op_func = None
+            col = key
+            for suffix, op in OPERATOR_MAP.items():
+                if suffix in key:
+                    col = key.replace(suffix, "")
+                    op_func = op
+                    break
+            
+            if op_func is not None:
+                # Use operator function for comparison
+                df = df[op_func(df[col], value)]
             else:
-                if key not in df.columns:
-                    print(f"[WARNING] Filter column '{key}' not found in manifest (filter skipped)")
-                    continue
+                # Equality or membership check
                 if isinstance(value, (list, tuple, set)):
                     df = df[df[key].isin(value)]
                 else:
                     df = df[df[key] == value]
+        
         return df.reset_index(drop=True)
 
     # ------------------------

@@ -21,8 +21,7 @@ from common.taxonomy import Taxonomy
 from utils.geometry_utils import (
     world_to_local_coords, points_to_image_coords, draw_point
 )
-from utils.layout_analysis import count_distinct_colors
-# We'll use our own numpy-based function instead
+from utils.layout_analysis import count_distinct_colors_numpy
 
 TAXONOMY = None
 
@@ -45,34 +44,6 @@ def compute_whiteness_ratio(canvas: np.ndarray, white_threshold: int = 230) -> f
     return white_pixels / total_pixels if total_pixels > 0 else 0.0
 
 
-def count_distinct_colors_numpy(canvas: np.ndarray, min_pixel_threshold: int = 0) -> int:
-    """
-    Count distinct colors in a numpy canvas array.
-    Includes ALL colors (background, floor, walls, objects).
-    Empty rooms typically have only 3 colors: background + floor + wall.
-    
-    Args:
-        canvas: Image array (H, W, 3) with values in [0, 255]
-        min_pixel_threshold: Minimum number of pixels for a color to be counted
-    
-    Returns:
-        Number of distinct colors
-    """
-    # Reshape to (N, 3) where N = H * W
-    pixels = canvas.reshape(-1, 3)
-    
-    # Get unique colors and their counts
-    unique_colors, counts = np.unique(pixels, axis=0, return_counts=True)
-    
-    distinct_colors = 0
-    for color, count in zip(unique_colors, counts):
-        # Check minimum pixel threshold
-        if count < min_pixel_threshold:
-            continue
-        
-        distinct_colors += 1
-    
-    return distinct_colors
 
 
 def create_room_layout_new(
@@ -228,7 +199,7 @@ def create_room_layout_new(
     # Count ALL colors (including background, floor, walls, objects)
     # Empty rooms typically have only 3 colors: background + floor + wall
     # But walls might be same color as background, so we need to check non-background colors too
-    color_count_all = count_distinct_colors_numpy(canvas, min_pixel_threshold=10)
+    color_count_all = count_distinct_colors_numpy(canvas, exclude_background=False, min_pixel_threshold=10)
     
     # Also count non-background colors to catch cases where walls = background
     background_color = np.array([240, 240, 240])

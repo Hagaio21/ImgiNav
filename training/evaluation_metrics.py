@@ -16,7 +16,8 @@ import warnings
 
 # Set cache directories to use work space instead of home directory
 # This avoids "No space left on device" errors in /zhome
-work_cache_dir = "/work3/s233249/ImgiNav/.cache"
+from common.env_config import CACHE_DIR
+work_cache_dir = str(CACHE_DIR)
 os.makedirs(work_cache_dir, exist_ok=True)
 
 # Shared directory for evaluation models (used by all experiments)
@@ -704,15 +705,19 @@ def compute_evaluation_metrics(
             taxonomy_obj = taxonomy
             if taxonomy_obj is None:
                 # Try to load from default path
-                DEFAULT_TAXONOMY_PATH = "/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
-                taxonomy_path = DEFAULT_TAXONOMY_PATH
+                # Try environment variable first, then relative path
+                taxonomy_path = os.environ.get("IMGINAV_TAXONOMY_PATH", None)
+                if taxonomy_path is None:
+                    # Try relative path from current file
+                    project_root = Path(__file__).parent.parent
+                    taxonomy_path = str(project_root / "config" / "taxonomy.json")
                 if not Path(taxonomy_path).exists():
                     # Try relative path as fallback
                     rel_path = Path("config/taxonomy.json")
                     if rel_path.exists():
                         taxonomy_path = str(rel_path)
                     else:
-                        raise FileNotFoundError(f"Taxonomy not found at {DEFAULT_TAXONOMY_PATH} or {rel_path}")
+                        raise FileNotFoundError(f"Taxonomy not found at {taxonomy_path} or {rel_path}")
                 taxonomy_obj = Taxonomy(taxonomy_path)
             elif not isinstance(taxonomy_obj, Taxonomy):
                 # If taxonomy is a string/Path, load it
@@ -785,16 +790,18 @@ def compute_evaluation_metrics(
     
     # Layout-specific metrics (coverage, class matching, color matching)
     # These don't require external models - they analyze geometric properties directly
-    # Default taxonomy path (always use this path)
-    DEFAULT_TAXONOMY_PATH = "/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
-    
+    # Try environment variable first, then relative path
     try:
         from common.taxonomy import Taxonomy
         from analysis.evaluation_metrics import LayoutEvaluator
         from data_preparation.utils.layout_analysis import LayoutSegmentor
         
-        # Always use the default taxonomy path
-        taxonomy_path = DEFAULT_TAXONOMY_PATH
+        # Try to find taxonomy.json relative to project root or use environment variable
+        taxonomy_path = os.environ.get("IMGINAV_TAXONOMY_PATH", None)
+        if taxonomy_path is None:
+            # Try relative path from current file
+            project_root = Path(__file__).parent.parent
+            taxonomy_path = str(project_root / "config" / "taxonomy.json")
         if not Path(taxonomy_path).exists():
             # Try relative path as fallback
             rel_path = Path("config/taxonomy.json")
@@ -802,7 +809,7 @@ def compute_evaluation_metrics(
                 taxonomy_path = str(rel_path)
                 taxonomy_obj = Taxonomy(taxonomy_path)
             else:
-                warnings.warn(f"Taxonomy path does not exist: {DEFAULT_TAXONOMY_PATH}, trying to use provided taxonomy object")
+                warnings.warn(f"Taxonomy path does not exist: {taxonomy_path}, trying to use provided taxonomy object")
                 # If taxonomy is already a Taxonomy instance, use it
                 if taxonomy is not None and not isinstance(taxonomy, (str, Path)):
                     taxonomy_obj = taxonomy

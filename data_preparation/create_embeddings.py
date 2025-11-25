@@ -379,7 +379,7 @@ def create_layout_embeddings_from_manifest(
                     # Save in experiment folder (preferred for diffusion training)
                     latent_dir = Path(output_latent_dir)
                 else:
-                    # Legacy: For augmented dataset: create latents in /work3/s233249/ImgiNav/datasets/augmented/latents/
+                    # Legacy: For augmented dataset: create latents in <BASE_DIR>/datasets/augmented/latents/
                     # Structure: images/name.png -> latents/name.pt
                     # Find the augmented directory in the path
                     latent_base_dir = None

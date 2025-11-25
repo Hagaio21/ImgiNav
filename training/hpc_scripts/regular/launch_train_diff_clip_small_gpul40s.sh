@@ -3,7 +3,12 @@
 # Submits: small_rooms_bottleneck, small_scenes_bottleneck (2 experiments)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
+# Source environment configuration
+source "${SCRIPT_DIR}/../../env_config.sh" 2>/dev/null || {
+    # Fallback if env_config.sh not found
+    BASE_DIR="${IMGINAV_ROOT:-/work3/s233249/ImgiNav/ImgiNav}"
+    export BASE_DIR
+}
 TRAIN_SCRIPT="${SCRIPT_DIR}/../run_train_diff_clip.sh"
 
 CONFIGS=(

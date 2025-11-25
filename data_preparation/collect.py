@@ -17,11 +17,15 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from common.taxonomy import Taxonomy
+from common.file_io import read_manifest, create_manifest
 from data_preparation.utils.layout_analysis import (
     build_color_to_category_mapping,
     analyze_layout_colors,
     categorize_room_by_contents
 )
+from data_preparation.utils.file_discovery import parse_layout_filename
+from data_preparation.utils.layout_analysis import count_distinct_colors
+import shutil
 
 
 def collect_all(data_root: Path, output_csv: Path):
@@ -482,96 +486,545 @@ def collect_dataset(root: Path, out_dir: Path, layouts_csv: Path):
     collect_dataset_files(root, data_csv)
 
 
+# Functions for new-layouts subcommand (from collect_new_layouts.py)
+def check_if_empty(layout_path: Path, min_colors: int = 4) -> bool:
+    """
+    Check if a layout image is empty (too few colors).
+    
+    Args:
+        layout_path: Path to layout image
+        min_colors: Minimum number of distinct colors (excluding background)
+    
+    Returns:
+        True if empty, False otherwise
+    """
+    try:
+        color_count = count_distinct_colors(
+            layout_path, 
+            exclude_background=True, 
+            min_pixel_threshold=10
+        )
+        return color_count < min_colors
+    except Exception as e:
+        print(f"[warn] Error checking emptiness for {layout_path}: {e}")
+        return True  # Assume empty if we can't check
+
+
+def collect_new_layouts(
+    layout_dir: Path,
+    output_csv: Path,
+    data_root: Optional[Path] = None,
+    check_empty: bool = True,
+    min_colors: int = 4,
+    use_relative_paths: bool = True
+) -> None:
+    """
+    Collect new layout images into a manifest CSV.
+    
+    Args:
+        layout_dir: Directory containing layout_new images
+        output_csv: Output manifest CSV path
+        data_root: Root directory for relative paths (if None, uses absolute paths)
+        check_empty: Whether to check if layouts are empty
+        min_colors: Minimum colors for non-empty check
+        use_relative_paths: If True and data_root provided, use relative paths
+    """
+    layout_dir = Path(layout_dir)
+    output_csv = Path(output_csv)
+    
+    if not layout_dir.exists():
+        raise ValueError(f"Layout directory does not exist: {layout_dir}")
+    
+    # Find all files in the target folder
+    layout_files = list(layout_dir.glob("*.png"))
+    
+    # If no PNG files, try all files
+    if not layout_files:
+        layout_files = list(layout_dir.glob("*"))
+        layout_files = [f for f in layout_files if f.is_file()]
+    
+    layout_files = sorted(layout_files)
+    
+    print(f"[INFO] Found {len(layout_files)} layout images in {layout_dir}")
+    
+    # Prepare manifest rows
+    manifest_rows: List[Dict[str, str]] = []
+    
+    for layout_path in tqdm(layout_files, desc="Processing layouts"):
+        try:
+            if not layout_path.is_file():
+                continue
+            
+            # Parse filename
+            try:
+                scene_id, layout_type, room_id = parse_layout_filename(layout_path.name)
+            except ValueError:
+                print(f"[warn] File with unexpected name format, using fallback: {layout_path.name}")
+                scene_id = layout_path.stem
+                layout_type = "unknown"
+                room_id = "unknown"
+            
+            layout_path_str = str(layout_path.resolve())
+            
+            # Check if empty
+            is_empty = 0
+            if check_empty:
+                if check_if_empty(layout_path, min_colors=min_colors):
+                    is_empty = 1
+            
+            manifest_rows.append({
+                "scene_id": scene_id,
+                "type": layout_type,
+                "room_id": room_id,
+                "layout_path": layout_path_str,
+                "is_empty": str(is_empty)
+            })
+            
+        except Exception as e:
+            print(f"[warn] Error processing {layout_path}: {e}")
+            continue
+    
+    # Write manifest CSV
+    fieldnames = ["scene_id", "type", "room_id", "layout_path", "is_empty"]
+    
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(manifest_rows)
+    
+    # Print statistics
+    scene_count = sum(1 for r in manifest_rows if r["type"] == "scene")
+    room_count = sum(1 for r in manifest_rows if r["type"] == "room")
+    empty_count = sum(1 for r in manifest_rows if r["is_empty"] == "1")
+    
+    print(f"\n[INFO] Manifest created: {output_csv}")
+    print(f"[INFO] Statistics:")
+    print(f"  Total layouts: {len(manifest_rows)}")
+    print(f"  Scene layouts: {scene_count}")
+    print(f"  Room layouts: {room_count}")
+    print(f"  Empty layouts: {empty_count}")
+    print(f"  Valid layouts: {len(manifest_rows) - empty_count}")
+
+
+# Functions for joint subcommand (from create_joint_manifest.py)
+def find_graph_files(layout_path: Path, scene_id: str, layout_type: str, room_id: str) -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
+    """Find graph JSON, text, and embedding files for a layout."""
+    layout_dir = layout_path.parent
+    
+    if layout_type == "scene":
+        graph_json = layout_dir / f"{scene_id}_scene_graph.json"
+        graph_txt = layout_dir / f"{scene_id}_scene_graph.txt"
+        graph_emb_pt = layout_dir / f"{scene_id}_scene_graph.pt"
+        graph_emb_npy = layout_dir / f"{scene_id}_scene_graph.npy"
+        
+        if not graph_json.exists():
+            parent_dir = layout_dir.parent
+            graph_json = parent_dir / f"{scene_id}_scene_graph.json"
+            graph_txt = parent_dir / f"{scene_id}_scene_graph.txt"
+            graph_emb_pt = parent_dir / f"{scene_id}_scene_graph.pt"
+            graph_emb_npy = parent_dir / f"{scene_id}_scene_graph.npy"
+    else:
+        graph_json = layout_dir / f"{scene_id}_{room_id}_graph.json"
+        graph_txt = layout_dir / f"{scene_id}_{room_id}_graph.txt"
+        graph_emb_pt = layout_dir / f"{scene_id}_{room_id}_graph.pt"
+        graph_emb_npy = layout_dir / f"{scene_id}_{room_id}_graph.npy"
+        
+        if not graph_json.exists():
+            room_dir = layout_dir.parent
+            graph_json = room_dir / f"{scene_id}_{room_id}_graph.json"
+            graph_txt = room_dir / f"{scene_id}_{room_id}_graph.txt"
+            graph_emb_pt = room_dir / f"{scene_id}_{room_id}_graph.pt"
+            graph_emb_npy = room_dir / f"{scene_id}_{room_id}_graph.npy"
+    
+    graph_emb = graph_emb_pt if graph_emb_pt.exists() else (graph_emb_npy if graph_emb_npy.exists() else None)
+    graph_json = graph_json if graph_json.exists() else None
+    graph_txt = graph_txt if graph_txt.exists() else None
+    
+    return graph_json, graph_txt, graph_emb
+
+
+def find_pov_images(data_root: Path, scene_id: str, room_id: str) -> List[Dict[str, str]]:
+    """Find all POV images (tex and seg) for a room."""
+    povs = []
+    
+    room_dir = data_root / scene_id / "rooms" / room_id
+    if not room_dir.exists():
+        room_dir = data_root / scene_id / "rooms" / f"room_id={room_id}"
+    
+    if not room_dir.exists():
+        return povs
+    
+    povs_dir = room_dir / "povs"
+    if not povs_dir.exists():
+        return povs
+    
+    tex_dir = povs_dir / "tex"
+    if tex_dir.exists():
+        for pov_file in sorted(tex_dir.glob(f"{scene_id}_{room_id}_*_pov_tex.png")):
+            povs.append({"pov_path": str(pov_file.resolve()), "pov_type": "tex"})
+    
+    seg_dir = povs_dir / "seg"
+    if seg_dir.exists():
+        for pov_file in sorted(seg_dir.glob(f"{scene_id}_{room_id}_*_pov_seg.png")):
+            povs.append({"pov_path": str(pov_file.resolve()), "pov_type": "seg"})
+    
+    return povs
+
+
+def copy_file_safe(source: Path, dest: Path) -> bool:
+    """Copy a file to destination, creating parent directories if needed."""
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if source.exists():
+            shutil.copy2(source, dest)
+            return True
+        return False
+    except Exception as e:
+        print(f"[warn] Failed to copy {source} to {dest}: {e}")
+        return False
+
+
+def create_joint_manifest(
+    layouts_manifest: Path,
+    data_root: Path,
+    output_path: Path,
+    output_dir: Optional[Path] = None
+) -> None:
+    """Create a joint manifest combining layouts, POVs, graphs, graph texts, and embeddings."""
+    print(f"Reading layouts manifest from {layouts_manifest}...")
+    layout_rows = read_manifest(layouts_manifest)
+    print(f"Found {len(layout_rows)} layout entries")
+    
+    data_root = Path(data_root)
+    
+    graphs_dir = None
+    povs_tex_dir = None
+    povs_seg_dir = None
+    if output_dir:
+        output_dir = Path(output_dir)
+        graphs_dir = output_dir / "graphs"
+        povs_tex_dir = output_dir / "povs" / "tex"
+        povs_seg_dir = output_dir / "povs" / "seg"
+        graphs_dir.mkdir(parents=True, exist_ok=True)
+        povs_tex_dir.mkdir(parents=True, exist_ok=True)
+        povs_seg_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Will copy graphs to: {graphs_dir}")
+        print(f"Will copy textured POVs to: {povs_tex_dir}")
+        print(f"Will copy segmented POVs to: {povs_seg_dir}")
+    
+    copied_graphs = {}
+    copied_povs = {}
+    joint_rows = []
+    
+    for layout_row in tqdm(layout_rows, desc="Processing layouts"):
+        scene_id = layout_row.get("scene_id", "")
+        layout_type = layout_row.get("type", "")
+        room_id = layout_row.get("room_id", "")
+        layout_path_str = layout_row.get("layout_path", "")
+        is_empty = layout_row.get("is_empty", "0")
+        
+        if not layout_path_str:
+            print(f"[warn] Skipping row with no layout_path: {scene_id}/{room_id}")
+            continue
+        
+        layout_path = Path(layout_path_str)
+        if not layout_path.is_absolute():
+            layout_path = data_root / layout_path
+        if not layout_path.exists():
+            print(f"[warn] Layout file does not exist: {layout_path}")
+            continue
+        
+        graph_json, graph_txt, graph_emb = find_graph_files(layout_path, scene_id, layout_type, room_id)
+        
+        graph_json_path = ""
+        graph_txt_path = ""
+        graph_emb_path = ""
+        
+        if graph_json:
+            if graphs_dir:
+                if graph_json not in copied_graphs:
+                    graph_filename = f"{scene_id}_{room_id}_graph.json" if layout_type == "room" else f"{scene_id}_scene_graph.json"
+                    dest_path = graphs_dir / graph_filename
+                    if copy_file_safe(graph_json, dest_path):
+                        copied_graphs[graph_json] = dest_path
+                        graph_json_path = str(dest_path.resolve())
+                else:
+                    graph_json_path = str(copied_graphs[graph_json].resolve())
+            else:
+                graph_json_path = str(graph_json.resolve())
+        
+        if graph_txt:
+            if graphs_dir:
+                if graph_txt not in copied_graphs:
+                    graph_filename = f"{scene_id}_{room_id}_graph.txt" if layout_type == "room" else f"{scene_id}_scene_graph.txt"
+                    dest_path = graphs_dir / graph_filename
+                    if copy_file_safe(graph_txt, dest_path):
+                        copied_graphs[graph_txt] = dest_path
+                        graph_txt_path = str(dest_path.resolve())
+                else:
+                    graph_txt_path = str(copied_graphs[graph_txt].resolve())
+            else:
+                graph_txt_path = str(graph_txt.resolve())
+        
+        if graph_emb:
+            if graphs_dir:
+                if graph_emb not in copied_graphs:
+                    ext = graph_emb.suffix
+                    graph_filename = f"{scene_id}_{room_id}_graph{ext}" if layout_type == "room" else f"{scene_id}_scene_graph{ext}"
+                    dest_path = graphs_dir / graph_filename
+                    if copy_file_safe(graph_emb, dest_path):
+                        copied_graphs[graph_emb] = dest_path
+                        graph_emb_path = str(dest_path.resolve())
+                else:
+                    graph_emb_path = str(copied_graphs[graph_emb].resolve())
+            else:
+                graph_emb_path = str(graph_emb.resolve())
+        
+        if layout_type == "room":
+            povs = find_pov_images(data_root, scene_id, room_id)
+            
+            if povs:
+                for pov in povs:
+                    pov_source = Path(pov["pov_path"])
+                    pov_dest_path = ""
+                    
+                    target_povs_dir = povs_tex_dir if pov["pov_type"] == "tex" else povs_seg_dir
+                    
+                    if target_povs_dir:
+                        if pov_source.exists():
+                            if pov_source not in copied_povs:
+                                dest_path = target_povs_dir / pov_source.name
+                                if copy_file_safe(pov_source, dest_path):
+                                    copied_povs[pov_source] = dest_path
+                                    pov_dest_path = str(dest_path.resolve())
+                            else:
+                                pov_dest_path = str(copied_povs[pov_source].resolve())
+                    else:
+                        pov_dest_path = str(pov_source.resolve()) if pov_source.exists() else ""
+                    
+                    joint_rows.append({
+                        "scene_id": scene_id,
+                        "type": layout_type,
+                        "room_id": room_id,
+                        "layout_path": str(layout_path.resolve()),
+                        "is_empty": is_empty,
+                        "pov_path": pov_dest_path,
+                        "pov_type": pov["pov_type"],
+                        "graph_path": graph_json_path,
+                        "graph_text_path": graph_txt_path,
+                        "graph_embedding_path": graph_emb_path,
+                    })
+            else:
+                joint_rows.append({
+                    "scene_id": scene_id,
+                    "type": layout_type,
+                    "room_id": room_id,
+                    "layout_path": str(layout_path.resolve()),
+                    "is_empty": is_empty,
+                    "pov_path": "",
+                    "pov_type": "",
+                    "graph_path": graph_json_path,
+                    "graph_text_path": graph_txt_path,
+                    "graph_embedding_path": graph_emb_path,
+                })
+        else:
+            joint_rows.append({
+                "scene_id": scene_id,
+                "type": layout_type,
+                "room_id": room_id,
+                "layout_path": str(layout_path.resolve()),
+                "is_empty": is_empty,
+                "pov_path": "",
+                "pov_type": "",
+                "graph_path": graph_json_path,
+                "graph_text_path": graph_txt_path,
+                "graph_embedding_path": graph_emb_path,
+            })
+    
+    fieldnames = [
+        "scene_id", "type", "room_id", "layout_path", "is_empty",
+        "pov_path", "pov_type",
+        "graph_path", "graph_text_path", "graph_embedding_path"
+    ]
+    
+    print(f"\nWriting joint manifest to {output_path}...")
+    create_manifest(joint_rows, output_path, fieldnames)
+    
+    total_rows = len(joint_rows)
+    room_rows = sum(1 for r in joint_rows if r["type"] == "room")
+    scene_rows = sum(1 for r in joint_rows if r["type"] == "scene")
+    rows_with_povs = sum(1 for r in joint_rows if r["pov_path"])
+    rows_with_graphs = sum(1 for r in joint_rows if r["graph_path"])
+    
+    print(f"\n✓ Joint manifest created successfully!")
+    print(f"  Total rows: {total_rows}")
+    print(f"  Room layouts: {room_rows}")
+    print(f"  Scene layouts: {scene_rows}")
+    print(f"  Rows with POVs: {rows_with_povs}")
+    print(f"  Rows with graphs: {rows_with_graphs}")
+    
+    if graphs_dir:
+        print(f"\n✓ Copied {len(copied_graphs)} graph files to {graphs_dir}")
+    if povs_tex_dir or povs_seg_dir:
+        print(f"✓ Copied {len(copied_povs)} POV files")
+
+
 def main():
     import time
     parser = argparse.ArgumentParser(
-        description="Dataset collection utility: builds manifests for scenes, rooms, layouts, graphs, or POVs."
+        description="Dataset collection utility: builds manifests for scenes, rooms, layouts, graphs, or POVs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "--type", required=True,
-        choices=["all", "graphs", "layouts", "dataset", "povs"],
-        help="Collection type to run. "
-             "'all' = full manifest, 'graphs' = collect graph files, "
-             "'layouts' = collect layout images, 'dataset' = collect dataset file structure, 'povs' = collect POV metadata."
+    subparsers = parser.add_subparsers(dest="command", help="Collection command to run")
+    
+    # new-layouts subcommand
+    parser_new_layouts = subparsers.add_parser(
+        "new-layouts",
+        help="Collect new layout images into a manifest CSV"
     )
-
-    # Common arguments
-    parser.add_argument("--root", help="Dataset root directory (for graphs, layouts, dataset, or povs)")
-    parser.add_argument("--data_root", help="Dataset root directory (for 'all' mode only)")
-    parser.add_argument("--output", help="Output manifest CSV path")
-    parser.add_argument("--out", help="Output directory (for 'dataset' type)")
-
-    # Type-specific
-    parser.add_argument("--layouts", help="Path to layouts.csv (for dataset or povs mode)")
-    parser.add_argument("--workers", type=int, default=multiprocessing.cpu_count(),
-                       help="Number of parallel workers (for 'layouts' type)")
-    parser.add_argument("--taxonomy", type=Path, default=None,
-                       help="Path to taxonomy.json file (for content categorization in layouts)")
-    parser.add_argument("--no_content_analysis", action="store_true",
-                       help="Disable content categorization (faster but no content_category column)")
-
+    parser_new_layouts.add_argument("--layout_dir", type=Path, required=True,
+                                   help="Directory containing layout_new images")
+    parser_new_layouts.add_argument("--output", type=Path, required=True,
+                                   help="Output manifest CSV path")
+    parser_new_layouts.add_argument("--data_root", type=Path, default=None,
+                                   help="Root directory for relative paths (optional)")
+    parser_new_layouts.add_argument("--no-check-empty", action="store_true",
+                                   help="Skip empty layout checking (faster)")
+    parser_new_layouts.add_argument("--min-colors", type=int, default=4,
+                                   help="Minimum colors for non-empty check (default: 4)")
+    parser_new_layouts.add_argument("--absolute-paths", action="store_true",
+                                   help="Use absolute paths instead of relative paths")
+    
+    # joint subcommand
+    parser_joint = subparsers.add_parser(
+        "joint",
+        help="Create a joint manifest combining layouts, POVs, graphs, graph texts, and embeddings"
+    )
+    parser_joint.add_argument("--layouts-manifest", type=Path, required=True,
+                             help="Path to cleaned layouts manifest CSV")
+    parser_joint.add_argument("--data-root", type=Path, required=True,
+                             help="Root directory of the dataset (where scenes are stored)")
+    parser_joint.add_argument("--output", type=Path, required=True,
+                             help="Path to output joint manifest CSV")
+    parser_joint.add_argument("--output-dir", type=Path, default=None,
+                             help="Optional directory to copy graphs and POVs to")
+    
+    # legacy subcommand (original --type functionality)
+    parser_legacy = subparsers.add_parser(
+        "legacy",
+        help="Legacy collection modes (all, graphs, layouts, dataset, povs)"
+    )
+    parser_legacy.add_argument("--type", required=True,
+                              choices=["all", "graphs", "layouts", "dataset", "povs"],
+                              help="Collection type to run")
+    parser_legacy.add_argument("--root", help="Dataset root directory")
+    parser_legacy.add_argument("--data_root", help="Dataset root directory (for 'all' mode)")
+    parser_legacy.add_argument("--output", help="Output manifest CSV path")
+    parser_legacy.add_argument("--out", help="Output directory (for 'dataset' type)")
+    parser_legacy.add_argument("--layouts", help="Path to layouts.csv")
+    parser_legacy.add_argument("--workers", type=int, default=multiprocessing.cpu_count(),
+                              help="Number of parallel workers (for 'layouts' type)")
+    parser_legacy.add_argument("--taxonomy", type=Path, default=None,
+                              help="Path to taxonomy.json file")
+    parser_legacy.add_argument("--no_content_analysis", action="store_true",
+                              help="Disable content categorization")
+    
     args = parser.parse_args()
-
+    
+    if not args.command:
+        parser.print_help()
+        return
+    
     start_time = time.time()
     print("=" * 70)
     print(f"[INFO] Starting collection")
-    print(f"[INFO] Mode       : {args.type}")
-    print(f"[INFO] Data root  : {args.data_root or args.root}")
-    print(f"[INFO] Output     : {args.output or args.out}")
+    print(f"[INFO] Command    : {args.command}")
     print("=" * 70)
-
+    
     try:
-        if args.type == "all":
-            if not args.data_root or not args.output:
-                parser.error("--type all requires --data_root and --output")
-            print("[STEP] Collecting complete dataset manifest...")
-            collect_all(Path(args.data_root), Path(args.output))
-
-        elif args.type == "graphs":
-            if not args.root or not args.output:
-                parser.error("--type graphs requires --root and --output")
-            print("[STEP] Collecting graph metadata...")
-            collect_graphs(Path(args.root), Path(args.output))
-
-        elif args.type == "layouts":
-            if not args.root or not args.output:
-                parser.error("--type layouts requires --root and --output")
-            taxonomy_path = args.taxonomy
-            if taxonomy_path is None:
-                # Try default path
-                default_taxonomy = Path(__file__).parent.parent / "config" / "taxonomy.json"
-                if default_taxonomy.exists():
-                    taxonomy_path = default_taxonomy
-            print(f"[STEP] Scanning layouts with {args.workers} workers...")
-            collect_layouts(Path(args.root), Path(args.output), args.workers, 
-                          taxonomy_path=taxonomy_path, 
-                          analyze_content=not args.no_content_analysis)
-
-        elif args.type == "dataset":
-            if not args.root or not args.out or not args.layouts:
-                parser.error("--type dataset requires --root, --out, and --layouts")
-            print("[STEP] Collecting dataset structure and layout metadata...")
-            collect_dataset(Path(args.root), Path(args.out), Path(args.layouts))
-
-        elif args.type == "povs":
-            if not args.root or not args.output or not args.layouts:
-                parser.error("--type povs requires --root, --output, and --layouts")
-            print("[STEP] Collecting POV metadata and linking layouts...")
-            empty_map = load_empty_map(Path(args.layouts))
-            collect_povs(Path(args.root), Path(args.output), empty_map)
-
-        else:
-            parser.error(f"Unknown collection type: {args.type}")
-
+        if args.command == "new-layouts":
+            print(f"[INFO] Layout dir  : {args.layout_dir}")
+            print(f"[INFO] Output       : {args.output}")
+            collect_new_layouts(
+                layout_dir=args.layout_dir,
+                output_csv=args.output,
+                data_root=args.data_root,
+                check_empty=not args.no_check_empty,
+                min_colors=args.min_colors,
+                use_relative_paths=not args.absolute_paths
+            )
+        
+        elif args.command == "joint":
+            print(f"[INFO] Layouts manifest: {args.layouts_manifest}")
+            print(f"[INFO] Data root       : {args.data_root}")
+            print(f"[INFO] Output          : {args.output}")
+            if not args.layouts_manifest.exists():
+                print(f"[error] Layouts manifest not found: {args.layouts_manifest}")
+                sys.exit(1)
+            if not args.data_root.exists():
+                print(f"[error] Data root directory not found: {args.data_root}")
+                sys.exit(1)
+            create_joint_manifest(
+                args.layouts_manifest,
+                args.data_root,
+                args.output,
+                args.output_dir
+            )
+        
+        elif args.command == "legacy":
+            print(f"[INFO] Mode       : {args.type}")
+            print(f"[INFO] Data root  : {args.data_root or args.root}")
+            print(f"[INFO] Output     : {args.output or args.out}")
+            
+            if args.type == "all":
+                if not args.data_root or not args.output:
+                    parser_legacy.error("--type all requires --data_root and --output")
+                print("[STEP] Collecting complete dataset manifest...")
+                collect_all(Path(args.data_root), Path(args.output))
+            
+            elif args.type == "graphs":
+                if not args.root or not args.output:
+                    parser_legacy.error("--type graphs requires --root and --output")
+                print("[STEP] Collecting graph metadata...")
+                collect_graphs(Path(args.root), Path(args.output))
+            
+            elif args.type == "layouts":
+                if not args.root or not args.output:
+                    parser_legacy.error("--type layouts requires --root and --output")
+                taxonomy_path = args.taxonomy
+                if taxonomy_path is None:
+                    default_taxonomy = Path(__file__).parent.parent / "config" / "taxonomy.json"
+                    if default_taxonomy.exists():
+                        taxonomy_path = default_taxonomy
+                print(f"[STEP] Scanning layouts with {args.workers} workers...")
+                collect_layouts(Path(args.root), Path(args.output), args.workers, 
+                              taxonomy_path=taxonomy_path, 
+                              analyze_content=not args.no_content_analysis)
+            
+            elif args.type == "dataset":
+                if not args.root or not args.out or not args.layouts:
+                    parser_legacy.error("--type dataset requires --root, --out, and --layouts")
+                print("[STEP] Collecting dataset structure and layout metadata...")
+                collect_dataset(Path(args.root), Path(args.out), Path(args.layouts))
+            
+            elif args.type == "povs":
+                if not args.root or not args.output or not args.layouts:
+                    parser_legacy.error("--type povs requires --root, --output, and --layouts")
+                print("[STEP] Collecting POV metadata and linking layouts...")
+                empty_map = load_empty_map(Path(args.layouts))
+                collect_povs(Path(args.root), Path(args.output), empty_map)
+        
     except Exception as e:
         import traceback
         print("\n[ERROR] Collection failed:")
         print(traceback.format_exc())
         raise e
-
+    
     elapsed = time.time() - start_time
     print("=" * 70)
-    print(f"[DONE] Completed collection type '{args.type}' in {elapsed:.1f} seconds")
+    print(f"[DONE] Completed collection command '{args.command}' in {elapsed:.1f} seconds")
     print("=" * 70)
 
 

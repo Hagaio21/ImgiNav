@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 from tqdm import tqdm
-import math
 import numpy as np
 from PIL import Image
 import sys
@@ -34,71 +33,95 @@ from training.utils import (
     create_grad_scaler,
     save_metrics_csv,
 )
+from training.engine import Trainer
 from training.plotting_utils import plot_loss_curves
 from models.diffusion import DiffusionModel
+from models.autoencoder import Autoencoder
 from models.losses.base_loss import LOSS_REGISTRY
 
 
-def load_vae_metadata(ae_checkpoint_path):
+def latents2rgb(model, output_dict, warning_prefix="Decoder"):
     """
-    Load VAE metadata JSON file and extract recommended values.
+    Convert latents to RGB images from model output.
+    
+    Handles two cases:
+    1. Output already contains "rgb" key - use it directly
+    2. Output contains "latent" key - decode using model.decoder
     
     Args:
-        ae_checkpoint_path: Path to autoencoder checkpoint
-        
+        model: DiffusionModel with decoder
+        output_dict: Dictionary containing either "rgb" or "latent" key
+        warning_prefix: Prefix for warning message if decoding fails
+    
     Returns:
-        dict with 'scale_factor', 'latent_clamp_min', 'latent_clamp_max', or None if not found
+        torch.Tensor: RGB images in [0, 1] range, or None if decoding fails
     """
-    import json
-    from pathlib import Path
-    
-    checkpoint_path = Path(ae_checkpoint_path)
-    if not checkpoint_path.exists():
+    if "rgb" in output_dict:
+        rgb = output_dict["rgb"]
+        # Normalize from [-1, 1] to [0, 1] if needed
+        if rgb.min() < 0:
+            rgb = (rgb + 1.0) / 2.0
+        rgb = torch.clamp(rgb, 0.0, 1.0)
+        return rgb
+    elif "latent" in output_dict:
+        with torch.no_grad():
+            decoded = model.decoder({"latent": output_dict["latent"]})
+            if "rgb" in decoded:
+                rgb = (decoded["rgb"] + 1.0) / 2.0
+                rgb = torch.clamp(rgb, 0.0, 1.0)
+                return rgb
+            else:
+                print(f"  Warning: {warning_prefix} did not produce RGB output")
+                return None
+    else:
+        print(f"  Warning: {warning_prefix} output missing both 'rgb' and 'latent' keys")
         return None
-    
-    # Metadata file is typically in the parent directory of checkpoints/
-    # e.g., /work3/.../vae_clip/checkpoints/vae_clip_checkpoint_best.pt
-    # -> /work3/.../vae_clip/vae_clip_metadata.json
-    checkpoint_dir = checkpoint_path.parent  # checkpoints/
-    vae_dir = checkpoint_dir.parent  # vae_clip/
-    
-    # Try to find metadata file - could be named {exp_name}_metadata.json
-    # Look for any *_metadata.json in the VAE directory
-    metadata_files = list(vae_dir.glob("*_metadata.json"))
-    
-    if not metadata_files:
-        return None
-    
-    # Use the first metadata file found (or could match by experiment name)
-    metadata_path = metadata_files[0]
-    
-    try:
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-        
-        recommended = metadata.get("recommended_values", {})
-        if recommended:
-            return {
-                "scale_factor": recommended.get("scale_factor"),
-                "latent_clamp_min": recommended.get("latent_clamp_min"),
-                "latent_clamp_max": recommended.get("latent_clamp_max")
-            }
-    except Exception as e:
-        print(f"Warning: Failed to load VAE metadata from {metadata_path}: {e}")
-    
-    return None
 
 
-def compute_loss(
-    model, batch, latents, t, noise, cond, loss_fn, 
-    use_amp=False, device_obj=None, cfg_dropout_rate=0.0
-):
+# Step function for Trainer
+def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
+    """Step function for diffusion training - computes loss only (Trainer handles backward/step)."""
+    device_obj = trainer.device
+    
+    # Get latents
+    latents = batch.get("latent")
+    if latents is None:
+        if "rgb" in batch and model._has_encoder:
+            with torch.no_grad():
+                encoder_out = model.encoder(batch["rgb"])
+                if "latent" in encoder_out:
+                    latents = encoder_out["latent"]
+                elif "mu" in encoder_out:
+                    latents = encoder_out["mu"]
+                else:
+                    raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
+        else:
+            raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
+    
+    # Get training config from trainer or use defaults
+    use_non_uniform_sampling = getattr(trainer, 'use_non_uniform_sampling', False)
+    cfg_dropout_rate = getattr(trainer, 'cfg_dropout_rate', 0.0)
+    
+    # Sample random timesteps
+    num_steps = model.scheduler.num_steps
+    if use_non_uniform_sampling:
+        # Higher probability for early timesteps (high noise)
+        probs = torch.exp(-torch.linspace(0, 2, num_steps, device=device_obj))
+        probs = probs / probs.sum()
+        t = torch.multinomial(probs, latents.shape[0], replacement=True)
+    else:
+        # Uniform sampling (default)
+        t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
+    noise = model.scheduler.randn_like(latents)
+    
+    # No type-based conditioning - only using control signals (text_emb, pov_emb)
+    cond = None
 
     # Extract embeddings if available (for cross-attention conditioning)
     text_emb = batch.get("text_emb", None)
     pov_emb = batch.get("pov_emb", None)
     
-    # Ensure embeddings are 1D (flatten if needed) - optimized: only clone if needed
+    # Ensure embeddings are 1D (flatten if needed)
     if text_emb is not None:
         if text_emb.dim() > 1:
             text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
@@ -106,7 +129,7 @@ def compute_loss(
         if pov_emb.dim() > 1:
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
     
-    cfg_dropped = False
+    # Apply CFG dropout during training
     if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
         if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
             # When dropping condition, set both to zeros_like if they exist (do NOT set to None)
@@ -115,8 +138,7 @@ def compute_loss(
             if pov_emb is not None:
                 pov_emb = torch.zeros_like(pov_emb)
             
-            cfg_dropped = True
-    
+    # Handle embedding projection requirements
     if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
         if text_emb is None and pov_emb is None:
             # Both are None - create zero tensors with appropriate batch size from latents
@@ -130,272 +152,302 @@ def compute_loss(
             # pov_emb is None but text_emb exists - create zero pov_emb
             pov_emb = torch.zeros((text_emb.shape[0], 512), device=text_emb.device, dtype=text_emb.dtype)
     
-    # Forward pass through model
-    outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
-    
-    # Note: Evaluation metrics computation removed from compute_loss for speed
-    # Metrics are computed separately in eval_epoch when needed
-    
-    # Prepare preds dict for loss computation
-    preds = {
-        "pred_noise": outputs["pred_noise"],
-        "scheduler": model.scheduler,
-        "timesteps": t,
-    }
-    
-    # Prepare targets dict
-    targets = {
-        "noise": noise,
-    }
-    
-    # Compute loss using CompositeLoss
-    if use_amp and device_obj.type == "cuda":
+    # Forward pass and loss computation (Trainer handles scaling for gradient accumulation)
+    if trainer.use_amp:
         with torch.amp.autocast('cuda'):
-            total_loss, logs = loss_fn(preds, targets)
+            outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+            preds = {
+                "pred_noise": outputs["pred_noise"],
+                "scheduler": model.scheduler,
+                "timesteps": t,
+            }
+            targets = {"noise": noise}
+            loss, logs = loss_fn(preds, targets)
     else:
-        total_loss, logs = loss_fn(preds, targets)
+        outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+        preds = {
+            "pred_noise": outputs["pred_noise"],
+            "scheduler": model.scheduler,
+            "timesteps": t,
+        }
+        targets = {"noise": noise}
+        loss, logs = loss_fn(preds, targets)
     
-    return total_loss, logs
+    # Return outputs for potential collection (though diffusion doesn't collect latents)
+    return loss, logs, {"latents": latents, "t": t, "noise": noise}
 
 
-def train_epoch(
-    model, dataloader, scheduler, loss_fn, 
-    optimizer, device, epoch, use_amp=False, max_grad_norm=None, use_non_uniform_sampling=False, cfg_dropout_rate=0.0, gradient_accumulation_steps=1
-):
-    """Train for one epoch using CompositeLoss."""
-    start_time = time.time()
-    model.train()
-    total_loss = 0.0
-    total_samples = 0
-    log_dict = {}
+# Eval step function for Trainer
+def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
+    """Step function for diffusion evaluation - computes loss only."""
+    device_obj = trainer.device
     
-    device_obj = to_device(device)
-    
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    for batch_idx, batch in enumerate(pbar):
-        batch = move_batch_to_device(batch, device_obj)
-        
-        # Get latents
-        latents = batch.get("latent")
-        if latents is None:
-            if "rgb" in batch and model._has_encoder:
-                with torch.no_grad():
-                    encoder_out = model.encoder(batch["rgb"])
-                    if "latent" in encoder_out:
-                        latents = encoder_out["latent"]
-                    elif "mu" in encoder_out:
-                        latents = encoder_out["mu"]
-                    else:
-                        raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
+    # Get latents
+    latents = batch.get("latent")
+    if latents is None:
+        if "rgb" in batch and model._has_encoder:
+            encoder_out = model.encoder(batch["rgb"])
+            if "latent" in encoder_out:
+                latents = encoder_out["latent"]
+            elif "mu" in encoder_out:
+                latents = encoder_out["mu"]
             else:
-                raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
-        
-        # Sample random timesteps
-        num_steps = model.scheduler.num_steps
-        # Support non-uniform timestep sampling (favors high-noise timesteps for better generalization)
-        # This helps with low-diversity datasets by focusing on harder denoising tasks
-        if use_non_uniform_sampling:
-            # Higher probability for early timesteps (high noise)
-            # Exponential decay: early timesteps have higher probability
-            probs = torch.exp(-torch.linspace(0, 2, num_steps, device=device_obj))
-            probs = probs / probs.sum()
-            t = torch.multinomial(probs, latents.shape[0], replacement=True)
+                raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
         else:
-            # Uniform sampling (default)
-            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
-        noise = model.scheduler.randn_like(latents)
-        
-        # No type-based conditioning - only using control signals (text_emb, pov_emb)
-        cond = None
-        
-        # Compute loss
-        # Scale loss by 1/gradient_accumulation_steps to maintain effective learning rate
-        loss_scale = 1.0 / gradient_accumulation_steps
-        
-        # Don't compute eval metrics during training (too expensive)
-        # They're computed during evaluation instead
-        
-        if use_amp and device_obj.type == "cuda":
-            with torch.amp.autocast('cuda'):
-                total_loss_val, logs = compute_loss(
-                    model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, cfg_dropout_rate
-                )
-                # Scale loss for gradient accumulation
-                total_loss_val = total_loss_val * loss_scale
-            
-            scaler = getattr(train_epoch, '_scaler', None)
-            if scaler is None:
-                scaler = create_grad_scaler(use_amp, device_obj)
-                train_epoch._scaler = scaler
-            
-            if scaler:
-                scaler.scale(total_loss_val).backward()
-            else:
-                total_loss_val.backward()
-            
-            # Only step optimizer and zero gradients every gradient_accumulation_steps
-            if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                if scaler:
-                    if max_grad_norm is not None:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    if max_grad_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-                    optimizer.step()
-                
-                optimizer.zero_grad()
-            else:
-                # Still need to zero grad on first iteration if not already done
-                if batch_idx == 0:
-                    optimizer.zero_grad()
-        else:
-            total_loss_val, logs = compute_loss(
-                model, batch, latents, t, noise, cond, loss_fn,
-                use_amp, device_obj, cfg_dropout_rate
-            )
-            # Scale loss for gradient accumulation
-            total_loss_val = total_loss_val * loss_scale
-            
-            total_loss_val.backward()
-            
-            # Only step optimizer and zero gradients every gradient_accumulation_steps
-            if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                if max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-                optimizer.step()
-                optimizer.zero_grad()
-                
-                # Update EMA after optimizer step
-                if hasattr(model, 'update_ema'):
-                    model.update_ema()
-            else:
-                # Still need to zero grad on first iteration if not already done
-                if batch_idx == 0:
-                    optimizer.zero_grad()
-        
-        batch_size = latents.shape[0]
-        # For logging, use unscaled loss (multiply back by accumulation_steps since we scaled it down)
-        # Note: total_loss_val was scaled by 1/gradient_accumulation_steps, so we multiply back
-        loss_val = total_loss_val.detach().item() * gradient_accumulation_steps
-        total_loss += loss_val * batch_size
-        total_samples += batch_size
-        
-        for k, v in logs.items():
-            if k not in log_dict:
-                log_dict[k] = 0.0
-            if isinstance(v, torch.Tensor):
-                log_dict[k] += v.item() * batch_size
-            else:
-                log_dict[k] += v * batch_size
-        
-        pbar.set_postfix({"loss": loss_val, **{k: v/total_samples for k, v in log_dict.items()}})
+            raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
     
-    if total_samples == 0:
-        raise RuntimeError("No samples processed in training epoch! Check dataloader.")
+    # Sample random timesteps (uniform for evaluation)
+    num_steps = model.scheduler.num_steps
+    t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
+    noise = model.scheduler.randn_like(latents)
     
-    avg_loss = total_loss / total_samples
-    avg_logs = {k: v / total_samples for k, v in log_dict.items()}
+    # No type-based conditioning - only using control signals (text_emb, pov_emb)
+    cond = None
     
-    # Step scheduler once per epoch (not per batch)
-    # Most schedulers (CosineAnnealingLR, LinearLR, StepLR) are epoch-based
-    if scheduler:
-        scheduler.step()
+    # Extract embeddings if available (for cross-attention conditioning)
+    text_emb = batch.get("text_emb", None)
+    pov_emb = batch.get("pov_emb", None)
     
-    elapsed_time = time.time() - start_time
+    # Ensure embeddings are 1D (flatten if needed)
+    if text_emb is not None:
+        if text_emb.dim() > 1:
+            text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+    if pov_emb is not None:
+        if pov_emb.dim() > 1:
+            pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
     
-    return avg_loss, avg_logs
-
-
-def eval_epoch(
-    model, dataloader, scheduler, loss_fn, 
-    device, use_amp=False, guidance_scale=1.0, limit_val_batches=50
-):
-    """Evaluate for one epoch using CompositeLoss."""
-    start_time = time.time()
-    model.eval()
-    total_loss = 0.0
-    total_samples = 0
-    log_dict = {}
+    # No CFG dropout during evaluation
     
-    device_obj = to_device(device)
-    
-    # Determine the actual number of batches to process
-    total_batches = len(dataloader)
-    num_batches = min(limit_val_batches, total_batches) if limit_val_batches is not None else total_batches
-    
-    with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", total=num_batches)):
-            # Break early if we've reached the limit
-            if limit_val_batches is not None and batch_idx >= limit_val_batches:
-                break
-            batch = move_batch_to_device(batch, device_obj)
-            
-            latents = batch.get("latent")
-            if latents is None:
-                if "rgb" in batch and model._has_encoder:
-                    encoder_out = model.encoder(batch["rgb"])
-                    if "latent" in encoder_out:
-                        latents = encoder_out["latent"]
-                    elif "mu" in encoder_out:
-                        latents = encoder_out["mu"]
-                    else:
-                        raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
-                else:
-                    raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
-            
-            num_steps = model.scheduler.num_steps
-            t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
-            noise = model.scheduler.randn_like(latents)
-            
-            # No type-based conditioning - only using control signals (text_emb, pov_emb)
-            cond = None
-            
-            if use_amp and device_obj.type == "cuda":
-                with torch.amp.autocast('cuda'):
-                    total_loss_val, logs = compute_loss(
-                        model, batch, latents, t, noise, cond, loss_fn,
-                        use_amp, device_obj, cfg_dropout_rate=0.0
-                    )
-            else:
-                total_loss_val, logs = compute_loss(
-                    model, batch, latents, t, noise, cond, loss_fn,
-                    use_amp, device_obj, cfg_dropout_rate=0.0
-                )
-            
+    # Handle embedding projection requirements
+    if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
+        if text_emb is None and pov_emb is None:
+            # Both are None - create zero tensors with appropriate batch size from latents
             batch_size = latents.shape[0]
-            loss_val = total_loss_val.item()
-            total_loss += loss_val * batch_size
-            total_samples += batch_size
-            
-            for k, v in logs.items():
-                if k not in log_dict:
-                    log_dict[k] = 0.0
-                if isinstance(v, torch.Tensor):
-                    log_dict[k] += v.item() * batch_size
-                else:
-                    log_dict[k] += v * batch_size
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=latents.dtype)
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=latents.dtype)
+        elif text_emb is None and pov_emb is not None:
+            # text_emb is None but pov_emb exists - create zero text_emb
+            text_emb = torch.zeros((pov_emb.shape[0], 384), device=pov_emb.device, dtype=pov_emb.dtype)
+        elif pov_emb is None and text_emb is not None:
+            # pov_emb is None but text_emb exists - create zero pov_emb
+            pov_emb = torch.zeros((text_emb.shape[0], 512), device=text_emb.device, dtype=text_emb.dtype)
     
-    if total_samples == 0:
-        raise RuntimeError("No samples processed in evaluation epoch! Check dataloader.")
+    # Forward pass and loss computation (no cfg_dropout during evaluation)
+    if trainer.use_amp:
+        with torch.amp.autocast('cuda'):
+            outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+            preds = {
+                "pred_noise": outputs["pred_noise"],
+                "scheduler": model.scheduler,
+                "timesteps": t,
+            }
+            targets = {"noise": noise}
+            loss, logs = loss_fn(preds, targets)
+    else:
+        outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+        preds = {
+            "pred_noise": outputs["pred_noise"],
+            "scheduler": model.scheduler,
+            "timesteps": t,
+        }
+        targets = {"noise": noise}
+        loss, logs = loss_fn(preds, targets)
     
-    avg_loss = total_loss / total_samples
-    avg_logs = {k: v / total_samples for k, v in log_dict.items()}
+    # Return outputs for potential collection
+    return loss, logs, {"latents": latents, "t": t, "noise": noise}
+
+
+def save_targets_and_conditions(model, val_loader, device, output_dir, exp_name=None):
+    """Save target images and their conditioning information once.
     
-    elapsed_time = time.time() - start_time
+    Creates per-sample structure:
+    samples/conditioned/sample_X/
+        ├── conditions/  (text_emb, pov_emb, graph_text, pov image)
+        └── target/      (target image)
     
-    return avg_loss, avg_logs
+    Args:
+        model: DiffusionModel
+        val_loader: Validation dataloader
+        device: Device string
+        output_dir: Output directory
+        exp_name: Experiment name prefix
+    """
+    model.eval()
+    samples_dir = output_dir / "samples"
+    conditioned_dir = samples_dir / "conditioned"
+    conditioned_dir.mkdir(parents=True, exist_ok=True)
+    
+    device_obj = to_device(device)
+    
+    # Check if targets already saved (check first sample)
+    sample_0_dir = conditioned_dir / "sample_0"
+    if sample_0_dir.exists() and (sample_0_dir / "target").exists():
+        print("  Targets and conditions already saved, skipping...")
+        return
+    
+    try:
+        batch_iter = iter(val_loader)
+        batch = next(batch_iter)
+    except StopIteration:
+        return
+    
+    # Get dataset to find rooms and scenes
+    dataset = val_loader.dataset
+    
+    # Find samples from the validation dataset (same logic as save_samples)
+    room_indices = []
+    scene_indices = []
+    
+    if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
+        for idx in range(len(dataset)):
+            row = dataset.df.iloc[idx]
+            sample_type = str(row.get('type', '')).lower().strip()
+            if sample_type == 'room' and len(room_indices) < 8:
+                room_indices.append(idx)
+            elif sample_type == 'scene' and len(scene_indices) < 8:
+                scene_indices.append(idx)
+            if len(room_indices) >= 8 and len(scene_indices) >= 8:
+                break
+            if (len(room_indices) > 0 and len(scene_indices) == 0 and len(room_indices) >= 16):
+                break
+            if (len(scene_indices) > 0 and len(room_indices) == 0 and len(scene_indices) >= 16):
+                break
+    else:
+        room_indices = list(range(min(16, len(dataset))))
+        scene_indices = []
+    
+    if len(room_indices) == 0 or len(scene_indices) == 0:
+        available_indices = room_indices if len(room_indices) > 0 else scene_indices
+        selected_indices = available_indices[:16] if len(available_indices) >= 16 else available_indices
+        dataset_type = "rooms" if len(room_indices) > 0 else "scenes"
+    else:
+        selected_indices = room_indices + scene_indices
+    
+    batch_size = len(selected_indices)
+    
+    if batch_size == 0:
+        print("  Warning: No samples found in validation dataset")
+        return
+    
+    # Load selected samples from dataset
+    batch_data = {}
+    for idx in selected_indices:
+        sample = dataset[idx]
+        for key, value in sample.items():
+            if key not in batch_data:
+                batch_data[key] = []
+            batch_data[key].append(value)
+    
+    # Convert lists to tensors
+    batch = {}
+    for key, values in batch_data.items():
+        if isinstance(values[0], torch.Tensor):
+            batch[key] = torch.stack(values)
+        else:
+            batch[key] = values
+    
+    batch = move_batch_to_device(batch, device_obj, non_blocking=False)
+    
+    # Extract embeddings and latents
+    text_emb = batch.get("text_emb", None)
+    pov_emb = batch.get("pov_emb", None)
+    target_latents = batch.get("latent", None)
+    
+    if target_latents is None:
+        return
+    
+    # Flatten embeddings if needed
+    if text_emb is not None:
+        if text_emb.dim() > 1:
+            text_emb = text_emb.flatten(start_dim=1)
+    elif pov_emb is not None:
+        text_emb = torch.zeros_like(pov_emb)
+        if text_emb.dim() > 1:
+            text_emb = text_emb.flatten(start_dim=1)
+    
+    if pov_emb is not None:
+        if pov_emb.dim() > 1:
+            pov_emb = pov_emb.flatten(start_dim=1)
+    elif text_emb is not None:
+        pov_emb = torch.zeros_like(text_emb)
+        if pov_emb.dim() > 1:
+            pov_emb = pov_emb.flatten(start_dim=1)
+    
+    # Decode target latents to RGB
+    with torch.no_grad():
+        target_output = {"latent": target_latents}
+        target_rgb = latents2rgb(model, target_output, warning_prefix="Decoder for target latents")
+    
+    if target_rgb is None:
+        return
+    
+    # Convert to numpy for saving
+    target_np = (target_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+    
+    # Save per-sample structure
+    for i in range(batch_size):
+        sample_dir = conditioned_dir / f"sample_{i}"
+        conditions_dir = sample_dir / "conditions"
+        target_dir = sample_dir / "target"
+        
+        conditions_dir.mkdir(parents=True, exist_ok=True)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save target image
+        target_img = Image.fromarray(target_np[i].transpose(1, 2, 0))
+        target_img.save(target_dir / "target.png")
+        
+        # Save embeddings (per-sample, keep batch dimension for consistency)
+        if text_emb is not None:
+            torch.save(text_emb[i:i+1].cpu(), conditions_dir / "text_embedding.pt")
+        if pov_emb is not None:
+            torch.save(pov_emb[i:i+1].cpu(), conditions_dir / "pov_embedding.pt")
+        
+        # Save graph text and POV image
+        idx = selected_indices[i] if i < len(selected_indices) else i
+        row = dataset.df.iloc[idx]
+        
+        graph_text_path = row.get("graph_text_path", "")
+        if graph_text_path and Path(graph_text_path).exists():
+            try:
+                with open(graph_text_path, 'r') as f:
+                    graph_text = f.read()
+                with open(conditions_dir / "graph_text.txt", 'w') as f:
+                    f.write(graph_text)
+            except Exception:
+                pass
+        
+        pov_path = row.get("pov_path", "")
+        if pov_path and Path(pov_path).exists():
+            try:
+                pov_img = Image.open(pov_path)
+                pov_img.save(conditions_dir / "pov.png")
+            except Exception:
+                pass
+    
+    # Save global metadata
+    metadata = {
+        "batch_size": batch_size,
+        "room_indices": room_indices,
+        "scene_indices": scene_indices,
+        "selected_indices": selected_indices,
+        "has_text_emb": text_emb is not None,
+        "has_pov_emb": pov_emb is not None,
+    }
+    with open(conditioned_dir / "metadata.json", 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    print(f"  Saved targets and conditions to {conditioned_dir}")
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=16, exp_name=None, guidance_scale=1.0, cfg_dropout_rate=0.0):
     """Generate and save sample images.
     
     Generates:
-    - Unconditioned samples: 4x4 grid (16 samples)
-    - Targets vs Generated comparison: side-by-side comparison from validation batch
+    - Unconditioned samples: 4x4 grid (16 samples) - saved every sample interval
+    - Generated samples: conditioned generation - saved every sample interval
+    
+    Note: Targets and conditions should be saved once using save_targets_and_conditions()
     """
     model.eval()
     samples_dir = output_dir / "samples"
@@ -445,19 +497,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         )
         
         # Decode unconditioned samples
-        if "rgb" in unconditioned_output:
-            unconditioned_rgb = unconditioned_output["rgb"]
-            if unconditioned_rgb.min() < 0:  # [-1, 1] range
-                unconditioned_rgb = (unconditioned_rgb + 1.0) / 2.0
-            unconditioned_rgb = torch.clamp(unconditioned_rgb, 0.0, 1.0)
-        else:
-            decoded = model.decoder({"latent": unconditioned_output["latent"]})
-            if "rgb" in decoded:
-                unconditioned_rgb = (decoded["rgb"] + 1.0) / 2.0
-                unconditioned_rgb = torch.clamp(unconditioned_rgb, 0.0, 1.0)
-            else:
-                print("  Warning: Decoder did not produce RGB output for unconditioned samples")
-                unconditioned_rgb = None
+        unconditioned_rgb = latents2rgb(model, unconditioned_output, warning_prefix="Decoder for unconditioned samples")
     
     # Save 4x4 unconditioned grid
     if unconditioned_rgb is not None:
@@ -475,118 +515,61 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             col = idx % grid_n
             unconditioned_grid.paste(img, (col * img_size, row * img_size))
         
-        epoch_prefix = f"{exp_name}_epoch_{epoch:03d}" if exp_name else f"epoch_{epoch:03d}"
-        unconditioned_path = samples_dir / f"{epoch_prefix}_unconditioned_4x4.png"
+        # Save to unconditioned directory
+        unconditioned_dir = samples_dir / "unconditioned"
+        unconditioned_dir.mkdir(parents=True, exist_ok=True)
+        unconditioned_path = unconditioned_dir / f"epoch_{epoch:03d}.png"
         unconditioned_grid.save(unconditioned_path)
 
     # ============================================================================
-    # Part 2: Targets vs Generated comparison (4x4 = 16 samples)
+    # Part 2: Generate conditioned samples (saved every sample interval)
     # ============================================================================
-    # Get dataset to find rooms and scenes (different conditioning structures)
-    dataset = val_loader.dataset
+    # Load saved targets and conditions
+    conditioned_dir = samples_dir / "conditioned"
     
-    # Find samples from the validation dataset
-    # Handle both mixed-type and single-type datasets
-    room_indices = []
-    scene_indices = []
-    
-    # Check if dataset has 'type' column
-    if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
-        for idx in range(len(dataset)):
-            row = dataset.df.iloc[idx]
-            sample_type = str(row.get('type', '')).lower().strip()
-            if sample_type == 'room' and len(room_indices) < 8:
-                room_indices.append(idx)
-            elif sample_type == 'scene' and len(scene_indices) < 8:
-                scene_indices.append(idx)
-            # For mixed-type datasets, stop when we have 8 of each (16 total)
-            # For single-type datasets, continue until we have 16 samples
-            if len(room_indices) >= 8 and len(scene_indices) >= 8:
-                break
-            # For single-type datasets, collect 16 samples of the available type
-            if (len(room_indices) > 0 and len(scene_indices) == 0 and len(room_indices) >= 16):
-                break
-            if (len(scene_indices) > 0 and len(room_indices) == 0 and len(scene_indices) >= 16):
-                break
-    else:
-        # Fallback: use first 16 samples if type column not available
-        room_indices = list(range(min(16, len(dataset))))
-        scene_indices = []
-    
-    # Handle single-type vs mixed-type datasets
-    if len(room_indices) == 0 or len(scene_indices) == 0:
-        # Single-type dataset - use 16 samples of the available type
-        available_indices = room_indices if len(room_indices) > 0 else scene_indices
-        selected_indices = available_indices[:16] if len(available_indices) >= 16 else available_indices
-        dataset_type = "rooms" if len(room_indices) > 0 else "scenes"
-    else:
-        # Mixed-type dataset - use 8 of each type (16 total)
-        selected_indices = room_indices + scene_indices
-    
-    batch_size = len(selected_indices)
-    
-    if batch_size == 0:
-        print("  Warning: No samples found in validation dataset for comparison")
+    if not conditioned_dir.exists():
+        print("  Warning: Conditioned samples directory not found. Run save_targets_and_conditions() first.")
         return
     
-    # Load selected samples from dataset
-    batch_data = {}
-    for idx in selected_indices:
-        sample = dataset[idx]
-        for key, value in sample.items():
-            if key not in batch_data:
-                batch_data[key] = []
-            batch_data[key].append(value)
+    # Load metadata to get batch size
+    metadata_path = conditioned_dir / "metadata.json"
+    if not metadata_path.exists():
+        print("  Warning: Conditioned samples metadata not found.")
+        return
     
-    # Convert lists to tensors
-    batch = {}
-    for key, values in batch_data.items():
-        if isinstance(values[0], torch.Tensor):
-            batch[key] = torch.stack(values)
-        else:
-            batch[key] = values
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
     
-    batch = move_batch_to_device(batch, device_obj, non_blocking=False)
+    batch_size = metadata["batch_size"]
     
-    # Extract embeddings (control signals only - no type-based conditioning)
-    text_emb = batch.get("text_emb", None)
-    pov_emb = batch.get("pov_emb", None)
-    target_latents = batch.get("latent", None)
+    # Load embeddings (batch-level for generation)
+    text_emb_list = []
+    pov_emb_list = []
+    for i in range(batch_size):
+        sample_dir = conditioned_dir / f"sample_{i}"
+        conditions_dir = sample_dir / "conditions"
+        
+        text_emb_path = conditions_dir / "text_embedding.pt"
+        pov_emb_path = conditions_dir / "pov_embedding.pt"
+        
+        if text_emb_path.exists():
+            text_emb_list.append(torch.load(text_emb_path, map_location=device_obj))
+        if pov_emb_path.exists():
+            pov_emb_list.append(torch.load(pov_emb_path, map_location=device_obj))
     
-    # No type-based conditioning - only using control signals (text_emb, pov_emb)
+    # Stack embeddings back to batch
+    if text_emb_list:
+        text_emb = torch.cat(text_emb_list, dim=0)
+    else:
+        text_emb = None
+    
+    if pov_emb_list:
+        pov_emb = torch.cat(pov_emb_list, dim=0)
+    else:
+        pov_emb = None
+    
+    # No type-based conditioning
     cond = None
-    
-    # CRITICAL: Replace None with torch.zeros_like to avoid embedding_proj errors
-    # Ensure embeddings are 1D (flatten if needed)
-    if text_emb is not None:
-        if text_emb.dim() > 1:
-            text_emb = text_emb.flatten(start_dim=1)
-    elif pov_emb is not None:
-        # Create zero tensor matching pov_emb shape for text_emb
-        text_emb = torch.zeros_like(pov_emb)
-        if text_emb.dim() > 1:
-            text_emb = text_emb.flatten(start_dim=1)
-    
-    if pov_emb is not None:
-        if pov_emb.dim() > 1:
-            pov_emb = pov_emb.flatten(start_dim=1)
-    elif text_emb is not None:
-        # Create zero tensor matching text_emb shape for pov_emb
-        pov_emb = torch.zeros_like(text_emb)
-        if pov_emb.dim() > 1:
-            pov_emb = pov_emb.flatten(start_dim=1)
-    
-    if target_latents is None:
-        return
-    
-    # Decode target latents to RGB (for comparison)
-    with torch.no_grad():
-        target_decoded = model.decoder({"latent": target_latents})
-        if "rgb" in target_decoded:
-            target_rgb = (target_decoded["rgb"] + 1.0) / 2.0
-            target_rgb = torch.clamp(target_rgb, 0.0, 1.0)
-        else:
-            target_rgb = None
     
     # Generate conditioned samples using DDIM (50 steps)
     ddim_steps = 50
@@ -606,150 +589,69 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         )
         
         # Decode generated latents to RGB
-        if "rgb" in conditioned_output:
-            generated_rgb = conditioned_output["rgb"]
-            if generated_rgb.min() < 0:  # [-1, 1] range
-                generated_rgb = (generated_rgb + 1.0) / 2.0
-            generated_rgb = torch.clamp(generated_rgb, 0.0, 1.0)
-        else:
-            decoded = model.decoder({"latent": conditioned_output["latent"]})
-            if "rgb" in decoded:
-                generated_rgb = (decoded["rgb"] + 1.0) / 2.0
-                generated_rgb = torch.clamp(generated_rgb, 0.0, 1.0)
-            else:
-                print("  Warning: Decoder did not produce RGB output for generated samples")
-                generated_rgb = None
+        generated_rgb = latents2rgb(model, conditioned_output, warning_prefix="Decoder for generated samples")
     
-    # Create side-by-side comparison: target (left) | generated (right)
-    if target_rgb is not None and generated_rgb is not None:
-        # Convert to [0, 255] for PIL
-        target_np = (target_rgb.cpu().numpy() * 255.0).astype(np.uint8)
-        generated_np = (generated_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+    if generated_rgb is None:
+        return
+    
+    # Load target images for comparison grids
+    target_images = []
+    for i in range(batch_size):
+        sample_dir = conditioned_dir / f"sample_{i}"
+        target_path = sample_dir / "target" / "target.png"
+        if target_path.exists():
+            target_images.append(Image.open(target_path))
+        else:
+            print(f"  Warning: Target image for sample {i} not found")
+            return
+    
+    # Convert generated to images
+    generated_np = (generated_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+    generated_images = []
+    for i in range(batch_size):
+        generated_img = Image.fromarray(generated_np[i].transpose(1, 2, 0))
+        generated_images.append(generated_img)
+    
+    # Save generated images per-sample
+    for i in range(batch_size):
+        sample_dir = conditioned_dir / f"sample_{i}"
+        generated_dir = sample_dir / "generated"
+        generated_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create images
-        target_images = []
-        generated_images = []
-        for i in range(batch_size):
-            target_img = Image.fromarray(target_np[i].transpose(1, 2, 0))
-            generated_img = Image.fromarray(generated_np[i].transpose(1, 2, 0))
-            target_images.append(target_img)
-            generated_images.append(generated_img)
-        
-        # Create side-by-side comparison
-        img_size = target_images[0].size[0]
-        grid_n = 4  # 4 columns
-        num_rows = (batch_size + grid_n - 1) // grid_n
-        
-        # Create target grid
-        target_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
-        for idx, img in enumerate(target_images):
-            row = idx // grid_n
-            col = idx % grid_n
-            target_grid.paste(img, (col * img_size, row * img_size))
-        
-        # Create generated grid
-        generated_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
-        for idx, img in enumerate(generated_images):
-            row = idx // grid_n
-            col = idx % grid_n
-            generated_grid.paste(img, (col * img_size, row * img_size))
-        
-        # Concatenate horizontally (side by side)
-        comparison_width = img_size * grid_n * 2
-        comparison_height = img_size * num_rows
-        comparison_img = Image.new('RGB', (comparison_width, comparison_height))
-        comparison_img.paste(target_grid, (0, 0))
-        comparison_img.paste(generated_grid, (img_size * grid_n, 0))
-        
-        # Save comparison
-        epoch_prefix = f"{exp_name}_epoch_{epoch:03d}" if exp_name else f"epoch_{epoch:03d}"
-        comparison_path = samples_dir / f"{epoch_prefix}_comparison.png"
-        comparison_img.save(comparison_path)
-        
-        # Also save generated samples only
-        samples_path = samples_dir / f"{epoch_prefix}_generated.png"
-        generated_grid.save(samples_path)
-        
-        # ============================================================================
-        # Part 3: Save individual samples with conditioning information
-        # ============================================================================
-        data_dir = output_dir / "sample_data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        
-        images_dir = data_dir / f"{epoch_prefix}_images"
-        images_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Get paths from dataset
-        graph_texts = []
-        layout_paths = []
-        pov_paths = []
-        
-        for i in range(batch_size):
-            idx = selected_indices[i] if i < len(selected_indices) else i
-            row = dataset.df.iloc[idx]
-            
-            # Get graph text path
-            graph_text_path = row.get("graph_text_path", "")
-            if graph_text_path and Path(graph_text_path).exists():
-                try:
-                    with open(graph_text_path, 'r') as f:
-                        graph_text = f.read()
-                    graph_texts.append(graph_text)
-                    # Save graph text
-                    text_file = images_dir / f"sample_{i:03d}_graph_text.txt"
-                    with open(text_file, 'w') as f:
-                        f.write(graph_text)
-                except Exception:
-                    graph_texts.append("")
-            else:
-                graph_texts.append("")
-            
-            # Get layout path (for reference)
-            layout_path = row.get("layout_path", "")
-            layout_paths.append(layout_path)
-            
-            # Get POV path
-            pov_path = row.get("pov_path", "")
-            pov_paths.append(pov_path)
-            
-            # Save POV image if available
-            if pov_path and Path(pov_path).exists():
-                try:
-                    pov_img = Image.open(pov_path)
-                    pov_img.save(images_dir / f"sample_{i:03d}_pov.png")
-                except Exception:
-                    pass
-        
-        # Save target and generated images individually
-        for i in range(batch_size):
-            target_img = target_images[i]
-            generated_img = generated_images[i]
-            target_img.save(images_dir / f"sample_{i:03d}_target.png")
-            generated_img.save(images_dir / f"sample_{i:03d}_generated.png")
-        
-        # Save control signal embeddings (no type-based conditioning)
-        if text_emb is not None:
-            torch.save(text_emb.cpu(), images_dir / "text_embeddings.pt")
-        if pov_emb is not None:
-            torch.save(pov_emb.cpu(), images_dir / "pov_embeddings.pt")
-        
-        # Save metadata
-        metadata = {
-            "epoch": epoch,
-            "batch_size": batch_size,
-            "room_indices": room_indices,
-            "scene_indices": scene_indices,
-            "selected_indices": selected_indices,
-            "layout_paths": layout_paths,
-            "pov_paths": pov_paths,
-            "graph_texts": graph_texts,
-            "has_text_emb": text_emb is not None,
-            "has_pov_emb": pov_emb is not None,
-            "guidance_scale": guidance_scale,
-            "cfg_dropout_rate": cfg_dropout_rate,
-        }
-        with open(images_dir / "metadata.json", 'w') as f:
-            json.dump(metadata, f, indent=2)
+        generated_img = generated_images[i]
+        generated_img.save(generated_dir / f"sample_{i}_epoch_{epoch:03d}.png")
+    
+    # Create comparison grids for easy viewing
+    img_size = target_images[0].size[0]
+    grid_n = 4  # 4 columns
+    num_rows = (batch_size + grid_n - 1) // grid_n
+    
+    # Create target grid
+    target_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
+    for idx, img in enumerate(target_images):
+        row = idx // grid_n
+        col = idx % grid_n
+        target_grid.paste(img, (col * img_size, row * img_size))
+    
+    # Create generated grid
+    generated_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
+    for idx, img in enumerate(generated_images):
+        row = idx // grid_n
+        col = idx % grid_n
+        generated_grid.paste(img, (col * img_size, row * img_size))
+    
+    # Concatenate horizontally (side by side) for comparison
+    comparison_width = img_size * grid_n * 2
+    comparison_height = img_size * num_rows
+    comparison_img = Image.new('RGB', (comparison_width, comparison_height))
+    comparison_img.paste(target_grid, (0, 0))
+    comparison_img.paste(generated_grid, (img_size * grid_n, 0))
+    
+    # Save comparison grid
+    comparison_dir = samples_dir / "comparison"
+    comparison_dir.mkdir(parents=True, exist_ok=True)
+    comparison_path = comparison_dir / f"comparison_epoch_{epoch:03d}.png"
+    comparison_img.save(comparison_path)
 
 
 def main():
@@ -804,7 +706,7 @@ def main():
     if ae_cfg and isinstance(ae_cfg, dict):
         ae_checkpoint = ae_cfg.get("checkpoint")
         if ae_checkpoint:
-            vae_metadata = load_vae_metadata(ae_checkpoint)
+            vae_metadata = Autoencoder.load_metadata(ae_checkpoint)
     
     # Get scale_factor from config or VAE metadata (should be part of VAE statistics)
     # Check both diffusion section and top-level config
@@ -845,28 +747,11 @@ def main():
     
     # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
+    extra_state = {}  # Initialize empty dict for non-resume case
     
-    # Load checkpoint (Stage 1, Stage 2, or resume)
-    stage1_checkpoint = config.get("diffusion", {}).get("stage1_checkpoint")
-    stage2_checkpoint = config.get("diffusion", {}).get("stage2_checkpoint")
-    
-    if stage2_checkpoint and not should_resume:
-        model, _ = DiffusionModel.load_checkpoint(
-            stage2_checkpoint,
-            map_location=device,
-            return_extra=True,
-            config=config
-        )
-        model = model.to(device_obj)
-    elif stage1_checkpoint and not should_resume:
-        model, _ = DiffusionModel.load_checkpoint(
-            stage1_checkpoint,
-            map_location=device,
-            return_extra=True,
-            config=config
-        )
-        model = model.to(device_obj)
-    elif should_resume:
+    # Load checkpoint (resume) or build from config (fresh start)
+    if should_resume:
+        # Load checkpoint manually (before Trainer is created)
         model, extra_state = DiffusionModel.load_checkpoint(
             latest_checkpoint,
             map_location=device,
@@ -1016,30 +901,52 @@ def main():
     
     # Training settings
     epochs = config["training"].get("epochs", 100)
-    use_amp = config["training"].get("use_amp", False)
+    use_amp = config["training"].get("use_amp", True)  # Default to True for speedup and memory efficiency
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
     use_non_uniform_sampling = config["training"].get("use_non_uniform_sampling", False)  # Default False for uniform sampling
     early_stopping_patience = config["training"].get("early_stopping_patience", None)
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
+    gradient_accumulation_steps = config.get("training", {}).get("gradient_accumulation_steps", 1)
     
-    # Early stopping state
-    epochs_without_improvement = 0
-    cfg_dropout_config = config.get("training", {}).get("cfg_dropout_rate", 0.0)
+    # Create Trainer
+    trainer = Trainer(
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device_obj,
+        use_amp=use_amp,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_grad_norm=max_grad_norm,
+    )
+    # Store diffusion-specific config in trainer for step function access
+    trainer.use_non_uniform_sampling = use_non_uniform_sampling
+    
+    # Restore optimizer and scheduler state if resuming
+    if should_resume and "optimizer_state" in extra_state:
+        trainer.optimizer.load_state_dict(extra_state["optimizer_state"])
+    if should_resume and "scheduler_state" in extra_state and scheduler is not None:
+        trainer.scheduler.load_state_dict(extra_state["scheduler_state"])
+    if should_resume and "scaler_state" in extra_state and trainer.scaler is not None:
+        trainer.scaler.load_state_dict(extra_state["scaler_state"])
+    
+    # Early stopping state (restore from checkpoint if resuming)
+    if should_resume:
+        # Try to restore epochs_without_improvement from checkpoint, but it might not be saved
+        epochs_without_improvement = extra_state.get("epochs_without_improvement", 0)
+    else:
+        epochs_without_improvement = 0
+    
+    # Get CFG dropout rate (constant, no scheduling)
+    cfg_dropout_rate = config.get("training", {}).get("cfg_dropout_rate", 0.0)
+    if isinstance(cfg_dropout_rate, dict):
+        # Legacy dict format - use end rate as constant
+        cfg_dropout_rate = cfg_dropout_rate.get("end", 0.0)
     guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
-    if isinstance(cfg_dropout_config, dict):
-        start_rate = cfg_dropout_config.get("start", 1.0)
-        end_rate = cfg_dropout_config.get("end", 0.1)
-        schedule_type = cfg_dropout_config.get("schedule", "linear")
-        step_size = cfg_dropout_config.get("step_size", 1)
-        plateau_epoch = cfg_dropout_config.get("plateau_epoch", None)
-        schedule_info = f"({schedule_type} schedule"
-        if step_size > 1:
-            schedule_info += f", changes every {step_size} epochs"
-        if plateau_epoch is not None:
-            schedule_info += f", plateaus at {end_rate} after epoch {plateau_epoch}"
-        schedule_info += ")"
+    
+    # Set CFG dropout rate in trainer (constant throughout training)
+    trainer.cfg_dropout_rate = cfg_dropout_rate
     
     # Training loop
     for epoch in range(start_epoch, epochs):
@@ -1047,52 +954,12 @@ def main():
         print(f"{'='*60}")
         
         # Train
-        # Get CFG parameters from config
-        # Support scheduled CFG dropout (decreasing over epochs)
-        cfg_dropout_config = config.get("training", {}).get("cfg_dropout_rate", 0.0)
-        if isinstance(cfg_dropout_config, dict):
-            # Schedule format: {start: 1.0, end: 0.1, schedule: "linear", step_size: 10, plateau_epoch: 200}
-            start_rate = cfg_dropout_config.get("start", 1.0)
-            end_rate = cfg_dropout_config.get("end", 0.1)
-            schedule_type = cfg_dropout_config.get("schedule", "linear")
-            step_size = cfg_dropout_config.get("step_size", 1)  # Change every N epochs (default: 1 for backward compatibility)
-            plateau_epoch = cfg_dropout_config.get("plateau_epoch", None)  # After this epoch, stay at end_rate
-            
-            # If we've passed the plateau epoch, just use the end rate
-            if plateau_epoch is not None and epoch >= plateau_epoch:
-                cfg_dropout_rate = end_rate
-            else:
-                # Calculate current rate based on schedule with step-based updates
-                # Use floor division to get the current step, so rate stays constant for step_size epochs
-                # If plateau_epoch is set, calculate progress based on plateau_epoch instead of total epochs
-                effective_max_epoch = plateau_epoch if plateau_epoch is not None else epochs
-                current_step = epoch // step_size
-                max_step = (effective_max_epoch - 1) // step_size  # Maximum step before plateau
-                if max_step > 0:
-                    progress = min(current_step / max_step, 1.0)  # Clamp to 1.0
-                else:
-                    progress = 0.0
-                
-                if schedule_type == "linear":
-                    cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
-                elif schedule_type == "cosine":
-                    import math
-                    cfg_dropout_rate = end_rate + (start_rate - end_rate) * (1 + math.cos(math.pi * progress)) / 2
-                else:
-                    # Default to linear
-                    cfg_dropout_rate = start_rate + (end_rate - start_rate) * progress
-        else:
-            # Fixed rate (backward compatible)
-            cfg_dropout_rate = cfg_dropout_config
-        
-        guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
-        gradient_accumulation_steps = config.get("training", {}).get("gradient_accumulation_steps", 1)
-        
-        train_loss, train_logs = train_epoch(
-            model, train_loader, scheduler, loss_fn,
-            optimizer, device_obj, epoch + 1, use_amp=use_amp, max_grad_norm=max_grad_norm,
-            use_non_uniform_sampling=use_non_uniform_sampling, cfg_dropout_rate=cfg_dropout_rate,
-            gradient_accumulation_steps=gradient_accumulation_steps
+        train_loss, train_logs = trainer.train_epoch(
+            dataloader=train_loader,
+            loss_fn=loss_fn,
+            epoch=epoch + 1,
+            step_fn=diffusion_step_fn,
+            collect_fn=None  # Diffusion doesn't collect latents
         )
         
         print(f"Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.6f}", flush=True)
@@ -1106,10 +973,12 @@ def main():
             # Get guidance_scale from config for evaluation
             guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
             
-            val_loss, val_logs = eval_epoch(
-                model, val_loader, scheduler, loss_fn,
-                device_obj, use_amp=use_amp,
-                guidance_scale=guidance_scale, limit_val_batches=50
+            val_loss, val_logs = trainer.eval_epoch(
+                dataloader=val_loader,
+                loss_fn=loss_fn,
+                step_fn=diffusion_eval_step_fn,
+                collect_fn=None,  # Diffusion doesn't collect latents
+                limit_batches=50
             )
             
             # Check if this is the best validation loss BEFORE updating best_val_loss
@@ -1131,8 +1000,11 @@ def main():
                 # Update best_val_loss if not using early stopping
                 best_val_loss = val_loss
         
-        # Save samples
-        # Always save at epoch 1, then every sample_interval epochs
+        # Save targets and conditions once (at epoch 1)
+        if val_loader and (epoch + 1 == 1):
+            save_targets_and_conditions(model, val_loader, device_obj, output_dir, exp_name=exp_name)
+        
+        # Save generated samples every sample_interval epochs
         if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
             # Get guidance_scale from config (default 1.0 = no CFG)
             guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
@@ -1152,14 +1024,13 @@ def main():
             "epoch": epoch + 1,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "cfg_dropout_rate": cfg_dropout_rate,  # Track CFG dropout rate
             **{f"train_{k}": v for k, v in train_logs.items()},
             **{f"val_{k}": v for k, v in val_logs.items()}
         }
         training_history.append(history_entry)
         
         # Save metrics to CSV
-        save_metrics_csv(training_history, metrics_csv_path)
+        trainer.save_metrics_csv(metrics_csv_path, training_history)
         
         # Plot loss curves
         if len(training_history) > 0:
@@ -1169,25 +1040,14 @@ def main():
             except Exception:
                 pass
         
-        # Save checkpoint
-        checkpoint_dir = output_dir / "checkpoints"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        
-        checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
-        model.save_checkpoint(
-            checkpoint_path,
+        # Save checkpoint using Trainer
+        trainer.save_training_checkpoint(
+            output_dir=output_dir,
+            exp_name=exp_name,
             epoch=epoch + 1,
             best_val_loss=best_val_loss,
-            training_history=training_history
-        )
-        
-        if is_best:
-            best_checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
-            model.save_checkpoint(
-                best_checkpoint_path,
-                epoch=epoch + 1,
-                best_val_loss=best_val_loss,
-                training_history=training_history
+            training_history=training_history,
+            is_best=is_best
             )
         
         # Early stopping check

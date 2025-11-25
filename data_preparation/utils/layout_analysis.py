@@ -174,6 +174,45 @@ def count_distinct_colors(layout_path: Path, exclude_background: bool = True,
         return 0
 
 
+def count_distinct_colors_numpy(canvas: np.ndarray, exclude_background: bool = True,
+                                min_pixel_threshold: int = 0) -> int:
+    """
+    Count distinct colors in a numpy canvas array.
+    Includes ALL colors (background, floor, walls, objects) unless exclude_background=True.
+    
+    Args:
+        canvas: Image array (H, W, 3) with values in [0, 255]
+        exclude_background: If True, exclude white/gray background colors
+        min_pixel_threshold: Minimum number of pixels for a color to be counted
+    
+    Returns:
+        Number of distinct colors
+    """
+    # Reshape to (N, 3) where N = H * W
+    pixels = canvas.reshape(-1, 3)
+    
+    # Get unique colors and their counts
+    unique_colors, counts = np.unique(pixels, axis=0, return_counts=True)
+    
+    distinct_colors = 0
+    white_vals = {(240, 240, 240), (255, 255, 255), (200, 200, 200), (211, 211, 211)}
+    
+    for color, count in zip(unique_colors, counts):
+        # Skip background colors if requested
+        if exclude_background:
+            color_tuple = tuple(color)
+            if color_tuple in white_vals:
+                continue
+        
+        # Check minimum pixel threshold
+        if count < min_pixel_threshold:
+            continue
+        
+        distinct_colors += 1
+    
+    return distinct_colors
+
+
 def get_object_class_combination(layout_path: Path, color_to_category: Dict[Tuple[int, int, int], str]) -> str:
     """
     Get a string representation of the combination of object classes present.

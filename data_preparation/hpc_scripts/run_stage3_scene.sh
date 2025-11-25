@@ -12,7 +12,7 @@ set -euo pipefail
 # Configuration
 SCENES_ROOT="/work3/s233249/ImgiNav/datasets/scenes"
 TAXONOMY_FILE="/zhome/62/5/203350/ws/ImgiNav/config/taxonomy.json"
-PYTHON_SCRIPT="/zhome/62/5/203350/ws/ImgiNav/data_preperation/stage3_create_room_scenes_layouts.py"
+PYTHON_SCRIPT="/zhome/62/5/203350/ws/ImgiNav/data_preparation/create_new_layouts.py"
 MANIFEST_DIR="/zhome/62/5/203350/ws/ImgiNav/data_preperation/hpc_scripts/manifests/shards"
 
 # Job array indexing
@@ -37,10 +37,11 @@ if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   conda activate scenefactor || true
 fi
 
-# Run Stage 3 for rooms with manifest
+# Run Stage 3 for scenes with manifest
 python "${PYTHON_SCRIPT}" \
   --in_root "${SCENES_ROOT}" \
   --taxonomy "${TAXONOMY_FILE}" \
+  --output_dir "${SCENES_ROOT}" \
   --manifest "${SCENE_MANIFEST}" \
   --mode "scene" \
   --res 512 \
