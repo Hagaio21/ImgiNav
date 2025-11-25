@@ -19,14 +19,14 @@ SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
 MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model"
 TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/dataset_v2"
-PROJECT_ROOT="/work3/s233249/ImgiNav/ImgiNav"
+PROJECT_ROOT="/work3/s233249/ImgiNav"
 
 N_SHARDS=20                                          # Must match [1-20] above
-PYTHON_SCRIPT="${PROJECT_ROOT}/data_preparation/pipeline_v2/render_worker.py"
+PYTHON_SCRIPT="${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/render_worker.py"
 # =============================================================================
 
 # Create logs directory
-mkdir -p "${PROJECT_ROOT}/data_preparation/pipeline_v2/hpc_scripts/logs"
+mkdir -p "${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs"
 
 IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
 TMPDIR_LOCAL="${TMPDIR:-/tmp}"
@@ -39,13 +39,31 @@ echo "Scenes root: ${SCENES_ROOT}"
 echo "Output dir: ${OUTPUT_DIR}"
 
 # 1) Collect all *.json scene files, deterministic order
-find "${SCENES_ROOT}" -type f -name '*.json' -print | sort > "${ALL_LIST}"
+echo "Finding scene files in ${SCENES_ROOT}..."
+if [ ! -d "${SCENES_ROOT}" ]; then
+  echo "ERROR: SCENES_ROOT directory does not exist: ${SCENES_ROOT}" >&2
+  exit 1
+fi
+
+find "${SCENES_ROOT}" -type f -name '*.json' -print | sort > "${ALL_LIST}" || {
+  echo "ERROR: Failed to find scene files" >&2
+  exit 1
+}
 
 TOTAL_SCENES=$(wc -l < "${ALL_LIST}")
 echo "Found ${TOTAL_SCENES} total scene files"
 
+if [ ${TOTAL_SCENES} -eq 0 ]; then
+  echo "ERROR: No scene files found!" >&2
+  exit 1
+fi
+
 # 2) Split into balanced shards using GNU split
-split -d -n l/${N_SHARDS} "${ALL_LIST}" "${SHARD_PREFIX}"
+echo "Splitting into ${N_SHARDS} shards..."
+split -d -n l/${N_SHARDS} "${ALL_LIST}" "${SHARD_PREFIX}" || {
+  echo "ERROR: Failed to split scene list" >&2
+  exit 1
+}
 
 # 3) Pick this task's shard file
 SUFFIX=$(printf "%02d" $((IDX-1)))
@@ -84,15 +102,35 @@ if [ ! -f "${TAXONOMY_FILE}" ]; then
 fi
 
 # 7) Check required dependencies
+echo "Checking Python dependencies..."
 python -c "import trimesh, pyrender, numpy, scipy, PIL" || {
   echo "ERROR: Required Python packages not available" >&2
+  echo "Trying to import individually to identify missing package..." >&2
+  python -c "import trimesh" || echo "  - trimesh missing" >&2
+  python -c "import pyrender" || echo "  - pyrender missing" >&2
+  python -c "import numpy" || echo "  - numpy missing" >&2
+  python -c "import scipy" || echo "  - scipy missing" >&2
+  python -c "import PIL" || echo "  - PIL missing" >&2
   exit 1
 }
+echo "All dependencies available"
 
 # 8) Process each scene in the shard
 echo "Starting processing at $(date)"
 
-cd "${PROJECT_ROOT}"
+echo "Changing to project directory: ${PROJECT_ROOT}/ImgiNav"
+cd "${PROJECT_ROOT}/ImgiNav" || {
+  echo "ERROR: Failed to change to project directory: ${PROJECT_ROOT}/ImgiNav" >&2
+  exit 1
+}
+
+echo "Current directory: $(pwd)"
+echo "Python script path: ${PYTHON_SCRIPT}"
+if [ ! -f "${PYTHON_SCRIPT}" ]; then
+  echo "ERROR: Python script not found: ${PYTHON_SCRIPT}" >&2
+  exit 1
+fi
+echo "Python script exists and is readable"
 
 while IFS= read -r JSON_PATH; do
   if [ -z "${JSON_PATH}" ] || [ ! -f "${JSON_PATH}" ]; then
