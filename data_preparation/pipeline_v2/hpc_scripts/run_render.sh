@@ -89,8 +89,13 @@ fi
 echo "Sample of found files (first 3):"
 echo "${FIND_RESULT}" | head -3
 
-echo "${FIND_RESULT}" | grep -v '^$' | sort > "${ALL_LIST}" || {
-  echo "ERROR: Failed to write scene list to ${ALL_LIST}" >&2
+# Write scene list - handle pipe errors gracefully
+echo "Writing scene list to ${ALL_LIST}..."
+{
+  echo "${FIND_RESULT}" | grep -v '^$' | sort
+} > "${ALL_LIST}" 2>&1 || {
+  WRITE_EXIT=$?
+  echo "ERROR: Failed to write scene list to ${ALL_LIST} (exit code: ${WRITE_EXIT})" >&2
   echo "Temp directory: ${TMPDIR_LOCAL}" >&2
   echo "Temp directory exists: $([ -d "${TMPDIR_LOCAL}" ] && echo 'yes' || echo 'no')" >&2
   echo "Temp directory writable: $([ -w "${TMPDIR_LOCAL}" ] && echo 'yes' || echo 'no')" >&2
@@ -99,8 +104,20 @@ echo "${FIND_RESULT}" | grep -v '^$' | sort > "${ALL_LIST}" || {
   exit 1
 }
 
+# Verify file was written
+if [ ! -f "${ALL_LIST}" ]; then
+  echo "ERROR: Scene list file was not created: ${ALL_LIST}" >&2
+  exit 1
+fi
+
+FILE_SIZE=$(wc -l < "${ALL_LIST}")
 echo "Wrote scene list to ${ALL_LIST}"
-echo "Total scenes: $(wc -l < "${ALL_LIST}")"
+echo "Total scenes: ${FILE_SIZE}"
+if [ ${FILE_SIZE} -eq 0 ]; then
+  echo "ERROR: Scene list file is empty!" >&2
+  exit 1
+fi
+
 echo "First few lines of scene list:"
 head -3 "${ALL_LIST}"
 
