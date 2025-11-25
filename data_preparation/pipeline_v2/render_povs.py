@@ -32,16 +32,53 @@ o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
 def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
     """
-    Load scene from OBJ file.
+    Load scene from OBJ file with materials/textures.
     """
     print(f"Loading scene from OBJ: {obj_path}")
+    geometry_dir = obj_path.parent
+    materials_dir = geometry_dir / "materials"
     
-    # Simply load the OBJ file - trimesh will handle MTL files automatically
-    # Use the directory containing the OBJ as the base for resolving relative paths
-    scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True)
+    # Read OBJ to check MTL reference
+    with open(obj_path, 'r') as f:
+        obj_content = f.read()
+    
+    # Fix MTL path if needed - OBJ has "mtllib materials/xxx.mtl", need to make resolver work
+    # Create a custom resolver that handles "materials/" prefix
+    class MaterialsResolver:
+        def __init__(self, geometry_dir, materials_dir):
+            self.geometry_dir = Path(geometry_dir)
+            self.materials_dir = Path(materials_dir)
+            # Also create standard resolver for fallback
+            self.std_resolver = trimesh.visual.resolvers.FilePathResolver(geometry_dir)
+        
+        def get(self, name):
+            # Remove "materials/" prefix if present
+            clean_name = name.replace('materials/', '')
+            
+            # Try materials directory first
+            mtl_path = self.materials_dir / clean_name
+            if mtl_path.exists():
+                return str(mtl_path)
+            
+            # Try standard resolver
+            result = self.std_resolver.get(name)
+            if result:
+                return result
+            
+            # Try standard resolver with clean name
+            result = self.std_resolver.get(clean_name)
+            if result:
+                return result
+            
+            return None
+    
+    resolver = MaterialsResolver(geometry_dir, materials_dir)
+    
+    # Load with resolver
+    scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, resolver=resolver)
     
     if scene is None:
-        scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, force='scene')
+        scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, force='scene', resolver=resolver)
     
     if scene is None:
         raise ValueError(f"OBJ file loaded as None: {obj_path}")
