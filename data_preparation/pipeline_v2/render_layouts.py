@@ -80,6 +80,20 @@ def main():
     scene_json = Path(args.scene_json)
     scene_id = scene_json.stem
     
+    # Try to load metadata if available
+    output_dir = Path(args.output_dir)
+    geometry_dir = output_dir / "geometry"
+    metadata_path = geometry_dir / f"{scene_id}_metadata.json"
+    scene_metadata = None
+    if metadata_path.exists():
+        try:
+            import json
+            with open(metadata_path, 'r') as f:
+                scene_metadata = json.load(f)
+            print(f"Loaded metadata from: {metadata_path}")
+        except Exception as e:
+            print(f"Warning: Could not load metadata: {e}")
+    
     print(f"Loading scene: {scene_id}")
     trimesh_scene = load_front_scene(scene_json, Path(args.future_root), taxonomy)
     
@@ -99,7 +113,8 @@ def main():
     # Scene-level Layout Pass: RGB
     print("Rendering scene-level layout RGB...")
     try:
-        layout_rgb = render_layout_rgb(trimesh_scene, hide_ceilings=True, width=256, height=256)
+        layout_rgb = render_layout_rgb(trimesh_scene, hide_ceilings=True, width=256, height=256, 
+                                      clip_top_meters=1.0, scene_metadata=scene_metadata)
         layout_rgb_path = layouts_rgb_dir / f"{scene_id}_scene.png"
         Image.fromarray(layout_rgb).save(layout_rgb_path)
         print(f"  Saved scene layout RGB: {layout_rgb_path}")
@@ -114,7 +129,8 @@ def main():
     # Scene-level Layout Pass: Segmentation
     print("Rendering scene-level layout segmentation...")
     try:
-        layout_seg = render_layout_seg(trimesh_scene, taxonomy, hide_ceilings=True, width=256, height=256)
+        layout_seg = render_layout_seg(trimesh_scene, taxonomy, hide_ceilings=True, width=256, height=256,
+                                      clip_top_meters=1.0, scene_metadata=scene_metadata)
         layout_seg_path = layouts_seg_dir / f"{scene_id}_scene.png"
         Image.fromarray(layout_seg).save(layout_seg_path)
         print(f"  Saved scene layout segmentation: {layout_seg_path}")
@@ -136,7 +152,12 @@ def main():
         
         # Room RGB layout
         try:
-            room_layout_rgb = render_layout_rgb(room_scene, hide_ceilings=True, width=256, height=256)
+            # Get room metadata if available
+            room_metadata = None
+            if scene_metadata and 'rooms' in scene_metadata and room_name in scene_metadata['rooms']:
+                room_metadata = {'scene_bounds': scene_metadata['rooms'][room_name].get('bounds', {})}
+            room_layout_rgb = render_layout_rgb(room_scene, hide_ceilings=True, width=256, height=256,
+                                               clip_top_meters=1.0, scene_metadata=room_metadata)
             room_layout_rgb_path = layouts_rgb_dir / f"{scene_id}_{safe_room_name}_room.png"
             Image.fromarray(room_layout_rgb).save(room_layout_rgb_path)
             print(f"    Saved room RGB layout: {room_layout_rgb_path}")
@@ -150,7 +171,12 @@ def main():
         
         # Room segmentation layout
         try:
-            room_layout_seg = render_layout_seg(room_scene, taxonomy, hide_ceilings=True, width=256, height=256)
+            # Get room metadata if available
+            room_metadata = None
+            if scene_metadata and 'rooms' in scene_metadata and room_name in scene_metadata['rooms']:
+                room_metadata = {'scene_bounds': scene_metadata['rooms'][room_name].get('bounds', {})}
+            room_layout_seg = render_layout_seg(room_scene, taxonomy, hide_ceilings=True, width=256, height=256,
+                                               clip_top_meters=1.0, scene_metadata=room_metadata)
             room_layout_seg_path = layouts_seg_dir / f"{scene_id}_{safe_room_name}_room.png"
             Image.fromarray(room_layout_seg).save(room_layout_seg_path)
             print(f"    Saved room segmentation layout: {room_layout_seg_path}")

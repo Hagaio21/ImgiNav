@@ -9,7 +9,7 @@ import math
 import time
 import inspect
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 import numpy as np
 import open3d as o3d
@@ -200,7 +200,8 @@ def clip_mesh_above_height(mesh: trimesh.Trimesh, transform: np.ndarray,
 def render_layout_rgb(trimesh_scene: trimesh.Scene,
                       hide_ceilings: bool = True,
                       width: int = 256, height: int = 256,
-                      clip_top_meters: float = 1.0) -> np.ndarray:
+                      clip_top_meters: float = 1.0,
+                      scene_metadata: Optional[Dict] = None) -> np.ndarray:
     """
     Render top-down RGB layout using Open3D with orthographic projection.
     Clips top portion of structure to make pathways visible.
@@ -215,19 +216,34 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     Returns:
         RGB image array (H, W, 3) uint8
     """
-    min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    # Use metadata if available, otherwise compute bounds
+    if scene_metadata is not None and 'scene_bounds' in scene_metadata:
+        scene_bounds = scene_metadata['scene_bounds']
+        if scene_bounds.get('min') and scene_bounds.get('max'):
+            min_bounds = np.array(scene_bounds['min'])
+            max_bounds = np.array(scene_bounds['max'])
+        else:
+            min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    else:
+        min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    
     center = (min_bounds + max_bounds) / 2
     size = max_bounds - min_bounds
     max_size = max(size[0], size[2])  # X and Z dimensions for top-down
     
-    # Calculate clipping height (1 meter from top)
+    # Calculate clipping height (1 meter from top) - mandatory
     clip_height = max_bounds[1] - clip_top_meters  # Y coordinate in 3D-FRONT
+    if clip_height < min_bounds[1]:
+        # If clipping would remove everything, clip at scene min (no clipping)
+        clip_height = min_bounds[1]
+        print(f"WARNING: Clipping height would be below scene min, using min_bounds[1] = {clip_height}")
     
     # Create Open3D visualizer
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=width, height=height)
     
     # Add meshes with clipping
+    mesh_count = 0
     for node_name in trimesh_scene.graph.nodes_geometry:
         try:
             transform, geometry_name = trimesh_scene.graph.get(node_name)
@@ -243,15 +259,19 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
                 continue
             
             if isinstance(geometry, trimesh.Trimesh):
-                # Clip mesh if needed
+                # Clip mesh (mandatory)
                 clipped_mesh = clip_mesh_above_height(geometry, transform, clip_height)
                 if clipped_mesh is None:
                     continue
                 
                 o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform)
                 vis.add_geometry(o3d_mesh)
-        except (KeyError, ValueError, IndexError):
+                mesh_count += 1
+        except (KeyError, ValueError, IndexError) as e:
             continue
+    
+    if mesh_count == 0:
+        print(f"WARNING: No meshes added to visualizer! Scene bounds: min={min_bounds}, max={max_bounds}, clip_height={clip_height}")
     
     # Set render options with lighting
     opt = vis.get_render_option()
@@ -329,23 +349,39 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
                       taxonomy: Taxonomy,
                       hide_ceilings: bool = True,
                       width: int = 256, height: int = 256,
-                      clip_top_meters: float = 1.0) -> np.ndarray:
+                      clip_top_meters: float = 1.0,
+                      scene_metadata: Optional[Dict] = None) -> np.ndarray:
     """
     Render top-down segmentation layout with taxonomy colors.
     Uses orthographic projection and clips top portion.
     """
-    min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    # Use metadata if available, otherwise compute bounds
+    if scene_metadata is not None and 'scene_bounds' in scene_metadata:
+        scene_bounds = scene_metadata['scene_bounds']
+        if scene_bounds.get('min') and scene_bounds.get('max'):
+            min_bounds = np.array(scene_bounds['min'])
+            max_bounds = np.array(scene_bounds['max'])
+        else:
+            min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    else:
+        min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
+    
     center = (min_bounds + max_bounds) / 2
     size = max_bounds - min_bounds
     max_size = max(size[0], size[2])
     
-    # Calculate clipping height (1 meter from top)
+    # Calculate clipping height (1 meter from top) - mandatory
     clip_height = max_bounds[1] - clip_top_meters  # Y coordinate in 3D-FRONT
+    if clip_height < min_bounds[1]:
+        # If clipping would remove everything, clip at scene min (no clipping)
+        clip_height = min_bounds[1]
+        print(f"WARNING: Clipping height would be below scene min, using min_bounds[1] = {clip_height}")
     
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=width, height=height)
     
     # Add meshes with taxonomy colors and clipping
+    mesh_count = 0
     for node_name in trimesh_scene.graph.nodes_geometry:
         try:
             transform, geometry_name = trimesh_scene.graph.get(node_name)
