@@ -734,23 +734,46 @@ def main():
     # Start Xvfb if needed (HPC mode or no display)
     global VFB
     use_xvfb = args.hpc or ('DISPLAY' not in os.environ)
+    
+    print(f"Display check: DISPLAY={os.environ.get('DISPLAY', 'NOT SET')}")
+    print(f"Xvfb available: {XVFB_AVAILABLE}, use_xvfb: {use_xvfb}")
+    
     if use_xvfb and XVFB_AVAILABLE:
         try:
+            print("Attempting to start Xvfb...")
             VFB = Xvfb(width=1024, height=768, colordepth=24)
             VFB.start()
             os.environ['DISPLAY'] = f':{VFB.new_display}'
-            print(f"Started Xvfb virtual display: {os.environ['DISPLAY']}")
+            print(f"✓ Started Xvfb virtual display: {os.environ['DISPLAY']}")
+            
+            # Verify Xvfb is working by checking if we can connect to it
+            import subprocess
+            try:
+                result = subprocess.run(['xdpyinfo', '-display', os.environ['DISPLAY']], 
+                                      capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    print(f"✓ Verified Xvfb display is working")
+                else:
+                    print(f"Warning: xdpyinfo check failed: {result.stderr.decode()}")
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                print("Warning: Could not verify Xvfb (xdpyinfo not available)")
         except Exception as e:
-            print(f"Warning: Failed to start Xvfb: {e}")
-            print("Continuing without Xvfb (may fail if no display available)")
-            VFB = None
+            print(f"ERROR: Failed to start Xvfb: {e}")
+            import traceback
+            traceback.print_exc()
+            print("Cannot continue without display")
+            raise RuntimeError(f"Cannot render without display. Xvfb failed: {e}")
     elif use_xvfb and not XVFB_AVAILABLE:
-        print("Warning: Xvfb requested but xvfbwrapper not available.")
+        print("ERROR: Xvfb requested but xvfbwrapper not available.")
         print("Install with: pip install xvfbwrapper")
         print("Or use system xvfb-run to wrap the script")
         if 'DISPLAY' not in os.environ:
-            print("ERROR: No display available and Xvfb not available!")
             raise RuntimeError("Cannot render without display. Install xvfbwrapper or use xvfb-run.")
+    
+    # Final check
+    if 'DISPLAY' not in os.environ:
+        raise RuntimeError("No DISPLAY environment variable set. Cannot render.")
+    print(f"Using DISPLAY: {os.environ['DISPLAY']}")
     
     # Set random seed
     random.seed(args.seed)
