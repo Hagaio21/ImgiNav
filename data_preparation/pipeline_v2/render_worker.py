@@ -37,7 +37,7 @@ project_root = script_dir.parent.parent  # Go up from pipeline_v2 -> data_prepar
 sys.path.insert(0, str(project_root))
 
 from common.taxonomy import Taxonomy
-from data_preparation.pipeline_v2.scene_loader import load_front_scene
+from data_preparation.pipeline_v2.scene_loader import load_front_scene, extract_rooms_from_scene
 
 # Set Open3D verbosity to errors only
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
@@ -201,12 +201,21 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     vis.update_renderer()
     time.sleep(0.12)  # Give OpenGL time
     
-    # Capture image
-    img = vis.capture_screen_image(do_render=True)
+    # Capture image to temporary file (Open3D requires filename)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+    
+    vis.capture_screen_image(tmp_path, do_render=True)
     vis.destroy_window()
     
-    # Convert to numpy array
+    # Read image back as numpy array
+    img = Image.open(tmp_path)
     img_np = np.asarray(img)
+    
+    # Clean up temp file
+    os.unlink(tmp_path)
+    
     return img_np
 
 
@@ -343,12 +352,21 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     vis.update_renderer()
     time.sleep(0.12)
     
-    # Capture image
-    img = vis.capture_screen_image(do_render=True)
+    # Capture image to temporary file (Open3D requires filename)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+    
+    vis.capture_screen_image(tmp_path, do_render=True)
     vis.destroy_window()
     
-    # Convert to numpy array
+    # Read image back as numpy array
+    img = Image.open(tmp_path)
     img_np = np.asarray(img)
+    
+    # Clean up temp file
+    os.unlink(tmp_path)
+    
     return img_np
 
 
@@ -618,12 +636,21 @@ def render_pov(trimesh_scene: trimesh.Scene,
     vis.update_renderer()
     time.sleep(0.12)
     
-    # Capture image
-    img = vis.capture_screen_image(do_render=True)
+    # Capture image to temporary file (Open3D requires filename)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+    
+    vis.capture_screen_image(tmp_path, do_render=True)
     vis.destroy_window()
     
-    # Convert to numpy array
+    # Read image back as numpy array
+    img = Image.open(tmp_path)
     img_np = np.asarray(img)
+    
+    # Clean up temp file
+    os.unlink(tmp_path)
+    
     return img_np
 
 
@@ -758,12 +785,21 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     vis.update_renderer()
     time.sleep(0.12)
     
-    # Capture image
-    img = vis.capture_screen_image(do_render=True)
+    # Capture image to temporary file (Open3D requires filename)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+    
+    vis.capture_screen_image(tmp_path, do_render=True)
     vis.destroy_window()
     
-    # Convert to numpy array
+    # Read image back as numpy array
+    img = Image.open(tmp_path)
     img_np = np.asarray(img)
+    
+    # Clean up temp file
+    os.unlink(tmp_path)
+    
     return img_np
 
 
@@ -829,35 +865,76 @@ def main():
     for d in [layouts_rgb_dir, layouts_seg_dir, povs_rgb_dir, povs_seg_dir, graphs_dir, geometry_dir]:
         d.mkdir(parents=True, exist_ok=True)
     
-    # Layout Pass: RGB
-    print("Rendering layout RGB...")
+    # Extract rooms from scene
+    print("Extracting rooms from scene...")
+    room_scenes = extract_rooms_from_scene(trimesh_scene)
+    print(f"  Found {len(room_scenes)} rooms: {list(room_scenes.keys())}")
+    
+    # Scene-level Layout Pass: RGB
+    print("Rendering scene-level layout RGB...")
     try:
         layout_rgb = render_layout_rgb(trimesh_scene, hide_ceilings=True, width=256, height=256)
-        layout_rgb_path = layouts_rgb_dir / f"{scene_id}.png"
+        layout_rgb_path = layouts_rgb_dir / f"{scene_id}_scene.png"
         Image.fromarray(layout_rgb).save(layout_rgb_path)
-        print(f"  Saved layout RGB: {layout_rgb_path}")
+        print(f"  Saved scene layout RGB: {layout_rgb_path}")
         if not layout_rgb_path.exists():
-            raise FileNotFoundError(f"Layout RGB file was not created: {layout_rgb_path}")
+            raise FileNotFoundError(f"Scene layout RGB file was not created: {layout_rgb_path}")
     except Exception as e:
-        print(f"ERROR: Failed to render layout RGB: {e}")
+        print(f"ERROR: Failed to render scene layout RGB: {e}")
         import traceback
         traceback.print_exc()
         raise
     
-    # Layout Pass: Segmentation
-    print("Rendering layout segmentation...")
+    # Scene-level Layout Pass: Segmentation
+    print("Rendering scene-level layout segmentation...")
     try:
         layout_seg = render_layout_seg(trimesh_scene, taxonomy, hide_ceilings=True, width=256, height=256)
-        layout_seg_path = layouts_seg_dir / f"{scene_id}.png"
+        layout_seg_path = layouts_seg_dir / f"{scene_id}_scene.png"
         Image.fromarray(layout_seg).save(layout_seg_path)
-        print(f"  Saved layout segmentation: {layout_seg_path}")
+        print(f"  Saved scene layout segmentation: {layout_seg_path}")
         if not layout_seg_path.exists():
-            raise FileNotFoundError(f"Layout segmentation file was not created: {layout_seg_path}")
+            raise FileNotFoundError(f"Scene layout segmentation file was not created: {layout_seg_path}")
     except Exception as e:
-        print(f"ERROR: Failed to render layout segmentation: {e}")
+        print(f"ERROR: Failed to render scene layout segmentation: {e}")
         import traceback
         traceback.print_exc()
         raise
+    
+    # Room-level Layout Pass
+    print("Rendering room-level layouts...")
+    for room_name, room_scene in room_scenes.items():
+        # Sanitize room name for filename
+        safe_room_name = room_name.replace(" ", "_").replace("/", "_").lower()
+        
+        print(f"  Processing room: {room_name}")
+        
+        # Room RGB layout
+        try:
+            room_layout_rgb = render_layout_rgb(room_scene, hide_ceilings=True, width=256, height=256)
+            room_layout_rgb_path = layouts_rgb_dir / f"{scene_id}_{safe_room_name}_room.png"
+            Image.fromarray(room_layout_rgb).save(room_layout_rgb_path)
+            print(f"    Saved room RGB layout: {room_layout_rgb_path}")
+            if not room_layout_rgb_path.exists():
+                raise FileNotFoundError(f"Room RGB layout file was not created: {room_layout_rgb_path}")
+        except Exception as e:
+            print(f"    ERROR: Failed to render room RGB layout for {room_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+        
+        # Room segmentation layout
+        try:
+            room_layout_seg = render_layout_seg(room_scene, taxonomy, hide_ceilings=True, width=256, height=256)
+            room_layout_seg_path = layouts_seg_dir / f"{scene_id}_{safe_room_name}_room.png"
+            Image.fromarray(room_layout_seg).save(room_layout_seg_path)
+            print(f"    Saved room segmentation layout: {room_layout_seg_path}")
+            if not room_layout_seg_path.exists():
+                raise FileNotFoundError(f"Room segmentation layout file was not created: {room_layout_seg_path}")
+        except Exception as e:
+            print(f"    ERROR: Failed to render room segmentation layout for {room_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
     
     # POV Pass: Sample camera positions
     print("Sampling camera positions...")
@@ -927,24 +1004,58 @@ def main():
         pov_count += 1
         print(f"  Rendered POV {pov_count}/{args.num_povs}")
     
-    # Build graphs from segmentation layout
-    print("Building graphs...")
+    # Save scene geometry as GLB
+    print("Saving scene geometry...")
     try:
-        from data_preparation.pipeline_v2.graph_builder import build_room_graph_from_layout as build_graph
-        layout_seg_path = layouts_seg_dir / f"{scene_id}.png"
-        if layout_seg_path.exists():
-            build_graph(
-                scene_id, "scene", layout_seg_path, taxonomy, graphs_dir
-            )
-            print("Graphs built successfully")
+        glb_path = geometry_dir / f"{scene_id}.glb"
+        trimesh_scene.export(glb_path, file_type="glb")
+        print(f"  Saved scene geometry: {glb_path}")
+        if not glb_path.exists():
+            raise FileNotFoundError(f"GLB file was not created: {glb_path}")
     except Exception as e:
-        print(f"Warning: Failed to build graphs: {e}")
+        print(f"ERROR: Failed to save scene geometry: {e}")
+        import traceback
+        traceback.print_exc()
+        # Don't raise - geometry export is optional
+    
+    # Build graphs from segmentation layouts
+    print("Building graphs...")
+    from data_preparation.pipeline_v2.graph_builder import build_room_graph_from_layout as build_graph
+    
+    # Scene-level graph
+    try:
+        scene_layout_seg_path = layouts_seg_dir / f"{scene_id}_scene.png"
+        if scene_layout_seg_path.exists():
+            build_graph(
+                scene_id, "scene", scene_layout_seg_path, taxonomy, graphs_dir
+            )
+            print("  Scene graph built successfully")
+    except Exception as e:
+        print(f"  Warning: Failed to build scene graph: {e}")
         import traceback
         traceback.print_exc()
     
+    # Room-level graphs
+    for room_name, room_scene in room_scenes.items():
+        safe_room_name = room_name.replace(" ", "_").replace("/", "_").lower()
+        try:
+            room_layout_seg_path = layouts_seg_dir / f"{scene_id}_{safe_room_name}_room.png"
+            if room_layout_seg_path.exists():
+                build_graph(
+                    scene_id, room_name, room_layout_seg_path, taxonomy, graphs_dir
+                )
+                print(f"  Room graph built for {room_name}")
+        except Exception as e:
+            print(f"  Warning: Failed to build graph for room {room_name}: {e}")
+            import traceback
+            traceback.print_exc()
+    
     print(f"Completed rendering for scene: {scene_id}")
-    print(f"  Layouts: RGB and segmentation")
+    print(f"  Scene layouts: RGB and segmentation")
+    print(f"  Room layouts: {len(room_scenes)} rooms (RGB and segmentation each)")
     print(f"  POVs: {pov_count} RGB and segmentation images")
+    print(f"  Geometry: GLB file")
+    print(f"  Graphs: 1 scene graph + {len(room_scenes)} room graphs")
     
     # Stop Xvfb if we started it
     if VFB is not None:

@@ -7,6 +7,7 @@ Parses 3D-FRONT JSON files and loads 3D-FUTURE meshes into a unified scene.
 import json
 from pathlib import Path
 from typing import Dict, Optional
+from collections import defaultdict
 
 import numpy as np
 import trimesh
@@ -88,7 +89,7 @@ def load_front_scene(json_path: Path, future_root: Path, taxonomy: Taxonomy) -> 
     Load 3D-FRONT scene from JSON and assemble into trimesh.Scene.
     
     Includes both furniture (from 3D-FUTURE) and architectural meshes (walls/floors/ceilings).
-    Attaches metadata: category_id, is_ceiling flag.
+    Attaches metadata: category_id, is_ceiling flag, room_name.
     
     Args:
         json_path: Path to 3D-FRONT JSON file
@@ -120,6 +121,16 @@ def load_front_scene(json_path: Path, future_root: Path, taxonomy: Taxonomy) -> 
     
     # Iterate through rooms
     for room in scene_data.get("scene", {}).get("room", []):
+        # Get room type/name
+        room_type = room.get("type", "UnknownRoom")
+        if not room_type or room_type.strip() == "":
+            room_type = "UnknownRoom"
+        room_name = room_type.strip()
+        
+        # Skip empty rooms
+        if room.get("empty", 0) == 1:
+            continue
+        
         for child_index, child in enumerate(room.get("children", [])):
             ref_id = child.get("ref")
             if not ref_id:
@@ -191,6 +202,7 @@ def load_front_scene(json_path: Path, future_root: Path, taxonomy: Taxonomy) -> 
                 mesh.metadata['is_ceiling'] = is_ceiling
                 mesh.metadata['label'] = label
                 mesh.metadata['ref_id'] = ref_id
+                mesh.metadata['room_name'] = room_name  # Track which room this belongs to
                 
                 # Add to scene
                 node_name = f"{ref_id}_{child_index}"
@@ -201,4 +213,49 @@ def load_front_scene(json_path: Path, future_root: Path, taxonomy: Taxonomy) -> 
                 continue
     
     return scene
+
+
+def extract_rooms_from_scene(trimesh_scene: trimesh.Scene) -> Dict[str, trimesh.Scene]:
+    """
+    Extract separate trimesh scenes for each room.
+    
+    Args:
+        trimesh_scene: Full scene with all rooms
+        
+    Returns:
+        Dictionary mapping room_name -> trimesh.Scene for that room
+    """
+    # Group meshes by room
+    room_meshes = defaultdict(list)
+    for node_name in trimesh_scene.graph.nodes_geometry:
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            room_name = metadata.get('room_name', 'UnknownRoom')
+            
+            room_meshes[room_name].append((node_name, geometry, transform))
+        except (KeyError, ValueError, IndexError):
+            continue
+    
+    # Create separate scene for each room
+    rooms = {}
+    for room_name, meshes in room_meshes.items():
+        room_scene = trimesh.Scene()
+        for node_name, geometry, transform in meshes:
+            # Create a copy of the mesh to avoid modifying the original
+            mesh_copy = geometry.copy()
+            # Preserve metadata
+            if hasattr(geometry, 'metadata'):
+                mesh_copy.metadata = geometry.metadata.copy()
+            room_scene.add_geometry(mesh_copy, node_name=node_name, transform=transform)
+        rooms[room_name] = room_scene
+    
+    return rooms
 
