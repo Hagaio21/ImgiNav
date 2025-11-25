@@ -21,11 +21,11 @@ from data_preparation.pipeline_v2.scene_loader import load_front_scene, extract_
 
 def _organize_material_files(obj_path: Path, materials_dir: Path):
     """
-    Organize MTL and texture files created by OBJ export into materials/ folder.
-    Updates OBJ and MTL file paths to reference materials/ folder.
+    Move ALL material files (MTL and textures) to materials/ folder.
+    Only the OBJ file should remain in geometry/ folder.
     
     Args:
-        obj_path: Path to OBJ file
+        obj_path: Path to OBJ file (in geometry/ folder)
         materials_dir: Directory to move materials to (geometry/materials/)
     """
     obj_dir = obj_path.parent
@@ -52,33 +52,43 @@ def _organize_material_files(obj_path: Path, materials_dir: Path):
             if Path(texture_path).is_absolute():
                 texture_files.append(Path(texture_path))
             else:
-                texture_files.append(obj_dir / texture_path)
+                # Check if it's already in materials/ or in obj_dir
+                if texture_path.startswith("materials/"):
+                    texture_files.append(obj_dir / texture_path)
+                else:
+                    texture_files.append(obj_dir / texture_path)
     
     # Move MTL file to materials/
     new_mtl_path = materials_dir / mtl_path.name
     shutil.move(str(mtl_path), str(new_mtl_path))
     print(f"  Moved MTL file to: {new_mtl_path}")
     
-    # Move texture files to materials/ (MTL references stay as filename only since they're in same folder)
+    # Move texture files to materials/ (only if they're in obj_dir or its subdirectories)
     for texture_path in texture_files:
         if texture_path.exists():
-            new_texture_path = materials_dir / texture_path.name
-            shutil.move(str(texture_path), str(new_texture_path))
-            print(f"  Moved texture to: {new_texture_path}")
+            # Only move if texture is in or under obj_dir (don't move external textures)
+            try:
+                texture_path.relative_to(obj_dir)
+                # Get just the filename
+                texture_name = texture_path.name
+                new_texture_path = materials_dir / texture_name
+                shutil.move(str(texture_path), str(new_texture_path))
+                print(f"  Moved texture to: {new_texture_path}")
+            except ValueError:
+                # Texture is outside obj_dir, skip it
+                print(f"  WARNING: Texture {texture_path} is outside geometry folder, skipping move")
     
     # MTL content doesn't need updating - textures are referenced by filename only
     # (they're in the same materials/ folder as the MTL file)
-    updated_mtl_content = mtl_content
-    
-    # Write updated MTL file
+    # Write MTL file (no changes needed to content)
     with open(new_mtl_path, 'w') as f:
-        f.write(updated_mtl_content)
+        f.write(mtl_content)
     
     # Update OBJ file to reference MTL in materials/ folder
     with open(obj_path, 'r') as f:
         obj_content = f.read()
     
-    # Update mtllib reference
+    # Update mtllib reference to point to materials/ folder
     obj_content = re.sub(
         r'mtllib\s+[^\s\n]+',
         f'mtllib materials/{mtl_path.name}',

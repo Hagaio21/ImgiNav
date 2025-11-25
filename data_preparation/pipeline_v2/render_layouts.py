@@ -50,7 +50,7 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
     """
     print(f"Loading scene from OBJ: {obj_path}")
     # Load with process=False to preserve textures and materials
-    # OBJ files need a resolver to find MTL and texture files in materials/ folder
+     # OBJ files need a resolver to find MTL and texture files in materials/ folder
     geometry_dir = obj_path.parent
     materials_dir = geometry_dir / "materials"
     
