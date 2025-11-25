@@ -1,7 +1,7 @@
 #!/bin/bash
 #BSUB -J render[1-20]
-#BSUB -o /work3/s233249/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_%I.%J.out
-#BSUB -e /work3/s233249/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_%I.%J.err
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_%I.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_%I.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=8000]"
 #BSUB -W 07:00
@@ -19,7 +19,7 @@ SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
 MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model"
 TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/dataset_v2"
-PROJECT_ROOT="/work3/s233249/ImgiNav"
+PROJECT_ROOT="/work3/s233249/ImgiNav/ImgiNav"
 
 N_SHARDS=20                                          # Must match [1-20] above
 PYTHON_SCRIPT="${PROJECT_ROOT}/data_preparation/pipeline_v2/render_worker.py"
