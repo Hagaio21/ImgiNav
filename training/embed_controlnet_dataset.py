@@ -58,12 +58,22 @@ def embed_layouts_with_vae(
     autoencoder.eval()
     print(f"✓ VAE loaded")
     
-    # Load manifest
-    df = pd.read_csv(manifest_path)
-    print(f"Loaded manifest with {len(df)} samples")
+    # Load manifest with robust error handling
+    print(f"Loading manifest from: {manifest_path}")
+    try:
+        df = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+        print(f"Loaded manifest with {len(df)} samples")
+        print(f"Columns: {list(df.columns)[-3:] if len(df.columns) > 3 else list(df.columns)}")
+    except Exception as e:
+        print(f"ERROR: Failed to read manifest: {e}")
+        raise
+    
+    # Validate that layout_path column exists
+    if "layout_path" not in df.columns:
+        raise ValueError(f"Manifest must contain 'layout_path' column. Found columns: {list(df.columns)}")
     
     # Filter rows with layout_path
-    df = df.dropna(subset=["layout_path"])
+    df = df[df["layout_path"].astype(str).str.strip() != ""]
     print(f"Found {len(df)} samples with layout_path")
     
     # Create latent directory
@@ -148,9 +158,36 @@ def embed_layouts_with_vae(
     for idx, latent_path in latent_paths:
         df.at[idx, column_name] = latent_path
     
-    # Save manifest
-    df.to_csv(output_manifest_path, index=False)
-    print(f"✓ Manifest updated: {output_manifest_path}")
+    # Validate: Ensure column name doesn't appear as a value in any row
+    # This can happen if CSV was previously corrupted
+    mask = df[column_name] == column_name
+    if mask.any():
+        print(f"WARNING: Found {mask.sum()} rows where '{column_name}' contains the column name itself")
+        print("Cleaning these rows...")
+        # Only keep rows where we actually set a path
+        df.loc[mask, column_name] = ""
+    
+    # Ensure all columns are strings to avoid type issues
+    for col in df.columns:
+        df[col] = df[col].astype(str)
+    
+    # Save manifest with explicit column order preservation
+    print(f"Saving manifest to: {output_manifest_path}")
+    output_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Write CSV with explicit handling
+    df.to_csv(output_manifest_path, index=False, encoding='utf-8')
+    
+    # Validate the saved file
+    try:
+        test_df = pd.read_csv(output_manifest_path, nrows=1)
+        if column_name not in test_df.columns:
+            raise ValueError(f"Column '{column_name}' not found in saved CSV")
+        print(f"✓ Manifest updated: {output_manifest_path}")
+        print(f"  Verified: Column '{column_name}' exists in saved file")
+    except Exception as e:
+        print(f"ERROR: Failed to validate saved CSV: {e}")
+        raise
     
     # Cleanup
     del autoencoder
