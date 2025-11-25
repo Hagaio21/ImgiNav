@@ -259,6 +259,32 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     print("Removing ceilings from scene...")
     scene_no_ceiling = create_scene_without_ceilings(trimesh_scene)
     
+    # Validate scene has geometry
+    if len(scene_no_ceiling.geometry) == 0:
+        raise ValueError(f"Scene {scene_id} has no geometry after removing ceilings!")
+    
+    # Count vertices to ensure we have actual geometry
+    total_vertices = 0
+    for node_name in scene_no_ceiling.graph.nodes_geometry:
+        try:
+            transform, geometry_name = scene_no_ceiling.graph.get(node_name)
+            if geometry_name not in scene_no_ceiling.geometry:
+                if node_name not in scene_no_ceiling.geometry:
+                    continue
+                geometry = scene_no_ceiling.geometry[node_name]
+            else:
+                geometry = scene_no_ceiling.geometry[geometry_name]
+            
+            if isinstance(geometry, trimesh.Trimesh):
+                total_vertices += len(geometry.vertices)
+        except (KeyError, ValueError, IndexError):
+            continue
+    
+    if total_vertices == 0:
+        raise ValueError(f"Scene {scene_id} has no vertices after removing ceilings!")
+    
+    print(f"  Scene has {len(scene_no_ceiling.geometry)} meshes with {total_vertices} total vertices")
+    
     # Save regular OBJ with textures (no ceilings) - OBJ preserves textures via MTL files
     print("Saving scene geometry...")
     materials_dir = geometry_dir / "materials"
@@ -278,6 +304,21 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
             raise ValueError(f"OBJ file was not created: {temp_obj_path}")
         if temp_obj_path.stat().st_size == 0:
             raise ValueError(f"OBJ file is empty: {temp_obj_path}")
+        
+        # Validate OBJ file has vertices
+        with open(temp_obj_path, 'r') as f:
+            obj_lines = f.readlines()
+        
+        has_vertices = any(line.strip().startswith('v ') for line in obj_lines)
+        has_faces = any(line.strip().startswith('f ') for line in obj_lines)
+        
+        if not has_vertices:
+            raise ValueError(f"OBJ file has no vertices: {temp_obj_path}")
+        if not has_faces:
+            raise ValueError(f"OBJ file has no faces: {temp_obj_path}")
+        
+        print(f"  OBJ file validated: {sum(1 for line in obj_lines if line.strip().startswith('v '))} vertices, "
+              f"{sum(1 for line in obj_lines if line.strip().startswith('f '))} faces")
         
         # Read OBJ content to find actual MTL filename
         with open(temp_obj_path, 'r') as f:

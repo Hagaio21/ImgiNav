@@ -49,34 +49,8 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
     Use process=False and maintain_order=True to preserve textures and materials.
     """
     print(f"Loading scene from OBJ: {obj_path}")
-    # Load with process=False to preserve textures and materials
-     # OBJ files need a resolver to find MTL and texture files in materials/ folder
     geometry_dir = obj_path.parent
     materials_dir = geometry_dir / "materials"
-    
-    # Create resolver that checks materials/ folder first, then geometry/ folder
-    class MultiPathResolver:
-        def __init__(self, base_dir, materials_dir):
-            self.base_dir = Path(base_dir)
-            self.materials_dir = Path(materials_dir)
-        
-        def get(self, name):
-            # Remove "materials/" prefix if present (from updated MTL file)
-            clean_name = name.replace("materials/", "")
-            
-            # Check materials/ folder first
-            materials_path = self.materials_dir / clean_name
-            if materials_path.exists():
-                return str(materials_path)
-            
-            # Fallback to base directory
-            base_path = self.base_dir / clean_name
-            if base_path.exists():
-                return str(base_path)
-            
-            return None
-    
-    resolver = MultiPathResolver(geometry_dir, materials_dir)
     
     # Check if OBJ file exists and is not empty
     if not obj_path.exists():
@@ -85,17 +59,19 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
     if obj_path.stat().st_size == 0:
         raise ValueError(f"OBJ file is empty: {obj_path}")
     
+    # Use trimesh's built-in FilePathResolver pointing to geometry directory
+    # This allows it to resolve "materials/xxx.mtl" relative to the geometry dir
+    # The OBJ file has "mtllib materials/xxx.mtl" which is relative to geometry/
     try:
-        # Try loading without forcing scene first (in case it's a single mesh)
+        resolver = trimesh.visual.resolvers.FilePathResolver(geometry_dir)
         scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
                            resolver=resolver)
         
-        # If None, try with force='scene'
         if scene is None:
             scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
                                force='scene', resolver=resolver)
     except Exception as e:
-        # Try loading without resolver as fallback
+        # Fallback: try without resolver (might work if no MTL file is needed)
         try:
             print(f"  Warning: Loading with resolver failed, trying without resolver...")
             scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True)
@@ -103,7 +79,9 @@ def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
                 scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, 
                                    force='scene')
         except Exception as e2:
-            raise ValueError(f"Failed to load OBJ file {obj_path}: {e} (fallback also failed: {e2})")
+            raise ValueError(f"Failed to load OBJ file {obj_path}:\n"
+                           f"  With resolver: {e}\n"
+                           f"  Without resolver: {e2}")
     
     if scene is None:
         raise ValueError(f"OBJ file loaded as None: {obj_path}")
