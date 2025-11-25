@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """
 Render worker for 3D-FRONT scenes.
-Renders top-down layouts and perspective POVs using pyrender.
+Renders top-down layouts and perspective POVs using Open3D (like old pipeline).
 """
 
-# Use system xvfb-run for virtual display (set in HPC scripts)
-# pyrender will use pyglet with the virtual display
 import os
+import time
+import math
+
+# Try to import xvfbwrapper (like old pipeline)
+try:
+    from xvfbwrapper import Xvfb
+    XVFBWRAPPER_AVAILABLE = True
+except ImportError:
+    Xvfb = None
+    XVFBWRAPPER_AVAILABLE = False
 
 import argparse
 import random
@@ -14,19 +22,16 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
-import pyrender
+import open3d as o3d
 import trimesh
 from PIL import Image
 
-# Global variable to hold Xvfb instance (not used with EGL, but kept for compatibility)
+# Global variable to hold Xvfb instance
 VFB = None
-XVFB_AVAILABLE = False
 
 import sys
 
 # Add project root to path for imports
-# __file__ is at: .../ImgiNav/data_preparation/pipeline_v2/render_worker.py
-# Project root is: .../ImgiNav/
 script_dir = Path(__file__).resolve().parent
 project_root = script_dir.parent.parent  # Go up from pipeline_v2 -> data_preparation -> ImgiNav
 sys.path.insert(0, str(project_root))
@@ -34,250 +39,84 @@ sys.path.insert(0, str(project_root))
 from common.taxonomy import Taxonomy
 from data_preparation.pipeline_v2.scene_loader import load_front_scene
 
+# Set Open3D verbosity to errors only
+o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
-def trimesh_to_pyrender_scene(trimesh_scene: trimesh.Scene, 
-                               hide_ceilings: bool = False) -> pyrender.Scene:
+
+def trimesh_to_o3d_mesh(trimesh_mesh: trimesh.Trimesh, transform: np.ndarray) -> o3d.geometry.TriangleMesh:
     """
-    Convert trimesh.Scene to pyrender.Scene.
+    Convert trimesh.Trimesh to Open3D TriangleMesh with transform applied.
     
     Args:
-        trimesh_scene: Input trimesh scene
-        hide_ceilings: If True, exclude nodes with is_ceiling=True
+        trimesh_mesh: Input trimesh mesh
+        transform: 4x4 transformation matrix
         
     Returns:
-        pyrender.Scene object
+        Open3D TriangleMesh
     """
-    pyrender_scene = pyrender.Scene()
+    # Create Open3D mesh
+    o3d_mesh = o3d.geometry.TriangleMesh()
+    o3d_mesh.vertices = o3d.utility.Vector3dVector(trimesh_mesh.vertices.astype(np.float64))
+    o3d_mesh.triangles = o3d.utility.Vector3iVector(trimesh_mesh.faces.astype(np.int32))
     
-    # Iterate through graph nodes - each node has (transform, geometry_name)
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            # Get transform and geometry name from graph node
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            
-            # Access geometry using the geometry_name from the graph
-            if geometry_name not in trimesh_scene.geometry:
-                # Try using node_name as fallback
-                if node_name not in trimesh_scene.geometry:
-                    continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
-            
-            # Check if ceiling should be hidden
-            if hide_ceilings:
-                metadata = getattr(geometry, 'metadata', {})
-                if metadata.get('is_ceiling', False):
-                    continue
-            
-            # Convert trimesh to pyrender mesh
-            if isinstance(geometry, trimesh.Trimesh):
-                # Create pyrender mesh (vertex colors are preserved automatically from trimesh)
-                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, smooth=False)
-                
-                # Add to pyrender scene
-                pyrender_scene.add(pyrender_mesh, pose=transform, name=node_name)
-        except (KeyError, ValueError, IndexError) as e:
-            # Skip nodes that can't be accessed
-            continue
+    # Apply transform to vertices
+    if transform is not None and not np.allclose(transform, np.eye(4)):
+        vertices_hom = np.column_stack([trimesh_mesh.vertices, np.ones(len(trimesh_mesh.vertices))])
+        vertices_world = (transform @ vertices_hom.T).T[:, :3]
+        o3d_mesh.vertices = o3d.utility.Vector3dVector(vertices_world.astype(np.float64))
     
-    return pyrender_scene
+    # Copy vertex colors if available
+    if hasattr(trimesh_mesh.visual, 'vertex_colors') and trimesh_mesh.visual.vertex_colors is not None:
+        vcolors = trimesh_mesh.visual.vertex_colors
+        if len(vcolors.shape) == 2 and vcolors.shape[1] >= 3:
+            # Convert to 0-1 range if needed
+            if vcolors.max() > 1.0:
+                vcolors = vcolors.astype(np.float32) / 255.0
+            o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(vcolors[:, :3].astype(np.float64))
+    
+    # Compute normals
+    o3d_mesh.compute_vertex_normals()
+    
+    return o3d_mesh
 
 
-def render_layout_rgb(pyrender_scene: pyrender.Scene, 
+def render_layout_rgb(trimesh_scene: trimesh.Scene,
+                      hide_ceilings: bool = True,
                       width: int = 256, height: int = 256) -> np.ndarray:
     """
-    Render top-down RGB layout.
+    Render top-down RGB layout using Open3D.
     
     Args:
-        pyrender_scene: pyrender scene (ceilings should be filtered)
+        trimesh_scene: trimesh scene
+        hide_ceilings: If True, exclude ceiling meshes
         width: Image width
         height: Image height
         
     Returns:
         RGB image array (H, W, 3) uint8
     """
-    # Calculate scene bounds from mesh primitives
-    bounds = []
-    for node in pyrender_scene.mesh_nodes:
-        mesh = node.mesh
-        transform = node.matrix
-        
-        # Access vertices through primitives
-        for primitive in mesh.primitives:
-            if hasattr(primitive, 'positions') and primitive.positions is not None:
-                vertices = primitive.positions
-                if len(vertices) > 0:
-                    # Transform vertices to world space
-                    if transform is not None:
-                        vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                        vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                    else:
-                        vertices_world = vertices
-                    bounds.append(vertices_world)
-    
-    if not bounds:
-        # Default bounds if no geometry
-        min_bounds = np.array([-5, -5, 0])
-        max_bounds = np.array([5, 5, 3])
-    else:
-        all_vertices = np.vstack(bounds)
-        min_bounds = all_vertices.min(axis=0)
-        max_bounds = all_vertices.max(axis=0)
-    
-    # Center and size
-    center = (min_bounds + max_bounds) / 2
-    size = max_bounds - min_bounds
-    max_size = max(size[0], size[1])
-    
-    # Camera setup: orthographic top-down
-    camera = pyrender.OrthographicCamera(xmag=max_size/2, ymag=max_size/2)
-    
-    # Camera pose: looking down from above
-    camera_pose = np.eye(4)
-    camera_pose[2, 3] = center[2] + max_size  # Height above scene
-    camera_pose[1, 1] = -1  # Flip Y for correct orientation
-    camera_pose[2, 2] = -1
-    
-    # Add camera and light
-    camera_node = pyrender_scene.add(camera, pose=camera_pose)
-    
-    # Add directional light
-    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
-    light_pose = np.eye(4)
-    light_pose[2, 3] = center[2] + max_size
-    pyrender_scene.add(light, pose=light_pose)
-    
-    # Render - with error handling for GL context issues
-    try:
-        renderer = pyrender.OffscreenRenderer(width, height)
-    except Exception as e:
-        error_msg = str(e)
-        print(f"ERROR: Failed to create OffscreenRenderer: {error_msg}")
-        print(f"Display: {os.environ.get('DISPLAY', 'NOT SET')}")
-        print(f"LIBGL_ALWAYS_SOFTWARE: {os.environ.get('LIBGL_ALWAYS_SOFTWARE', 'NOT SET')}")
-        print(f"GALLIUM_DRIVER: {os.environ.get('GALLIUM_DRIVER', 'NOT SET')}")
-        raise
-    
-    color, depth = renderer.render(pyrender_scene)
-    renderer.delete()
-    
-    # Remove camera and light
-    pyrender_scene.remove_node(camera_node)
-    
-    return color
-
-
-def render_layout_seg(pyrender_scene: pyrender.Scene, 
-                     taxonomy: Taxonomy,
-                     width: int = 256, height: int = 256) -> np.ndarray:
-    """
-    Render top-down segmentation layout with taxonomy colors.
-    
-    Args:
-        pyrender_scene: pyrender scene (ceilings should be filtered)
-        taxonomy: Taxonomy object for color mapping
-        width: Image width
-        height: Image height
-        
-    Returns:
-        Segmentation image array (H, W, 3) uint8
-    """
-    # Swap materials for segmentation
-    original_materials = {}
-    for node in pyrender_scene.mesh_nodes:
-        mesh = node.mesh
-        # Get category_id from metadata (stored in node name or need to track)
-        # We'll need to store category_id mapping when converting
-        
-        # For now, we'll need to access the original trimesh scene metadata
-        # This is a limitation - we may need to pass metadata separately
-        pass
-    
-    # For segmentation, we'll create a new scene with colored materials
-    # This is simplified - in practice, we need to map each mesh to its category_id
-    # and apply the taxonomy color
-    
-    # Re-render with flat materials
-    # Calculate bounds (same as RGB)
-    bounds = []
-    for node in pyrender_scene.mesh_nodes:
-        mesh = node.mesh
-        transform = node.matrix
-        
-        # Access vertices through primitives
-        for primitive in mesh.primitives:
-            if hasattr(primitive, 'positions') and primitive.positions is not None:
-                vertices = primitive.positions
-                if len(vertices) > 0:
-                    if transform is not None:
-                        vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                        vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                    else:
-                        vertices_world = vertices
-                    bounds.append(vertices_world)
-    
-    if not bounds:
-        min_bounds = np.array([-5, -5, 0])
-        max_bounds = np.array([5, 5, 3])
-    else:
-        all_vertices = np.vstack(bounds)
-        min_bounds = all_vertices.min(axis=0)
-        max_bounds = all_vertices.max(axis=0)
-    
-    center = (min_bounds + max_bounds) / 2
-    size = max_bounds - min_bounds
-    max_size = max(size[0], size[1])
-    
-    # Create new scene with colored materials
-    seg_scene = pyrender.Scene()
-    
-    # We need to rebuild with colored materials
-    # This requires access to the original trimesh scene metadata
-    # For now, return a placeholder - this will be improved
-    
-    camera = pyrender.OrthographicCamera(xmag=max_size/2, ymag=max_size/2)
-    camera_pose = np.eye(4)
-    camera_pose[2, 3] = center[2] + max_size
-    camera_pose[1, 1] = -1
-    camera_pose[2, 2] = -1
-    
-    camera_node = seg_scene.add(camera, pose=camera_pose)
-    
-    renderer = pyrender.OffscreenRenderer(width, height)
-    color, depth = renderer.render(seg_scene)
-    renderer.delete()
-    
-    return color
-
-
-def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
-                               taxonomy: Taxonomy,
-                               width: int = 256, height: int = 256) -> np.ndarray:
-    """
-    Render segmentation layout by rebuilding scene with colored materials.
-    
-    Args:
-        trimesh_scene: Original trimesh scene
-        taxonomy: Taxonomy object
-        width: Image width
-        height: Image height
-        
-    Returns:
-        Segmentation image array
-    """
-    # Create new pyrender scene with colored meshes
-    seg_scene = pyrender.Scene()
-    
-    # Calculate bounds
+    # Calculate scene bounds
     all_vertices = []
     for node_name in trimesh_scene.graph.nodes_geometry:
-        geometry = trimesh_scene.geometry[node_name]
-        if isinstance(geometry, trimesh.Trimesh):
-            transform = trimesh_scene.graph.get(node_name)[0]
-            vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
-            vertices_world = (transform @ vertices_hom.T).T[:, :3]
-            all_vertices.append(vertices_world)
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
+                continue
+            
+            if isinstance(geometry, trimesh.Trimesh):
+                vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                all_vertices.append(vertices_world)
+        except (KeyError, ValueError, IndexError):
+            continue
     
     if not all_vertices:
         min_bounds = np.array([-5, -5, 0])
@@ -291,7 +130,11 @@ def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
     size = max_bounds - min_bounds
     max_size = max(size[0], size[1])
     
-    # Add meshes with colored materials
+    # Create Open3D visualizer
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(visible=False, width=width, height=height)
+    
+    # Add meshes
     for node_name in trimesh_scene.graph.nodes_geometry:
         try:
             transform, geometry_name = trimesh_scene.graph.get(node_name)
@@ -303,9 +146,139 @@ def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
                 geometry = trimesh_scene.geometry[geometry_name]
             
             metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
+                continue
             
-            # Skip ceilings
-            if metadata.get('is_ceiling', False):
+            if isinstance(geometry, trimesh.Trimesh):
+                # Create mesh without transform (we'll apply it to vertices)
+                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                vis.add_geometry(o3d_mesh)
+        except (KeyError, ValueError, IndexError):
+            continue
+    
+    # Set render options
+    opt = vis.get_render_option()
+    opt.background_color = np.array([0, 0, 0], dtype=np.float32)  # Black background
+    
+    # Camera setup: orthographic top-down
+    # Calculate camera parameters for orthographic view
+    camera_height = center[2] + max_size * 1.5
+    
+    # Create look-at matrix: camera at (center_x, camera_height, center_z) looking at center
+    eye = np.array([center[0], camera_height, center[2]], dtype=np.float64)
+    center_point = center.astype(np.float64)
+    up = np.array([0, 0, -1], dtype=np.float64)  # Negative Z is up for top-down
+    
+    # Set up camera using pinhole camera parameters
+    fx = fy = width / (2 * max_size)  # Orthographic-like scaling
+    cx, cy = width / 2.0, height / 2.0
+    
+    pin = o3d.camera.PinholeCameraParameters()
+    pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
+    
+    def look_at(eye_, center_, up_):
+        f = center_ - eye_
+        f = f / (np.linalg.norm(f) + 1e-12)
+        upn = up_ / (np.linalg.norm(up_) + 1e-12)
+        l = np.cross(upn, f)
+        l = l / (np.linalg.norm(l) + 1e-12)
+        u2 = np.cross(f, l)
+        M = np.eye(4, dtype=np.float64)
+        M[0, :3] = l
+        M[1, :3] = u2
+        M[2, :3] = f
+        T = np.eye(4, dtype=np.float64)
+        T[:3, 3] = -eye_
+        return M @ T
+    
+    pin.extrinsic = look_at(eye, center_point, up)
+    
+    ctr = vis.get_view_control()
+    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
+    
+    # Render
+    vis.poll_events()
+    vis.update_renderer()
+    time.sleep(0.12)  # Give OpenGL time
+    
+    # Capture image
+    img = vis.capture_screen_image(do_render=True)
+    vis.destroy_window()
+    
+    # Convert to numpy array
+    img_np = np.asarray(img)
+    return img_np
+
+
+def render_layout_seg(trimesh_scene: trimesh.Scene,
+                      taxonomy: Taxonomy,
+                      hide_ceilings: bool = True,
+                      width: int = 256, height: int = 256) -> np.ndarray:
+    """
+    Render top-down segmentation layout with taxonomy colors using Open3D.
+    
+    Args:
+        trimesh_scene: trimesh scene
+        taxonomy: Taxonomy object
+        hide_ceilings: If True, exclude ceiling meshes
+        width: Image width
+        height: Image height
+        
+    Returns:
+        Segmentation image array (H, W, 3) uint8
+    """
+    # Calculate scene bounds (same as RGB)
+    all_vertices = []
+    for node_name in trimesh_scene.graph.nodes_geometry:
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
+                continue
+            
+            if isinstance(geometry, trimesh.Trimesh):
+                vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                all_vertices.append(vertices_world)
+        except (KeyError, ValueError, IndexError):
+            continue
+    
+    if not all_vertices:
+        min_bounds = np.array([-5, -5, 0])
+        max_bounds = np.array([5, 5, 3])
+    else:
+        all_vertices = np.vstack(all_vertices)
+        min_bounds = all_vertices.min(axis=0)
+        max_bounds = all_vertices.max(axis=0)
+    
+    center = (min_bounds + max_bounds) / 2
+    size = max_bounds - min_bounds
+    max_size = max(size[0], size[1])
+    
+    # Create Open3D visualizer
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(visible=False, width=width, height=height)
+    
+    # Add meshes with taxonomy colors
+    for node_name in trimesh_scene.graph.nodes_geometry:
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
                 continue
             
             if isinstance(geometry, trimesh.Trimesh):
@@ -315,40 +288,68 @@ def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
                 if color_rgb is None:
                     color_rgb = (127, 127, 127)  # Default gray
                 
-                # Create flat material with taxonomy color
-                material = pyrender.MetallicRoughnessMaterial(
-                    baseColorFactor=[c/255.0 for c in color_rgb] + [1.0],
-                    metallicFactor=0.0,
-                    roughnessFactor=1.0
+                # Create mesh
+                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                
+                # Set uniform vertex colors based on taxonomy
+                num_vertices = len(o3d_mesh.vertices)
+                seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
+                o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
+                    np.tile(seg_color, (num_vertices, 1))
                 )
                 
-                # Create mesh with material
-                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, material=material)
-                seg_scene.add(pyrender_mesh, pose=transform, name=node_name)
+                vis.add_geometry(o3d_mesh)
         except (KeyError, ValueError, IndexError):
             continue
     
-    # Camera setup
-    camera = pyrender.OrthographicCamera(xmag=max_size/2, ymag=max_size/2)
-    camera_pose = np.eye(4)
-    camera_pose[2, 3] = center[2] + max_size
-    camera_pose[1, 1] = -1
-    camera_pose[2, 2] = -1
+    # Set render options
+    opt = vis.get_render_option()
+    opt.background_color = np.array([0, 0, 0], dtype=np.float32)  # Black background
     
-    camera_node = seg_scene.add(camera, pose=camera_pose)
+    # Camera setup (same as RGB)
+    camera_height = center[2] + max_size * 1.5
+    eye = np.array([center[0], camera_height, center[2]], dtype=np.float64)
+    center_point = center.astype(np.float64)
+    up = np.array([0, 0, -1], dtype=np.float64)
     
-    # Render with anti-aliasing disabled to prevent color bleeding
-    renderer = pyrender.OffscreenRenderer(width, height)
-    try:
-        # Try to disable anti-aliasing using render flags
-        flags = pyrender.RenderFlags.SKIP_CULL_FACES | pyrender.RenderFlags.FLAT
-        color, depth = renderer.render(seg_scene, flags=flags)
-    except (AttributeError, TypeError):
-        # Fallback if RenderFlags not available or flags parameter not supported
-        color, depth = renderer.render(seg_scene)
-    renderer.delete()
+    fx = fy = width / (2 * max_size)
+    cx, cy = width / 2.0, height / 2.0
     
-    return color
+    pin = o3d.camera.PinholeCameraParameters()
+    pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
+    
+    def look_at(eye_, center_, up_):
+        f = center_ - eye_
+        f = f / (np.linalg.norm(f) + 1e-12)
+        upn = up_ / (np.linalg.norm(up_) + 1e-12)
+        l = np.cross(upn, f)
+        l = l / (np.linalg.norm(l) + 1e-12)
+        u2 = np.cross(f, l)
+        M = np.eye(4, dtype=np.float64)
+        M[0, :3] = l
+        M[1, :3] = u2
+        M[2, :3] = f
+        T = np.eye(4, dtype=np.float64)
+        T[:3, 3] = -eye_
+        return M @ T
+    
+    pin.extrinsic = look_at(eye, center_point, up)
+    
+    ctr = vis.get_view_control()
+    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
+    
+    # Render
+    vis.poll_events()
+    vis.update_renderer()
+    time.sleep(0.12)
+    
+    # Capture image
+    img = vis.capture_screen_image(do_render=True)
+    vis.destroy_window()
+    
+    # Convert to numpy array
+    img_np = np.asarray(img)
+    return img_np
 
 
 def find_floor_meshes(trimesh_scene: trimesh.Scene, taxonomy: Taxonomy) -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -377,7 +378,6 @@ def find_floor_meshes(trimesh_scene: trimesh.Scene, taxonomy: Taxonomy) -> List[
                 geometry = trimesh_scene.geometry[geometry_name]
             
             metadata = getattr(geometry, 'metadata', {})
-            
             category_id = metadata.get('category_id', 0)
             label = metadata.get('label', '').lower()
             
@@ -403,7 +403,7 @@ def sample_camera_position(trimesh_scene: trimesh.Scene,
                            max_attempts: int = 50) -> Optional[np.ndarray]:
     """
     Sample a valid camera position on the floor, not inside furniture.
-    Uses ray-casting to ensure position is actually above floor mesh (handles L/U-shaped rooms).
+    Uses ray-casting to ensure position is actually above floor mesh.
     
     Args:
         trimesh_scene: trimesh scene for ray-casting
@@ -440,7 +440,6 @@ def sample_camera_position(trimesh_scene: trimesh.Scene,
             
             if category_id in floor_ids or label == 'floor':
                 if isinstance(geometry, trimesh.Trimesh):
-                    # Apply transform to get world-space mesh
                     floor_mesh = geometry.copy()
                     floor_mesh.apply_transform(transform)
                     floor_meshes.append(floor_mesh)
@@ -455,11 +454,9 @@ def sample_camera_position(trimesh_scene: trimesh.Scene,
     
     # Create ray intersector
     try:
-        # Try pyembree first (faster)
         from trimesh.ray import ray_pyembree
         intersector = ray_pyembree.RayMeshIntersector(floor_combined)
     except (AttributeError, ImportError):
-        # Fallback to triangle-based intersector
         from trimesh.ray import ray_triangle
         intersector = ray_triangle.RayMeshIntersector(floor_combined)
     
@@ -485,8 +482,8 @@ def sample_camera_position(trimesh_scene: trimesh.Scene,
             continue
         
         # Ray-cast check: Cast ray downward from above to check if it hits floor
-        ray_origin = np.array([[x, 10.0, z]])  # Start high above
-        ray_direction = np.array([[0.0, -1.0, 0.0]])  # Point downward
+        ray_origin = np.array([[x, 10.0, z]])
+        ray_direction = np.array([[0.0, -1.0, 0.0]])
         
         try:
             locations, index_ray, index_tri = intersector.intersects_location(
@@ -494,153 +491,33 @@ def sample_camera_position(trimesh_scene: trimesh.Scene,
             )
             
             if len(locations) == 0:
-                continue  # Ray missed floor -> position is in void
-            
-            # Check if hit is at floor level (within reasonable tolerance)
-            hit_height = locations[0][1]
-            if abs(hit_height) > 0.5:  # Hit something too high (table, etc.)
                 continue
             
-            # Valid position found
+            hit_height = locations[0][1]
+            if abs(hit_height) > 0.5:
+                continue
+            
             return np.array([x, eye_height, z])
         except Exception:
-            # If ray-casting fails, fall back to bbox check only
             return np.array([x, eye_height, z])
     
     return None
 
 
-def render_pov_seg(trimesh_scene: trimesh.Scene,
-                   camera_pos: np.ndarray,
-                   taxonomy: Taxonomy,
-                   camera_target: Optional[np.ndarray] = None,
-                   width: int = 256,
-                   height: int = 256,
-                   fov: float = 70.0) -> np.ndarray:
+def render_pov(trimesh_scene: trimesh.Scene,
+                camera_pos: np.ndarray,
+                hide_ceilings: bool = False,
+                camera_target: Optional[np.ndarray] = None,
+                width: int = 256,
+                height: int = 256,
+                fov: float = 70.0) -> np.ndarray:
     """
-    Render POV segmentation with colored materials.
+    Render perspective POV from camera position using Open3D.
     
     Args:
-        trimesh_scene: Original trimesh scene
-        camera_pos: Camera position
-        taxonomy: Taxonomy object
-        camera_target: Look-at target
-        width: Image width
-        height: Image height
-        fov: Field of view in degrees
-        
-    Returns:
-        Segmentation image array
-    """
-    # Create scene with colored materials
-    seg_scene = pyrender.Scene()
-    
-    # Calculate scene center for camera target
-    all_vertices = []
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
-                    continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
-            
-            if isinstance(geometry, trimesh.Trimesh):
-                vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                all_vertices.append(vertices_world)
-        except (KeyError, ValueError, IndexError):
-            continue
-    
-    if all_vertices:
-        all_vertices = np.vstack(all_vertices)
-        if camera_target is None:
-            camera_target = all_vertices.mean(axis=0)
-    else:
-        if camera_target is None:
-            camera_target = camera_pos + np.array([0, 0, -1])
-    
-    # Add meshes with colored materials
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
-                    continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
-            
-            if isinstance(geometry, trimesh.Trimesh):
-                metadata = getattr(geometry, 'metadata', {})
-                
-                # Get category color
-                category_id = metadata.get('category_id', 0)
-                color_rgb = taxonomy.get_color(category_id, mode="category")
-                if color_rgb is None:
-                    color_rgb = (127, 127, 127)
-                
-                # Create flat material
-                material = pyrender.MetallicRoughnessMaterial(
-                    baseColorFactor=[c/255.0 for c in color_rgb] + [1.0],
-                    metallicFactor=0.0,
-                    roughnessFactor=1.0
-                )
-                
-                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, material=material)
-                seg_scene.add(pyrender_mesh, pose=transform, name=node_name)
-        except (KeyError, ValueError, IndexError):
-            continue
-    
-    # Camera setup
-    camera = pyrender.PerspectiveCamera(yfov=np.radians(fov), aspectRatio=width/height)
-    
-    forward = camera_target - camera_pos
-    forward = forward / (np.linalg.norm(forward) + 1e-8)
-    up = np.array([0, 1, 0])
-    right = np.cross(forward, up)
-    right = right / (np.linalg.norm(right) + 1e-8)
-    up = np.cross(right, forward)
-    
-    camera_pose = np.eye(4)
-    camera_pose[:3, 0] = right
-    camera_pose[:3, 1] = up
-    camera_pose[:3, 2] = -forward
-    camera_pose[:3, 3] = camera_pos
-    
-    camera_node = seg_scene.add(camera, pose=camera_pose)
-    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
-    light_pose = camera_pose.copy()
-    seg_scene.add(light, pose=light_pose)
-    
-    # Render with anti-aliasing disabled to prevent color bleeding
-    renderer = pyrender.OffscreenRenderer(width, height)
-    try:
-        # Try to disable anti-aliasing using render flags
-        flags = pyrender.RenderFlags.SKIP_CULL_FACES | pyrender.RenderFlags.FLAT
-        color, depth = renderer.render(seg_scene, flags=flags)
-    except (AttributeError, TypeError):
-        # Fallback if RenderFlags not available or flags parameter not supported
-        color, depth = renderer.render(seg_scene)
-    renderer.delete()
-    
-    return color
-
-
-def render_pov(pyrender_scene: pyrender.Scene,
-               camera_pos: np.ndarray,
-               camera_target: Optional[np.ndarray] = None,
-               width: int = 256,
-               height: int = 256,
-               fov: float = 70.0) -> np.ndarray:
-    """
-    Render perspective POV from camera position.
-    
-    Args:
-        pyrender_scene: pyrender scene
+        trimesh_scene: trimesh scene
         camera_pos: Camera position (x, y, z)
+        hide_ceilings: If True, exclude ceiling meshes
         camera_target: Look-at target (default: scene center)
         width: Image width
         height: Image height
@@ -649,79 +526,249 @@ def render_pov(pyrender_scene: pyrender.Scene,
     Returns:
         RGB image array
     """
+    # Calculate scene center if not provided
     if camera_target is None:
-        # Calculate scene center from mesh primitives
-        bounds = []
-        for node in pyrender_scene.mesh_nodes:
-            mesh = node.mesh
-            transform = node.matrix
-            
-            # Access vertices through primitives
-            for primitive in mesh.primitives:
-                if hasattr(primitive, 'positions') and primitive.positions is not None:
-                    vertices = primitive.positions
-                    if len(vertices) > 0:
-                        if transform is not None:
-                            vertices_hom = np.column_stack([vertices, np.ones(len(vertices))])
-                            vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                        else:
-                            vertices_world = vertices
-                        bounds.append(vertices_world)
+        all_vertices = []
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                if isinstance(geometry, trimesh.Trimesh):
+                    vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    all_vertices.append(vertices_world)
+            except (KeyError, ValueError, IndexError):
+                continue
         
-        if bounds:
-            all_vertices = np.vstack(bounds)
+        if all_vertices:
+            all_vertices = np.vstack(all_vertices)
             camera_target = all_vertices.mean(axis=0)
         else:
             camera_target = camera_pos + np.array([0, 0, -1])
     
-    # Camera setup
-    camera = pyrender.PerspectiveCamera(yfov=np.radians(fov), aspectRatio=width/height)
+    # Create Open3D visualizer
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(visible=False, width=width, height=height)
     
-    # Look-at matrix
-    forward = camera_target - camera_pos
-    forward = forward / (np.linalg.norm(forward) + 1e-8)
-    up = np.array([0, 1, 0])
-    right = np.cross(forward, up)
-    right = right / (np.linalg.norm(right) + 1e-8)
-    up = np.cross(right, forward)
+    # Add meshes
+    for node_name in trimesh_scene.graph.nodes_geometry:
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
+                continue
+            
+            if isinstance(geometry, trimesh.Trimesh):
+                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                vis.add_geometry(o3d_mesh)
+        except (KeyError, ValueError, IndexError):
+            continue
     
-    camera_pose = np.eye(4)
-    camera_pose[:3, 0] = right
-    camera_pose[:3, 1] = up
-    camera_pose[:3, 2] = -forward
-    camera_pose[:3, 3] = camera_pos
+    # Set render options
+    opt = vis.get_render_option()
+    opt.background_color = np.array([0, 0, 0], dtype=np.float32)
     
-    # Add camera
-    camera_node = pyrender_scene.add(camera, pose=camera_pose)
+    # Camera setup: perspective
+    fx = (0.5 * width) / math.tan(math.radians(fov) / 2.0)
+    fy = fx
+    cx, cy = width / 2.0, height / 2.0
     
-    # Improved lighting: ambient + point light at room center
-    # Set ambient light to ensure nothing is pitch black
-    pyrender_scene.ambient_light = np.array([0.5, 0.5, 0.5])
+    pin = o3d.camera.PinholeCameraParameters()
+    pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
     
-    # Add point light near ceiling center to simulate room lighting
-    point_light = pyrender.PointLight(color=[1.0, 1.0, 1.0], intensity=10.0)
-    light_pose = np.eye(4)
-    light_pose[:3, 3] = [camera_target[0], 2.5, camera_target[2]]  # 2.5m above scene center
-    pyrender_scene.add(point_light, pose=light_pose)
+    def look_at(eye_, center_, up_):
+        f = center_ - eye_
+        f = f / (np.linalg.norm(f) + 1e-12)
+        upn = up_ / (np.linalg.norm(up_) + 1e-12)
+        l = np.cross(upn, f)
+        l = l / (np.linalg.norm(l) + 1e-12)
+        u2 = np.cross(f, l)
+        M = np.eye(4, dtype=np.float64)
+        M[0, :3] = l
+        M[1, :3] = u2
+        M[2, :3] = f
+        T = np.eye(4, dtype=np.float64)
+        T[:3, 3] = -eye_
+        return M @ T
     
-    # Also add directional light from camera for fill
-    dir_light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
-    dir_light_pose = camera_pose.copy()
-    pyrender_scene.add(dir_light, pose=dir_light_pose)
+    pin.extrinsic = look_at(
+        camera_pos.astype(np.float64),
+        camera_target.astype(np.float64),
+        np.array([0, 1, 0], dtype=np.float64)
+    )
+    
+    ctr = vis.get_view_control()
+    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
     
     # Render
-    renderer = pyrender.OffscreenRenderer(width, height)
-    color, depth = renderer.render(pyrender_scene)
-    renderer.delete()
+    vis.poll_events()
+    vis.update_renderer()
+    time.sleep(0.12)
     
-    # Remove camera and lights
-    pyrender_scene.remove_node(camera_node)
+    # Capture image
+    img = vis.capture_screen_image(do_render=True)
+    vis.destroy_window()
     
-    return color
+    # Convert to numpy array
+    img_np = np.asarray(img)
+    return img_np
+
+
+def render_pov_seg(trimesh_scene: trimesh.Scene,
+                   camera_pos: np.ndarray,
+                   taxonomy: Taxonomy,
+                   hide_ceilings: bool = False,
+                   camera_target: Optional[np.ndarray] = None,
+                   width: int = 256,
+                   height: int = 256,
+                   fov: float = 70.0) -> np.ndarray:
+    """
+    Render POV segmentation with taxonomy colors using Open3D.
+    
+    Args:
+        trimesh_scene: trimesh scene
+        camera_pos: Camera position
+        taxonomy: Taxonomy object
+        hide_ceilings: If True, exclude ceiling meshes
+        camera_target: Look-at target
+        width: Image width
+        height: Image height
+        fov: Field of view in degrees
+        
+    Returns:
+        Segmentation image array
+    """
+    # Calculate scene center if not provided
+    if camera_target is None:
+        all_vertices = []
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                if isinstance(geometry, trimesh.Trimesh):
+                    vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    all_vertices.append(vertices_world)
+            except (KeyError, ValueError, IndexError):
+                continue
+        
+        if all_vertices:
+            all_vertices = np.vstack(all_vertices)
+            camera_target = all_vertices.mean(axis=0)
+        else:
+            camera_target = camera_pos + np.array([0, 0, -1])
+    
+    # Create Open3D visualizer
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(visible=False, width=width, height=height)
+    
+    # Add meshes with taxonomy colors
+    for node_name in trimesh_scene.graph.nodes_geometry:
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
+                continue
+            
+            if isinstance(geometry, trimesh.Trimesh):
+                # Get category color
+                category_id = metadata.get('category_id', 0)
+                color_rgb = taxonomy.get_color(category_id, mode="category")
+                if color_rgb is None:
+                    color_rgb = (127, 127, 127)
+                
+                # Create mesh
+                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                
+                # Set uniform vertex colors based on taxonomy
+                num_vertices = len(o3d_mesh.vertices)
+                seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
+                o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
+                    np.tile(seg_color, (num_vertices, 1))
+                )
+                
+                vis.add_geometry(o3d_mesh)
+        except (KeyError, ValueError, IndexError):
+            continue
+    
+    # Set render options
+    opt = vis.get_render_option()
+    opt.background_color = np.array([0, 0, 0], dtype=np.float32)
+    
+    # Camera setup (same as RGB POV)
+    fx = (0.5 * width) / math.tan(math.radians(fov) / 2.0)
+    fy = fx
+    cx, cy = width / 2.0, height / 2.0
+    
+    pin = o3d.camera.PinholeCameraParameters()
+    pin.intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
+    
+    def look_at(eye_, center_, up_):
+        f = center_ - eye_
+        f = f / (np.linalg.norm(f) + 1e-12)
+        upn = up_ / (np.linalg.norm(up_) + 1e-12)
+        l = np.cross(upn, f)
+        l = l / (np.linalg.norm(l) + 1e-12)
+        u2 = np.cross(f, l)
+        M = np.eye(4, dtype=np.float64)
+        M[0, :3] = l
+        M[1, :3] = u2
+        M[2, :3] = f
+        T = np.eye(4, dtype=np.float64)
+        T[:3, 3] = -eye_
+        return M @ T
+    
+    pin.extrinsic = look_at(
+        camera_pos.astype(np.float64),
+        camera_target.astype(np.float64),
+        np.array([0, 1, 0], dtype=np.float64)
+    )
+    
+    ctr = vis.get_view_control()
+    ctr.convert_from_pinhole_camera_parameters(pin, allow_arbitrary=True)
+    
+    # Render
+    vis.poll_events()
+    vis.update_renderer()
+    time.sleep(0.12)
+    
+    # Capture image
+    img = vis.capture_screen_image(do_render=True)
+    vis.destroy_window()
+    
+    # Convert to numpy array
+    img_np = np.asarray(img)
+    return img_np
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Render 3D-FRONT scene layouts and POVs")
+    parser = argparse.ArgumentParser(description="Render 3D-FRONT scene layouts and POVs using Open3D")
     parser.add_argument("--scene_json", required=True, help="Path to 3D-FRONT JSON file")
     parser.add_argument("--future_root", required=True, help="Path to 3D-FUTURE model directory")
     parser.add_argument("--output_dir", required=True, help="Output dataset root directory")
@@ -729,18 +776,28 @@ def main():
     parser.add_argument("--num_povs", type=int, default=6, help="Number of POVs to render")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--hpc", action="store_true", default=False,
-                        help="Force use of Xvfb for headless HPC rendering")
+                        help="Run inside Xvfb for headless HPC rendering (like old pipeline)")
     
     args = parser.parse_args()
     
-    # Check if we have a display (should be set by xvfb-run)
-    display = os.environ.get('DISPLAY', 'NOT SET')
-    print(f"Display: {display}")
-    print(f"Software rendering: LIBGL_ALWAYS_SOFTWARE={os.environ.get('LIBGL_ALWAYS_SOFTWARE', 'NOT SET')}")
-    
-    if display == 'NOT SET':
-        print("WARNING: DISPLAY not set. Rendering may fail.")
-        print("Make sure to run with xvfb-run or set DISPLAY environment variable.")
+    # Start Xvfb if needed (like old pipeline)
+    global VFB
+    if args.hpc:
+        if XVFBWRAPPER_AVAILABLE:
+            try:
+                VFB = Xvfb(width=args.num_povs * 256, height=256, colordepth=24)
+                VFB.start()
+                os.environ['DISPLAY'] = f':{VFB.new_display}'
+                print(f"Started Xvfb virtual display: {os.environ['DISPLAY']}")
+            except Exception as e:
+                print(f"Warning: Failed to start Xvfb: {e}")
+                print("Continuing without Xvfb (may fail if no display available)")
+                VFB = None
+        else:
+            print("Warning: --hpc flag set but xvfbwrapper not installed")
+            print("Install with: pip install xvfbwrapper")
+            if 'DISPLAY' not in os.environ:
+                raise RuntimeError("Cannot render without display. Install xvfbwrapper or use xvfb-run.")
     
     # Set random seed
     random.seed(args.seed)
@@ -775,8 +832,7 @@ def main():
     # Layout Pass: RGB
     print("Rendering layout RGB...")
     try:
-        pyrender_scene_no_ceiling = trimesh_to_pyrender_scene(trimesh_scene, hide_ceilings=True)
-        layout_rgb = render_layout_rgb(pyrender_scene_no_ceiling, width=256, height=256)
+        layout_rgb = render_layout_rgb(trimesh_scene, hide_ceilings=True, width=256, height=256)
         layout_rgb_path = layouts_rgb_dir / f"{scene_id}.png"
         Image.fromarray(layout_rgb).save(layout_rgb_path)
         print(f"  Saved layout RGB: {layout_rgb_path}")
@@ -791,7 +847,7 @@ def main():
     # Layout Pass: Segmentation
     print("Rendering layout segmentation...")
     try:
-        layout_seg = render_layout_seg_improved(trimesh_scene, taxonomy, width=256, height=256)
+        layout_seg = render_layout_seg(trimesh_scene, taxonomy, hide_ceilings=True, width=256, height=256)
         layout_seg_path = layouts_seg_dir / f"{scene_id}.png"
         Image.fromarray(layout_seg).save(layout_seg_path)
         print(f"  Saved layout segmentation: {layout_seg_path}")
@@ -830,9 +886,6 @@ def main():
         except (KeyError, ValueError, IndexError):
             continue
     
-    # Restore ceiling for POV rendering
-    pyrender_scene_full = trimesh_to_pyrender_scene(trimesh_scene, hide_ceilings=False)
-    
     # Render POVs
     pov_count = 0
     for i in range(args.num_povs * 2):  # Try more than needed
@@ -847,7 +900,7 @@ def main():
         
         # Render RGB
         try:
-            pov_rgb = render_pov(pyrender_scene_full, camera_pos, width=256, height=256, fov=70.0)
+            pov_rgb = render_pov(trimesh_scene, camera_pos, hide_ceilings=False, width=256, height=256, fov=70.0)
             pov_rgb_path = povs_rgb_dir / f"{scene_id}_v{pov_count+1:02d}.png"
             Image.fromarray(pov_rgb).save(pov_rgb_path)
             if not pov_rgb_path.exists():
@@ -858,9 +911,9 @@ def main():
             traceback.print_exc()
             continue
         
-        # Render segmentation with colored materials
+        # Render segmentation
         try:
-            pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, width=256, height=256, fov=70.0)
+            pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, hide_ceilings=False, width=256, height=256, fov=70.0)
             pov_seg_path = povs_seg_dir / f"{scene_id}_v{pov_count+1:02d}.png"
             Image.fromarray(pov_seg).save(pov_seg_path)
             if not pov_seg_path.exists():
@@ -880,7 +933,6 @@ def main():
         from data_preparation.pipeline_v2.graph_builder import build_room_graph_from_layout as build_graph
         layout_seg_path = layouts_seg_dir / f"{scene_id}.png"
         if layout_seg_path.exists():
-            # Use "scene" as room name for scene-level graphs
             build_graph(
                 scene_id, "scene", layout_seg_path, taxonomy, graphs_dir
             )
@@ -908,10 +960,8 @@ if __name__ == "__main__":
         main()
     finally:
         # Ensure Xvfb is stopped even on error
-        # VFB is a module-level variable, accessible here
-        if 'VFB' in globals() and VFB is not None:
+        if 'VFB' in globals() and globals()['VFB'] is not None:
             try:
-                VFB.stop()
+                globals()['VFB'].stop()
             except Exception:
                 pass
-

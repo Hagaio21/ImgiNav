@@ -11,17 +11,11 @@ set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
 # Configure for CPU-only software rendering (no GPU)
-# Use Mesa software rendering with Xvfb virtual display
+# Open3D works with Mesa software rendering (same as old pipeline)
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
-# Ensure Mesa software rendering is used
 export MESA_GL_VERSION_OVERRIDE=3.3
 export MESA_GLSL_VERSION_OVERRIDE=330
-# Additional Mesa settings for Xvfb compatibility
-export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
-export LIBGL_ALWAYS_INDIRECT=1
-# Disable hardware acceleration checks
-export __GLX_VENDOR_LIBRARY_NAME=mesa
 
 # Pipeline v2: Test rendering for 10 scenes
 # Job array with 2 jobs for testing
@@ -262,15 +256,15 @@ while IFS= read -r JSON_PATH; do
   echo "Processing scene ${SCENE_COUNT}/${SHARD_COUNT}: ${SCENE_ID}"
   echo "=========================================="
   
-  # Use xvfb-run to create virtual display for rendering
-  # -a: auto display number, -s: server args with GLX extension
-  xvfb-run -a -s "-screen 0 1024x768x24 +extension GLX +render -noreset" python "${PYTHON_SCRIPT}" \
+  # Open3D handles Xvfb via --hpc flag (like old pipeline)
+  python "${PYTHON_SCRIPT}" \
     --scene_json "${JSON_PATH}" \
     --future_root "${MODEL_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
     --num_povs 6 \
-    --seed 42 || {
+    --seed 42 \
+    --hpc || {
     echo "ERROR: Failed to process scene ${SCENE_ID}" >&2
     continue
   }
