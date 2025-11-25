@@ -5,6 +5,7 @@ This is fast and should be done first, before rendering.
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Dict
 
@@ -181,20 +182,180 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     seg_scene.export(seg_glb_path, file_type="glb")
     print(f"  Saved segmented geometry: {seg_glb_path}")
     
-    # Save processed scene metadata JSON
-    scene_metadata = {
-        "scene_id": scene_id,
-        "rooms": {room_name: {
-            "room_name": room_name,
-            "mesh_count": len(list(room_scene.graph.nodes_geometry))
-        } for room_name, room_scene in room_scenes.items()},
-        "total_meshes": len(list(trimesh_scene.graph.nodes_geometry)),
-        "room_count": len(room_scenes)
-    }
+    # Generate comprehensive metadata
+    print("  Generating scene metadata...")
+    scene_metadata = generate_scene_metadata(
+        scene_id, trimesh_scene, room_scenes, scene_no_ceiling, taxonomy
+    )
+    
     metadata_path = geometry_dir / f"{scene_id}_metadata.json"
     with open(metadata_path, 'w') as f:
         json.dump(scene_metadata, f, indent=2)
     print(f"  Saved scene metadata: {metadata_path}")
     
     return scene_metadata
+
+
+def generate_scene_metadata(scene_id: str,
+                            trimesh_scene: trimesh.Scene, 
+                            room_scenes: Dict[str, trimesh.Scene],
+                            scene_no_ceiling: trimesh.Scene,
+                            taxonomy: Taxonomy) -> Dict:
+    """
+    Generate comprehensive metadata for a scene.
+    
+    Args:
+        scene_id: Scene identifier
+        trimesh_scene: Full scene (with ceilings)
+        room_scenes: Dictionary of room_name -> room_scene
+        scene_no_ceiling: Scene without ceilings
+        taxonomy: Taxonomy object
+        
+    Returns:
+        Dictionary with comprehensive scene metadata
+    """
+    # Helper to get mesh info from a scene
+    def get_mesh_info(scene: trimesh.Scene, exclude_ceilings: bool = False):
+        category_counts = Counter()
+        label_counts = Counter()
+        furniture_count = 0
+        architectural_count = 0
+        total_vertices = 0
+        total_faces = 0
+        categories_present = set()
+        labels_present = set()
+        
+        for node_name in scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = scene.graph.get(node_name)
+                if geometry_name not in scene.geometry:
+                    if node_name not in scene.geometry:
+                        continue
+                    geometry = scene.geometry[node_name]
+                else:
+                    geometry = scene.geometry[geometry_name]
+                
+                if not isinstance(geometry, trimesh.Trimesh):
+                    continue
+                
+                metadata = getattr(geometry, 'metadata', {})
+                
+                # Skip ceilings if requested
+                if exclude_ceilings and metadata.get('is_ceiling', False):
+                    continue
+                
+                category_id = metadata.get('category_id', 0)
+                label = metadata.get('label', 'unknown')
+                
+                if category_id > 0:
+                    category_name = taxonomy.id_to_name(category_id)
+                    category_counts[category_name] += 1
+                    categories_present.add(category_name)
+                
+                if label and label != 'unknown':
+                    label_counts[label] += 1
+                    labels_present.add(label)
+                
+                # Count furniture vs architectural
+                if metadata.get('is_ceiling', False):
+                    architectural_count += 1
+                elif label in ['wall', 'floor', 'ceiling', 'structure']:
+                    architectural_count += 1
+                else:
+                    furniture_count += 1
+                
+                # Apply transform to get world-space bounds
+                vertices_world = trimesh.transform_points(geometry.vertices, transform)
+                total_vertices += len(vertices_world)
+                total_faces += len(geometry.faces)
+                
+            except (KeyError, ValueError, IndexError):
+                continue
+        
+        return {
+            'category_counts': dict(category_counts),
+            'label_counts': dict(label_counts),
+            'furniture_count': furniture_count,
+            'architectural_count': architectural_count,
+            'total_vertices': total_vertices,
+            'total_faces': total_faces,
+            'categories_present': sorted(list(categories_present)),
+            'labels_present': sorted(list(labels_present))
+        }
+    
+    # Get scene bounds (without ceilings)
+    try:
+        scene_bounds = scene_no_ceiling.bounds
+        scene_min = scene_bounds[0].tolist()
+        scene_max = scene_bounds[1].tolist()
+        scene_center = scene_no_ceiling.centroid.tolist()
+        scene_size = (scene_bounds[1] - scene_bounds[0]).tolist()
+    except:
+        scene_min = scene_max = scene_center = scene_size = None
+    
+    # Get overall scene statistics
+    scene_info = get_mesh_info(trimesh_scene, exclude_ceilings=True)
+    
+    # Get per-room statistics
+    rooms_metadata = {}
+    for room_name, room_scene in room_scenes.items():
+        try:
+            # Get room bounds
+            room_bounds = room_scene.bounds
+            room_min = room_bounds[0].tolist()
+            room_max = room_bounds[1].tolist()
+            room_center = room_scene.centroid.tolist()
+            room_size = (room_bounds[1] - room_bounds[0]).tolist()
+        except:
+            room_min = room_max = room_center = room_size = None
+        
+        room_info = get_mesh_info(room_scene, exclude_ceilings=True)
+        
+        rooms_metadata[room_name] = {
+            "room_name": room_name,
+            "mesh_count": len(list(room_scene.graph.nodes_geometry)),
+            "bounds": {
+                "min": room_min,
+                "max": room_max,
+                "center": room_center,
+                "size": room_size
+            },
+            "statistics": {
+                "furniture_count": room_info['furniture_count'],
+                "architectural_count": room_info['architectural_count'],
+                "total_vertices": room_info['total_vertices'],
+                "total_faces": room_info['total_faces']
+            },
+            "category_distribution": room_info['category_counts'],
+            "label_distribution": room_info['label_counts'],
+            "categories_present": room_info['categories_present'],
+            "labels_present": room_info['labels_present']
+        }
+    
+    # Build comprehensive metadata
+    metadata = {
+        "scene_id": scene_id,
+        "scene_bounds": {
+            "min": scene_min,
+            "max": scene_max,
+            "center": scene_center,
+            "size": scene_size
+        },
+        "statistics": {
+            "total_meshes": len(list(trimesh_scene.graph.nodes_geometry)),
+            "total_meshes_no_ceiling": len(list(scene_no_ceiling.graph.nodes_geometry)),
+            "room_count": len(room_scenes),
+            "furniture_count": scene_info['furniture_count'],
+            "architectural_count": scene_info['architectural_count'],
+            "total_vertices": scene_info['total_vertices'],
+            "total_faces": scene_info['total_faces']
+        },
+        "category_distribution": scene_info['category_counts'],
+        "label_distribution": scene_info['label_counts'],
+        "categories_present": scene_info['categories_present'],
+        "labels_present": scene_info['labels_present'],
+        "rooms": rooms_metadata
+    }
+    
+    return metadata
 
