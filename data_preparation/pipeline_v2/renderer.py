@@ -121,18 +121,96 @@ def get_scene_bounds(trimesh_scene: trimesh.Scene, hide_ceilings: bool = True) -
     return min_bounds, max_bounds
 
 
+def clip_mesh_above_height(mesh: trimesh.Trimesh, transform: np.ndarray, 
+                          max_height: float) -> Optional[trimesh.Trimesh]:
+    """
+    Clip mesh to remove parts above max_height (in world coordinates).
+    
+    Args:
+        mesh: Input trimesh mesh
+        transform: 4x4 transformation matrix
+        max_height: Maximum Y coordinate (3D-FRONT uses Y for height)
+        
+    Returns:
+        Clipped mesh or None if completely above threshold
+    """
+    # Transform vertices to world space
+    vertices_hom = np.column_stack([mesh.vertices, np.ones(len(mesh.vertices))])
+    vertices_world = (transform @ vertices_hom.T).T[:, :3]
+    
+    # Check if any vertices are below threshold
+    below_mask = vertices_world[:, 1] <= max_height  # Y coordinate in 3D-FRONT
+    
+    if not np.any(below_mask):
+        # All vertices above threshold, return None
+        return None
+    
+    if np.all(below_mask):
+        # All vertices below threshold, return original mesh
+        return mesh
+    
+    # Some vertices are above, need to clip
+    # Use trimesh's slice_plane to cut at max_height
+    try:
+        # Create a plane at max_height (normal pointing up)
+        plane_origin = np.array([0, max_height, 0])
+        plane_normal = np.array([0, 1, 0])  # Pointing up in Y direction
+        
+        # Transform plane to mesh local space
+        transform_inv = np.linalg.inv(transform)
+        plane_origin_local = (transform_inv @ np.append(plane_origin, 1))[:3]
+        # Transform normal (only rotation, no translation)
+        plane_normal_local = (transform_inv[:3, :3] @ plane_normal)
+        plane_normal_local = plane_normal_local / (np.linalg.norm(plane_normal_local) + 1e-12)
+        
+        # Slice mesh with plane
+        sliced = mesh.slice_plane(plane_origin_local, plane_normal_local, cap=True)
+        
+        if sliced.is_empty or len(sliced.vertices) == 0:
+            return None
+        
+        return sliced
+    except Exception:
+        # If slicing fails, try simple vertex filtering
+        # Keep faces where at least one vertex is below threshold
+        face_mask = np.any(below_mask[mesh.faces], axis=1)
+        if not np.any(face_mask):
+            return None
+        
+        # Create new mesh with filtered faces
+        filtered_faces = mesh.faces[face_mask]
+        # Remap vertex indices
+        used_vertices = np.unique(filtered_faces.flatten())
+        vertex_map = {old_idx: new_idx for new_idx, old_idx in enumerate(used_vertices)}
+        remapped_faces = np.array([[vertex_map[v] for v in face] for face in filtered_faces])
+        
+        clipped_mesh = trimesh.Trimesh(
+            vertices=mesh.vertices[used_vertices],
+            faces=remapped_faces,
+            process=False
+        )
+        
+        # Preserve metadata
+        if hasattr(mesh, 'metadata'):
+            clipped_mesh.metadata = mesh.metadata.copy()
+        
+        return clipped_mesh
+
+
 def render_layout_rgb(trimesh_scene: trimesh.Scene,
                       hide_ceilings: bool = True,
-                      width: int = 256, height: int = 256) -> np.ndarray:
+                      width: int = 256, height: int = 256,
+                      clip_top_meters: float = 1.0) -> np.ndarray:
     """
-    Render top-down RGB layout using Open3D.
-    Fixed coordinate system: Y-up (Open3D standard).
+    Render top-down RGB layout using Open3D with orthographic projection.
+    Clips top portion of structure to make pathways visible.
     
     Args:
         trimesh_scene: trimesh scene
         hide_ceilings: If True, exclude ceiling meshes
         width: Image width
         height: Image height
+        clip_top_meters: Height in meters to clip from top (default 1.0)
         
     Returns:
         RGB image array (H, W, 3) uint8
@@ -142,11 +220,14 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     size = max_bounds - min_bounds
     max_size = max(size[0], size[2])  # X and Z dimensions for top-down
     
+    # Calculate clipping height (1 meter from top)
+    clip_height = max_bounds[1] - clip_top_meters  # Y coordinate in 3D-FRONT
+    
     # Create Open3D visualizer
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=width, height=height)
     
-    # Add meshes
+    # Add meshes with clipping
     for node_name in trimesh_scene.graph.nodes_geometry:
         try:
             transform, geometry_name = trimesh_scene.graph.get(node_name)
@@ -162,7 +243,12 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
                 continue
             
             if isinstance(geometry, trimesh.Trimesh):
-                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                # Clip mesh if needed
+                clipped_mesh = clip_mesh_above_height(geometry, transform, clip_height)
+                if clipped_mesh is None:
+                    continue
+                
+                o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform)
                 vis.add_geometry(o3d_mesh)
         except (KeyError, ValueError, IndexError):
             continue
@@ -172,18 +258,19 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     opt.background_color = np.array([0, 0, 0], dtype=np.float32)
     opt.light_on = True  # Enable lighting for textures
     
-    # Camera setup: top-down orthographic view
-    # 3D-FRONT uses Z-up, Open3D uses Y-up
-    # For top-down: camera at high Y, looking down at -Y
-    camera_height = max_size * 1.5
-    eye = np.array([center[0], center[1] + camera_height, center[2]], dtype=np.float64)
+    # Camera setup: true orthographic projection (top-down)
+    # Place camera very far away with very large focal length for orthographic effect
+    # 3D-FRONT uses Y-up for height, so camera is at high Y looking down
+    camera_distance = max_size * 100.0  # Very far for orthographic
+    eye = np.array([center[0], center[1] + camera_distance, center[2]], dtype=np.float64)
     center_point = center.astype(np.float64)
     up = np.array([0, 0, 1], dtype=np.float64)  # Z-up for 3D-FRONT coordinate system
     
-    # Orthographic-like camera: large focal length for top-down
-    # Scale to fit scene in view
-    zoom = max_size * 1.2
-    fx = fy = (width / 2.0) / zoom
+    # True orthographic: use very large focal length
+    # This makes the projection effectively orthographic (no perspective distortion)
+    # Scale factor: pixels per unit
+    pixels_per_unit = min(width, height) / (max_size * 1.1)  # 10% margin
+    fx = fy = pixels_per_unit * camera_distance  # Large focal length for orthographic
     cx, cy = width / 2.0, height / 2.0
     
     pin = o3d.camera.PinholeCameraParameters()
@@ -241,19 +328,24 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
 def render_layout_seg(trimesh_scene: trimesh.Scene,
                       taxonomy: Taxonomy,
                       hide_ceilings: bool = True,
-                      width: int = 256, height: int = 256) -> np.ndarray:
+                      width: int = 256, height: int = 256,
+                      clip_top_meters: float = 1.0) -> np.ndarray:
     """
     Render top-down segmentation layout with taxonomy colors.
+    Uses orthographic projection and clips top portion.
     """
     min_bounds, max_bounds = get_scene_bounds(trimesh_scene, hide_ceilings)
     center = (min_bounds + max_bounds) / 2
     size = max_bounds - min_bounds
     max_size = max(size[0], size[2])
     
+    # Calculate clipping height (1 meter from top)
+    clip_height = max_bounds[1] - clip_top_meters  # Y coordinate in 3D-FRONT
+    
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=width, height=height)
     
-    # Add meshes with taxonomy colors
+    # Add meshes with taxonomy colors and clipping
     for node_name in trimesh_scene.graph.nodes_geometry:
         try:
             transform, geometry_name = trimesh_scene.graph.get(node_name)
@@ -269,12 +361,17 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
                 continue
             
             if isinstance(geometry, trimesh.Trimesh):
+                # Clip mesh if needed
+                clipped_mesh = clip_mesh_above_height(geometry, transform, clip_height)
+                if clipped_mesh is None:
+                    continue
+                
                 category_id = metadata.get('category_id', 0)
                 color_rgb = taxonomy.get_color(category_id, mode="category")
                 if color_rgb is None:
                     color_rgb = (127, 127, 127)
                 
-                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform)
                 num_vertices = len(o3d_mesh.vertices)
                 seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
                 o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
@@ -288,14 +385,15 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     opt.background_color = np.array([0, 0, 0], dtype=np.float32)
     opt.light_on = True
     
-    # Camera setup (same as RGB)
-    camera_height = max_size * 1.5
-    eye = np.array([center[0], center[1] + camera_height, center[2]], dtype=np.float64)
+    # Camera setup: true orthographic projection (same as RGB)
+    camera_distance = max_size * 100.0  # Very far for orthographic
+    eye = np.array([center[0], center[1] + camera_distance, center[2]], dtype=np.float64)
     center_point = center.astype(np.float64)
     up = np.array([0, 0, 1], dtype=np.float64)  # Z-up for 3D-FRONT
     
-    zoom = max_size * 1.2
-    fx = fy = (width / 2.0) / zoom
+    # True orthographic: use very large focal length
+    pixels_per_unit = min(width, height) / (max_size * 1.1)  # 10% margin
+    fx = fy = pixels_per_unit * camera_distance  # Large focal length for orthographic
     cx, cy = width / 2.0, height / 2.0
     
     pin = o3d.camera.PinholeCameraParameters()

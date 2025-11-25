@@ -215,7 +215,7 @@ def generate_scene_metadata(scene_id: str,
         Dictionary with comprehensive scene metadata
     """
     # Helper to get mesh info from a scene
-    def get_mesh_info(scene: trimesh.Scene, exclude_ceilings: bool = False):
+    def get_mesh_info(scene: trimesh.Scene, exclude_ceilings: bool = False, include_furniture_positions: bool = False):
         category_counts = Counter()
         label_counts = Counter()
         furniture_count = 0
@@ -224,6 +224,7 @@ def generate_scene_metadata(scene_id: str,
         total_faces = 0
         categories_present = set()
         labels_present = set()
+        furniture_positions = []  # List of furniture with positions
         
         for node_name in scene.graph.nodes_geometry:
             try:
@@ -256,23 +257,48 @@ def generate_scene_metadata(scene_id: str,
                     label_counts[label] += 1
                     labels_present.add(label)
                 
-                # Count furniture vs architectural
-                if metadata.get('is_ceiling', False):
-                    architectural_count += 1
-                elif label in ['wall', 'floor', 'ceiling', 'structure']:
-                    architectural_count += 1
-                else:
-                    furniture_count += 1
-                
                 # Apply transform to get world-space bounds
                 vertices_world = trimesh.transform_points(geometry.vertices, transform)
                 total_vertices += len(vertices_world)
                 total_faces += len(geometry.faces)
                 
+                # Calculate mesh center (position) in world space
+                mesh_center = vertices_world.mean(axis=0)
+                mesh_bounds_min = vertices_world.min(axis=0)
+                mesh_bounds_max = vertices_world.max(axis=0)
+                mesh_size = mesh_bounds_max - mesh_bounds_min
+                
+                # Count furniture vs architectural
+                is_architectural = False
+                if metadata.get('is_ceiling', False):
+                    architectural_count += 1
+                    is_architectural = True
+                elif label in ['wall', 'floor', 'ceiling', 'structure']:
+                    architectural_count += 1
+                    is_architectural = True
+                else:
+                    furniture_count += 1
+                
+                # Store furniture position if requested
+                if include_furniture_positions and not is_architectural:
+                    furniture_info = {
+                        'category_id': category_id,
+                        'category_name': taxonomy.id_to_name(category_id) if category_id > 0 else 'unknown',
+                        'label': label,
+                        'position': mesh_center.tolist(),  # [x, y, z] center position
+                        'bounds': {
+                            'min': mesh_bounds_min.tolist(),
+                            'max': mesh_bounds_max.tolist(),
+                            'size': mesh_size.tolist()
+                        },
+                        'ref_id': metadata.get('ref_id', 'unknown')
+                    }
+                    furniture_positions.append(furniture_info)
+                
             except (KeyError, ValueError, IndexError):
                 continue
         
-        return {
+        result = {
             'category_counts': dict(category_counts),
             'label_counts': dict(label_counts),
             'furniture_count': furniture_count,
@@ -282,6 +308,11 @@ def generate_scene_metadata(scene_id: str,
             'categories_present': sorted(list(categories_present)),
             'labels_present': sorted(list(labels_present))
         }
+        
+        if include_furniture_positions:
+            result['furniture_positions'] = furniture_positions
+        
+        return result
     
     # Get scene bounds (without ceilings)
     try:
@@ -294,9 +325,9 @@ def generate_scene_metadata(scene_id: str,
         scene_min = scene_max = scene_center = scene_size = None
     
     # Get overall scene statistics
-    scene_info = get_mesh_info(trimesh_scene, exclude_ceilings=True)
+    scene_info = get_mesh_info(trimesh_scene, exclude_ceilings=True, include_furniture_positions=False)
     
-    # Get per-room statistics
+    # Get per-room statistics with furniture positions
     rooms_metadata = {}
     for room_name, room_scene in room_scenes.items():
         try:
@@ -309,15 +340,17 @@ def generate_scene_metadata(scene_id: str,
         except:
             room_min = room_max = room_center = room_size = None
         
-        room_info = get_mesh_info(room_scene, exclude_ceilings=True)
+        # Get room info with furniture positions
+        room_info = get_mesh_info(room_scene, exclude_ceilings=True, include_furniture_positions=True)
         
         rooms_metadata[room_name] = {
             "room_name": room_name,
             "mesh_count": len(list(room_scene.graph.nodes_geometry)),
+            "center": room_center,  # Room center for graph building
             "bounds": {
                 "min": room_min,
                 "max": room_max,
-                "center": room_center,
+                "center": room_center,  # Also in bounds for compatibility
                 "size": room_size
             },
             "statistics": {
@@ -329,7 +362,8 @@ def generate_scene_metadata(scene_id: str,
             "category_distribution": room_info['category_counts'],
             "label_distribution": room_info['label_counts'],
             "categories_present": room_info['categories_present'],
-            "labels_present": room_info['labels_present']
+            "labels_present": room_info['labels_present'],
+            "furniture": room_info.get('furniture_positions', [])  # List of furniture with positions
         }
     
     # Build comprehensive metadata
