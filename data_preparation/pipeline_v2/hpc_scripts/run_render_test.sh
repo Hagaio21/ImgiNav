@@ -1,7 +1,7 @@
 #!/bin/bash
 #BSUB -J render_test[1-2]
-#BSUB -o /work3/s233249/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_test_%I.%J.out
-#BSUB -e /work3/s233249/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_test_%I.%J.err
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_test_%I.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs/render_test_%I.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=8000]"
 #BSUB -W 07:00
@@ -23,11 +23,11 @@ PROJECT_ROOT="/work3/s233249/ImgiNav"
 
 N_SHARDS=2                                           # Must match [1-2] above
 MAX_SCENES=10                                        # Limit to 10 scenes for testing
-PYTHON_SCRIPT="${PROJECT_ROOT}/data_preparation/pipeline_v2/render_worker.py"
+PYTHON_SCRIPT="${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/render_worker.py"
 # =============================================================================
 
 # Create logs directory
-mkdir -p "${PROJECT_ROOT}/data_preparation/pipeline_v2/hpc_scripts/logs"
+mkdir -p "${PROJECT_ROOT}/ImgiNav/data_preparation/pipeline_v2/hpc_scripts/logs"
 
 IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
 TMPDIR_LOCAL="${TMPDIR:-/tmp}"
