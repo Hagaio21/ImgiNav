@@ -97,9 +97,9 @@ def trimesh_to_o3d_mesh(trimesh_mesh: trimesh.Trimesh, transform: np.ndarray = N
                 )
     
     # Make mesh double-sided to prevent backface culling issues
-    o3d_mesh.triangles = o3d.utility.Vector3iVector(
-        np.vstack([o3d_mesh.triangles, o3d_mesh.triangles[:, ::-1]])
-    )
+    triangles_np = np.asarray(o3d_mesh.triangles)
+    triangles_double = np.vstack([triangles_np, triangles_np[:, ::-1]])
+    o3d_mesh.triangles = o3d.utility.Vector3iVector(triangles_double)
     
     return o3d_mesh
 
