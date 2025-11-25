@@ -117,26 +117,40 @@ def get_scene_bounds(trimesh_scene: trimesh.Scene, hide_ceilings: bool = False) 
     """
     all_vertices = []
     
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
+    # Handle both scene graph (GLB) and single mesh (PLY) cases
+    if len(trimesh_scene.graph.nodes_geometry) > 0:
+        # Scene has graph structure (from GLB)
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                metadata = getattr(geometry, 'metadata', {})
+                if hide_ceilings and metadata.get('is_ceiling', False):
                     continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
+                
+                if isinstance(geometry, trimesh.Trimesh):
+                    vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    all_vertices.append(vertices_world)
+            except (KeyError, ValueError, IndexError):
+                continue
+    else:
+        # Scene has no graph (from PLY merge) - use geometry directly
+        for geometry in trimesh_scene.geometry.values():
+            if not isinstance(geometry, trimesh.Trimesh):
+                continue
             
             metadata = getattr(geometry, 'metadata', {})
             if hide_ceilings and metadata.get('is_ceiling', False):
                 continue
             
-            if isinstance(geometry, trimesh.Trimesh):
-                vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                all_vertices.append(vertices_world)
-        except (KeyError, ValueError, IndexError):
-            continue
+            all_vertices.append(geometry.vertices)
     
     if not all_vertices:
         return np.array([0, 0, 0]), np.array([1, 1, 1])
@@ -269,34 +283,59 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     
     # Add meshes to visualizer
     mesh_count = 0
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
+    
+    # Handle both scene graph (GLB) and single mesh (PLY) cases
+    if len(trimesh_scene.graph.nodes_geometry) > 0:
+        # Scene has graph structure (from GLB)
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                metadata = getattr(geometry, 'metadata', {})
+                if hide_ceilings and metadata.get('is_ceiling', False):
                     continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
+                
+                if isinstance(geometry, trimesh.Trimesh):
+                    # Clip mesh if needed
+                    clipped_mesh = clip_mesh_above_height(
+                        geometry, clip_height, transform, up_axis, floor_threshold
+                    )
+                    if clipped_mesh is None:
+                        continue
+                    
+                    # Convert to Open3D mesh (don't apply transform, already in world space from GLB)
+                    o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform=None, apply_transform=False)
+                    vis.add_geometry(o3d_mesh)
+                    mesh_count += 1
+            except (KeyError, ValueError, IndexError) as e:
+                continue
+    else:
+        # Scene has no graph (from PLY merge) - use geometry directly
+        for geometry in trimesh_scene.geometry.values():
+            if not isinstance(geometry, trimesh.Trimesh):
+                continue
             
             metadata = getattr(geometry, 'metadata', {})
             if hide_ceilings and metadata.get('is_ceiling', False):
                 continue
             
-            if isinstance(geometry, trimesh.Trimesh):
-                # Clip mesh if needed
-                clipped_mesh = clip_mesh_above_height(
-                    geometry, clip_height, transform, up_axis, floor_threshold
-                )
-                if clipped_mesh is None:
-                    continue
-                
-                # Convert to Open3D mesh (don't apply transform, already in world space from GLB)
-                o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform=None, apply_transform=False)
-                vis.add_geometry(o3d_mesh)
-                mesh_count += 1
-        except (KeyError, ValueError, IndexError) as e:
-            continue
+            # Clip mesh if needed (no transform needed, already merged)
+            clipped_mesh = clip_mesh_above_height(
+                geometry, clip_height, None, up_axis, floor_threshold
+            )
+            if clipped_mesh is None:
+                continue
+            
+            # Convert to Open3D mesh
+            o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform=None, apply_transform=False)
+            vis.add_geometry(o3d_mesh)
+            mesh_count += 1
     
     if mesh_count == 0:
         # Return white image if no meshes
@@ -433,33 +472,37 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     
     # Add meshes with taxonomy colors
     mesh_count = 0
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
-                    continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
-            
-            metadata = getattr(geometry, 'metadata', {})
-            if hide_ceilings and metadata.get('is_ceiling', False):
-                continue
-            
-            if isinstance(geometry, trimesh.Trimesh):
-                # Clip mesh if needed
-                clipped_mesh = clip_mesh_above_height(
-                    geometry, clip_height, transform, up_axis, floor_threshold
-                )
-                if clipped_mesh is None:
+    
+    # Handle both scene graph (GLB) and single mesh (PLY) cases
+    if len(trimesh_scene.graph.nodes_geometry) > 0:
+        # Scene has graph structure (from GLB)
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                metadata = getattr(geometry, 'metadata', {})
+                if hide_ceilings and metadata.get('is_ceiling', False):
                     continue
                 
-                category_id = metadata.get('category_id', 0)
-                color_rgb = taxonomy.get_color(category_id, mode="category")
-                if color_rgb is None:
-                    color_rgb = (127, 127, 127)
-                
+                if isinstance(geometry, trimesh.Trimesh):
+                    # Clip mesh if needed
+                    clipped_mesh = clip_mesh_above_height(
+                        geometry, clip_height, transform, up_axis, floor_threshold
+                    )
+                    if clipped_mesh is None:
+                        continue
+                    
+                    category_id = metadata.get('category_id', 0)
+                    color_rgb = taxonomy.get_color(category_id, mode="category")
+                    if color_rgb is None:
+                        color_rgb = (127, 127, 127)
+                    
                 # Convert to Open3D mesh (don't apply transform, already in world space from GLB)
                 o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform=None, apply_transform=False)
                 num_vertices = len(o3d_mesh.vertices)
@@ -469,8 +512,39 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
                 )
                 vis.add_geometry(o3d_mesh)
                 mesh_count += 1
-        except (KeyError, ValueError, IndexError):
-            continue
+            except (KeyError, ValueError, IndexError):
+                continue
+    else:
+        # Scene has no graph (from PLY merge) - use geometry directly
+        for geometry in trimesh_scene.geometry.values():
+            if not isinstance(geometry, trimesh.Trimesh):
+                continue
+            
+            metadata = getattr(geometry, 'metadata', {})
+            if hide_ceilings and metadata.get('is_ceiling', False):
+                continue
+            
+            # Clip mesh if needed (no transform needed, already merged)
+            clipped_mesh = clip_mesh_above_height(
+                geometry, clip_height, None, up_axis, floor_threshold
+            )
+            if clipped_mesh is None:
+                continue
+            
+            category_id = metadata.get('category_id', 0)
+            color_rgb = taxonomy.get_color(category_id, mode="category")
+            if color_rgb is None:
+                color_rgb = (127, 127, 127)
+            
+            # Convert to Open3D mesh
+            o3d_mesh = trimesh_to_o3d_mesh(clipped_mesh, transform=None, apply_transform=False)
+            num_vertices = len(o3d_mesh.vertices)
+            seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
+            o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
+                np.tile(seg_color, (num_vertices, 1))
+            )
+            vis.add_geometry(o3d_mesh)
+            mesh_count += 1
     
     if mesh_count == 0:
         # Return white image if no meshes
@@ -583,25 +657,40 @@ def render_pov(trimesh_scene: trimesh.Scene,
     vis.create_window(visible=False, width=width, height=height)
     
     # Add meshes with textures
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
+    # Handle both scene graph (GLB) and single mesh (PLY) cases
+    if len(trimesh_scene.graph.nodes_geometry) > 0:
+        # Scene has graph structure (from GLB)
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                metadata = getattr(geometry, 'metadata', {})
+                if hide_ceilings and metadata.get('is_ceiling', False):
                     continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
+                
+                if isinstance(geometry, trimesh.Trimesh):
+                    o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                    vis.add_geometry(o3d_mesh)
+            except (KeyError, ValueError, IndexError):
+                continue
+    else:
+        # Scene has no graph (from PLY merge) - use geometry directly
+        for geometry in trimesh_scene.geometry.values():
+            if not isinstance(geometry, trimesh.Trimesh):
+                continue
             
             metadata = getattr(geometry, 'metadata', {})
             if hide_ceilings and metadata.get('is_ceiling', False):
                 continue
             
-            if isinstance(geometry, trimesh.Trimesh):
-                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
-                vis.add_geometry(o3d_mesh)
-        except (KeyError, ValueError, IndexError):
-            continue
+            o3d_mesh = trimesh_to_o3d_mesh(geometry, transform=None)
+            vis.add_geometry(o3d_mesh)
     
     # Set up camera
     eye = np.asarray(camera_pos, dtype=np.float64)
@@ -680,35 +769,60 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     vis.create_window(visible=False, width=width, height=height)
     
     # Add meshes with taxonomy colors
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
+    # Handle both scene graph (GLB) and single mesh (PLY) cases
+    if len(trimesh_scene.graph.nodes_geometry) > 0:
+        # Scene has graph structure (from GLB)
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                metadata = getattr(geometry, 'metadata', {})
+                if hide_ceilings and metadata.get('is_ceiling', False):
                     continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
+                
+                if isinstance(geometry, trimesh.Trimesh):
+                    category_id = metadata.get('category_id', 0)
+                    color_rgb = taxonomy.get_color(category_id, mode="category")
+                    if color_rgb is None:
+                        color_rgb = (127, 127, 127)
+                    
+                    o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
+                    num_vertices = len(o3d_mesh.vertices)
+                    seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
+                    o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
+                        np.tile(seg_color, (num_vertices, 1))
+                    )
+                    vis.add_geometry(o3d_mesh)
+            except (KeyError, ValueError, IndexError):
+                continue
+    else:
+        # Scene has no graph (from PLY merge) - use geometry directly
+        for geometry in trimesh_scene.geometry.values():
+            if not isinstance(geometry, trimesh.Trimesh):
+                continue
             
             metadata = getattr(geometry, 'metadata', {})
             if hide_ceilings and metadata.get('is_ceiling', False):
                 continue
             
-            if isinstance(geometry, trimesh.Trimesh):
-                category_id = metadata.get('category_id', 0)
-                color_rgb = taxonomy.get_color(category_id, mode="category")
-                if color_rgb is None:
-                    color_rgb = (127, 127, 127)
-                
-                o3d_mesh = trimesh_to_o3d_mesh(geometry, transform)
-                num_vertices = len(o3d_mesh.vertices)
-                seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
-                o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
-                    np.tile(seg_color, (num_vertices, 1))
-                )
-                vis.add_geometry(o3d_mesh)
-        except (KeyError, ValueError, IndexError):
-            continue
+            category_id = metadata.get('category_id', 0)
+            color_rgb = taxonomy.get_color(category_id, mode="category")
+            if color_rgb is None:
+                color_rgb = (127, 127, 127)
+            
+            o3d_mesh = trimesh_to_o3d_mesh(geometry, transform=None)
+            num_vertices = len(o3d_mesh.vertices)
+            seg_color = np.array([c/255.0 for c in color_rgb], dtype=np.float64)
+            o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(
+                np.tile(seg_color, (num_vertices, 1))
+            )
+            vis.add_geometry(o3d_mesh)
 
     # Set up camera
     eye = np.asarray(camera_pos, dtype=np.float64)
