@@ -1,26 +1,25 @@
 #!/bin/bash
-# Launch script for both rooms and scenes experiments with full cross attention
-# Runs small, medium, and large sizes
+# Launch script for Large Spatial CLIP Diffusion models on gpul40s queue
+# Submits: large_rooms_bottleneck, large_scenes_bottleneck (2 experiments)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
+TRAIN_SCRIPT="${SCRIPT_DIR}/../run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular/small_all.yaml"
-    "experiments/diffusion/clip/regular/medium_all.yaml"
-    "experiments/diffusion/clip/regular/large_all.yaml"
+    "experiments/diffusion/clip/spatial_rooms/large_bottleneck.yaml"
+    "experiments/diffusion/clip/spatial_scenes/large_bottleneck.yaml"
 )
 
 echo "=============================================================================="
-echo "Launching Both Rooms and Scenes Experiments (Full Cross Attention)"
+echo "Launching Large Spatial CLIP Diffusion Training (gpul40s queue)"
 echo "=============================================================================="
 echo "Submitting ${#CONFIGS[@]} jobs..."
 
 for config in "${CONFIGS[@]}"; do
     config_path="${BASE_DIR}/${config}"
     if [ ! -f "${config_path}" ]; then
-        echo "WARNING: Config not found: ${config}"
+        echo "WARNING: Config not found: ${config} (will be skipped)"
         continue
     fi
     
@@ -50,12 +49,12 @@ except:
         -n 4 \
         -R "rusage[mem=8000]" \
         -gpu "num=1" \
-        -W 24:00 \
+        -W 48:00 \
         -q gpul40s \
         bash "${TRAIN_SCRIPT}" "${config}"
     
     sleep 1
 done
 
-echo "Done! Submitted ${#CONFIGS[@]} jobs to gpuv100 queue"
+echo "Done! Submitted jobs to gpul40s queue"
 

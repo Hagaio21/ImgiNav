@@ -1,18 +1,18 @@
 #!/bin/bash
-# Launch script for Medium CLIP Diffusion models on gpuv100 queue
-# Submits: medium_rooms_bottleneck, medium_scenes_bottleneck (2 experiments)
+# Launch script for Small Spatial CLIP Diffusion models on gpul40s queue
+# Submits: small_rooms_bottleneck, small_scenes_bottleneck (2 experiments)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
+TRAIN_SCRIPT="${SCRIPT_DIR}/../run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular_rooms/medium_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_scenes/medium_bottleneck.yaml"
+    "experiments/diffusion/clip/spatial_rooms/small_bottleneck.yaml"
+    "experiments/diffusion/clip/spatial_scenes/small_bottleneck.yaml"
 )
 
 echo "=============================================================================="
-echo "Launching Medium CLIP Diffusion Training (gpuv100 queue)"
+echo "Launching Small Spatial CLIP Diffusion Training (gpul40s queue)"
 echo "=============================================================================="
 echo "Submitting ${#CONFIGS[@]} jobs..."
 
@@ -49,11 +49,12 @@ except:
         -n 4 \
         -R "rusage[mem=8000]" \
         -gpu "num=1" \
-        -W 24:00 \
-        -q gpuv100 \
+        -W 48:00 \
+        -q gpul40s \
         bash "${TRAIN_SCRIPT}" "${config}"
     
     sleep 1
 done
 
-echo "Done! Submitted ${#CONFIGS[@]} jobs to gpuv100 queue"
+echo "Done! Submitted ${#CONFIGS[@]} jobs to gpul40s queue"
+

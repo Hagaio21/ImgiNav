@@ -1,18 +1,19 @@
 #!/bin/bash
-# Launch script for Small CLIP Diffusion models on gpul40s queue
-# Submits: small_rooms_bottleneck, small_scenes_bottleneck (2 experiments)
+# Launch script for both rooms and scenes spatial experiments with full cross attention
+# Runs small, medium, and large sizes
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-TRAIN_SCRIPT="${SCRIPT_DIR}/run_train_diff_clip.sh"
+TRAIN_SCRIPT="${SCRIPT_DIR}/../run_train_diff_clip.sh"
 
 CONFIGS=(
-    "experiments/diffusion/clip/regular_rooms/small_bottleneck.yaml"
-    "experiments/diffusion/clip/regular_scenes/small_bottleneck.yaml"
+    "experiments/diffusion/clip/spatial/small_all.yaml"
+    "experiments/diffusion/clip/spatial/medium_all.yaml"
+    "experiments/diffusion/clip/spatial/large_all.yaml"
 )
 
 echo "=============================================================================="
-echo "Launching Small CLIP Diffusion Training (gpul40s queue)"
+echo "Launching Both Rooms and Scenes Spatial Experiments (Full Cross Attention)"
 echo "=============================================================================="
 echo "Submitting ${#CONFIGS[@]} jobs..."
 
@@ -49,7 +50,7 @@ except:
         -n 4 \
         -R "rusage[mem=8000]" \
         -gpu "num=1" \
-        -W 48:00 \
+        -W 24:00 \
         -q gpul40s \
         bash "${TRAIN_SCRIPT}" "${config}"
     
@@ -57,3 +58,4 @@ except:
 done
 
 echo "Done! Submitted ${#CONFIGS[@]} jobs to gpul40s queue"
+

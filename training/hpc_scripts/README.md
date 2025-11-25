@@ -1,16 +1,40 @@
-# CLIP Diffusion Experiments
+# CLIP Diffusion Experiments - HPC Scripts
 
-This directory contains diffusion experiment configurations for training diffusion models with CLIP-aligned VAE embeddings. The experiments use cross-attention with CLIP embedding projections to condition the diffusion process.
-
-## Overview
-
-The workflow consists of three main steps:
-
-1. **Train CLIP VAEs** - Train regular and spatial CLIP VAEs
-2. **Create Embeddings** - Embed layouts using the trained VAEs
-3. **Train Diffusion Models** - Train diffusion models with various configurations
+This directory contains HPC scripts for training and evaluating diffusion models with CLIP-aligned VAE embeddings. The scripts are organized into logical subdirectories for better maintainability.
 
 ## Directory Structure
+
+```
+training/hpc_scripts/
+├── regular/              # Regular (non-spatial) CLIP VAE experiment scripts
+│   ├── launch_*.sh       # Launch scripts for regular experiments
+│   └── run_train_*.sh    # Direct run scripts for regular experiments
+├── spatial/              # Spatial CLIP VAE experiment scripts
+│   ├── launch_*.sh       # Launch scripts for spatial experiments
+│   └── run_train_*.sh   # Direct run scripts for spatial experiments
+├── vae/                  # VAE training scripts
+│   └── run_train_vae_*.sh
+├── embedding/            # Embedding/data preparation scripts
+│   ├── run_embed_*.sh
+│   ├── launch_embed_*.sh
+│   └── fix_manifest_csv.sh
+├── evaluation/           # Evaluation scripts
+│   ├── eval_diff_clip_*.sh
+│   └── launch_eval_diff_clip_all.sh
+├── debug/                # Debug/testing scripts
+│   ├── debug_diffusion.sh
+│   ├── launch_debug_diffusion.sh
+│   └── run_debug_*.sh
+├── analysis/             # Analysis/comparison scripts
+│   ├── run_compare_all_experiments.sh
+│   └── launch_compare_all_experiments.sh
+├── run_train_diff_clip.sh        # General training script (used by launch scripts)
+└── launch_train_diff_clip.sh     # General launch script (for any config)
+```
+
+## Experiment Configurations
+
+The experiment configs are located in `experiments/diffusion/clip/`:
 
 ```
 experiments/diffusion/clip/
@@ -19,139 +43,176 @@ experiments/diffusion/clip/
 │   ├── medium_*.yaml # Medium models (64 base_channels, depth 4)
 │   └── large_*.yaml  # Large models (128 base_channels, depth 4)
 ├── regular_rooms/    # Regular CLIP VAE experiments (rooms only)
-│   ├── small_*.yaml  # Small models with type filter: room
-│   ├── medium_bottleneck.yaml  # Medium bottleneck (cross-attention at [downs, bottleneck])
-│   └── large_bottleneck.yaml   # Large bottleneck (cross-attention at [downs, bottleneck])
+│   ├── small_*.yaml
+│   ├── medium_*.yaml
+│   └── large_*.yaml
 ├── regular_scenes/   # Regular CLIP VAE experiments (scenes only)
-│   ├── small_*.yaml  # Small models with type filter: scene
-│   ├── medium_bottleneck.yaml  # Medium bottleneck (cross-attention at [downs, bottleneck])
-│   └── large_bottleneck.yaml   # Large bottleneck (cross-attention at [downs, bottleneck])
+│   ├── small_*.yaml
+│   ├── medium_*.yaml
+│   └── large_*.yaml
 ├── spatial/          # Spatial CLIP VAE experiments (all types)
 │   ├── small_*.yaml
 │   ├── medium_*.yaml
 │   └── large_*.yaml
 ├── spatial_rooms/    # Spatial CLIP VAE experiments (rooms only)
-│   └── small_*.yaml  # Small models with type filter: room
+│   ├── small_*.yaml
+│   ├── medium_*.yaml
+│   └── large_*.yaml
 └── spatial_scenes/   # Spatial CLIP VAE experiments (scenes only)
-    └── small_*.yaml  # Small models with type filter: scene
+    ├── small_*.yaml
+    ├── medium_*.yaml
+    └── large_*.yaml
 ```
 
 Each size has 4 attention location variants:
 - `*_down.yaml` - Attention only in down path
-- `*_bottleneck.yaml` - Attention only at bottleneck
+- `*_bottleneck.yaml` - Attention only at bottleneck (or [downs, bottleneck] for rooms/scenes)
 - `*_up.yaml` - Attention only in up path
 - `*_all.yaml` - Attention at all locations (downs, bottleneck, ups)
 
-## Step 1: Train CLIP VAEs
+## Complete Workflow
+
+### Step 1: Train CLIP VAEs
 
 Train both regular and spatial CLIP VAEs. These create the joint embedding space.
 
-### Regular CLIP VAE
+#### Regular CLIP VAE
 
 ```bash
-# Launch training
-bsub < training/hpc_scripts/launch_train_vae_clip.sh
-
-# Or run directly
-bsub < training/hpc_scripts/run_train_vae_clip.sh
+bsub < training/hpc_scripts/vae/run_train_vae_clip.sh
 ```
 
 **Config:** `experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256_clip.yaml`
 
-**Output:** Checkpoint saved to `/work3/s233249/ImgiNav/experiments/clip/vae_clip/checkpoints/vae_clip_checkpoint_best.pt`
+**Output:** `/work3/s233249/ImgiNav/experiments/clip/vae_clip/checkpoints/vae_clip_checkpoint_best.pt`
 
-### Spatial CLIP VAE
+#### Spatial CLIP VAE
 
 ```bash
-# Launch training
-bsub < training/hpc_scripts/launch_train_vae_clip_spatial.sh
-
-# Or run directly
-bsub < training/hpc_scripts/run_train_vae_clip_spatial.sh
+bsub < training/hpc_scripts/vae/run_train_vae_clip_spatial.sh
 ```
 
 **Config:** `experiments/autoencoders/new_layouts/new_layouts_VAE_32x32_structural_256_clip_spatial.yaml`
 
-**Output:** Checkpoint saved to `/work3/s233249/ImgiNav/experiments/clip/vae_clip_spatial/checkpoints/vae_clip_spatial_checkpoint_best.pt`
+**Output:** `/work3/s233249/ImgiNav/experiments/clip/vae_clip_spatial/checkpoints/vae_clip_spatial_checkpoint_best.pt`
 
-## Step 2: Create Embeddings
+### Step 2: Create Embeddings
 
 After both VAEs are trained, embed layouts using both VAEs and save to shared latents directory.
 
 ```bash
-# Embed layouts with both CLIP VAEs
-bsub < training/hpc_scripts/run_embed_clip_vaes_shared.sh
+bsub < training/hpc_scripts/embedding/run_embed_clip_vaes_shared.sh
 ```
 
 **What it does:**
 - Embeds layouts using regular CLIP VAE → saves to `shared_embeddings/latents/vae_clip/`
 - Embeds layouts using spatial CLIP VAE → saves to `shared_embeddings/latents/vae_clip_spatial/`
-- Creates/updates manifest at `shared_embeddings/manifest_with_latents.csv` with columns:
+- Creates/updates manifest at `shared_embeddings/manifest_with_embeddings.csv` with columns:
   - `latent_path_vae_clip` - Paths to regular CLIP VAE latents
   - `latent_path_vae_clip_spatial` - Paths to spatial CLIP VAE latents
 
 **Input manifest:** `/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv`
 
-**Output manifest:** `/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_latents.csv`
+**Output manifest:** `/work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv` (updated in place)
 
-## Step 3: Train Diffusion Models
+### Step 3: Train Diffusion Models
 
 Train diffusion models using the embedded latents. All experiments use cross-attention with CLIP embedding projections.
 
-### Single Experiment
+#### General Launch Script (Any Config)
 
 ```bash
 # Launch single experiment
 ./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular/small_down.yaml
-```
 
-### Multiple Experiments
-
-```bash
-# Launch all small regular experiments
+# Launch multiple experiments
 ./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular/small_*.yaml
-
-# Launch all medium regular experiments
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular/medium_*.yaml
-
-# Launch all large regular experiments
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular/large_*.yaml
-
-# Launch all regular CLIP experiments
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular/*.yaml
-
-# Launch all spatial CLIP experiments
 ./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/spatial/*.yaml
 ```
 
-### Type-Filtered Experiments (Rooms & Scenes)
+#### Regular Experiments
 
-Type-filtered experiments train on only rooms or only scenes. Each launch script submits **2 jobs** (one for rooms, one for scenes) using the bottleneck variant:
-
+**Small Models (2 jobs: rooms + scenes)**
 ```bash
-# Small models (2 jobs: rooms + scenes)
-./training/hpc_scripts/launch_train_diff_clip_small_gpuv100.sh    # gpuv100 queue (24h limit)
-./training/hpc_scripts/launch_train_diff_clip_small_gpul40s.sh    # gpul40s queue (48h limit)
-
-# Medium models (2 jobs: rooms + scenes)
-./training/hpc_scripts/launch_train_diff_clip_medium_gpuv100.sh   # gpuv100 queue (24h limit)
-./training/hpc_scripts/launch_train_diff_clip_medium_gpul40s.sh  # gpul40s queue (48h limit)
-
-# Large models (2 jobs: rooms + scenes)
-./training/hpc_scripts/launch_train_diff_clip_large_gpuv100.sh    # gpuv100 queue (24h limit)
-./training/hpc_scripts/launch_train_diff_clip_large_gpul40s.sh    # gpul40s queue (48h limit)
+./training/hpc_scripts/regular/launch_train_diff_clip_small_gpuv100.sh    # gpuv100 queue (24h limit)
+./training/hpc_scripts/regular/launch_train_diff_clip_small_gpul40s.sh    # gpul40s queue (48h limit)
 ```
 
-**Note:** Each script launches the bottleneck variant for both rooms and scenes. The bottleneck configs use cross-attention at `[downs, bottleneck]` locations.
-
-### Direct Run (without launch script)
-
+**Medium Models (2 jobs: rooms + scenes)**
 ```bash
-# Run single experiment directly
-bsub < training/hpc_scripts/run_train_diff_clip.sh experiments/diffusion/clip/regular/small_down.yaml
+./training/hpc_scripts/regular/launch_train_diff_clip_medium_gpuv100.sh   # gpuv100 queue (24h limit)
+./training/hpc_scripts/regular/launch_train_diff_clip_medium_gpul40s.sh    # gpul40s queue (48h limit)
 ```
 
-## Experiment Configurations
+**Large Models (2 jobs: rooms + scenes)**
+```bash
+./training/hpc_scripts/regular/launch_train_diff_clip_large_gpuv100.sh     # gpuv100 queue (24h limit)
+./training/hpc_scripts/regular/launch_train_diff_clip_large_gpul40s.sh    # gpul40s queue (48h limit)
+```
+
+**Text-Only Experiments (Rooms, Down+Bottleneck Attention)**
+```bash
+./training/hpc_scripts/regular/launch_rooms_text_only_all_sizes.sh
+```
+
+**Full Cross-Attention Experiments**
+```bash
+./training/hpc_scripts/regular/launch_both_rooms_scenes_all_sizes.sh
+./training/hpc_scripts/regular/launch_medium_full_cross_attention.sh
+```
+
+#### Spatial Experiments
+
+**Small Models (2 jobs: rooms + scenes)**
+```bash
+./training/hpc_scripts/spatial/launch_train_diff_clip_spatial_small_gpul40s.sh
+```
+
+**Medium Models (2 jobs: rooms + scenes)**
+```bash
+./training/hpc_scripts/spatial/launch_train_diff_clip_spatial_medium_gpul40s.sh
+```
+
+**Large Models (2 jobs: rooms + scenes)**
+```bash
+./training/hpc_scripts/spatial/launch_train_diff_clip_spatial_large_gpul40s.sh
+```
+
+**Text-Only Experiments (Rooms, Down+Bottleneck Attention)**
+```bash
+./training/hpc_scripts/spatial/launch_rooms_text_only_all_sizes.sh
+```
+
+**Full Cross-Attention Experiments**
+```bash
+./training/hpc_scripts/spatial/launch_both_rooms_scenes_all_sizes.sh
+```
+
+### Step 4: Evaluate Models
+
+After training, evaluate the models:
+
+```bash
+# Launch all evaluation jobs (6 jobs: small/medium/large x rooms/scenes)
+./training/hpc_scripts/evaluation/launch_eval_diff_clip_all.sh
+
+# Or run individual evaluations
+bsub < training/hpc_scripts/evaluation/eval_diff_clip_small_rooms.sh
+bsub < training/hpc_scripts/evaluation/eval_diff_clip_small_scenes.sh
+# ... etc
+```
+
+### Step 5: Compare Experiments
+
+Compare metrics across all experiments:
+
+```bash
+./training/hpc_scripts/analysis/launch_compare_all_experiments.sh
+```
+
+This generates comparison plots and summary tables in `/work3/s233249/ImgiNav/experiments/clip/comparison_summary/`
+
+## Model Configurations
 
 ### Model Sizes
 
@@ -184,22 +245,6 @@ bsub < training/hpc_scripts/run_train_diff_clip.sh experiments/diffusion/clip/re
 - **spatial_scenes**: Spatial CLIP VAE, filtered to scenes only (`type: [scene]`)
 
 Type filtering is done at the dataset level using the `type` column in the manifest. This allows training separate models for rooms vs scenes to compare performance.
-
-## Complete Workflow Example
-
-```bash
-# 1. Train regular CLIP VAE
-bsub < training/hpc_scripts/launch_train_vae_clip.sh
-
-# 2. Train spatial CLIP VAE (can run in parallel)
-bsub < training/hpc_scripts/launch_train_vae_clip_spatial.sh
-
-# 3. Wait for both VAEs to finish, then create embeddings
-bsub < training/hpc_scripts/run_embed_clip_vaes_shared.sh
-
-# 4. Train diffusion models (example: all small regular experiments)
-./training/hpc_scripts/launch_train_diff_clip.sh experiments/diffusion/clip/regular/small_*.yaml
-```
 
 ## Output Locations
 
@@ -251,8 +296,8 @@ Examples:
 - **Cross-Attention**: All models use cross-attention with CLIP embedding projections
 - **CLIP Alignment**: Embeddings are projected using CLIP projections from the VAE checkpoint
 - **Classifier-Free Guidance**: 
-  - Regular configs: CFG dropout rate 0.1, guidance scale 3.0
-  - Rooms/scenes configs: CFG dropout rate 0.15, guidance scale 3.0
+  - Regular configs: CFG dropout rate 0.1, guidance scale 5.0
+  - Rooms/scenes configs: CFG dropout rate 0.15, guidance scale 5.0
 - **Resume Support**: Training automatically resumes from latest checkpoint
 - **Shared Latents**: All experiments use the same shared latents manifest for consistency
 - **Type Filtering**: Optional filtering by `type` column (room/scene) for specialized models
@@ -262,10 +307,11 @@ Examples:
 ### Embedding script fails
 - Ensure both VAE checkpoints exist
 - Check that input manifest exists: `experiments/shared_embeddings/manifest_with_embeddings.csv`
+- If CSV is misaligned, use: `./training/hpc_scripts/embedding/fix_manifest_csv.sh`
 
 ### Diffusion training fails
 - Verify embeddings were created successfully
-- Check that `shared_embeddings/manifest_with_latents.csv` exists
+- Check that `shared_embeddings/manifest_with_embeddings.csv` exists
 - Ensure the correct latent column is referenced in the config (`latent_path_vae_clip` or `latent_path_vae_clip_spatial`)
 - For type-filtered experiments, verify the manifest has a `type` column with values "room" or "scene"
 
@@ -278,6 +324,7 @@ Examples:
 
 - **gpuv100**: 24-hour time limit, suitable for shorter experiments
 - **gpul40s**: 48-hour time limit, suitable for longer training runs
+- **hpc**: CPU-only queue for analysis jobs
 
 ## Notes
 
@@ -287,3 +334,12 @@ Examples:
 - Evaluation metrics: CLIP Score, FID, and mIoU (computed during validation)
 - Sample generation: 16 unconditioned samples (4x4 grid) + 16 comparison samples (target vs generated)
 
+## Script Organization
+
+- **regular/**: Scripts for regular (non-spatial) CLIP VAE experiments
+- **spatial/**: Scripts for spatial CLIP VAE experiments
+- **vae/**: Scripts for training VAEs
+- **embedding/**: Scripts for creating embeddings and data preparation
+- **evaluation/**: Scripts for evaluating trained models
+- **debug/**: Scripts for debugging and testing
+- **analysis/**: Scripts for comparing and analyzing experiments
