@@ -17,11 +17,6 @@ from torchvision.utils import save_image, make_grid
 from PIL import Image
 import numpy as np
 import pandas as pd
-import numpy as np
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for HPC
-import matplotlib.pyplot as plt
-import seaborn as sns
 import json
 
 # Suppress torchvision.io extension warning (we use PIL, not torchvision.io)
@@ -183,10 +178,6 @@ def save_vae_metadata(output_dir, exp_name, latent_stats):
     metadata_path = output_dir / f"{exp_name}_metadata.json"
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
-    
-    print(f"  Saved VAE metadata: {metadata_path}")
-    print(f"    Scale factor: {scale_factor:.6f}")
-    print(f"    Clamp range: [{clamp_min:.2f}, {clamp_max:.2f}]")
 
 
 def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=False, collect_latents=False):
@@ -232,22 +223,6 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
         
         outputs = model(batch["rgb"])
         
-        # Debug: Check if embeddings are in batch (first iteration only)
-        if epoch == 1 and total_samples == 0:
-            print(f"\nDEBUG: Batch keys: {list(batch.keys())}")
-            if "text_emb" in batch:
-                print(f"DEBUG: text_emb shape: {batch['text_emb'].shape}, requires_grad: {batch['text_emb'].requires_grad}")
-            else:
-                print(f"DEBUG: text_emb NOT in batch!")
-            if "pov_emb" in batch:
-                print(f"DEBUG: pov_emb shape: {batch['pov_emb'].shape}, requires_grad: {batch['pov_emb'].requires_grad}")
-            else:
-                print(f"DEBUG: pov_emb NOT in batch!")
-            print(f"DEBUG: outputs keys: {list(outputs.keys())}")
-            if "latent_features" in outputs:
-                print(f"DEBUG: latent_features shape: {outputs['latent_features'].shape}, requires_grad: {outputs['latent_features'].requires_grad}")
-            print()
-        
         if collect_latents and all_latents is not None:
             if "mu" in outputs:
                 all_latents.append(outputs["mu"].detach().cpu())
@@ -255,27 +230,6 @@ def train_epoch(model, dataloader, loss_fn, optimizer, device, epoch, use_amp=Fa
                 all_latents.append(outputs["latent"].detach().cpu())
         
         loss, logs = loss_fn(outputs, batch)
-        
-        # Debug: Check loss value and CLIP projections (first iteration only)
-        if epoch == 1 and total_samples == 0:
-            print(f"DEBUG: Loss value: {loss.item():.6f}, requires_grad: {loss.requires_grad}")
-            print(f"DEBUG: Loss logs: {list(logs.keys())}")
-            for k, v in logs.items():
-                if isinstance(v, torch.Tensor):
-                    print(f"DEBUG:   {k}: {v.item():.6f}")
-                else:
-                    print(f"DEBUG:   {k}: {v}")
-            # Check if CLIP loss has projections
-            from models.losses.base_loss import LOSS_REGISTRY
-            CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
-            CLIPLossClass = LOSS_REGISTRY.get("CLIPLoss")
-            if CompositeLossClass and isinstance(loss_fn, CompositeLossClass):
-                for sub_loss in loss_fn.losses:
-                    if CLIPLossClass and isinstance(sub_loss, CLIPLossClass):
-                        print(f"DEBUG: CLIP loss projections: {sub_loss.projections is not None}")
-                        if sub_loss.projections is not None:
-                            print(f"DEBUG: CLIP projections device: {next(sub_loss.projections.parameters()).device}")
-            print()
         
         optimizer.zero_grad()
         loss.backward()
@@ -416,8 +370,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         else:
             grid_path = samples_dir / f"epoch_{epoch:03d}_comparison.png"
         save_image(combined_grid, grid_path, normalize=False)
-    
-    print(f"  Saved samples to {samples_dir}")
 
 
 def main():
@@ -429,20 +381,16 @@ def main():
     args = parser.parse_args()
     
     # Load config
-    print(f"Loading config from {args.config}")
     config = load_config(args.config)
     exp_name = config.get("experiment", {}).get("name", "unnamed")
-    print(f"Experiment: {exp_name}")
     
     # Set deterministic behavior if seed is provided
     training_seed = config.get("training", {}).get("seed", None)
     if training_seed is not None:
         set_deterministic(training_seed)
-        print(f"Set deterministic mode with seed: {training_seed}")
     
     # Get device from config or default
     device = get_device(config)
-    print(f"Device: {device}")
     
     # Get output directory from config
     output_dir = config.get("experiment", {}).get("save_path")
@@ -453,7 +401,6 @@ def main():
         output_dir = Path(output_dir)
     
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}")
     
     
     # Check for checkpoint to resume from
@@ -463,7 +410,6 @@ def main():
         checkpoint_to_resume = Path(args.checkpoint)
         if not checkpoint_to_resume.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_to_resume}")
-        print(f"Using checkpoint from argument: {checkpoint_to_resume}")
     else:
         # Check in checkpoints folder first, then fallback to root (for backward compatibility)
         checkpoint_dir_temp = output_dir / "checkpoints"
@@ -472,7 +418,6 @@ def main():
             latest_checkpoint = output_dir / f"{exp_name}_checkpoint_latest.pt"
         if latest_checkpoint.exists():
             checkpoint_to_resume = latest_checkpoint
-            print(f"Found latest checkpoint: {latest_checkpoint}")
     
     start_epoch = 0
     best_val_loss = float("inf")
@@ -486,8 +431,6 @@ def main():
     
     should_resume = checkpoint_to_resume is not None
     if should_resume:
-        print(f"\nResuming training from checkpoint: {checkpoint_to_resume}")
-        
         # Load checkpoint with extra state (uses saved config from checkpoint)
         model, extra_state = Autoencoder.load_checkpoint(
             checkpoint_to_resume,
@@ -510,28 +453,17 @@ def main():
                 # (start_epoch is 0-indexed, CSV epochs are 1-indexed)
                 df_filtered = df[df['epoch'] < (start_epoch + 1)]
                 training_history = df_filtered.to_dict('records')
-                print(f"  Loaded {len(training_history)} epochs from CSV file (filtered to epochs < {start_epoch + 1})")
-            except Exception as e:
-                print(f"  Warning: Could not load metrics from CSV: {e}")
-        
-        print(f"  Resuming from epoch {start_epoch + 1}")
-        print(f"  Best validation loss so far: {best_val_loss:.6f}")
-        if training_history:
-            print(f"  Loaded {len(training_history)} previous epochs from history")
+            except Exception:
+                pass
     else:
         # Build components
-        print("Building model...")
         model = build_model(config)
         model = model.to(device_obj)
     
     # Enable cudnn benchmark for faster convolutions (optimizes for input sizes)
     if device_obj.type == "cuda":
         torch.backends.cudnn.benchmark = True
-        print("Enabled cudnn.benchmark for faster convolutions")
     
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
-    print("Building dataset...")
     dataset = build_dataset(config)
     
     # Build validation dataset
@@ -547,7 +479,6 @@ def main():
             shuffle=False,
             num_workers=config["training"].get("num_workers", 4)
         )
-        print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)} (from config)")
         # Use full dataset for training if validation is explicitly provided
         train_dataset = dataset
     else:
@@ -562,7 +493,6 @@ def main():
                 shuffle=False,
                 num_workers=config["training"].get("num_workers", 4)
             )
-            print(f"Validation dataset size: {len(val_dataset)}, Batches: {len(val_loader)} (auto-split {int((1-train_split)*100)}%)")
         else:
             train_dataset = dataset
     
@@ -571,9 +501,7 @@ def main():
         shuffle=config["training"].get("shuffle", True),
         num_workers=config["training"].get("num_workers", 4)
     )
-    print(f"Train dataset size: {len(train_dataset)}, Batches: {len(train_loader)}")
     
-    print("Building loss function...")
     loss_fn = build_loss(config)
     
     from models.losses.base_loss import LOSS_REGISTRY
@@ -597,27 +525,21 @@ def main():
                 raise RuntimeError("CLIP loss projections are not the same instance as model.clip_projections!")
             proj_params = list(model.clip_projections.parameters())
             trainable_proj_params = [p for p in proj_params if p.requires_grad]
-            print(f"  ✓ Connected CLIP projections ({len(trainable_proj_params)}/{len(proj_params)} trainable)")
     
     if not clip_loss_found:
         raise RuntimeError("CLIP loss not found in CompositeLoss! Check loss config has CLIPLoss component.")
     
-    print("Building optimizer...")
     optimizer = build_optimizer(model, config)
     if should_resume:
         optimizer_state = extra_state.get("optimizer_state")
         if optimizer_state:
             optimizer.load_state_dict(optimizer_state)
-            print("  Loaded optimizer state from checkpoint")
     
     # Enable mixed precision training by default (can be disabled in config)
     use_amp = config.get("training", {}).get("use_amp", True)  # Default to True for speedup
     if use_amp and device_obj.type == "cuda":
-        print("Using mixed precision training (FP16)")
         # Create scaler once for the training function
         train_epoch._scaler = create_grad_scaler(use_amp, device_obj)
-    elif not use_amp:
-        print("Mixed precision training disabled (use_amp: false)")
     
     # Training configuration (all from config)
     epochs_to_train = config["training"]["epochs"]  # Additional epochs to train
@@ -634,21 +556,6 @@ def main():
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
     early_stopping_restore_best = config["training"].get("early_stopping_restore_best", True)
     
-    print(f"\nTraining configuration:")
-    print(f"  Additional epochs to train: {epochs_to_train}")
-    print(f"  Starting from epoch: {start_epoch + 1}")
-    print(f"  Will train until epoch: {end_epoch}")
-    print(f"  Save interval: every {save_interval} epoch(s)")
-    if val_loader:
-        print(f"  Evaluation: every epoch")
-    print(f"  Sample interval: every {sample_interval} epoch(s)")
-    if keep_checkpoints:
-        print(f"  Keeping only last {keep_checkpoints} checkpoints")
-    if early_stopping_patience:
-        print(f"  Early stopping: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
-        if early_stopping_restore_best:
-            print(f"  Will restore best checkpoint on early stop")
-    
     # Create checkpoints directory
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -656,467 +563,7 @@ def main():
     checkpoint_files = []
     epochs_without_improvement = 0
     
-    def _plot_latent_statistics(df, output_dir, exp_name):
-        """Plot latent statistics from standardization loss."""
-        sns.set_style("darkgrid")
-        # Check if latent statistics columns exist (from LatentStandardizationLoss)
-        has_train_stats = 'train_LatentStd_MeanVal' in df.columns
-        has_val_stats = 'val_LatentStd_MeanVal' in df.columns
-        
-        if not has_train_stats and not has_val_stats:
-            return  # No latent statistics to plot
-        
-        epochs = df['epoch'].values
-        
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle(f'Latent Statistics - {exp_name}', fontsize=16, fontweight='bold')
-        
-        # Plot 1: Latent Mean over time
-        ax = axes[0, 0]
-        if has_train_stats:
-            ax.plot(epochs, df['train_LatentStd_MeanVal'], label='Train mean', linewidth=2, marker='o', markersize=3, color='blue')
-        if has_val_stats:
-            ax.plot(epochs, df['val_LatentStd_MeanVal'], label='Val mean', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
-        ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, label='Target: 0')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Latent Mean')
-        ax.set_title('Latent Mean (should → 0)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Plot 2: Latent Std over time
-        ax = axes[0, 1]
-        if has_train_stats:
-            ax.plot(epochs, df['train_LatentStd_StdVal'], label='Train std', linewidth=2, marker='o', markersize=3, color='green')
-        if has_val_stats:
-            ax.plot(epochs, df['val_LatentStd_StdVal'], label='Val std', linewidth=2, marker='s', markersize=3, color='orange', linestyle='--')
-        ax.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='Target: 1')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Latent Std')
-        ax.set_title('Latent Std (should → 1)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Plot 3: Mean Loss component
-        ax = axes[1, 0]
-        if has_train_stats:
-            ax.plot(epochs, df['train_LatentStd_Mean'], label='Train mean loss', linewidth=2, marker='o', markersize=3, color='purple')
-        if has_val_stats:
-            ax.plot(epochs, df['val_LatentStd_Mean'], label='Val mean loss', linewidth=2, marker='s', markersize=3, color='cyan', linestyle='--')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Mean Loss Component')
-        ax.set_title('Mean Deviation Loss (should → 0)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        if len(df) > 1 and has_train_stats:
-            try:
-                max_val = df['train_LatentStd_Mean'].max()
-                if isinstance(max_val, (int, float)) and max_val > 0:
-                    ax.set_yscale('log')
-            except (TypeError, ValueError):
-                pass
-        
-        # Plot 4: Std Loss component
-        ax = axes[1, 1]
-        if has_train_stats:
-            ax.plot(epochs, df['train_LatentStd_Std'], label='Train std loss', linewidth=2, marker='o', markersize=3, color='brown')
-        if has_val_stats:
-            ax.plot(epochs, df['val_LatentStd_Std'], label='Val std loss', linewidth=2, marker='s', markersize=3, color='pink', linestyle='--')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Std Loss Component')
-        ax.set_title('Std Deviation Loss (should → 0)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        if len(df) > 1 and has_train_stats:
-            try:
-                max_val = df['train_LatentStd_Std'].max()
-                if isinstance(max_val, (int, float)) and max_val > 0:
-                    ax.set_yscale('log')
-            except (TypeError, ValueError):
-                pass
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = output_dir / f'{exp_name}_latent_statistics.png'
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close()
-        print(f"  Saved latent statistics plot: {plot_path}")
-    
-    def _plot_kld_loss(df, output_dir, exp_name):
-        """Plot KLD (KL Divergence) loss from KLDLoss."""
-        sns.set_style("darkgrid")
-        # Check if KLD columns exist
-        has_train_kld = 'train_KLD' in df.columns
-        has_val_kld = 'val_KLD' in df.columns
-        
-        if not has_train_kld and not has_val_kld:
-            return  # No KLD loss to plot
-        
-        epochs = df['epoch'].values
-        
-        # Create figure
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle(f'KL Divergence Loss - {exp_name}', fontsize=16, fontweight='bold')
-        
-        # Plot 1: KLD Loss over time
-        ax = axes[0]
-        if has_train_kld:
-            ax.plot(epochs, df['train_KLD'], label='Train KLD', linewidth=2, marker='o', markersize=3, color='blue')
-        if has_val_kld:
-            ax.plot(epochs, df['val_KLD'], label='Val KLD', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('KLD Loss')
-        ax.set_title('KL Divergence Loss (should decrease or stabilize)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        if len(df) > 1 and has_train_kld:
-            try:
-                max_val = df['train_KLD'].max()
-                min_val = df['train_KLD'].min()
-                if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
-                    if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                        ax.set_yscale('log')
-            except (TypeError, ValueError):
-                pass
-        
-        # Plot 2: KLD Loss trend (smoothed)
-        ax = axes[1]
-        if has_train_kld:
-            # Compute moving average for smoother trend
-            window = min(5, len(df) // 4) if len(df) > 4 else 1
-            if window > 1:
-                train_smooth = df['train_KLD'].rolling(window=window, center=True).mean()
-                ax.plot(epochs, df['train_KLD'], label='Train KLD (raw)', linewidth=1, alpha=0.3, color='blue')
-                ax.plot(epochs, train_smooth, label=f'Train KLD (MA-{window})', linewidth=2, marker='o', markersize=3, color='blue')
-            else:
-                ax.plot(epochs, df['train_KLD'], label='Train KLD', linewidth=2, marker='o', markersize=3, color='blue')
-        if has_val_kld:
-            window = min(5, len(df) // 4) if len(df) > 4 else 1
-            if window > 1:
-                val_smooth = df['val_KLD'].rolling(window=window, center=True).mean()
-                ax.plot(epochs, df['val_KLD'], label='Val KLD (raw)', linewidth=1, alpha=0.3, color='red', linestyle='--')
-                ax.plot(epochs, val_smooth, label=f'Val KLD (MA-{window})', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
-            else:
-                ax.plot(epochs, df['val_KLD'], label='Val KLD', linewidth=2, marker='s', markersize=3, color='red', linestyle='--')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('KLD Loss')
-        ax.set_title('KLD Loss Trend (smoothed)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        if len(df) > 1 and has_train_kld:
-            try:
-                max_val = df['train_KLD'].max()
-                min_val = df['train_KLD'].min()
-                if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
-                    if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                        ax.set_yscale('log')
-            except (TypeError, ValueError):
-                pass
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = output_dir / f'{exp_name}_kld_loss.png'
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close()
-        print(f"  Saved KLD loss plot: {plot_path}")
-    
-    def _plot_loss_curves(df, output_dir, exp_name):
-        """Plot main training and validation loss curves."""
-        sns.set_style("darkgrid")
-        # Check if loss columns exist
-        has_train_loss = 'train_loss' in df.columns
-        has_val_loss = 'val_loss' in df.columns
-        
-        if not has_train_loss:
-            return  # No loss data to plot
-        
-        epochs = df['epoch'].values
-        
-        # Create figure
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        fig.suptitle(f'Training and Validation Loss - {exp_name}', fontsize=16, fontweight='bold')
-        
-        # Plot training loss
-        if has_train_loss:
-            ax.plot(epochs, df['train_loss'], label='Train Loss', linewidth=2, marker='o', markersize=3, color='blue', alpha=0.8)
-        
-        # Plot validation loss if available
-        if has_val_loss:
-            ax.plot(epochs, df['val_loss'], label='Val Loss', linewidth=2, marker='s', markersize=3, color='red', linestyle='--', alpha=0.8)
-        
-        ax.set_xlabel('Epoch', fontsize=12)
-        ax.set_ylabel('Loss', fontsize=12)
-        ax.legend(fontsize=11)
-        ax.grid(True, alpha=0.3)
-        
-        # Use log scale if loss values span multiple orders of magnitude
-        if has_train_loss and len(df) > 1:
-            try:
-                max_loss = df['train_loss'].max()
-                min_loss = df['train_loss'].min()
-                if isinstance(max_loss, (int, float)) and isinstance(min_loss, (int, float)):
-                    if max_loss > 0 and min_loss > 0 and max_loss / min_loss > 10:
-                        ax.set_yscale('log')
-            except (TypeError, ValueError):
-                pass  # Skip log scale if values are not numeric
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = output_dir / f'{exp_name}_loss_curves.png'
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-        plt.close()
-        print(f"  Saved loss curves plot: {plot_path}")
-    
-    def _plot_all_loss_components(df, output_dir, exp_name):
-        """Plot all loss components from CSV as individual plots (train_key, val_key pairs)."""
-        sns.set_style("darkgrid")
-        
-        # Create plots directory
-        plots_dir = output_dir / "plots"
-        plots_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Find all loss component columns from CSV
-        # Pattern: train_* and val_* pairs (excluding total 'loss' column)
-        loss_components = set()
-        
-        for col in df.columns:
-            if col.startswith('train_'):
-                loss_name = col.replace('train_', '', 1)
-                # Skip total loss column
-                if loss_name == 'loss':
-                    continue
-                # Skip epoch and other non-loss columns
-                if loss_name == 'epoch':
-                    continue
-                loss_components.add(loss_name)
-            elif col.startswith('val_'):
-                loss_name = col.replace('val_', '', 1)
-                # Skip total loss column
-                if loss_name == 'loss':
-                    continue
-                # Skip epoch and other non-loss columns
-                if loss_name == 'epoch':
-                    continue
-                loss_components.add(loss_name)
-        
-        if len(loss_components) == 0:
-            return  # No loss components to plot
-        
-        epochs = df['epoch'].values
-        plotted_count = 0
-        
-        # Plot each component individually
-        for loss_name in sorted(loss_components):
-            train_col = f'train_{loss_name}'
-            val_col = f'val_{loss_name}'
-            
-            has_train = train_col in df.columns
-            has_val = val_col in df.columns
-            
-            if not has_train and not has_val:
-                continue
-            
-            # Create individual figure for this component
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            fig.suptitle(f'{loss_name} - {exp_name}', fontsize=16, fontweight='bold')
-            
-            if has_train:
-                # Check if column contains numeric values (not strings)
-                try:
-                    train_values = df[train_col]
-                    # Filter out non-numeric values
-                    numeric_mask = pd.to_numeric(train_values, errors='coerce').notna()
-                    if numeric_mask.any():
-                        ax.plot(epochs[numeric_mask], train_values[numeric_mask], 
-                               label='Train', linewidth=2, marker='o', markersize=4, 
-                               color='blue', alpha=0.8)
-                except Exception:
-                    pass  # Skip if can't plot
-            
-            if has_val:
-                try:
-                    val_values = df[val_col]
-                    # Filter out non-numeric values
-                    numeric_mask = pd.to_numeric(val_values, errors='coerce').notna()
-                    if numeric_mask.any():
-                        ax.plot(epochs[numeric_mask], val_values[numeric_mask], 
-                               label='Val', linewidth=2, marker='s', markersize=4, 
-                               color='red', alpha=0.8, linestyle='--')
-                except Exception:
-                    pass  # Skip if can't plot
-            
-            ax.set_xlabel('Epoch', fontsize=12)
-            ax.set_ylabel('Loss', fontsize=12)
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-            
-            # Use log scale if values span multiple orders of magnitude
-            if has_train and len(df) > 1:
-                try:
-                    train_values = df[train_col]
-                    numeric_values = pd.to_numeric(train_values, errors='coerce').dropna()
-                    if len(numeric_values) > 0:
-                        max_val = numeric_values.max()
-                        min_val = numeric_values.min()
-                        if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
-                            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                                ax.set_yscale('log')
-                except (TypeError, ValueError):
-                    pass  # Skip log scale if values are not numeric
-            
-            plt.tight_layout()
-            
-            # Save individual plot
-            # Sanitize loss name for filename (replace special chars)
-            safe_name = loss_name.replace('/', '_').replace('\\', '_').replace(' ', '_')
-            plot_path = plots_dir / f'{exp_name}_{safe_name}.png'
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-            plt.close()
-            plotted_count += 1
-        
-        if plotted_count > 0:
-            print(f"  Saved {plotted_count} loss component plots to {plots_dir}")
-    
-    def _plot_mse_losses(df, output_dir, exp_name):
-        """Plot MSE losses (including ColorWeightedMSE and per-class MSE if available) as individual plots."""
-        sns.set_style("darkgrid")
-        
-        # Create plots directory
-        plots_dir = output_dir / "plots"
-        plots_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Find all MSE-related columns
-        mse_columns = [col for col in df.columns if 'MSE' in col and ('train_' in col or 'val_' in col)]
-        
-        if len(mse_columns) == 0:
-            return  # No MSE losses to plot
-        
-        epochs = df['epoch'].values
-        
-        # Separate into main MSE and per-class MSE
-        main_mse = [col for col in mse_columns if col.replace('train_', '').replace('val_', '').count('_') <= 1]
-        per_class_mse = [col for col in mse_columns if col not in main_mse]
-        
-        # Plot main MSE losses individually
-        for col in main_mse:
-            is_train = col.startswith('train_')
-            loss_name = col.replace('train_', '').replace('val_', '')
-            train_col = f'train_{loss_name}'
-            val_col = f'val_{loss_name}'
-            
-            has_train = train_col in df.columns
-            has_val = val_col in df.columns
-            
-            if not has_train and not has_val:
-                continue
-            
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            fig.suptitle(f'{loss_name} - {exp_name}', fontsize=16, fontweight='bold')
-            
-            if has_train:
-                ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=4, 
-                       color='blue', alpha=0.8)
-            
-            if has_val:
-                ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=4, 
-                       color='red', alpha=0.8, linestyle='--')
-            
-            ax.set_xlabel('Epoch', fontsize=12)
-            ax.set_ylabel('MSE Loss', fontsize=12)
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-            
-            # Use log scale if values span multiple orders of magnitude
-            if has_train and len(df) > 1:
-                try:
-                    max_val = df[train_col].max()
-                    min_val = df[train_col].min()
-                    # Check if values are numeric (not strings)
-                    if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
-                        if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                            ax.set_yscale('log')
-                except (TypeError, ValueError):
-                    pass  # Skip log scale if values are not numeric
-            
-            plt.tight_layout()
-            
-            # Sanitize loss name for filename
-            safe_name = loss_name.replace('/', '_').replace('\\', '_').replace(' ', '_')
-            plot_path = plots_dir / f'{exp_name}_{safe_name}.png'
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-            plt.close()
-        
-        if main_mse:
-            # Count how many main MSE plots were actually saved
-            saved_count = 0
-            for col in main_mse:
-                loss_name = col.replace('train_', '').replace('val_', '')
-                if f'train_{loss_name}' in df.columns or f'val_{loss_name}' in df.columns:
-                    saved_count += 1
-            if saved_count > 0:
-                print(f"  Saved {saved_count} main MSE loss plots to {plots_dir}")
-        
-        # Plot per-class MSE individually if available (e.g., from ClassWeightedMSELoss)
-        if per_class_mse:
-            # Group by class
-            classes = set()
-            for col in per_class_mse:
-                parts = col.replace('train_', '').replace('val_', '').split('_')
-                if len(parts) >= 3:  # MSE_rgb_classname
-                    class_name = '_'.join(parts[2:])
-                    classes.add(class_name)
-            
-            for class_name in sorted(classes):
-                train_col = f'train_MSE_rgb_{class_name}'
-                val_col = f'val_MSE_rgb_{class_name}'
-                
-                has_train = train_col in df.columns
-                has_val = val_col in df.columns
-                
-                if not has_train and not has_val:
-                    continue
-                
-                fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-                fig.suptitle(f'MSE RGB {class_name} - {exp_name}', fontsize=16, fontweight='bold')
-                
-                if has_train:
-                    ax.plot(epochs, df[train_col], label='Train', linewidth=2, marker='o', markersize=4, 
-                           color='blue', alpha=0.8)
-                
-                if has_val:
-                    ax.plot(epochs, df[val_col], label='Val', linewidth=2, marker='s', markersize=4, 
-                           color='red', alpha=0.8, linestyle='--')
-                
-                ax.set_xlabel('Epoch', fontsize=12)
-                ax.set_ylabel('MSE Loss', fontsize=12)
-                ax.legend(fontsize=11)
-                ax.grid(True, alpha=0.3)
-                
-                # Use log scale if values span multiple orders of magnitude
-                if has_train and len(df) > 1:
-                    try:
-                        max_val = df[train_col].max()
-                        min_val = df[train_col].min()
-                        if isinstance(max_val, (int, float)) and isinstance(min_val, (int, float)):
-                            if max_val > 0 and min_val > 0 and max_val / min_val > 10:
-                                ax.set_yscale('log')
-                    except (TypeError, ValueError):
-                        pass  # Skip log scale if values are not numeric
-                
-                plt.tight_layout()
-                
-                # Sanitize class name for filename
-                safe_class = class_name.replace('/', '_').replace('\\', '_').replace(' ', '_')
-                plot_path = plots_dir / f'{exp_name}_MSE_rgb_{safe_class}.png'
-                plt.savefig(plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-                plt.close()
-            
-            if classes:
-                print(f"  Saved {len(classes)} per-class MSE loss plots to {plots_dir}")
+    from training.plotting_utils import plot_loss_curves
     
     # Check if model is VAE (variational encoder) to enable latent statistics collection
     is_vae = hasattr(model.encoder, 'variational') and model.encoder.variational
@@ -1126,12 +573,6 @@ def main():
         avg_loss, avg_logs = train_epoch(model, train_loader, loss_fn, optimizer, device, epoch + 1, use_amp=use_amp, collect_latents=is_vae)
         
         print(f"Epoch {epoch + 1}/{end_epoch} - Train Loss: {avg_loss:.6f}")
-        for k, v in avg_logs.items():
-            if isinstance(v, str):
-                # Handle string values (e.g., JSON-encoded per-channel stats)
-                print(f"  Train {k}: {v}")
-            else:
-                print(f"  Train {k}: {v:.6f}")
         
         # Record training history
         epoch_log = {
@@ -1144,12 +585,6 @@ def main():
         if val_loader:
             val_loss, val_logs = eval_epoch(model, val_loader, loss_fn, device, use_amp=use_amp, collect_latents=is_vae)
             print(f"  Val Loss: {val_loss:.6f}")
-            for k, v in val_logs.items():
-                if isinstance(v, str):
-                    # Handle string values (e.g., JSON-encoded per-channel stats)
-                    print(f"  Val {k}: {v}")
-                else:
-                    print(f"  Val {k}: {v:.6f}")
             epoch_log["val_loss"] = float(val_loss)
             epoch_log.update({f"val_{k}": (v if isinstance(v, str) else float(v)) for k, v in val_logs.items()})
             
@@ -1158,12 +593,10 @@ def main():
             if improvement > early_stopping_min_delta:
                 best_val_loss = val_loss
                 epochs_without_improvement = 0  # Reset counter on improvement
-                print(f"  New best validation loss: {best_val_loss:.6f} (improvement: {improvement:.6f})")
                 
                 # Save best checkpoint immediately (always updated when best is found)
                 best_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
                 model.save_checkpoint(best_path, include_config=True)
-                print(f"  Saved best checkpoint (val_loss: {best_val_loss:.6f})")
                 
                 # Save VAE metadata with latent statistics if available
                 if is_vae and val_logs:
@@ -1173,14 +606,10 @@ def main():
                         save_vae_metadata(output_dir, exp_name, latent_stats)
             else:
                 epochs_without_improvement += 1
-                if early_stopping_patience:
-                    print(f"  No improvement for {epochs_without_improvement}/{early_stopping_patience} epochs")
             
             # Early stopping check
             if early_stopping_patience and epochs_without_improvement >= early_stopping_patience:
-                print(f"\nEarly stopping triggered!")
-                print(f"  No improvement for {epochs_without_improvement} epochs")
-                print(f"  Best validation loss: {best_val_loss:.6f}")
+                print(f"Early stopping triggered after {epoch + 1} epochs")
                 
                 # Restore best checkpoint if requested
                 if early_stopping_restore_best:
@@ -1189,10 +618,8 @@ def main():
                         # Fallback to root for backward compatibility
                         best_path = output_dir / f"{exp_name}_checkpoint_best.pt"
                     if best_path.exists():
-                        print(f"  Restoring best checkpoint from {best_path}")
                         model = Autoencoder.load_checkpoint(best_path, map_location=device_obj)
                         model = model.to(device_obj)
-                        print(f"  Model restored to best checkpoint")
                 
                 # Break out of training loop
                 break
@@ -1210,20 +637,8 @@ def main():
         # Create DataFrame for plotting
         df = pd.DataFrame(training_history)
         
-        # Plot main loss curves (always plot if training loss exists)
-        _plot_loss_curves(df, output_dir, exp_name)
-        
-        # Plot all loss components (MSE, CLIP, etc.)
-        _plot_all_loss_components(df, output_dir, exp_name)
-        
-        # Plot MSE losses (including ColorWeightedMSE and per-class if available)
-        _plot_mse_losses(df, output_dir, exp_name)
-        
-        # Plot latent statistics if available (from LatentStandardizationLoss)
-        _plot_latent_statistics(df, output_dir, exp_name)
-        
-        # Plot KLD loss if available (from KLDLoss)
-        _plot_kld_loss(df, output_dir, exp_name)
+        # Plot loss curves (simple train/val loss only)
+        plot_loss_curves(df, output_dir, exp_name=exp_name)
         
         # Save checkpoint at specified interval
         should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
@@ -1248,9 +663,7 @@ def main():
                     old_checkpoint.unlink()
             checkpoint_files = checkpoint_files[-keep_checkpoints:]
     
-    print(f"\nTraining complete!")
-    print(f"  Checkpoints (with config): {checkpoint_dir}/{exp_name}_checkpoint_*.pt")
-    print(f"  Metrics CSV: {metrics_csv_path}")
+    print(f"Training complete. Best validation loss: {best_val_loss:.6f}")
     
     # Save final VAE metadata if not already saved (use final validation stats)
     if is_vae and val_loader:
