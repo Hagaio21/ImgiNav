@@ -42,73 +42,66 @@ from data_preparation.pipeline_v2.renderer import render_layout_rgb, render_layo
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
 
-def load_scene_from_obj(obj_path: Path) -> trimesh.Scene:
+def load_scene_from_glb(glb_path: Path) -> trimesh.Scene:
     """
-    Load scene from OBJ file with materials/textures.
+    Load scene from GLB file. Convert to PLY temporarily for rendering (like test.py test 3).
+    The PLY conversion ensures proper format, then we delete it.
     """
-    print(f"Loading scene from OBJ: {obj_path}")
-    geometry_dir = obj_path.parent
-    materials_dir = geometry_dir / "materials"
+    print(f"Loading scene from GLB: {glb_path}")
     
-    # Read OBJ to check MTL reference
-    with open(obj_path, 'r') as f:
-        obj_content = f.read()
-    
-    # Fix MTL path if needed - OBJ has "mtllib materials/xxx.mtl", need to make resolver work
-    # Create a custom resolver that handles "materials/" prefix
-    class MaterialsResolver:
-        def __init__(self, geometry_dir, materials_dir):
-            self.geometry_dir = Path(geometry_dir)
-            self.materials_dir = Path(materials_dir)
-            # Also create standard resolver for fallback
-            self.std_resolver = trimesh.visual.resolvers.FilePathResolver(geometry_dir)
-        
-        def get(self, name):
-            # Remove "materials/" prefix if present
-            clean_name = name.replace('materials/', '')
-            
-            # Try materials directory first
-            mtl_path = self.materials_dir / clean_name
-            if mtl_path.exists():
-                return str(mtl_path)
-            
-            # Try standard resolver
-            result = self.std_resolver.get(name)
-            if result:
-                return result
-            
-            # Try standard resolver with clean name
-            result = self.std_resolver.get(clean_name)
-            if result:
-                return result
-            
-            return None
-    
-    resolver = MaterialsResolver(geometry_dir, materials_dir)
-    
-    # Load with resolver
-    scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, resolver=resolver)
+    # Load GLB with trimesh
+    scene = trimesh.load(str(glb_path), process=False, maintain_order=True)
     
     if scene is None:
-        scene = trimesh.load(str(obj_path), file_type='obj', process=False, maintain_order=True, force='scene', resolver=resolver)
-    
-    if scene is None:
-        raise ValueError(f"OBJ file loaded as None: {obj_path}")
+        raise ValueError(f"GLB file loaded as None: {glb_path}")
     
     if not isinstance(scene, trimesh.Scene):
+        # Wrap single mesh in scene
         if isinstance(scene, trimesh.Trimesh):
             new_scene = trimesh.Scene()
             new_scene.add_geometry(scene)
             scene = new_scene
         else:
-            raise ValueError(f"OBJ file did not load as a scene or mesh: {type(scene)}")
+            raise ValueError(f"GLB file did not load as a scene or mesh: {type(scene)}")
     
-    return scene
+    # Convert to PLY temporarily (like test.py test 3) - merge scene into single mesh
+    import tempfile
+    ply_path = Path(tempfile.mktemp(suffix='.ply'))
+    
+    try:
+        # Merge scene into single mesh and export to PLY
+        if isinstance(scene, trimesh.Scene):
+            mesh = scene.dump(concatenate=True)
+        else:
+            mesh = scene
+        
+        mesh.export(str(ply_path))
+        
+        # Load PLY back - this ensures proper format for rendering
+        ply_mesh = trimesh.load(str(ply_path), process=False, maintain_order=True)
+        
+        if ply_mesh is None:
+            # If PLY load fails, use original GLB scene
+            return scene
+        
+        # Wrap PLY mesh in scene (single mesh, no transforms needed after merge)
+        if isinstance(ply_mesh, trimesh.Scene):
+            return ply_mesh
+        elif isinstance(ply_mesh, trimesh.Trimesh):
+            ply_scene = trimesh.Scene()
+            ply_scene.add_geometry(ply_mesh)
+            return ply_scene
+        else:
+            return scene
+    finally:
+        # Delete temporary PLY file
+        if ply_path.exists():
+            ply_path.unlink()
 
 
 def extract_rooms_from_obj_scene(trimesh_scene: trimesh.Scene, scene_metadata: Dict) -> Dict[str, trimesh.Scene]:
     """
-    Extract room scenes from OBJ using room bounds from metadata file.
+    Extract room scenes from scene using room bounds from metadata file.
     Matches meshes to rooms by checking if mesh center is within room bounds.
     """
     if scene_metadata is None or 'rooms' not in scene_metadata:
@@ -226,9 +219,9 @@ def main():
     geometry_dir = output_dir / "geometry"
     
     # Load OBJ file (textured version)
-    obj_path = geometry_dir / f"{scene_id}.obj"
-    if not obj_path.exists():
-        raise FileNotFoundError(f"OBJ file not found: {obj_path}. Run geometry export first.")
+    glb_path = geometry_dir / f"{scene_id}.glb"
+    if not glb_path.exists():
+        raise FileNotFoundError(f"GLB file not found: {glb_path}. Run geometry export first.")
     
     # Load metadata (required for room extraction)
     metadata_path = geometry_dir / f"{scene_id}_metadata.json"
@@ -242,7 +235,7 @@ def main():
     
     # Load scene from OBJ
     print(f"Loading scene from OBJ: {scene_id}")
-    trimesh_scene = load_scene_from_obj(obj_path)
+    trimesh_scene = load_scene_from_glb(glb_path)
     
     # Create output directories
     output_dir = Path(args.output_dir)

@@ -68,8 +68,8 @@ if [ ! -d "${GEOMETRY_DIR}" ]; then
   exit 1
 fi
 
-# Find all OBJ files (these are the scenes that have been exported)
-FIND_RESULT=$(find "${GEOMETRY_DIR}" -type f -name '*.obj' ! -name '*_seg.obj' 2>&1)
+# Find all GLB files (these are the scenes that have been exported)
+FIND_RESULT=$(find "${GEOMETRY_DIR}" -type f -name '*.glb' ! -name '*_seg.glb' 2>&1)
 FIND_EXIT=$?
 
 if [ ${FIND_EXIT} -ne 0 ]; then
@@ -78,8 +78,8 @@ if [ ${FIND_EXIT} -ne 0 ]; then
   exit 1
 fi
 
-# Extract scene IDs from OBJ filenames
-echo "${FIND_RESULT}" | sed 's|.*/||' | sed 's|\.obj$||' | sort > "${ALL_LIST}" || {
+# Extract scene IDs from GLB filenames
+echo "${FIND_RESULT}" | sed 's|.*/||' | sed 's|\.glb$||' | sort > "${ALL_LIST}" || {
   EXIT_CODE=$?
   if [ ${EXIT_CODE} -eq 141 ]; then
     echo "Note: Received SIGPIPE (exit 141) but scene list should be complete"
@@ -219,11 +219,11 @@ while IFS= read -r SCENE_ID; do
   echo "=========================================="
   
   # Check if geometry files exist
-  OBJ_PATH="${OUTPUT_DIR}/geometry/${SCENE_ID}.obj"
+  GLB_PATH="${OUTPUT_DIR}/geometry/${SCENE_ID}.glb"
   METADATA_PATH="${OUTPUT_DIR}/geometry/${SCENE_ID}_metadata.json"
   
-  if [ ! -f "${OBJ_PATH}" ]; then
-    echo "WARNING: OBJ file not found: ${OBJ_PATH}, skipping"
+  if [ ! -f "${GLB_PATH}" ]; then
+    echo "WARNING: GLB file not found: ${GLB_PATH}, skipping"
     ((FAIL_COUNT++)) || true
     continue
   fi

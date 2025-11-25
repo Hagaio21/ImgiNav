@@ -285,92 +285,28 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     
     print(f"  Scene has {len(scene_no_ceiling.geometry)} meshes with {total_vertices} total vertices")
     
-    # Save regular OBJ with textures (no ceilings) - OBJ preserves textures via MTL files
+    # Save regular GLB with textures (no ceilings)
     print("Saving scene geometry...")
-    materials_dir = geometry_dir / "materials"
-    materials_dir.mkdir(parents=True, exist_ok=True)
+    glb_path = geometry_dir / f"{scene_id}.glb"
     
-    # Export OBJ to materials/ folder first (so all materials are saved there)
-    temp_obj_path = materials_dir / f"{scene_id}.obj"
-    obj_path = geometry_dir / f"{scene_id}.obj"
-    
-    # Export as OBJ (trimesh will create MTL file and textures in materials/ folder)
     try:
-        scene_no_ceiling.export(temp_obj_path, file_type="obj")
-        print(f"  Exported scene geometry to: {temp_obj_path}")
-        
-        # Verify OBJ file was created and has content
-        if not temp_obj_path.exists():
-            raise ValueError(f"OBJ file was not created: {temp_obj_path}")
-        if temp_obj_path.stat().st_size == 0:
-            raise ValueError(f"OBJ file is empty: {temp_obj_path}")
-        
-        # Validate OBJ file has vertices
-        with open(temp_obj_path, 'r') as f:
-            obj_lines = f.readlines()
-        
-        has_vertices = any(line.strip().startswith('v ') for line in obj_lines)
-        has_faces = any(line.strip().startswith('f ') for line in obj_lines)
-        
-        if not has_vertices:
-            raise ValueError(f"OBJ file has no vertices: {temp_obj_path}")
-        if not has_faces:
-            raise ValueError(f"OBJ file has no faces: {temp_obj_path}")
-        
-        print(f"  OBJ file validated: {sum(1 for line in obj_lines if line.strip().startswith('v '))} vertices, "
-              f"{sum(1 for line in obj_lines if line.strip().startswith('f '))} faces")
-        
-        # Read OBJ content to find actual MTL filename
-        with open(temp_obj_path, 'r') as f:
-            obj_content = f.read()
-        
-        # Find the actual MTL filename that trimesh created
-        mtl_match = re.search(r'mtllib\s+([^\s\n]+)', obj_content)
-        if mtl_match:
-            actual_mtl_name = mtl_match.group(1)
-            print(f"  Found MTL reference: {actual_mtl_name}")
-        else:
-            # No MTL file referenced (scene has no materials)
-            actual_mtl_name = None
-            print(f"  No MTL file referenced (scene may have no materials)")
-        
-        # Move OBJ file to geometry/ folder, leaving all materials in materials/
-        shutil.move(str(temp_obj_path), str(obj_path))
-        print(f"  Moved OBJ to geometry folder: {obj_path}")
-        
-        # Update OBJ file to reference MTL in materials/ folder (if MTL exists)
-        if actual_mtl_name:
-            # Update mtllib reference to point to materials/ folder
-            obj_content = re.sub(
-                r'mtllib\s+[^\s\n]+',
-                f'mtllib materials/{actual_mtl_name}',
-                obj_content
-            )
-            
-            with open(obj_path, 'w') as f:
-                f.write(obj_content)
-            print(f"  Updated OBJ file to reference MTL in materials/ folder")
-        else:
-            # No MTL to reference, just write the content as-is
-            with open(obj_path, 'w') as f:
-                f.write(obj_content)
-            print(f"  OBJ file has no MTL reference (no materials)")
+        scene_no_ceiling.export(glb_path, file_type="glb")
+        print(f"  Saved scene geometry: {glb_path}")
     except Exception as e:
-        print(f"  WARNING: OBJ export failed: {e}")
+        print(f"  WARNING: GLB export failed: {e}")
         import traceback
         traceback.print_exc()
         raise
     
-    # Create and save segmented OBJ (no ceilings) - OBJ preserves vertex colors
-    print("  Creating segmented OBJ...")
+    # Create and save segmented GLB (no ceilings) - GLB preserves vertex colors
+    print("  Creating segmented GLB...")
     seg_scene = create_segmented_scene(trimesh_scene, taxonomy)
-    seg_obj_path = geometry_dir / f"{scene_id}_seg.obj"
+    seg_glb_path = geometry_dir / f"{scene_id}_seg.glb"
     try:
-        # Export segmented OBJ directly to geometry/ (no materials needed for vertex colors)
-        seg_scene.export(seg_obj_path, file_type="obj")
-        print(f"  Saved segmented geometry: {seg_obj_path}")
+        seg_scene.export(seg_glb_path, file_type="glb")
+        print(f"  Saved segmented geometry: {seg_glb_path}")
     except Exception as e:
-        print(f"  WARNING: Segmented OBJ export failed: {e}")
+        print(f"  WARNING: Segmented GLB export failed: {e}")
         import traceback
         traceback.print_exc()
         raise

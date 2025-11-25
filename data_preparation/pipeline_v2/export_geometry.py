@@ -38,8 +38,8 @@ def main():
     )
     
     print(f"\n✓ Successfully exported geometry for scene: {scene_metadata['scene_id']}")
-    print(f"  - Regular OBJ: {scene_metadata['scene_id']}.obj")
-    print(f"  - Segmented OBJ: {scene_metadata['scene_id']}_seg.obj")
+    print(f"  - Regular GLB: {scene_metadata['scene_id']}.glb")
+    print(f"  - Segmented GLB: {scene_metadata['scene_id']}_seg.glb")
     print(f"  - Metadata JSON: {scene_metadata['scene_id']}_metadata.json")
     print(f"  - Rooms: {scene_metadata['statistics']['room_count']}")
 
