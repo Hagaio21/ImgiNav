@@ -105,7 +105,7 @@ if [ ${WRITE_EXIT} -ne 0 ] && [ ${WRITE_EXIT} -ne 141 ]; then
   echo "Disk space:" >&2
   df -h "${TMPDIR_LOCAL}" >&2
   exit 1
-}
+fi
 
 # Verify file was written
 if [ ! -f "${ALL_LIST}" ]; then
