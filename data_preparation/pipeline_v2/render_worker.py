@@ -4,29 +4,9 @@ Render worker for 3D-FRONT scenes.
 Renders top-down layouts and perspective POVs using pyrender.
 """
 
-# Force EGL platform for headless rendering BEFORE any OpenGL imports
+# Use system xvfb-run for virtual display (set in HPC scripts)
+# pyrender will use pyglet with the virtual display
 import os
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
-
-# Workaround for PyOpenGL bytes/string issue with EGL
-# This must be done before importing pyrender/OpenGL
-try:
-    from OpenGL import extensions
-    # Patch the ExtensionQuerier to handle bytes/string mismatch
-    original_call = extensions.ExtensionQuerier.__call__
-    def patched_call(self, specifier):
-        # Ensure both are the same type for startswith
-        if isinstance(specifier, bytes) and isinstance(self.prefix, str):
-            specifier_str = specifier.decode('utf-8', errors='ignore')
-            return specifier_str.startswith(self.prefix)
-        elif isinstance(specifier, str) and isinstance(self.prefix, bytes):
-            prefix_str = self.prefix.decode('utf-8', errors='ignore')
-            return specifier.startswith(prefix_str)
-        else:
-            return original_call(self, specifier)
-    extensions.ExtensionQuerier.__call__ = patched_call
-except (ImportError, AttributeError):
-    pass
 
 import argparse
 import random
