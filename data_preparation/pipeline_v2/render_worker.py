@@ -905,7 +905,6 @@ def main():
     print(f"  POVs: {pov_count} RGB and segmentation images")
     
     # Stop Xvfb if we started it
-    global VFB
     if VFB is not None:
         try:
             VFB.stop()
@@ -919,8 +918,8 @@ if __name__ == "__main__":
         main()
     finally:
         # Ensure Xvfb is stopped even on error
-        global VFB
-        if VFB is not None:
+        # VFB is a module-level variable, accessible here
+        if 'VFB' in globals() and VFB is not None:
             try:
                 VFB.stop()
             except Exception:
