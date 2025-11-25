@@ -89,14 +89,17 @@ if [ ${JSON_COUNT} -eq 0 ]; then
 fi
 
 echo "Sample of found files (first 3):"
-echo "${FIND_RESULT}" | head -3
+echo "${FIND_RESULT}" | head -3 || true  # Ignore SIGPIPE from head
 
 # Write scene list - handle pipe errors gracefully
 echo "Writing scene list to ${ALL_LIST}..."
-{
-  echo "${FIND_RESULT}" | grep -v '^$' | sort | head -n ${MAX_SCENES}
-} > "${ALL_LIST}" 2>&1 || {
-  WRITE_EXIT=$?
+# Use set +e temporarily to avoid SIGPIPE from head
+set +e
+echo "${FIND_RESULT}" | grep -v '^$' | sort | head -n ${MAX_SCENES} > "${ALL_LIST}" 2>&1
+WRITE_EXIT=$?
+set -e
+
+if [ ${WRITE_EXIT} -ne 0 ] && [ ${WRITE_EXIT} -ne 141 ]; then
   echo "ERROR: Failed to write scene list to ${ALL_LIST} (exit code: ${WRITE_EXIT})" >&2
   echo "Temp directory: ${TMPDIR_LOCAL}" >&2
   echo "Temp directory exists: $([ -d "${TMPDIR_LOCAL}" ] && echo 'yes' || echo 'no')" >&2
