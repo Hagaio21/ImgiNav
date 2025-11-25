@@ -1,16 +1,9 @@
 #!/bin/bash
 # Test script to run the full pipeline v2 on a single scene
-# Usage: ./test_pipeline.sh <scene_id>
+# Discovers scenes and tests on the first one found
+# Usage: ./test_pipeline.sh [optional_scene_id]
 
 set -euo pipefail
-
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 <scene_id>"
-    echo "Example: $0 00004f89-9aa5-43c2-ae3c-129586be8aaa"
-    exit 1
-fi
-
-SCENE_ID=$1
 
 # Configuration
 SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
@@ -19,17 +12,48 @@ TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/config/taxonomy.json"
 OUTPUT_DIR="/work3/s233249/ImgiNav/datasets/dataset_v2_test"
 PROJECT_ROOT="/work3/s233249/ImgiNav"
 
-# Find scene JSON file
-SCENE_JSON=$(find "${SCENES_ROOT}" -type f -name "${SCENE_ID}.json" | head -1)
+echo "=========================================="
+echo "Pipeline v2 Test - Scene Discovery"
+echo "=========================================="
+echo "Scenes root: ${SCENES_ROOT}"
+echo "Output directory: ${OUTPUT_DIR}"
+echo ""
 
-if [ -z "${SCENE_JSON}" ]; then
-    echo "ERROR: Scene JSON file not found for ${SCENE_ID}"
-    echo "Searched in: ${SCENES_ROOT}"
-    exit 1
+# Discover scenes
+if [ $# -ge 1 ]; then
+    # User provided scene ID
+    SCENE_ID=$1
+    echo "Using provided scene ID: ${SCENE_ID}"
+    SCENE_JSON=$(find "${SCENES_ROOT}" -type f -name "${SCENE_ID}.json" | head -1)
+    
+    if [ -z "${SCENE_JSON}" ]; then
+        echo "ERROR: Scene JSON file not found for ${SCENE_ID}"
+        echo "Searched in: ${SCENES_ROOT}"
+        exit 1
+    fi
+else
+    # Discover scenes automatically
+    echo "Discovering scenes in ${SCENES_ROOT}..."
+    if [ ! -d "${SCENES_ROOT}" ]; then
+        echo "ERROR: SCENES_ROOT directory does not exist: ${SCENES_ROOT}" >&2
+        exit 1
+    fi
+    
+    # Find all JSON files
+    SCENE_FILES=$(find "${SCENES_ROOT}" -type f -name '*.json' 2>/dev/null | sort | head -1)
+    
+    if [ -z "${SCENE_FILES}" ]; then
+        echo "ERROR: No scene JSON files found in ${SCENES_ROOT}" >&2
+        exit 1
+    fi
+    
+    SCENE_JSON="${SCENE_FILES}"
+    SCENE_ID=$(basename "${SCENE_JSON}" .json)
+    echo "Found scene: ${SCENE_ID}"
 fi
 
-echo "Found scene JSON: ${SCENE_JSON}"
-echo "Output directory: ${OUTPUT_DIR}"
+echo "Scene JSON: ${SCENE_JSON}"
+echo "Scene ID: ${SCENE_ID}"
 echo ""
 
 # Change to project directory
