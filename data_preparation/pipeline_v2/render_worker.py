@@ -46,37 +46,49 @@ def trimesh_to_pyrender_scene(trimesh_scene: trimesh.Scene,
     """
     pyrender_scene = pyrender.Scene()
     
+    # Iterate through graph nodes - each node has (transform, geometry_name)
     for node_name in trimesh_scene.graph.nodes_geometry:
-        geometry = trimesh_scene.geometry[node_name]
-        
-        # Check if ceiling should be hidden
-        if hide_ceilings:
-            metadata = getattr(geometry, 'metadata', {})
-            if metadata.get('is_ceiling', False):
-                continue
-        
-        # Convert trimesh to pyrender mesh
-        if isinstance(geometry, trimesh.Trimesh):
-            # Get vertex colors if available
-            vertex_colors = None
-            if hasattr(geometry.visual, 'vertex_colors'):
-                vc = geometry.visual.vertex_colors
-                if vc is not None and len(vc) > 0:
-                    # Convert to uint8 if needed
-                    if vc.dtype != np.uint8:
-                        vc = np.clip(vc, 0, 255).astype(np.uint8)
-                    vertex_colors = vc[:, :3]  # RGB only
+        try:
+            # Get transform and geometry name from graph node
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
             
-            # Create pyrender mesh
-            pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, 
-                                                       smooth=False,
-                                                       vertex_colors=vertex_colors)
+            # Access geometry using the geometry_name from the graph
+            if geometry_name not in trimesh_scene.geometry:
+                # Try using node_name as fallback
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
             
-            # Get transform from scene graph
-            transform = trimesh_scene.graph.get(node_name)[0]
+            # Check if ceiling should be hidden
+            if hide_ceilings:
+                metadata = getattr(geometry, 'metadata', {})
+                if metadata.get('is_ceiling', False):
+                    continue
             
-            # Add to pyrender scene
-            pyrender_scene.add(pyrender_mesh, pose=transform, name=node_name)
+            # Convert trimesh to pyrender mesh
+            if isinstance(geometry, trimesh.Trimesh):
+                # Get vertex colors if available
+                vertex_colors = None
+                if hasattr(geometry, 'visual') and hasattr(geometry.visual, 'vertex_colors'):
+                    vc = geometry.visual.vertex_colors
+                    if vc is not None and len(vc) > 0:
+                        # Convert to uint8 if needed
+                        if vc.dtype != np.uint8:
+                            vc = np.clip(vc, 0, 255).astype(np.uint8)
+                        vertex_colors = vc[:, :3]  # RGB only
+                
+                # Create pyrender mesh
+                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, 
+                                                           smooth=False,
+                                                           vertex_colors=vertex_colors)
+                
+                # Add to pyrender scene
+                pyrender_scene.add(pyrender_mesh, pose=transform, name=node_name)
+        except (KeyError, ValueError, IndexError) as e:
+            # Skip nodes that can't be accessed
+            continue
     
     return pyrender_scene
 
