@@ -8,7 +8,7 @@
 #BSUB -q hpc
 
 set -euo pipefail
-
+export MKL_INTERFACE_LAYER=LP64
 # Pipeline v2: Test rendering for 10 scenes
 # Job array with 2 jobs for testing
 

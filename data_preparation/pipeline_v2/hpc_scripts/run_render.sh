@@ -8,7 +8,7 @@
 #BSUB -q hpc
 
 set -euo pipefail
-
+export MKL_INTERFACE_LAYER=LP64
 # Pipeline v2: Render 3D-FRONT scenes to layouts and POVs
 # Job array with maximum 20 jobs
 
