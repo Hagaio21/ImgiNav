@@ -51,7 +51,7 @@ except:
         -R "rusage[mem=8000]" \
         -gpu "num=1" \
         -W 24:00 \
-        -q gpuv100 \
+        -q gpul40s \
         bash "${TRAIN_SCRIPT}" "${config}"
     
     sleep 1
