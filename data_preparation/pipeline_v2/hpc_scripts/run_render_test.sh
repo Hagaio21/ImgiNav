@@ -268,7 +268,7 @@ while IFS= read -r JSON_PATH; do
     --future_root "${MODEL_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
-    --num_povs 6 \
+    --skip_povs \
     --seed 42 \
     --hpc || {
     echo "ERROR: Failed to process scene ${SCENE_ID}" >&2

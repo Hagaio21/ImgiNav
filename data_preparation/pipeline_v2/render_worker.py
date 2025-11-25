@@ -806,6 +806,8 @@ def main():
     parser.add_argument("--output_dir", required=True, help="Output dataset root directory")
     parser.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
     parser.add_argument("--num_povs", type=int, default=6, help="Number of POVs to render")
+    parser.add_argument("--skip_povs", action="store_true", default=False,
+                        help="Skip POV rendering, only render layouts")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--hpc", action="store_true", default=False,
                         help="Run inside Xvfb for headless HPC rendering (like old pipeline)")
@@ -853,12 +855,15 @@ def main():
     output_dir = Path(args.output_dir)
     layouts_rgb_dir = output_dir / "layouts" / "rgb"
     layouts_seg_dir = output_dir / "layouts" / "seg"
-    povs_rgb_dir = output_dir / "povs" / "rgb"
-    povs_seg_dir = output_dir / "povs" / "seg"
     graphs_dir = output_dir / "graphs"
-    geometry_dir = output_dir / "geometry"
     
-    for d in [layouts_rgb_dir, layouts_seg_dir, povs_rgb_dir, povs_seg_dir, graphs_dir, geometry_dir]:
+    dirs_to_create = [layouts_rgb_dir, layouts_seg_dir, graphs_dir]
+    if not args.skip_povs:
+        povs_rgb_dir = output_dir / "povs" / "rgb"
+        povs_seg_dir = output_dir / "povs" / "seg"
+        dirs_to_create.extend([povs_rgb_dir, povs_seg_dir])
+    
+    for d in dirs_to_create:
         d.mkdir(parents=True, exist_ok=True)
     
     # Extract rooms from scene
@@ -932,99 +937,91 @@ def main():
             traceback.print_exc()
             continue
     
-    # POV Pass: Sample camera positions
-    print("Sampling camera positions...")
-    floor_bboxes = find_floor_meshes(trimesh_scene, taxonomy)
-    
-    # Get furniture bboxes for collision checking
-    furniture_bboxes = []
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
-                    continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
-            
-            metadata = getattr(geometry, 'metadata', {})
-            if not metadata.get('is_ceiling', False) and metadata.get('label', '') not in ['floor', 'wall']:
-                if isinstance(geometry, trimesh.Trimesh):
-                    vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
-                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                    min_bounds = vertices_world.min(axis=0)
-                    max_bounds = vertices_world.max(axis=0)
-                    furniture_bboxes.append((min_bounds, max_bounds))
-        except (KeyError, ValueError, IndexError):
-            continue
-    
-    # Render POVs from corners
-    print("Sampling camera positions from room corners...")
-    camera_positions = sample_camera_positions_from_corners(
-        trimesh_scene, floor_bboxes, furniture_bboxes, taxonomy,
-        num_povs=args.num_povs, eye_height=1.6
-    )
-    
-    if len(camera_positions) < args.num_povs:
-        print(f"Warning: Only found {len(camera_positions)} valid corner positions (requested {args.num_povs})")
-    
-    # Calculate room center for look-at target
-    if floor_bboxes:
-        all_min = np.array([bbox[0] for bbox in floor_bboxes]).min(axis=0)
-        all_max = np.array([bbox[1] for bbox in floor_bboxes]).max(axis=0)
-        room_center = (all_min + all_max) / 2
-        room_center[1] = 1.6  # Eye height
-    else:
-        room_center = None
-    
+    # POV Pass: Skip if requested
     pov_count = 0
-    for i, camera_pos in enumerate(camera_positions[:args.num_povs]):
+    if not args.skip_povs:
+        print("Sampling camera positions...")
+        floor_bboxes = find_floor_meshes(trimesh_scene, taxonomy)
         
-        # Render RGB (looking toward room center)
-        try:
-            pov_rgb = render_pov(trimesh_scene, camera_pos, hide_ceilings=False, 
-                               camera_target=room_center, width=256, height=256, fov=70.0)
-            pov_rgb_path = povs_rgb_dir / f"{scene_id}_v{pov_count+1:02d}.png"
-            Image.fromarray(pov_rgb).save(pov_rgb_path)
-            if not pov_rgb_path.exists():
-                raise FileNotFoundError(f"POV RGB file was not created: {pov_rgb_path}")
-        except Exception as e:
-            print(f"ERROR: Failed to render POV RGB: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+        # Get furniture bboxes for collision checking
+        furniture_bboxes = []
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                metadata = getattr(geometry, 'metadata', {})
+                if not metadata.get('is_ceiling', False) and metadata.get('label', '') not in ['floor', 'wall']:
+                    if isinstance(geometry, trimesh.Trimesh):
+                        vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                        vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                        min_bounds = vertices_world.min(axis=0)
+                        max_bounds = vertices_world.max(axis=0)
+                        furniture_bboxes.append((min_bounds, max_bounds))
+            except (KeyError, ValueError, IndexError):
+                continue
         
-        # Render segmentation (looking toward room center)
-        try:
-            pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, hide_ceilings=False,
-                                    camera_target=room_center, width=256, height=256, fov=70.0)
-            pov_seg_path = povs_seg_dir / f"{scene_id}_v{pov_count+1:02d}.png"
-            Image.fromarray(pov_seg).save(pov_seg_path)
-            if not pov_seg_path.exists():
-                raise FileNotFoundError(f"POV segmentation file was not created: {pov_seg_path}")
-        except Exception as e:
-            print(f"ERROR: Failed to render POV segmentation: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+        # Render POVs from corners
+        print("Sampling camera positions from room corners...")
+        camera_positions = sample_camera_positions_from_corners(
+            trimesh_scene, floor_bboxes, furniture_bboxes, taxonomy,
+            num_povs=args.num_povs, eye_height=1.6
+        )
         
-        pov_count += 1
-        print(f"  Rendered POV {pov_count}/{args.num_povs} from corner")
+        if len(camera_positions) < args.num_povs:
+            print(f"Warning: Only found {len(camera_positions)} valid corner positions (requested {args.num_povs})")
+        
+        # Calculate room center for look-at target
+        if floor_bboxes:
+            all_min = np.array([bbox[0] for bbox in floor_bboxes]).min(axis=0)
+            all_max = np.array([bbox[1] for bbox in floor_bboxes]).max(axis=0)
+            room_center = (all_min + all_max) / 2
+            room_center[1] = 1.6  # Eye height
+        else:
+            room_center = None
+        
+        for i, camera_pos in enumerate(camera_positions[:args.num_povs]):
+            
+            # Render RGB (looking toward room center)
+            try:
+                pov_rgb = render_pov(trimesh_scene, camera_pos, hide_ceilings=False, 
+                                   camera_target=room_center, width=256, height=256, fov=70.0)
+                pov_rgb_path = povs_rgb_dir / f"{scene_id}_v{pov_count+1:02d}.png"
+                Image.fromarray(pov_rgb).save(pov_rgb_path)
+                if not pov_rgb_path.exists():
+                    raise FileNotFoundError(f"POV RGB file was not created: {pov_rgb_path}")
+            except Exception as e:
+                print(f"ERROR: Failed to render POV RGB: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+            
+            # Render segmentation (looking toward room center)
+            try:
+                pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, hide_ceilings=False,
+                                        camera_target=room_center, width=256, height=256, fov=70.0)
+                pov_seg_path = povs_seg_dir / f"{scene_id}_v{pov_count+1:02d}.png"
+                Image.fromarray(pov_seg).save(pov_seg_path)
+                if not pov_seg_path.exists():
+                    raise FileNotFoundError(f"POV segmentation file was not created: {pov_seg_path}")
+            except Exception as e:
+                print(f"ERROR: Failed to render POV segmentation: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+            
+            pov_count += 1
+            print(f"  Rendered POV {pov_count}/{args.num_povs} from corner")
+    else:
+        print("Skipping POV rendering (--skip_povs flag set)")
     
-    # Save scene geometry as GLB
-    print("Saving scene geometry...")
-    try:
-        glb_path = geometry_dir / f"{scene_id}.glb"
-        trimesh_scene.export(glb_path, file_type="glb")
-        print(f"  Saved scene geometry: {glb_path}")
-        if not glb_path.exists():
-            raise FileNotFoundError(f"GLB file was not created: {glb_path}")
-    except Exception as e:
-        print(f"ERROR: Failed to save scene geometry: {e}")
-        import traceback
-        traceback.print_exc()
-        # Don't raise - geometry export is optional
+    # Skip geometry export (already done by geometry exporter)
+    print("Skipping geometry export (use export_geometry.py for that)")
     
     # Build graphs from segmentation layouts
     print("Building graphs...")
@@ -1061,8 +1058,8 @@ def main():
     print(f"Completed rendering for scene: {scene_id}")
     print(f"  Scene layouts: RGB and segmentation")
     print(f"  Room layouts: {len(room_scenes)} rooms (RGB and segmentation each)")
-    print(f"  POVs: {pov_count} RGB and segmentation images")
-    print(f"  Geometry: GLB file")
+    if not args.skip_povs:
+        print(f"  POVs: {pov_count} RGB and segmentation images")
     print(f"  Graphs: 1 scene graph + {len(room_scenes)} room graphs")
     
     # Stop Xvfb if we started it
