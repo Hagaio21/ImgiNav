@@ -11,8 +11,7 @@ set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
 # Configure for CPU-only software rendering (no GPU)
-# EGL with Mesa software rendering for headless CPU nodes
-export PYOPENGL_PLATFORM=egl
+# Use Mesa software rendering with Xvfb virtual display
 export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
 # Ensure Mesa software rendering is used
@@ -259,7 +258,8 @@ while IFS= read -r JSON_PATH; do
     --output_dir "${OUTPUT_DIR}" \
     --taxonomy "${TAXONOMY_FILE}" \
     --num_povs 6 \
-    --seed 42 || {
+    --seed 42 \
+    --hpc || {
     echo "ERROR: Failed to process scene ${SCENE_ID}" >&2
     continue
   }

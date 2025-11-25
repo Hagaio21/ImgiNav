@@ -4,34 +4,20 @@ Render worker for 3D-FRONT scenes.
 Renders top-down layouts and perspective POVs using pyrender.
 """
 
-# Set EGL platform for headless rendering BEFORE any OpenGL imports
+# Use Xvfb (virtual display) for headless rendering on CPU-only nodes
+# This is more reliable than EGL for CPU-only HPC environments
 import os
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
-# Workaround for PyOpenGL bytes/string issue with EGL
-# This must be done before importing pyrender/OpenGL
+# Try to import xvfbwrapper
 try:
-    from OpenGL import extensions
-    # Patch the ExtensionQuerier to handle bytes/string mismatch
-    # The error occurs when specifier is bytes but self.prefix is str (or vice versa)
-    original_call = extensions.ExtensionQuerier.__call__
-    def patched_call(self, specifier):
-        # Ensure both are the same type for startswith
-        if isinstance(specifier, bytes) and isinstance(self.prefix, str):
-            # specifier is bytes, prefix is str - convert specifier to str
-            specifier_str = specifier.decode('utf-8', errors='ignore')
-            return specifier_str.startswith(self.prefix)
-        elif isinstance(specifier, str) and isinstance(self.prefix, bytes):
-            # specifier is str, prefix is bytes - convert prefix to str
-            prefix_str = self.prefix.decode('utf-8', errors='ignore')
-            return specifier.startswith(prefix_str)
-        else:
-            # Both same type, use original
-            return original_call(self, specifier)
-    extensions.ExtensionQuerier.__call__ = patched_call
-except (ImportError, AttributeError):
-    # If patching fails, continue anyway - might work with different PyOpenGL version
-    pass
+    from xvfbwrapper import Xvfb
+    XVFB_AVAILABLE = True
+except ImportError:
+    Xvfb = None
+    XVFB_AVAILABLE = False
+
+# Global variable to hold Xvfb instance
+VFB = None
 
 import argparse
 import random
@@ -740,8 +726,31 @@ def main():
     parser.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
     parser.add_argument("--num_povs", type=int, default=6, help="Number of POVs to render")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--hpc", action="store_true", default=False,
+                        help="Force use of Xvfb for headless HPC rendering")
     
     args = parser.parse_args()
+    
+    # Start Xvfb if needed (HPC mode or no display)
+    global VFB
+    use_xvfb = args.hpc or ('DISPLAY' not in os.environ)
+    if use_xvfb and XVFB_AVAILABLE:
+        try:
+            VFB = Xvfb(width=1024, height=768, colordepth=24)
+            VFB.start()
+            os.environ['DISPLAY'] = f':{VFB.new_display}'
+            print(f"Started Xvfb virtual display: {os.environ['DISPLAY']}")
+        except Exception as e:
+            print(f"Warning: Failed to start Xvfb: {e}")
+            print("Continuing without Xvfb (may fail if no display available)")
+            VFB = None
+    elif use_xvfb and not XVFB_AVAILABLE:
+        print("Warning: Xvfb requested but xvfbwrapper not available.")
+        print("Install with: pip install xvfbwrapper")
+        print("Or use system xvfb-run to wrap the script")
+        if 'DISPLAY' not in os.environ:
+            print("ERROR: No display available and Xvfb not available!")
+            raise RuntimeError("Cannot render without display. Install xvfbwrapper or use xvfb-run.")
     
     # Set random seed
     random.seed(args.seed)
@@ -775,14 +784,34 @@ def main():
     
     # Layout Pass: RGB
     print("Rendering layout RGB...")
-    pyrender_scene_no_ceiling = trimesh_to_pyrender_scene(trimesh_scene, hide_ceilings=True)
-    layout_rgb = render_layout_rgb(pyrender_scene_no_ceiling, width=256, height=256)
-    Image.fromarray(layout_rgb).save(layouts_rgb_dir / f"{scene_id}.png")
+    try:
+        pyrender_scene_no_ceiling = trimesh_to_pyrender_scene(trimesh_scene, hide_ceilings=True)
+        layout_rgb = render_layout_rgb(pyrender_scene_no_ceiling, width=256, height=256)
+        layout_rgb_path = layouts_rgb_dir / f"{scene_id}.png"
+        Image.fromarray(layout_rgb).save(layout_rgb_path)
+        print(f"  Saved layout RGB: {layout_rgb_path}")
+        if not layout_rgb_path.exists():
+            raise FileNotFoundError(f"Layout RGB file was not created: {layout_rgb_path}")
+    except Exception as e:
+        print(f"ERROR: Failed to render layout RGB: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     # Layout Pass: Segmentation
     print("Rendering layout segmentation...")
-    layout_seg = render_layout_seg_improved(trimesh_scene, taxonomy, width=256, height=256)
-    Image.fromarray(layout_seg).save(layouts_seg_dir / f"{scene_id}.png")
+    try:
+        layout_seg = render_layout_seg_improved(trimesh_scene, taxonomy, width=256, height=256)
+        layout_seg_path = layouts_seg_dir / f"{scene_id}.png"
+        Image.fromarray(layout_seg).save(layout_seg_path)
+        print(f"  Saved layout segmentation: {layout_seg_path}")
+        if not layout_seg_path.exists():
+            raise FileNotFoundError(f"Layout segmentation file was not created: {layout_seg_path}")
+    except Exception as e:
+        print(f"ERROR: Failed to render layout segmentation: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     # POV Pass: Sample camera positions
     print("Sampling camera positions...")
@@ -827,15 +856,33 @@ def main():
             continue
         
         # Render RGB
-        pov_rgb = render_pov(pyrender_scene_full, camera_pos, width=256, height=256, fov=70.0)
-        Image.fromarray(pov_rgb).save(povs_rgb_dir / f"{scene_id}_v{pov_count+1:02d}.png")
+        try:
+            pov_rgb = render_pov(pyrender_scene_full, camera_pos, width=256, height=256, fov=70.0)
+            pov_rgb_path = povs_rgb_dir / f"{scene_id}_v{pov_count+1:02d}.png"
+            Image.fromarray(pov_rgb).save(pov_rgb_path)
+            if not pov_rgb_path.exists():
+                raise FileNotFoundError(f"POV RGB file was not created: {pov_rgb_path}")
+        except Exception as e:
+            print(f"ERROR: Failed to render POV RGB: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
         
         # Render segmentation with colored materials
-        pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, width=256, height=256, fov=70.0)
-        Image.fromarray(pov_seg).save(povs_seg_dir / f"{scene_id}_v{pov_count+1:02d}.png")
+        try:
+            pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, width=256, height=256, fov=70.0)
+            pov_seg_path = povs_seg_dir / f"{scene_id}_v{pov_count+1:02d}.png"
+            Image.fromarray(pov_seg).save(pov_seg_path)
+            if not pov_seg_path.exists():
+                raise FileNotFoundError(f"POV segmentation file was not created: {pov_seg_path}")
+        except Exception as e:
+            print(f"ERROR: Failed to render POV segmentation: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
         
         pov_count += 1
-        print(f"Rendered POV {pov_count}/{args.num_povs}")
+        print(f"  Rendered POV {pov_count}/{args.num_povs}")
     
     # Build graphs from segmentation layout
     print("Building graphs...")
@@ -856,8 +903,26 @@ def main():
     print(f"Completed rendering for scene: {scene_id}")
     print(f"  Layouts: RGB and segmentation")
     print(f"  POVs: {pov_count} RGB and segmentation images")
+    
+    # Stop Xvfb if we started it
+    global VFB
+    if VFB is not None:
+        try:
+            VFB.stop()
+            print("Stopped Xvfb virtual display")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Ensure Xvfb is stopped even on error
+        global VFB
+        if VFB is not None:
+            try:
+                VFB.stop()
+            except Exception:
+                pass
 
