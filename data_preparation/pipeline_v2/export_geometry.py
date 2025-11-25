@@ -41,7 +41,7 @@ def main():
     print(f"  - Regular GLB: {scene_metadata['scene_id']}.glb")
     print(f"  - Segmented GLB: {scene_metadata['scene_id']}_seg.glb")
     print(f"  - Metadata JSON: {scene_metadata['scene_id']}_metadata.json")
-    print(f"  - Rooms: {scene_metadata['room_count']}")
+    print(f"  - Rooms: {scene_metadata['statistics']['room_count']}")
 
 
 if __name__ == "__main__":
