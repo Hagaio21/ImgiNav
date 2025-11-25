@@ -19,7 +19,7 @@ except ImportError:
 import argparse
 import random
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 import numpy as np
 import open3d as o3d
@@ -413,6 +413,82 @@ def find_floor_meshes(trimesh_scene: trimesh.Scene, taxonomy: Taxonomy) -> List[
     return floor_bboxes
 
 
+def sample_camera_positions_from_corners(trimesh_scene: trimesh.Scene,
+                                         floor_bboxes: List[Tuple[np.ndarray, np.ndarray]],
+                                         furniture_bboxes: List[Tuple[np.ndarray, np.ndarray]],
+                                         taxonomy: Taxonomy,
+                                         num_povs: int = 6,
+                                         eye_height: float = 1.6,
+                                         margin: float = 0.5) -> List[np.ndarray]:
+    """
+    Sample camera positions from room corners looking toward the center.
+    Places cameras at corners of the floor bounding box, looking inward.
+    
+    Args:
+        trimesh_scene: trimesh scene for ray-casting
+        floor_bboxes: List of floor bounding boxes
+        furniture_bboxes: List of furniture bounding boxes
+        taxonomy: Taxonomy object for identifying floor meshes
+        num_povs: Number of camera positions to generate
+        eye_height: Camera eye height in meters
+        margin: Margin from walls (in meters)
+        
+    Returns:
+        List of camera positions (x, y, z)
+    """
+    if not floor_bboxes:
+        return []
+    
+    # Combine all floor bounds to get room bounds
+    all_min = np.array([bbox[0] for bbox in floor_bboxes]).min(axis=0)
+    all_max = np.array([bbox[1] for bbox in floor_bboxes]).max(axis=0)
+    
+    # Calculate room center (for looking direction)
+    room_center = (all_min + all_max) / 2
+    room_center[1] = eye_height  # Set height to eye level
+    
+    # Calculate room dimensions
+    room_size_x = all_max[0] - all_min[0]
+    room_size_z = all_max[2] - all_min[2]
+    
+    # Generate corner positions
+    corners = []
+    if num_povs >= 4:
+        # Four main corners
+        corners.append([all_min[0] + margin, eye_height, all_min[2] + margin])  # Bottom-left
+        corners.append([all_max[0] - margin, eye_height, all_min[2] + margin])  # Bottom-right
+        corners.append([all_min[0] + margin, eye_height, all_max[2] - margin])  # Top-left
+        corners.append([all_max[0] - margin, eye_height, all_max[2] - margin])  # Top-right
+    
+    # Add midpoints if we need more POVs
+    if num_povs > 4:
+        # Midpoints of each wall
+        mid_x = (all_min[0] + all_max[0]) / 2
+        mid_z = (all_min[2] + all_max[2]) / 2
+        
+        corners.append([all_min[0] + margin, eye_height, mid_z])  # Left wall center
+        corners.append([all_max[0] - margin, eye_height, mid_z])  # Right wall center
+        corners.append([mid_x, eye_height, all_min[2] + margin])  # Bottom wall center
+        corners.append([mid_x, eye_height, all_max[2] - margin])  # Top wall center
+    
+    # Filter out positions that are inside furniture
+    valid_corners = []
+    for corner in corners[:num_povs]:
+        x, y, z = corner
+        inside_furniture = False
+        for f_min, f_max in furniture_bboxes:
+            if (f_min[0] <= x <= f_max[0] and
+                f_min[1] <= y <= f_max[1] and
+                f_min[2] <= z <= f_max[2]):
+                inside_furniture = True
+                break
+        
+        if not inside_furniture:
+            valid_corners.append(np.array(corner))
+    
+    return valid_corners
+
+
 def sample_camera_position(trimesh_scene: trimesh.Scene,
                            floor_bboxes: List[Tuple[np.ndarray, np.ndarray]],
                            furniture_bboxes: List[Tuple[np.ndarray, np.ndarray]],
@@ -421,104 +497,15 @@ def sample_camera_position(trimesh_scene: trimesh.Scene,
                            max_attempts: int = 50) -> Optional[np.ndarray]:
     """
     Sample a valid camera position on the floor, not inside furniture.
-    Uses ray-casting to ensure position is actually above floor mesh.
-    
-    Args:
-        trimesh_scene: trimesh scene for ray-casting
-        floor_bboxes: List of floor bounding boxes
-        furniture_bboxes: List of furniture bounding boxes
-        taxonomy: Taxonomy object for identifying floor meshes
-        eye_height: Camera eye height in meters
-        max_attempts: Maximum sampling attempts
-        
-    Returns:
-        Camera position (x, y, z) or None if failed
+    DEPRECATED: Use sample_camera_positions_from_corners instead.
     """
-    if not floor_bboxes:
-        return None
-    
-    # Build a combined floor mesh for ray-casting
-    floor_meshes = []
-    floor_ids = [taxonomy.data.get("category2id", {}).get("floor", 0),
-                 taxonomy.data.get("label2id", {}).get("floor", 0)]
-    
-    for node_name in trimesh_scene.graph.nodes_geometry:
-        try:
-            transform, geometry_name = trimesh_scene.graph.get(node_name)
-            if geometry_name not in trimesh_scene.geometry:
-                if node_name not in trimesh_scene.geometry:
-                    continue
-                geometry = trimesh_scene.geometry[node_name]
-            else:
-                geometry = trimesh_scene.geometry[geometry_name]
-            
-            metadata = getattr(geometry, 'metadata', {})
-            category_id = metadata.get('category_id', 0)
-            label = metadata.get('label', '').lower()
-            
-            if category_id in floor_ids or label == 'floor':
-                if isinstance(geometry, trimesh.Trimesh):
-                    floor_mesh = geometry.copy()
-                    floor_mesh.apply_transform(transform)
-                    floor_meshes.append(floor_mesh)
-        except (KeyError, ValueError, IndexError):
-            continue
-    
-    if not floor_meshes:
-        return None
-    
-    # Combine all floor meshes into one for ray-casting
-    floor_combined = trimesh.util.concatenate(floor_meshes)
-    
-    # Create ray intersector
-    try:
-        from trimesh.ray import ray_pyembree
-        intersector = ray_pyembree.RayMeshIntersector(floor_combined)
-    except (AttributeError, ImportError):
-        from trimesh.ray import ray_triangle
-        intersector = ray_triangle.RayMeshIntersector(floor_combined)
-    
-    # Combine all floor bounds
-    all_min = np.array([bbox[0] for bbox in floor_bboxes]).min(axis=0)
-    all_max = np.array([bbox[1] for bbox in floor_bboxes]).max(axis=0)
-    
-    for attempt in range(max_attempts):
-        # Sample random X, Z within floor bounds
-        x = np.random.uniform(all_min[0], all_max[0])
-        z = np.random.uniform(all_min[2], all_max[2])
-        
-        # Check if inside any furniture bbox
-        inside_furniture = False
-        for f_min, f_max in furniture_bboxes:
-            if (f_min[0] <= x <= f_max[0] and
-                f_min[1] <= eye_height <= f_max[1] and
-                f_min[2] <= z <= f_max[2]):
-                inside_furniture = True
-                break
-        
-        if inside_furniture:
-            continue
-        
-        # Ray-cast check: Cast ray downward from above to check if it hits floor
-        ray_origin = np.array([[x, 10.0, z]])
-        ray_direction = np.array([[0.0, -1.0, 0.0]])
-        
-        try:
-            locations, index_ray, index_tri = intersector.intersects_location(
-                ray_origin, ray_direction, multiple_hits=False
-            )
-            
-            if len(locations) == 0:
-                continue
-            
-            hit_height = locations[0][1]
-            if abs(hit_height) > 0.5:
-                continue
-            
-            return np.array([x, eye_height, z])
-        except Exception:
-            return np.array([x, eye_height, z])
-    
+    # Fallback to corner-based sampling
+    corners = sample_camera_positions_from_corners(
+        trimesh_scene, floor_bboxes, furniture_bboxes, taxonomy,
+        num_povs=1, eye_height=eye_height
+    )
+    if corners:
+        return corners[0]
     return None
 
 
@@ -963,21 +950,32 @@ def main():
         except (KeyError, ValueError, IndexError):
             continue
     
-    # Render POVs
+    # Render POVs from corners
+    print("Sampling camera positions from room corners...")
+    camera_positions = sample_camera_positions_from_corners(
+        trimesh_scene, floor_bboxes, furniture_bboxes, taxonomy,
+        num_povs=args.num_povs, eye_height=1.6
+    )
+    
+    if len(camera_positions) < args.num_povs:
+        print(f"Warning: Only found {len(camera_positions)} valid corner positions (requested {args.num_povs})")
+    
+    # Calculate room center for look-at target
+    if floor_bboxes:
+        all_min = np.array([bbox[0] for bbox in floor_bboxes]).min(axis=0)
+        all_max = np.array([bbox[1] for bbox in floor_bboxes]).max(axis=0)
+        room_center = (all_min + all_max) / 2
+        room_center[1] = 1.6  # Eye height
+    else:
+        room_center = None
+    
     pov_count = 0
-    for i in range(args.num_povs * 2):  # Try more than needed
-        if pov_count >= args.num_povs:
-            break
+    for i, camera_pos in enumerate(camera_positions[:args.num_povs]):
         
-        camera_pos = sample_camera_position(trimesh_scene, floor_bboxes, furniture_bboxes, 
-                                          taxonomy, eye_height=1.6, max_attempts=50)
-        if camera_pos is None:
-            print(f"Warning: Failed to sample camera position for POV {i+1}")
-            continue
-        
-        # Render RGB
+        # Render RGB (looking toward room center)
         try:
-            pov_rgb = render_pov(trimesh_scene, camera_pos, hide_ceilings=False, width=256, height=256, fov=70.0)
+            pov_rgb = render_pov(trimesh_scene, camera_pos, hide_ceilings=False, 
+                               camera_target=room_center, width=256, height=256, fov=70.0)
             pov_rgb_path = povs_rgb_dir / f"{scene_id}_v{pov_count+1:02d}.png"
             Image.fromarray(pov_rgb).save(pov_rgb_path)
             if not pov_rgb_path.exists():
@@ -988,9 +986,10 @@ def main():
             traceback.print_exc()
             continue
         
-        # Render segmentation
+        # Render segmentation (looking toward room center)
         try:
-            pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, hide_ceilings=False, width=256, height=256, fov=70.0)
+            pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, hide_ceilings=False,
+                                    camera_target=room_center, width=256, height=256, fov=70.0)
             pov_seg_path = povs_seg_dir / f"{scene_id}_v{pov_count+1:02d}.png"
             Image.fromarray(pov_seg).save(pov_seg_path)
             if not pov_seg_path.exists():
@@ -1002,7 +1001,7 @@ def main():
             continue
         
         pov_count += 1
-        print(f"  Rendered POV {pov_count}/{args.num_povs}")
+        print(f"  Rendered POV {pov_count}/{args.num_povs} from corner")
     
     # Save scene geometry as GLB
     print("Saving scene geometry...")
