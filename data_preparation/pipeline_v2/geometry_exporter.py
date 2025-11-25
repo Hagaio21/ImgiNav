@@ -196,6 +196,93 @@ def export_scene_geometry(scene_json: Path, future_root: Path, taxonomy: Taxonom
     return scene_metadata
 
 
+def detect_up_direction(trimesh_scene: trimesh.Scene) -> Dict:
+    """
+    Detect the up direction by finding floor and ceiling meshes.
+    The axis with the largest difference between floor and ceiling is the up axis.
+    
+    Args:
+        trimesh_scene: Full scene (must include ceilings for this calculation)
+        
+    Returns:
+        Dictionary with 'up_axis' (0=X, 1=Y, 2=Z), 'up_vector' ([1,0,0], [0,1,0], or [0,0,1]),
+        'floor_center', 'ceiling_center', and 'vertical_separation'
+    """
+    floor_positions = []
+    ceiling_positions = []
+    
+    for node_name in trimesh_scene.graph.nodes_geometry:
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            if not isinstance(geometry, trimesh.Trimesh):
+                continue
+            
+            metadata = getattr(geometry, 'metadata', {})
+            label = metadata.get('label', '').lower()
+            is_ceiling = metadata.get('is_ceiling', False)
+            
+            # Get world-space vertices
+            vertices_world = trimesh.transform_points(geometry.vertices, transform)
+            mesh_center = vertices_world.mean(axis=0)
+            
+            if label == 'floor' or (label == '' and not is_ceiling and 'floor' in str(geometry_name).lower()):
+                floor_positions.append(mesh_center)
+            elif label == 'ceiling' or is_ceiling:
+                ceiling_positions.append(mesh_center)
+        except (KeyError, ValueError, IndexError):
+            continue
+    
+    if len(floor_positions) == 0 or len(ceiling_positions) == 0:
+        # Fallback: assume Y-up (3D-FRONT convention)
+        print(f"WARNING: Could not detect up direction (floor={len(floor_positions)}, ceiling={len(ceiling_positions)}), assuming Y-up")
+        return {
+            'up_axis': 1,  # Y-axis
+            'up_vector': [0, 1, 0],
+            'floor_center': None,
+            'ceiling_center': None,
+            'vertical_separation': None
+        }
+    
+    # Calculate average positions
+    floor_center = np.array(floor_positions).mean(axis=0)
+    ceiling_center = np.array(ceiling_positions).mean(axis=0)
+    
+    # Calculate separation along each axis
+    separation = ceiling_center - floor_center
+    abs_separation = np.abs(separation)
+    
+    # The axis with the largest separation is the up axis
+    up_axis = int(np.argmax(abs_separation))
+    
+    # Determine up direction (positive or negative)
+    if separation[up_axis] > 0:
+        up_vector = np.zeros(3)
+        up_vector[up_axis] = 1.0
+    else:
+        up_vector = np.zeros(3)
+        up_vector[up_axis] = -1.0
+    
+    print(f"Detected up direction: axis={up_axis} ({['X', 'Y', 'Z'][up_axis]}), "
+          f"vector={up_vector}, separation={abs_separation[up_axis]:.2f}")
+    print(f"  Floor center: {floor_center}")
+    print(f"  Ceiling center: {ceiling_center}")
+    
+    return {
+        'up_axis': int(up_axis),
+        'up_vector': up_vector.tolist(),
+        'floor_center': floor_center.tolist(),
+        'ceiling_center': ceiling_center.tolist(),
+        'vertical_separation': float(abs_separation[up_axis])
+    }
+
+
 def generate_scene_metadata(scene_id: str,
                             trimesh_scene: trimesh.Scene, 
                             room_scenes: Dict[str, trimesh.Scene],
@@ -314,6 +401,9 @@ def generate_scene_metadata(scene_id: str,
         
         return result
     
+    # Detect up direction using floor and ceiling meshes
+    up_direction_info = detect_up_direction(trimesh_scene)
+    
     # Get scene bounds (without ceilings)
     try:
         scene_bounds = scene_no_ceiling.bounds
@@ -375,6 +465,7 @@ def generate_scene_metadata(scene_id: str,
             "center": scene_center,
             "size": scene_size
         },
+        "up_direction": up_direction_info,  # Detected up direction from floor/ceiling
         "statistics": {
             "total_meshes": len(list(trimesh_scene.graph.nodes_geometry)),
             "total_meshes_no_ceiling": len(list(scene_no_ceiling.graph.nodes_geometry)),

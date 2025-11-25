@@ -35,18 +35,129 @@ project_root = script_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
 from common.taxonomy import Taxonomy
-from data_preparation.pipeline_v2.scene_loader import load_front_scene, extract_rooms_from_scene
+from data_preparation.pipeline_v2.scene_loader import extract_rooms_from_scene
 from data_preparation.pipeline_v2.renderer import render_layout_rgb, render_layout_seg
 
 # Set Open3D verbosity to errors only
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
 
+def load_scene_from_glb(glb_path: Path) -> trimesh.Scene:
+    """
+    Load scene from GLB file.
+    GLB files preserve the scene graph and geometry, including metadata.
+    """
+    print(f"Loading scene from GLB: {glb_path}")
+    scene = trimesh.load(str(glb_path), file_type='glb')
+    
+    if not isinstance(scene, trimesh.Scene):
+        # If it's a single mesh, wrap it in a scene
+        if isinstance(scene, trimesh.Trimesh):
+            new_scene = trimesh.Scene()
+            new_scene.add_geometry(scene)
+            scene = new_scene
+        else:
+            raise ValueError(f"GLB file did not load as a scene or mesh: {type(scene)}")
+    
+    return scene
+
+
+def extract_rooms_from_glb_scene(trimesh_scene: trimesh.Scene, scene_metadata: Dict) -> Dict[str, trimesh.Scene]:
+    """
+    Extract room scenes from GLB using room bounds from metadata file.
+    Matches meshes to rooms by checking if mesh center is within room bounds.
+    """
+    if scene_metadata is None or 'rooms' not in scene_metadata:
+        print("Warning: No room metadata available, returning full scene as single 'room'")
+        return {'scene': trimesh_scene}
+    
+    room_scenes = {}
+    
+    # Build a set of furniture positions from metadata for each room (for more precise matching)
+    room_furniture_positions = {}
+    for room_name, room_info in scene_metadata['rooms'].items():
+        furniture_positions = []
+        if 'furniture' in room_info:
+            for furniture in room_info['furniture']:
+                if 'position' in furniture:
+                    furniture_positions.append(np.array(furniture['position']))
+        room_furniture_positions[room_name] = furniture_positions
+    
+    # Extract rooms using bounds from metadata
+    for room_name, room_info in scene_metadata['rooms'].items():
+        room_scene = trimesh.Scene()
+        room_bounds = room_info.get('bounds', {})
+        
+        if 'min' not in room_bounds or 'max' not in room_bounds:
+            print(f"Warning: Room {room_name} has no bounds, skipping")
+            continue
+        
+        room_min = np.array(room_bounds['min'])
+        room_max = np.array(room_bounds['max'])
+        furniture_positions = room_furniture_positions.get(room_name, [])
+        
+        for node_name in trimesh_scene.graph.nodes_geometry:
+            try:
+                transform, geometry_name = trimesh_scene.graph.get(node_name)
+                if geometry_name not in trimesh_scene.geometry:
+                    if node_name not in trimesh_scene.geometry:
+                        continue
+                    geometry = trimesh_scene.geometry[node_name]
+                else:
+                    geometry = trimesh_scene.geometry[geometry_name]
+                
+                if isinstance(geometry, trimesh.Trimesh):
+                    # Transform vertices to world space
+                    vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    
+                    # Check if mesh center is within room bounds
+                    mesh_center = vertices_world.mean(axis=0)
+                    
+                    # Also check if any vertex is within bounds (for walls/floors that span rooms)
+                    vertices_in_bounds = np.all((vertices_world >= room_min) & (vertices_world <= room_max), axis=1)
+                    has_vertices_in_bounds = np.any(vertices_in_bounds)
+                    
+                    # Include mesh if center is in bounds OR if it has vertices in bounds
+                    # (this catches walls/floors that span multiple rooms)
+                    if np.all(mesh_center >= room_min) and np.all(mesh_center <= room_max) or has_vertices_in_bounds:
+                        # For architectural elements (walls/floors), be more selective
+                        metadata = getattr(geometry, 'metadata', {})
+                        category_name = metadata.get('category_name', '').lower()
+                        is_architectural = any(arch in category_name for arch in ['wall', 'floor', 'structure'])
+                        
+                        if is_architectural:
+                            # Only include if significant portion is in this room
+                            if np.sum(vertices_in_bounds) / len(vertices_world) > 0.3:  # 30% threshold
+                                mesh_copy = geometry.copy()
+                                if hasattr(geometry, 'metadata'):
+                                    mesh_copy.metadata = geometry.metadata.copy()
+                                room_scene.add_geometry(mesh_copy, node_name=node_name, transform=transform)
+                        else:
+                            # Furniture: include if center is in room
+                            if np.all(mesh_center >= room_min) and np.all(mesh_center <= room_max):
+                                mesh_copy = geometry.copy()
+                                if hasattr(geometry, 'metadata'):
+                                    mesh_copy.metadata = geometry.metadata.copy()
+                                room_scene.add_geometry(mesh_copy, node_name=node_name, transform=transform)
+            except (KeyError, ValueError, IndexError) as e:
+                continue
+        
+        if len(room_scene.graph.nodes_geometry) > 0:
+            room_scenes[room_name] = room_scene
+            print(f"  Extracted room '{room_name}': {len(room_scene.graph.nodes_geometry)} meshes")
+    
+    if len(room_scenes) == 0:
+        print("Warning: Could not extract rooms from GLB, using full scene")
+        room_scenes['scene'] = trimesh_scene
+    
+    return room_scenes
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Render 3D-FRONT scene layouts using Open3D")
-    parser.add_argument("--scene_json", required=True, help="Path to 3D-FRONT JSON file")
-    parser.add_argument("--future_root", required=True, help="Path to 3D-FUTURE model directory")
-    parser.add_argument("--output_dir", required=True, help="Output dataset root directory")
+    parser = argparse.ArgumentParser(description="Render scene layouts from GLB files using Open3D")
+    parser.add_argument("--scene_id", required=True, help="Scene ID (e.g., 002c110c-9bbc-4ab4-affa-4225fb127bad)")
+    parser.add_argument("--output_dir", required=True, help="Output dataset root directory (must contain geometry/ folder)")
     parser.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--hpc", action="store_true", default=False,
@@ -76,26 +187,29 @@ def main():
     # Load taxonomy
     taxonomy = Taxonomy(Path(args.taxonomy))
     
-    # Load scene
-    scene_json = Path(args.scene_json)
-    scene_id = scene_json.stem
-    
-    # Try to load metadata if available
+    # Get scene ID and paths
+    scene_id = args.scene_id
     output_dir = Path(args.output_dir)
     geometry_dir = output_dir / "geometry"
-    metadata_path = geometry_dir / f"{scene_id}_metadata.json"
-    scene_metadata = None
-    if metadata_path.exists():
-        try:
-            import json
-            with open(metadata_path, 'r') as f:
-                scene_metadata = json.load(f)
-            print(f"Loaded metadata from: {metadata_path}")
-        except Exception as e:
-            print(f"Warning: Could not load metadata: {e}")
     
-    print(f"Loading scene: {scene_id}")
-    trimesh_scene = load_front_scene(scene_json, Path(args.future_root), taxonomy)
+    # Load GLB file
+    glb_path = geometry_dir / f"{scene_id}.glb"
+    if not glb_path.exists():
+        raise FileNotFoundError(f"GLB file not found: {glb_path}. Run geometry export first.")
+    
+    # Load metadata (required for room extraction)
+    metadata_path = geometry_dir / f"{scene_id}_metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Metadata file not found: {metadata_path}. Run geometry export first.")
+    
+    import json
+    with open(metadata_path, 'r') as f:
+        scene_metadata = json.load(f)
+    print(f"Loaded metadata from: {metadata_path}")
+    
+    # Load scene from GLB
+    print(f"Loading scene from GLB: {scene_id}")
+    trimesh_scene = load_scene_from_glb(glb_path)
     
     # Create output directories
     output_dir = Path(args.output_dir)
@@ -105,9 +219,9 @@ def main():
     for d in [layouts_rgb_dir, layouts_seg_dir]:
         d.mkdir(parents=True, exist_ok=True)
     
-    # Extract rooms from scene
-    print("Extracting rooms from scene...")
-    room_scenes = extract_rooms_from_scene(trimesh_scene)
+    # Extract rooms from GLB scene using metadata
+    print("Extracting rooms from GLB scene using metadata...")
+    room_scenes = extract_rooms_from_glb_scene(trimesh_scene, scene_metadata)
     print(f"  Found {len(room_scenes)} rooms: {list(room_scenes.keys())}")
     
     # Scene-level Layout Pass: RGB
