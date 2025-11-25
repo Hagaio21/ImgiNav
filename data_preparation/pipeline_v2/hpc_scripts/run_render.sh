@@ -45,8 +45,28 @@ if [ ! -d "${SCENES_ROOT}" ]; then
   exit 1
 fi
 
-find "${SCENES_ROOT}" -type f -name '*.json' -print | sort > "${ALL_LIST}" || {
-  echo "ERROR: Failed to find scene files" >&2
+echo "SCENES_ROOT exists, searching for JSON files..."
+FIND_RESULT=$(find "${SCENES_ROOT}" -type f -name '*.json' 2>&1)
+FIND_EXIT=$?
+
+if [ ${FIND_EXIT} -ne 0 ]; then
+  echo "ERROR: find command failed with exit code ${FIND_EXIT}" >&2
+  echo "find error output: ${FIND_RESULT}" >&2
+  exit 1
+fi
+
+JSON_COUNT=$(echo "${FIND_RESULT}" | wc -l)
+echo "Found ${JSON_COUNT} JSON files"
+
+if [ ${JSON_COUNT} -eq 0 ]; then
+  echo "ERROR: No JSON files found in ${SCENES_ROOT}" >&2
+  echo "Trying to list directory contents..." >&2
+  ls -la "${SCENES_ROOT}" | head -20 >&2
+  exit 1
+fi
+
+echo "${FIND_RESULT}" | sort > "${ALL_LIST}" || {
+  echo "ERROR: Failed to write scene list to ${ALL_LIST}" >&2
   exit 1
 }
 
