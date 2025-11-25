@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone script to export scene geometry to GLB files.
+Standalone script to export scene geometry to OBJ files.
 Run this first to create geometry files before rendering.
 """
 
@@ -18,7 +18,7 @@ from data_preparation.pipeline_v2.geometry_exporter import export_scene_geometry
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export 3D-FRONT scene geometry to GLB files")
+    parser = argparse.ArgumentParser(description="Export 3D-FRONT scene geometry to OBJ files")
     parser.add_argument("--scene_json", required=True, help="Path to 3D-FRONT JSON file")
     parser.add_argument("--future_root", required=True, help="Path to 3D-FUTURE model directory")
     parser.add_argument("--output_dir", required=True, help="Output dataset root directory")
@@ -38,8 +38,8 @@ def main():
     )
     
     print(f"\n✓ Successfully exported geometry for scene: {scene_metadata['scene_id']}")
-    print(f"  - Regular GLB: {scene_metadata['scene_id']}.glb")
-    print(f"  - Segmented GLB: {scene_metadata['scene_id']}_seg.glb")
+    print(f"  - Regular OBJ: {scene_metadata['scene_id']}.obj")
+    print(f"  - Segmented OBJ: {scene_metadata['scene_id']}_seg.obj")
     print(f"  - Metadata JSON: {scene_metadata['scene_id']}_metadata.json")
     print(f"  - Rooms: {scene_metadata['statistics']['room_count']}")
 
