@@ -69,20 +69,8 @@ def trimesh_to_pyrender_scene(trimesh_scene: trimesh.Scene,
             
             # Convert trimesh to pyrender mesh
             if isinstance(geometry, trimesh.Trimesh):
-                # Get vertex colors if available
-                vertex_colors = None
-                if hasattr(geometry, 'visual') and hasattr(geometry.visual, 'vertex_colors'):
-                    vc = geometry.visual.vertex_colors
-                    if vc is not None and len(vc) > 0:
-                        # Convert to uint8 if needed
-                        if vc.dtype != np.uint8:
-                            vc = np.clip(vc, 0, 255).astype(np.uint8)
-                        vertex_colors = vc[:, :3]  # RGB only
-                
-                # Create pyrender mesh
-                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, 
-                                                           smooth=False,
-                                                           vertex_colors=vertex_colors)
+                # Create pyrender mesh (vertex colors are preserved automatically from trimesh)
+                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, smooth=False)
                 
                 # Add to pyrender scene
                 pyrender_scene.add(pyrender_mesh, pose=transform, name=node_name)
@@ -285,31 +273,40 @@ def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
     
     # Add meshes with colored materials
     for node_name in trimesh_scene.graph.nodes_geometry:
-        geometry = trimesh_scene.geometry[node_name]
-        metadata = getattr(geometry, 'metadata', {})
-        
-        # Skip ceilings
-        if metadata.get('is_ceiling', False):
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            
+            # Skip ceilings
+            if metadata.get('is_ceiling', False):
+                continue
+            
+            if isinstance(geometry, trimesh.Trimesh):
+                # Get category color
+                category_id = metadata.get('category_id', 0)
+                color_rgb = taxonomy.get_color(category_id, mode="category")
+                if color_rgb is None:
+                    color_rgb = (127, 127, 127)  # Default gray
+                
+                # Create flat material with taxonomy color
+                material = pyrender.MetallicRoughnessMaterial(
+                    baseColorFactor=[c/255.0 for c in color_rgb] + [1.0],
+                    metallicFactor=0.0,
+                    roughnessFactor=1.0
+                )
+                
+                # Create mesh with material
+                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, material=material)
+                seg_scene.add(pyrender_mesh, pose=transform, name=node_name)
+        except (KeyError, ValueError, IndexError):
             continue
-        
-        if isinstance(geometry, trimesh.Trimesh):
-            # Get category color
-            category_id = metadata.get('category_id', 0)
-            color_rgb = taxonomy.get_color(category_id, mode="category")
-            if color_rgb is None:
-                color_rgb = (127, 127, 127)  # Default gray
-            
-            # Create flat material with taxonomy color
-            material = pyrender.MetallicRoughnessMaterial(
-                baseColorFactor=[c/255.0 for c in color_rgb] + [1.0],
-                metallicFactor=0.0,
-                roughnessFactor=1.0
-            )
-            
-            # Create mesh with material
-            pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, material=material)
-            transform = trimesh_scene.graph.get(node_name)[0]
-            seg_scene.add(pyrender_mesh, pose=transform, name=node_name)
     
     # Camera setup
     camera = pyrender.OrthographicCamera(xmag=max_size/2, ymag=max_size/2)
@@ -320,9 +317,15 @@ def render_layout_seg_improved(trimesh_scene: trimesh.Scene,
     
     camera_node = seg_scene.add(camera, pose=camera_pose)
     
-    # Render
+    # Render with anti-aliasing disabled to prevent color bleeding
     renderer = pyrender.OffscreenRenderer(width, height)
-    color, depth = renderer.render(seg_scene)
+    try:
+        # Try to disable anti-aliasing using render flags
+        flags = pyrender.RenderFlags.SKIP_CULL_FACES | pyrender.RenderFlags.FLAT
+        color, depth = renderer.render(seg_scene, flags=flags)
+    except (AttributeError, TypeError):
+        # Fallback if RenderFlags not available or flags parameter not supported
+        color, depth = renderer.render(seg_scene)
     renderer.delete()
     
     return color
@@ -344,35 +347,49 @@ def find_floor_meshes(trimesh_scene: trimesh.Scene, taxonomy: Taxonomy) -> List[
                  taxonomy.data.get("label2id", {}).get("floor", 0)]
     
     for node_name in trimesh_scene.graph.nodes_geometry:
-        geometry = trimesh_scene.geometry[node_name]
-        metadata = getattr(geometry, 'metadata', {})
-        
-        category_id = metadata.get('category_id', 0)
-        label = metadata.get('label', '').lower()
-        
-        if category_id in floor_ids or label == 'floor':
-            if isinstance(geometry, trimesh.Trimesh):
-                transform = trimesh_scene.graph.get(node_name)[0]
-                vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                
-                min_bounds = vertices_world.min(axis=0)
-                max_bounds = vertices_world.max(axis=0)
-                floor_bboxes.append((min_bounds, max_bounds))
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            
+            category_id = metadata.get('category_id', 0)
+            label = metadata.get('label', '').lower()
+            
+            if category_id in floor_ids or label == 'floor':
+                if isinstance(geometry, trimesh.Trimesh):
+                    vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    
+                    min_bounds = vertices_world.min(axis=0)
+                    max_bounds = vertices_world.max(axis=0)
+                    floor_bboxes.append((min_bounds, max_bounds))
+        except (KeyError, ValueError, IndexError):
+            continue
     
     return floor_bboxes
 
 
-def sample_camera_position(floor_bboxes: List[Tuple[np.ndarray, np.ndarray]],
+def sample_camera_position(trimesh_scene: trimesh.Scene,
+                           floor_bboxes: List[Tuple[np.ndarray, np.ndarray]],
                            furniture_bboxes: List[Tuple[np.ndarray, np.ndarray]],
+                           taxonomy: Taxonomy,
                            eye_height: float = 1.6,
-                           max_attempts: int = 20) -> Optional[np.ndarray]:
+                           max_attempts: int = 50) -> Optional[np.ndarray]:
     """
     Sample a valid camera position on the floor, not inside furniture.
+    Uses ray-casting to ensure position is actually above floor mesh (handles L/U-shaped rooms).
     
     Args:
+        trimesh_scene: trimesh scene for ray-casting
         floor_bboxes: List of floor bounding boxes
         furniture_bboxes: List of furniture bounding boxes
+        taxonomy: Taxonomy object for identifying floor meshes
         eye_height: Camera eye height in meters
         max_attempts: Maximum sampling attempts
         
@@ -382,6 +399,50 @@ def sample_camera_position(floor_bboxes: List[Tuple[np.ndarray, np.ndarray]],
     if not floor_bboxes:
         return None
     
+    # Build a combined floor mesh for ray-casting
+    floor_meshes = []
+    floor_ids = [taxonomy.data.get("category2id", {}).get("floor", 0),
+                 taxonomy.data.get("label2id", {}).get("floor", 0)]
+    
+    for node_name in trimesh_scene.graph.nodes_geometry:
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            category_id = metadata.get('category_id', 0)
+            label = metadata.get('label', '').lower()
+            
+            if category_id in floor_ids or label == 'floor':
+                if isinstance(geometry, trimesh.Trimesh):
+                    # Apply transform to get world-space mesh
+                    floor_mesh = geometry.copy()
+                    floor_mesh.apply_transform(transform)
+                    floor_meshes.append(floor_mesh)
+        except (KeyError, ValueError, IndexError):
+            continue
+    
+    if not floor_meshes:
+        return None
+    
+    # Combine all floor meshes into one for ray-casting
+    floor_combined = trimesh.util.concatenate(floor_meshes)
+    
+    # Create ray intersector
+    try:
+        # Try pyembree first (faster)
+        from trimesh.ray import ray_pyembree
+        intersector = ray_pyembree.RayMeshIntersector(floor_combined)
+    except (AttributeError, ImportError):
+        # Fallback to triangle-based intersector
+        from trimesh.ray import ray_triangle
+        intersector = ray_triangle.RayMeshIntersector(floor_combined)
+    
     # Combine all floor bounds
     all_min = np.array([bbox[0] for bbox in floor_bboxes]).min(axis=0)
     all_max = np.array([bbox[1] for bbox in floor_bboxes]).max(axis=0)
@@ -390,21 +451,41 @@ def sample_camera_position(floor_bboxes: List[Tuple[np.ndarray, np.ndarray]],
         # Sample random X, Z within floor bounds
         x = np.random.uniform(all_min[0], all_max[0])
         z = np.random.uniform(all_min[2], all_max[2])
-        y = eye_height
-        
-        camera_pos = np.array([x, y, z])
         
         # Check if inside any furniture bbox
         inside_furniture = False
         for f_min, f_max in furniture_bboxes:
             if (f_min[0] <= x <= f_max[0] and
-                f_min[1] <= y <= f_max[1] and
+                f_min[1] <= eye_height <= f_max[1] and
                 f_min[2] <= z <= f_max[2]):
                 inside_furniture = True
                 break
         
-        if not inside_furniture:
-            return camera_pos
+        if inside_furniture:
+            continue
+        
+        # Ray-cast check: Cast ray downward from above to check if it hits floor
+        ray_origin = np.array([[x, 10.0, z]])  # Start high above
+        ray_direction = np.array([[0.0, -1.0, 0.0]])  # Point downward
+        
+        try:
+            locations, index_ray, index_tri = intersector.intersects_location(
+                ray_origin, ray_direction, multiple_hits=False
+            )
+            
+            if len(locations) == 0:
+                continue  # Ray missed floor -> position is in void
+            
+            # Check if hit is at floor level (within reasonable tolerance)
+            hit_height = locations[0][1]
+            if abs(hit_height) > 0.5:  # Hit something too high (table, etc.)
+                continue
+            
+            # Valid position found
+            return np.array([x, eye_height, z])
+        except Exception:
+            # If ray-casting fails, fall back to bbox check only
+            return np.array([x, eye_height, z])
     
     return None
 
@@ -437,12 +518,21 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     # Calculate scene center for camera target
     all_vertices = []
     for node_name in trimesh_scene.graph.nodes_geometry:
-        geometry = trimesh_scene.geometry[node_name]
-        if isinstance(geometry, trimesh.Trimesh):
-            transform = trimesh_scene.graph.get(node_name)[0]
-            vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
-            vertices_world = (transform @ vertices_hom.T).T[:, :3]
-            all_vertices.append(vertices_world)
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            if isinstance(geometry, trimesh.Trimesh):
+                vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                all_vertices.append(vertices_world)
+        except (KeyError, ValueError, IndexError):
+            continue
     
     if all_vertices:
         all_vertices = np.vstack(all_vertices)
@@ -454,26 +544,35 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     
     # Add meshes with colored materials
     for node_name in trimesh_scene.graph.nodes_geometry:
-        geometry = trimesh_scene.geometry[node_name]
-        if isinstance(geometry, trimesh.Trimesh):
-            metadata = getattr(geometry, 'metadata', {})
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
             
-            # Get category color
-            category_id = metadata.get('category_id', 0)
-            color_rgb = taxonomy.get_color(category_id, mode="category")
-            if color_rgb is None:
-                color_rgb = (127, 127, 127)
-            
-            # Create flat material
-            material = pyrender.MetallicRoughnessMaterial(
-                baseColorFactor=[c/255.0 for c in color_rgb] + [1.0],
-                metallicFactor=0.0,
-                roughnessFactor=1.0
-            )
-            
-            pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, material=material)
-            transform = trimesh_scene.graph.get(node_name)[0]
-            seg_scene.add(pyrender_mesh, pose=transform, name=node_name)
+            if isinstance(geometry, trimesh.Trimesh):
+                metadata = getattr(geometry, 'metadata', {})
+                
+                # Get category color
+                category_id = metadata.get('category_id', 0)
+                color_rgb = taxonomy.get_color(category_id, mode="category")
+                if color_rgb is None:
+                    color_rgb = (127, 127, 127)
+                
+                # Create flat material
+                material = pyrender.MetallicRoughnessMaterial(
+                    baseColorFactor=[c/255.0 for c in color_rgb] + [1.0],
+                    metallicFactor=0.0,
+                    roughnessFactor=1.0
+                )
+                
+                pyrender_mesh = pyrender.Mesh.from_trimesh(geometry, material=material)
+                seg_scene.add(pyrender_mesh, pose=transform, name=node_name)
+        except (KeyError, ValueError, IndexError):
+            continue
     
     # Camera setup
     camera = pyrender.PerspectiveCamera(yfov=np.radians(fov), aspectRatio=width/height)
@@ -496,8 +595,15 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     light_pose = camera_pose.copy()
     seg_scene.add(light, pose=light_pose)
     
+    # Render with anti-aliasing disabled to prevent color bleeding
     renderer = pyrender.OffscreenRenderer(width, height)
-    color, depth = renderer.render(seg_scene)
+    try:
+        # Try to disable anti-aliasing using render flags
+        flags = pyrender.RenderFlags.SKIP_CULL_FACES | pyrender.RenderFlags.FLAT
+        color, depth = renderer.render(seg_scene, flags=flags)
+    except (AttributeError, TypeError):
+        # Fallback if RenderFlags not available or flags parameter not supported
+        color, depth = renderer.render(seg_scene)
     renderer.delete()
     
     return color
@@ -561,18 +667,30 @@ def render_pov(pyrender_scene: pyrender.Scene,
     camera_pose[:3, 2] = -forward
     camera_pose[:3, 3] = camera_pos
     
-    # Add camera and light
+    # Add camera
     camera_node = pyrender_scene.add(camera, pose=camera_pose)
-    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
-    light_pose = camera_pose.copy()
-    pyrender_scene.add(light, pose=light_pose)
+    
+    # Improved lighting: ambient + point light at room center
+    # Set ambient light to ensure nothing is pitch black
+    pyrender_scene.ambient_light = np.array([0.5, 0.5, 0.5])
+    
+    # Add point light near ceiling center to simulate room lighting
+    point_light = pyrender.PointLight(color=[1.0, 1.0, 1.0], intensity=10.0)
+    light_pose = np.eye(4)
+    light_pose[:3, 3] = [camera_target[0], 2.5, camera_target[2]]  # 2.5m above scene center
+    pyrender_scene.add(point_light, pose=light_pose)
+    
+    # Also add directional light from camera for fill
+    dir_light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
+    dir_light_pose = camera_pose.copy()
+    pyrender_scene.add(dir_light, pose=dir_light_pose)
     
     # Render
     renderer = pyrender.OffscreenRenderer(width, height)
     color, depth = renderer.render(pyrender_scene)
     renderer.delete()
     
-    # Remove camera and light
+    # Remove camera and lights
     pyrender_scene.remove_node(camera_node)
     
     return color
@@ -614,8 +732,9 @@ def main():
     povs_rgb_dir = output_dir / "povs" / "rgb"
     povs_seg_dir = output_dir / "povs" / "seg"
     graphs_dir = output_dir / "graphs"
+    geometry_dir = output_dir / "geometry"
     
-    for d in [layouts_rgb_dir, layouts_seg_dir, povs_rgb_dir, povs_seg_dir, graphs_dir]:
+    for d in [layouts_rgb_dir, layouts_seg_dir, povs_rgb_dir, povs_seg_dir, graphs_dir, geometry_dir]:
         d.mkdir(parents=True, exist_ok=True)
     
     # Layout Pass: RGB
@@ -636,16 +755,25 @@ def main():
     # Get furniture bboxes for collision checking
     furniture_bboxes = []
     for node_name in trimesh_scene.graph.nodes_geometry:
-        geometry = trimesh_scene.geometry[node_name]
-        metadata = getattr(geometry, 'metadata', {})
-        if not metadata.get('is_ceiling', False) and metadata.get('label', '') not in ['floor', 'wall']:
-            if isinstance(geometry, trimesh.Trimesh):
-                transform = trimesh_scene.graph.get(node_name)[0]
-                vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
-                vertices_world = (transform @ vertices_hom.T).T[:, :3]
-                min_bounds = vertices_world.min(axis=0)
-                max_bounds = vertices_world.max(axis=0)
-                furniture_bboxes.append((min_bounds, max_bounds))
+        try:
+            transform, geometry_name = trimesh_scene.graph.get(node_name)
+            if geometry_name not in trimesh_scene.geometry:
+                if node_name not in trimesh_scene.geometry:
+                    continue
+                geometry = trimesh_scene.geometry[node_name]
+            else:
+                geometry = trimesh_scene.geometry[geometry_name]
+            
+            metadata = getattr(geometry, 'metadata', {})
+            if not metadata.get('is_ceiling', False) and metadata.get('label', '') not in ['floor', 'wall']:
+                if isinstance(geometry, trimesh.Trimesh):
+                    vertices_hom = np.column_stack([geometry.vertices, np.ones(len(geometry.vertices))])
+                    vertices_world = (transform @ vertices_hom.T).T[:, :3]
+                    min_bounds = vertices_world.min(axis=0)
+                    max_bounds = vertices_world.max(axis=0)
+                    furniture_bboxes.append((min_bounds, max_bounds))
+        except (KeyError, ValueError, IndexError):
+            continue
     
     # Restore ceiling for POV rendering
     pyrender_scene_full = trimesh_to_pyrender_scene(trimesh_scene, hide_ceilings=False)
@@ -656,8 +784,8 @@ def main():
         if pov_count >= args.num_povs:
             break
         
-        camera_pos = sample_camera_position(floor_bboxes, furniture_bboxes, 
-                                          eye_height=1.6, max_attempts=20)
+        camera_pos = sample_camera_position(trimesh_scene, floor_bboxes, furniture_bboxes, 
+                                          taxonomy, eye_height=1.6, max_attempts=50)
         if camera_pos is None:
             print(f"Warning: Failed to sample camera position for POV {i+1}")
             continue
