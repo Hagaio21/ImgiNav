@@ -369,16 +369,17 @@ def render_layout_rgb(trimesh_scene: trimesh.Scene,
     # Calculate camera distance to fit max_size in view
     camera_distance = (max_size / 2.0) * focal_length / (image_size / 2.0)
     
-    # Position camera above the scene along the up direction from metadata
-    # Place camera at the scene center horizontally, but above the scene vertically
-    # Calculate the height above the scene along the up axis
-    camera_height_above_scene = max_bounds[up_axis] + camera_distance
+    # Position camera above the scene using the up_vector from metadata
+    # Calculate how far above the scene we need to be along the up_vector direction
+    # Project scene bounds onto up_vector to find the maximum extent in the up direction
+    max_extent_along_up = np.dot(max_bounds - center, up_vector)
+    min_extent_along_up = np.dot(min_bounds - center, up_vector)
+    scene_height_along_up = max_extent_along_up - min_extent_along_up
+    # Position camera above the highest point along up_vector
+    camera_height_above_scene = max_extent_along_up + camera_distance
     
-    # Start with scene center
-    eye = center.copy().astype(np.float64)
-    # Move camera to the correct height along the up axis (above the scene)
-    eye[up_axis] = camera_height_above_scene
-    
+    # Position camera at scene center, then move it along up_vector direction
+    eye = center.copy().astype(np.float64) + up_vector * camera_height_above_scene
     center_point = center.astype(np.float64)
     
     # Compute view direction (from eye to center, which is opposite to up_vector)
@@ -639,16 +640,17 @@ def render_layout_seg(trimesh_scene: trimesh.Scene,
     # Calculate camera distance to fit max_size in view
     camera_distance = (max_size / 2.0) * focal_length / (image_size / 2.0)
     
-    # Position camera above the scene along the up direction from metadata
-    # Place camera at the scene center horizontally, but above the scene vertically
-    # Calculate the height above the scene along the up axis
-    camera_height_above_scene = max_bounds[up_axis] + camera_distance
+    # Position camera above the scene using the up_vector from metadata
+    # Calculate how far above the scene we need to be along the up_vector direction
+    # Project scene bounds onto up_vector to find the maximum extent in the up direction
+    max_extent_along_up = np.dot(max_bounds - center, up_vector)
+    min_extent_along_up = np.dot(min_bounds - center, up_vector)
+    scene_height_along_up = max_extent_along_up - min_extent_along_up
+    # Position camera above the highest point along up_vector
+    camera_height_above_scene = max_extent_along_up + camera_distance
     
-    # Start with scene center
-    eye = center.copy().astype(np.float64)
-    # Move camera to the correct height along the up axis (above the scene)
-    eye[up_axis] = camera_height_above_scene
-    
+    # Position camera at scene center, then move it along up_vector direction
+    eye = center.copy().astype(np.float64) + up_vector * camera_height_above_scene
     center_point = center.astype(np.float64)
     
     # Compute view direction (from eye to center, which is opposite to up_vector)
@@ -763,7 +765,8 @@ def render_pov(trimesh_scene: trimesh.Scene,
                 camera_target: Optional[np.ndarray] = None,
                 width: int = 256,
                 height: int = 256,
-                fov: float = 70.0) -> np.ndarray:
+                fov: float = 70.0,
+                up_vector: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Render POV RGB image from a camera position.
     
@@ -827,7 +830,12 @@ def render_pov(trimesh_scene: trimesh.Scene,
     # Set up camera
     eye = np.asarray(camera_pos, dtype=np.float64)
     center = np.asarray(camera_target, dtype=np.float64)
-    up = np.array([0, 1, 0], dtype=np.float64)  # Y-up
+    # Use up_vector from metadata if provided, otherwise default to Y-up
+    if up_vector is not None:
+        up = np.asarray(up_vector, dtype=np.float64)
+        up = up / np.linalg.norm(up)  # Normalize
+    else:
+        up = np.array([0, 1, 0], dtype=np.float64)  # Default Y-up
     
     fov_rad = math.radians(fov)
     fx = fy = (width / 2.0) / math.tan(fov_rad / 2.0)
@@ -887,7 +895,8 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
                   camera_target: Optional[np.ndarray] = None,
                   width: int = 256,
                   height: int = 256,
-                  fov: float = 70.0) -> np.ndarray:
+                  fov: float = 70.0,
+                  up_vector: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Render POV segmentation with taxonomy colors.
     """
@@ -959,7 +968,12 @@ def render_pov_seg(trimesh_scene: trimesh.Scene,
     # Set up camera
     eye = np.asarray(camera_pos, dtype=np.float64)
     center = np.asarray(camera_target, dtype=np.float64)
-    up = np.array([0, 1, 0], dtype=np.float64)  # Y-up
+    # Use up_vector from metadata if provided, otherwise default to Y-up
+    if up_vector is not None:
+        up = np.asarray(up_vector, dtype=np.float64)
+        up = up / np.linalg.norm(up)  # Normalize
+    else:
+        up = np.array([0, 1, 0], dtype=np.float64)  # Default Y-up
     
     fov_rad = math.radians(fov)
     fx = fy = (width / 2.0) / math.tan(fov_rad / 2.0)
@@ -1019,6 +1033,7 @@ def sample_camera_positions_from_corners(trimesh_scene: trimesh.Scene,
                                          num_attempts: int = 20,
                                          num_povs: int = 6,
                                          up_axis: int = 1,
+                                         up_vector: Optional[np.ndarray] = None,
                                          eye_height: float = 1.6,
                                          margin: float = 0.5) -> list:
     """
@@ -1043,6 +1058,16 @@ def sample_camera_positions_from_corners(trimesh_scene: trimesh.Scene,
     room_max = np.asarray(room_max)
     room_center = np.asarray(room_center)
     
+    # Use up_vector if provided, otherwise derive from up_axis
+    if up_vector is not None:
+        up_vec = np.asarray(up_vector, dtype=np.float64)
+        up_vec = up_vec / np.linalg.norm(up_vec)
+        # Find the dominant axis from up_vector
+        up_axis = int(np.argmax(np.abs(up_vec)))
+    else:
+        up_vec = np.zeros(3)
+        up_vec[up_axis] = 1.0
+    
     # Calculate room dimensions
     room_size = room_max - room_min
     
@@ -1050,36 +1075,39 @@ def sample_camera_positions_from_corners(trimesh_scene: trimesh.Scene,
     horizontal_axes = [i for i in range(3) if i != up_axis]
     h1, h2 = horizontal_axes[0], horizontal_axes[1]
     
-    # Calculate floor height (minimum along up axis)
-    floor_height = room_min[up_axis]
-    camera_height = floor_height + eye_height
+    # Calculate floor height using up_vector projection
+    floor_height_along_up = np.dot(room_min - room_center, up_vec) + np.dot(room_center, up_vec)
+    camera_height_along_up = floor_height_along_up + eye_height
     
     # Generate corner positions in horizontal plane
     corners = []
     if num_povs >= 4:
         # Four main corners
-        corners.append([room_min[h1] + margin, camera_height, room_min[h2] + margin])
-        corners.append([room_max[h1] - margin, camera_height, room_min[h2] + margin])
-        corners.append([room_min[h1] + margin, camera_height, room_max[h2] - margin])
-        corners.append([room_max[h1] - margin, camera_height, room_max[h2] - margin])
+        corners.append([room_min[h1] + margin, room_min[h2] + margin])
+        corners.append([room_max[h1] - margin, room_min[h2] + margin])
+        corners.append([room_min[h1] + margin, room_max[h2] - margin])
+        corners.append([room_max[h1] - margin, room_max[h2] - margin])
     
     # Add midpoints if we need more POVs
     if num_povs > 4:
         mid_h1 = (room_min[h1] + room_max[h1]) / 2
         mid_h2 = (room_min[h2] + room_max[h2]) / 2
         
-        corners.append([room_min[h1] + margin, camera_height, mid_h2])  # Left wall center
-        corners.append([room_max[h1] - margin, camera_height, mid_h2])  # Right wall center
-        corners.append([mid_h1, camera_height, room_min[h2] + margin])  # Bottom wall center
-        corners.append([mid_h1, camera_height, room_max[h2] - margin])  # Top wall center
+        corners.append([room_min[h1] + margin, mid_h2])  # Left wall center
+        corners.append([room_max[h1] - margin, mid_h2])  # Right wall center
+        corners.append([mid_h1, room_min[h2] + margin])  # Bottom wall center
+        corners.append([mid_h1, room_max[h2] - margin])  # Top wall center
     
-    # Convert to 3D positions with correct up axis
+    # Convert to 3D positions using up_vector
     valid_positions = []
     for corner_2d in corners[:num_povs]:
-        pos = np.zeros(3)
+        # Start with room center
+        pos = room_center.copy()
+        # Move horizontally along h1 and h2 axes
         pos[h1] = corner_2d[0]
-        pos[up_axis] = corner_2d[1]  # Camera height
-        pos[h2] = corner_2d[2]
+        pos[h2] = corner_2d[1]
+        # Move to camera height along up_vector direction
+        pos = pos + up_vec * (camera_height_along_up - np.dot(pos - room_center, up_vec))
         
         # Validate position is not inside furniture (simple bbox check)
         # For now, just add all corners - can add ray-casting later if needed

@@ -246,19 +246,19 @@ def main():
             np.random.seed(args.seed)
             camera_positions = sample_camera_positions_from_corners(
                 trimesh_scene, scene_min, scene_max, scene_center, 
-                num_attempts=20, num_povs=args.num_povs, up_axis=up_axis
+                num_attempts=20, num_povs=args.num_povs, up_axis=up_axis, up_vector=up_vector
             )
             
             for pov_idx, camera_pos in enumerate(camera_positions):
                 try:
                     pov_rgb = render_pov(trimesh_scene, camera_pos, hide_ceilings=True, 
-                                        width=256, height=256, camera_target=scene_center)
+                                        width=256, height=256, camera_target=scene_center, up_vector=up_vector)
                     pov_rgb_path = povs_rgb_dir / f"{args.scene_id}_scene_v{pov_idx+1:02d}.png"
                     Image.fromarray(pov_rgb).save(pov_rgb_path)
                     print(f"  Saved scene POV RGB {pov_idx+1}: {pov_rgb_path}")
                     
                     pov_seg = render_pov_seg(trimesh_scene, camera_pos, taxonomy, hide_ceilings=True,
-                                            width=256, height=256, camera_target=scene_center)
+                                            width=256, height=256, camera_target=scene_center, up_vector=up_vector)
                     pov_seg_path = povs_seg_dir / f"{args.scene_id}_scene_v{pov_idx+1:02d}.png"
                     Image.fromarray(pov_seg).save(pov_seg_path)
                     print(f"  Saved scene POV segmentation {pov_idx+1}: {pov_seg_path}")
@@ -291,19 +291,19 @@ def main():
             np.random.seed(args.seed + hash(room_name) % 1000)
             camera_positions = sample_camera_positions_from_corners(
                 room_scene, room_min, room_max, room_center,
-                num_attempts=20, num_povs=args.num_povs, up_axis=up_axis
+                num_attempts=20, num_povs=args.num_povs, up_axis=up_axis, up_vector=up_vector
             )
             
             for pov_idx, camera_pos in enumerate(camera_positions):
                 try:
                     pov_rgb = render_pov(room_scene, camera_pos, hide_ceilings=True,
-                                        width=256, height=256, camera_target=room_center)
+                                        width=256, height=256, camera_target=room_center, up_vector=up_vector)
                     pov_rgb_path = povs_rgb_dir / f"{args.scene_id}_{safe_room_name}_room_v{pov_idx+1:02d}.png"
                     Image.fromarray(pov_rgb).save(pov_rgb_path)
                     print(f"  Saved room POV RGB {pov_idx+1}: {pov_rgb_path}")
                     
                     pov_seg = render_pov_seg(room_scene, camera_pos, taxonomy, hide_ceilings=True,
-                                            width=256, height=256, camera_target=room_center)
+                                            width=256, height=256, camera_target=room_center, up_vector=up_vector)
                     pov_seg_path = povs_seg_dir / f"{args.scene_id}_{safe_room_name}_room_v{pov_idx+1:02d}.png"
                     Image.fromarray(pov_seg).save(pov_seg_path)
                     print(f"  Saved room POV segmentation {pov_idx+1}: {pov_seg_path}")
