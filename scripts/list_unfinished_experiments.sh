@@ -38,7 +38,37 @@ for exp_dir in "${exp_dirs[@]}"; do
     # Look for metrics CSV file
     metrics_csv="${exp_dir}/${exp_name}_metrics.csv"
     
+    # Try to get target epochs from config file first (needed for not-started experiments)
+    target_epochs="${DEFAULT_TARGET_EPOCHS}"
+    
+    # Look for config in common locations
+    config_dirs=(
+        "experiments/diffusion/clip"
+        "experiments/diffusion/clip/regular"
+        "experiments/diffusion/clip/regular_rooms"
+        "experiments/diffusion/clip/regular_scenes"
+        "experiments/diffusion/clip/spatial"
+        "experiments/diffusion/clip/spatial_rooms"
+        "experiments/diffusion/clip/spatial_scenes"
+    )
+    
+    for config_dir in "${config_dirs[@]}"; do
+        if [ -d "${config_dir}" ]; then
+            # Find YAML file with matching experiment name
+            config_file=$(grep -l "name: ${exp_name}" "${config_dir}"/*.yaml 2>/dev/null | head -n 1)
+            if [ -n "${config_file}" ] && [ -f "${config_file}" ]; then
+                # Try to extract epochs_target or epochs from config
+                config_target=$(grep -E "epochs_target:|epochs:" "${config_file}" | head -n 1 | awk '{print $2}' | tr -d ' ')
+                if [ -n "${config_target}" ] && [[ "${config_target}" =~ ^[0-9]+$ ]]; then
+                    target_epochs="${config_target}"
+                    break
+                fi
+            fi
+        fi
+    done
+    
     if [ ! -f "${metrics_csv}" ]; then
+        unfinished+=("${exp_name} - 0/${target_epochs}")
         echo "  ${exp_name}: No metrics CSV (not started)"
         continue
     fi
@@ -46,6 +76,7 @@ for exp_dir in "${exp_dirs[@]}"; do
     # Check if CSV has data (more than just header)
     line_count=$(wc -l < "${metrics_csv}" | tr -d ' ')
     if [ "${line_count}" -le 1 ]; then
+        unfinished+=("${exp_name} - 0/${target_epochs}")
         echo "  ${exp_name}: Metrics CSV is empty or has only header (not started)"
         continue
     fi
@@ -85,34 +116,6 @@ for exp_dir in "${exp_dirs[@]}"; do
         continue
     fi
     
-    # Try to get target epochs from config file
-    target_epochs="${DEFAULT_TARGET_EPOCHS}"
-    
-    # Look for config in common locations
-    config_dirs=(
-        "experiments/diffusion/clip"
-        "experiments/diffusion/clip/regular"
-        "experiments/diffusion/clip/regular_rooms"
-        "experiments/diffusion/clip/regular_scenes"
-        "experiments/diffusion/clip/spatial"
-        "experiments/diffusion/clip/spatial_rooms"
-        "experiments/diffusion/clip/spatial_scenes"
-    )
-    
-    for config_dir in "${config_dirs[@]}"; do
-        if [ -d "${config_dir}" ]; then
-            # Find YAML file with matching experiment name
-            config_file=$(grep -l "name: ${exp_name}" "${config_dir}"/*.yaml 2>/dev/null | head -n 1)
-            if [ -n "${config_file}" ] && [ -f "${config_file}" ]; then
-                # Try to extract epochs_target or epochs from config
-                config_target=$(grep -E "epochs_target:|epochs:" "${config_file}" | head -n 1 | awk '{print $2}' | tr -d ' ')
-                if [ -n "${config_target}" ] && [[ "${config_target}" =~ ^[0-9]+$ ]]; then
-                    target_epochs="${config_target}"
-                    break
-                fi
-            fi
-        fi
-    done
     
     # Check if unfinished
     if [ "${last_epoch}" -lt "${target_epochs}" ]; then
@@ -134,7 +137,7 @@ if [ ${#unfinished[@]} -gt 0 ]; then
     echo "Unfinished experiments:"
     echo "--------------------------------------------------------------------------------"
     for exp in "${unfinished[@]}"; do
-        echo "${exp}"
+        echo "  ${exp}"
     done
     echo "--------------------------------------------------------------------------------"
 else
