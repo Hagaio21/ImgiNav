@@ -147,22 +147,31 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
             if pov_emb is not None:
                 pov_emb = torch.zeros_like(pov_emb)
             
-    # Handle embedding projection requirements
+    # Handle embedding projection requirements based on config
+    # Only create zero tensors for embeddings that are configured but missing
     # Always use batch_size from latents to ensure consistency
     if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
         # Get dtype from model parameters for consistency (handles mixed precision)
         param_dtype = next(model.embedding_proj.parameters()).dtype
         
-        if text_emb is None and pov_emb is None:
-            # Both are None - create zero tensors with appropriate batch size from latents
+        # Get which embeddings are configured from trainer
+        use_text_emb = getattr(trainer, 'use_text_emb', True)  # Default True for backward compatibility
+        use_pov_emb = getattr(trainer, 'use_pov_emb', True)  # Default True for backward compatibility
+        
+        # Only create zero tensors if the embedding is configured but missing
+        if use_text_emb and text_emb is None:
+            # text_emb is configured but missing - create zero tensor
             text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
+        elif not use_text_emb:
+            # text_emb is not configured - keep as None
+            text_emb = None
+        
+        if use_pov_emb and pov_emb is None:
+            # pov_emb is configured but missing - create zero tensor
             pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
-        elif text_emb is None and pov_emb is not None:
-            # text_emb is None but pov_emb exists - create zero text_emb matching batch size
-            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
-        elif pov_emb is None and text_emb is not None:
-            # pov_emb is None but text_emb exists - create zero pov_emb matching batch size
-            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
+        elif not use_pov_emb:
+            # pov_emb is not configured - keep as None
+            pov_emb = None
     
     # Forward pass and loss computation (Trainer handles scaling for gradient accumulation)
     if trainer.use_amp:
@@ -239,22 +248,31 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     
     # No CFG dropout during evaluation
     
-    # Handle embedding projection requirements
+    # Handle embedding projection requirements based on config
+    # Only create zero tensors for embeddings that are configured but missing
     # Always use batch_size from latents to ensure consistency
     if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
         # Get dtype from model parameters for consistency (handles mixed precision)
         param_dtype = next(model.embedding_proj.parameters()).dtype
         
-        if text_emb is None and pov_emb is None:
-            # Both are None - create zero tensors with appropriate batch size from latents
+        # Get which embeddings are configured from trainer
+        use_text_emb = getattr(trainer, 'use_text_emb', True)  # Default True for backward compatibility
+        use_pov_emb = getattr(trainer, 'use_pov_emb', True)  # Default True for backward compatibility
+        
+        # Only create zero tensors if the embedding is configured but missing
+        if use_text_emb and text_emb is None:
+            # text_emb is configured but missing - create zero tensor
             text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
+        elif not use_text_emb:
+            # text_emb is not configured - keep as None
+            text_emb = None
+        
+        if use_pov_emb and pov_emb is None:
+            # pov_emb is configured but missing - create zero tensor
             pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
-        elif text_emb is None and pov_emb is not None:
-            # text_emb is None but pov_emb exists - create zero text_emb matching batch size
-            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
-        elif pov_emb is None and text_emb is not None:
-            # pov_emb is None but text_emb exists - create zero pov_emb matching batch size
-            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
+        elif not use_pov_emb:
+            # pov_emb is not configured - keep as None
+            pov_emb = None
     
     # Forward pass and loss computation (no cfg_dropout during evaluation)
     if trainer.use_amp:
@@ -281,19 +299,24 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     return loss, logs, {"latents": latents, "t": t, "noise": noise}
 
 
-def save_targets_and_conditions(model, val_loader, device, output_dir, exp_name=None):
+def save_targets_and_conditions(model, val_loader, device, output_dir, config, exp_name=None):
     """Save target images and their conditioning information once.
     
     Creates per-sample structure:
     samples/conditioned/sample_X/
-        ├── conditions/  (text_emb, pov_emb, graph_text, pov image)
+        ├── conditions/  (text_emb, pov_emb, graph_text [only if text_emb in config], pov image [only if pov_emb in config])
         └── target/      (target image)
+    
+    Note: 
+    - graph_text is only saved when text_emb is specified in config["dataset"]["outputs"].
+    - POV image is only saved when pov_emb is specified in config["dataset"]["outputs"].
     
     Args:
         model: DiffusionModel
         val_loader: Validation dataloader
         device: Device string
         output_dir: Output directory
+        config: Experiment configuration dict (must contain dataset.outputs)
         exp_name: Experiment name prefix
     """
     model.eval()
@@ -415,6 +438,11 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, exp_name=
     # Convert to numpy for saving
     target_np = (target_rgb.cpu().numpy() * 255.0).astype(np.uint8)
     
+    # Determine which conditions are configured in the experiment
+    dataset_outputs = config.get("dataset", {}).get("outputs", {})
+    use_text_emb = "text_emb" in dataset_outputs
+    use_pov_emb = "pov_emb" in dataset_outputs
+    
     # Save per-sample structure
     for i in range(batch_size):
         sample_dir = conditioned_dir / f"sample_{i}"
@@ -435,27 +463,31 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, exp_name=
         if pov_emb is not None and pov_emb.shape[1] == 512:
             torch.save(pov_emb[i:i+1].cpu(), conditions_dir / "pov_embedding.pt")
         
-        # Save graph text and POV image
+        # Save graph text and POV image based on config
         idx = selected_indices[i] if i < len(selected_indices) else i
         row = dataset.df.iloc[idx]
         
-        graph_text_path = row.get("graph_text_path", "")
-        if graph_text_path and Path(graph_text_path).exists():
-            try:
-                with open(graph_text_path, 'r') as f:
-                    graph_text = f.read()
-                with open(conditions_dir / "graph_text.txt", 'w') as f:
-                    f.write(graph_text)
-            except Exception:
-                pass
+        # Only save graph_text if text_emb is configured in the experiment
+        if use_text_emb:
+            graph_text_path = row.get("graph_text_path", "")
+            if graph_text_path and Path(graph_text_path).exists():
+                try:
+                    with open(graph_text_path, 'r') as f:
+                        graph_text = f.read()
+                    with open(conditions_dir / "graph_text.txt", 'w') as f:
+                        f.write(graph_text)
+                except Exception:
+                    pass
         
-        pov_path = row.get("pov_path", "")
-        if pov_path and Path(pov_path).exists():
-            try:
-                pov_img = Image.open(pov_path)
-                pov_img.save(conditions_dir / "pov.png")
-            except Exception:
-                pass
+        # Only save POV image if pov_emb is configured in the experiment
+        if use_pov_emb:
+            pov_path = row.get("pov_path", "")
+            if pov_path and Path(pov_path).exists():
+                try:
+                    pov_img = Image.open(pov_path)
+                    pov_img.save(conditions_dir / "pov.png")
+                except Exception:
+                    pass
     
     # Save global metadata
     metadata = {
@@ -465,6 +497,8 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, exp_name=
         "selected_indices": selected_indices,
         "has_text_emb": text_emb is not None,
         "has_pov_emb": pov_emb is not None,
+        "use_text_emb": use_text_emb,
+        "use_pov_emb": use_pov_emb,
     }
     with open(conditioned_dir / "metadata.json", 'w') as f:
         json.dump(metadata, f, indent=2)
@@ -970,6 +1004,11 @@ def main():
     # Store diffusion-specific config in trainer for step function access
     trainer.use_non_uniform_sampling = use_non_uniform_sampling
     
+    # Determine which conditions are configured in the experiment
+    dataset_outputs = config.get("dataset", {}).get("outputs", {})
+    trainer.use_text_emb = "text_emb" in dataset_outputs
+    trainer.use_pov_emb = "pov_emb" in dataset_outputs
+    
     # Restore optimizer and scheduler state if resuming
     if should_resume and "optimizer_state" in extra_state:
         trainer.optimizer.load_state_dict(extra_state["optimizer_state"])
@@ -994,6 +1033,12 @@ def main():
     
     # Set CFG dropout rate in trainer (constant throughout training)
     trainer.cfg_dropout_rate = cfg_dropout_rate
+    
+    # Print conditioning configuration for verification
+    print(f"\n[CONDITIONING CONFIG]")
+    print(f"  text_emb: {'ENABLED' if trainer.use_text_emb else 'DISABLED'}")
+    print(f"  pov_emb:  {'ENABLED' if trainer.use_pov_emb else 'DISABLED'}")
+    print(f"{'='*60}\n")
     
     # Training loop
     for epoch in range(start_epoch, epochs):
@@ -1049,7 +1094,7 @@ def main():
         
         # Save targets and conditions once (at epoch 1)
         if val_loader and (epoch + 1 == 1):
-            save_targets_and_conditions(model, val_loader, device_obj, output_dir, exp_name=exp_name)
+            save_targets_and_conditions(model, val_loader, device_obj, output_dir, config, exp_name=exp_name)
         
         # Save generated samples every sample_interval epochs
         if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
