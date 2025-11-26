@@ -43,21 +43,46 @@ for exp_dir in "${exp_dirs[@]}"; do
         continue
     fi
     
-    # Get last epoch from CSV (last row, first column should be epoch)
-    # Use tail -n 1 to get last line, then awk to get first column
-    last_epoch=$(tail -n 1 "${metrics_csv}" | awk -F',' '{print $1}' | tr -d ' ')
+    # Check if CSV has data (more than just header)
+    line_count=$(wc -l < "${metrics_csv}" | tr -d ' ')
+    if [ "${line_count}" -le 1 ]; then
+        echo "  ${exp_name}: Metrics CSV is empty or has only header (not started)"
+        continue
+    fi
+    
+    # Get last epoch from CSV
+    # First, check if CSV has a header row
+    first_line=$(head -n 1 "${metrics_csv}")
+    has_header=false
+    epoch_col=1
+    
+    if echo "${first_line}" | grep -q "epoch"; then
+        # Has header - find epoch column index
+        has_header=true
+        epoch_col=$(echo "${first_line}" | tr ',' '\n' | grep -n "^epoch$" | cut -d: -f1)
+        if [ -z "${epoch_col}" ]; then
+            # Try case-insensitive
+            epoch_col=$(echo "${first_line}" | tr ',' '\n' | grep -ni "^epoch$" | cut -d: -f1)
+        fi
+        if [ -z "${epoch_col}" ]; then
+            # Fallback to first column
+            epoch_col=1
+        fi
+    fi
+    
+    # Get last epoch from last data row
+    if [ "${has_header}" = true ]; then
+        # Skip header, get last line
+        last_epoch=$(tail -n +2 "${metrics_csv}" | tail -n 1 | awk -F',' -v col="${epoch_col}" '{print $col}' | tr -d ' ' | tr -d '"')
+    else
+        # No header, get last line
+        last_epoch=$(tail -n 1 "${metrics_csv}" | awk -F',' -v col="${epoch_col}" '{print $col}' | tr -d ' ' | tr -d '"')
+    fi
     
     # Check if last_epoch is a valid number
     if ! [[ "${last_epoch}" =~ ^[0-9]+$ ]]; then
-        # Try to get epoch column by name (if header exists)
-        # Find which column is "epoch"
-        epoch_col=$(head -n 1 "${metrics_csv}" | tr ',' '\n' | grep -n "^epoch$" | cut -d: -f1)
-        if [ -n "${epoch_col}" ]; then
-            last_epoch=$(tail -n 1 "${metrics_csv}" | awk -F',' -v col="${epoch_col}" '{print $col}' | tr -d ' ')
-        else
-            echo "  ${exp_name}: Could not parse epoch from CSV"
-            continue
-        fi
+        echo "  ${exp_name}: Could not parse epoch from CSV (got: '${last_epoch}')"
+        continue
     fi
     
     # Try to get target epochs from config file
