@@ -56,7 +56,7 @@ scheduler:
 training:
   seed: 2024
   train_split: 0.8
-  batch_size: 4
+  batch_size: 64
   num_workers: 4
   shuffle: true
   epochs: 1000
