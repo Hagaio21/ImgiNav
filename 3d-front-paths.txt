@@ -1,0 +1,3 @@
+"D:\datasets\3D-FRONT_FUTURE\3D-FRONT"
+"D:\datasets\3D-FRONT_FUTURE\3D-FRONT-texture"
+"D:\datasets\3D-FRONT_FUTURE\3D-FUTURE-model"
