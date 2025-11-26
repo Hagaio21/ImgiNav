@@ -5,7 +5,7 @@ experiment:
   epochs_target: 300
 
 dataset:
-  manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_latents.csv
+  manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv
   outputs:
     latent: latent_path_vae_clip_spatial
     text_emb: graph_embedding_path
