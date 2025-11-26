@@ -380,22 +380,33 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, exp_name=
     if target_latents is None:
         return
     
-    # Flatten embeddings if needed
+    # Get batch size and device from latents
+    batch_size = target_latents.shape[0]
+    device_obj = target_latents.device
+    param_dtype = target_latents.dtype
+    
+    # Flatten embeddings if needed and ensure correct dimensions
     if text_emb is not None:
-        if text_emb.dim() > 1:
+        if text_emb.dim() > 2:
             text_emb = text_emb.flatten(start_dim=1)
-    elif pov_emb is not None:
-        text_emb = torch.zeros_like(pov_emb)
-        if text_emb.dim() > 1:
-            text_emb = text_emb.flatten(start_dim=1)
+        # Ensure text_emb has correct shape [B, 384]
+        if text_emb.shape[1] != 384:
+            # If wrong dimension, create zero tensor with correct shape
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
+    else:
+        # Create zero text_emb with correct dimensions
+        text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
     
     if pov_emb is not None:
-        if pov_emb.dim() > 1:
+        if pov_emb.dim() > 2:
             pov_emb = pov_emb.flatten(start_dim=1)
-    elif text_emb is not None:
-        pov_emb = torch.zeros_like(text_emb)
-        if pov_emb.dim() > 1:
-            pov_emb = pov_emb.flatten(start_dim=1)
+        # Ensure pov_emb has correct shape [B, 512]
+        if pov_emb.shape[1] != 512:
+            # If wrong dimension, create zero tensor with correct shape
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
+    else:
+        # Create zero pov_emb with correct dimensions
+        pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
     
     # Decode target latents to RGB
     with torch.no_grad():
@@ -581,16 +592,30 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         if pov_emb_path.exists():
             pov_emb_list.append(torch.load(pov_emb_path, map_location=device_obj))
     
-    # Stack embeddings back to batch
+    # Stack embeddings back to batch and validate dimensions
     if text_emb_list:
         text_emb = torch.cat(text_emb_list, dim=0)
+        # Ensure text_emb has correct shape [B, 384]
+        if text_emb.shape[1] != 384:
+            # If wrong dimension, create zero tensor with correct shape
+            param_dtype = next(model.parameters()).dtype
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
+            print(f"  Warning: text_emb had wrong dimension, using zero tensor")
     else:
-        text_emb = None
+        param_dtype = next(model.parameters()).dtype
+        text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
     
     if pov_emb_list:
         pov_emb = torch.cat(pov_emb_list, dim=0)
+        # Ensure pov_emb has correct shape [B, 512]
+        if pov_emb.shape[1] != 512:
+            # If wrong dimension, create zero tensor with correct shape
+            param_dtype = next(model.parameters()).dtype
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
+            print(f"  Warning: pov_emb had wrong dimension ({pov_emb.shape[1]}), using zero tensor")
     else:
-        pov_emb = None
+        param_dtype = next(model.parameters()).dtype
+        pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
     
     # No type-based conditioning
     cond = None
