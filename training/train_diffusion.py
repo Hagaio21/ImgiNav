@@ -121,13 +121,22 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
     text_emb = batch.get("text_emb", None)
     pov_emb = batch.get("pov_emb", None)
     
-    # Ensure embeddings are 1D (flatten if needed)
+    # Get batch size from latents (ground truth for batch size)
+    batch_size = latents.shape[0]
+    
+    # Ensure embeddings are 1D (flatten if needed) and match batch size
     if text_emb is not None:
-        if text_emb.dim() > 1:
+        if text_emb.dim() > 2:
             text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+        # Ensure batch size matches latents
+        if text_emb.shape[0] != batch_size:
+            raise ValueError(f"text_emb batch size {text_emb.shape[0]} doesn't match latents batch size {batch_size}")
     if pov_emb is not None:
-        if pov_emb.dim() > 1:
+        if pov_emb.dim() > 2:
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+        # Ensure batch size matches latents
+        if pov_emb.shape[0] != batch_size:
+            raise ValueError(f"pov_emb batch size {pov_emb.shape[0]} doesn't match latents batch size {batch_size}")
     
     # Apply CFG dropout during training
     if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
@@ -139,18 +148,21 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
                 pov_emb = torch.zeros_like(pov_emb)
             
     # Handle embedding projection requirements
+    # Always use batch_size from latents to ensure consistency
     if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
+        # Get dtype from model parameters for consistency (handles mixed precision)
+        param_dtype = next(model.embedding_proj.parameters()).dtype
+        
         if text_emb is None and pov_emb is None:
             # Both are None - create zero tensors with appropriate batch size from latents
-            batch_size = latents.shape[0]
-            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=latents.dtype)
-            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=latents.dtype)
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
         elif text_emb is None and pov_emb is not None:
-            # text_emb is None but pov_emb exists - create zero text_emb
-            text_emb = torch.zeros((pov_emb.shape[0], 384), device=pov_emb.device, dtype=pov_emb.dtype)
+            # text_emb is None but pov_emb exists - create zero text_emb matching batch size
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
         elif pov_emb is None and text_emb is not None:
-            # pov_emb is None but text_emb exists - create zero pov_emb
-            pov_emb = torch.zeros((text_emb.shape[0], 512), device=text_emb.device, dtype=text_emb.dtype)
+            # pov_emb is None but text_emb exists - create zero pov_emb matching batch size
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
     
     # Forward pass and loss computation (Trainer handles scaling for gradient accumulation)
     if trainer.use_amp:
@@ -208,29 +220,41 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     text_emb = batch.get("text_emb", None)
     pov_emb = batch.get("pov_emb", None)
     
-    # Ensure embeddings are 1D (flatten if needed)
+    # Get batch size from latents (ground truth for batch size)
+    batch_size = latents.shape[0]
+    
+    # Ensure embeddings are 1D (flatten if needed) and match batch size
     if text_emb is not None:
-        if text_emb.dim() > 1:
+        if text_emb.dim() > 2:
             text_emb = text_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+        # Ensure batch size matches latents
+        if text_emb.shape[0] != batch_size:
+            raise ValueError(f"text_emb batch size {text_emb.shape[0]} doesn't match latents batch size {batch_size}")
     if pov_emb is not None:
-        if pov_emb.dim() > 1:
+        if pov_emb.dim() > 2:
             pov_emb = pov_emb.flatten(start_dim=1)  # [B, ...] -> [B, D]
+        # Ensure batch size matches latents
+        if pov_emb.shape[0] != batch_size:
+            raise ValueError(f"pov_emb batch size {pov_emb.shape[0]} doesn't match latents batch size {batch_size}")
     
     # No CFG dropout during evaluation
     
     # Handle embedding projection requirements
+    # Always use batch_size from latents to ensure consistency
     if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
+        # Get dtype from model parameters for consistency (handles mixed precision)
+        param_dtype = next(model.embedding_proj.parameters()).dtype
+        
         if text_emb is None and pov_emb is None:
             # Both are None - create zero tensors with appropriate batch size from latents
-            batch_size = latents.shape[0]
-            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=latents.dtype)
-            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=latents.dtype)
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
         elif text_emb is None and pov_emb is not None:
-            # text_emb is None but pov_emb exists - create zero text_emb
-            text_emb = torch.zeros((pov_emb.shape[0], 384), device=pov_emb.device, dtype=pov_emb.dtype)
+            # text_emb is None but pov_emb exists - create zero text_emb matching batch size
+            text_emb = torch.zeros((batch_size, 384), device=device_obj, dtype=param_dtype)
         elif pov_emb is None and text_emb is not None:
-            # pov_emb is None but text_emb exists - create zero pov_emb
-            pov_emb = torch.zeros((text_emb.shape[0], 512), device=text_emb.device, dtype=text_emb.dtype)
+            # pov_emb is None but text_emb exists - create zero pov_emb matching batch size
+            pov_emb = torch.zeros((batch_size, 512), device=device_obj, dtype=param_dtype)
     
     # Forward pass and loss computation (no cfg_dropout during evaluation)
     if trainer.use_amp:
