@@ -56,7 +56,7 @@ scheduler:
 training:
   seed: 2024
   train_split: 0.8
-  batch_size: 32  # Medium: 64²×4×4, attention at downs+bottleneck allows larger batch
+  batch_size: 64  # Medium: 64²×4×4, attention at downs+bottleneck allows larger batch
   num_workers: 4
   shuffle: true
   epochs: 1000
