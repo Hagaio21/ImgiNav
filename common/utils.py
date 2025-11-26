@@ -24,7 +24,7 @@ def write_json(data: Dict, path: Path, indent: int = 2):
 
 def create_progress_tracker(total: int, description: str = "Processing"):
     def update_progress(current: int, item_name: str = "", success: bool = True):
-        status = "✓" if success else "✗"
+        status = "[OK]" if success else "[FAIL]"
         percentage = (current / total) * 100 if total > 0 else 0
         print(f"[{current}/{total}] ({percentage:.1f}%) {status} {description} {item_name}", flush=True)
     return update_progress

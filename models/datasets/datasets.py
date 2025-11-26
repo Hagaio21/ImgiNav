@@ -30,6 +30,8 @@ class ManifestDataset(BaseComponent, Dataset):
                 raise FileNotFoundError(f"Manifest not found: {manifest}")
 
             self.df = pd.read_csv(manifest, low_memory=False)
+            # Strip whitespace from column names (common CSV issue)
+            self.df.columns = self.df.columns.str.strip()
             self.manifest_dir = manifest.parent  # Store manifest directory for relative path resolution
         transform_cfg = self._init_kwargs.get("transform", None)
         # Build transform from config if provided, otherwise use as-is (for callable transforms)
@@ -48,8 +50,47 @@ class ManifestDataset(BaseComponent, Dataset):
             required_cols = list(self.outputs.values())
             if self.label_col:
                 required_cols.append(self.label_col)
-            # Drop rows where any required column has NaN
-            self.df = self.df.dropna(subset=required_cols)
+            # Strip whitespace from required column names for matching
+            required_cols = [col.strip() if isinstance(col, str) else col for col in required_cols]
+            # Filter to only columns that exist in the DataFrame
+            existing_cols = [col for col in required_cols if col in self.df.columns]
+            missing_cols = [col for col in required_cols if col not in self.df.columns]
+            
+            # Column name mapping for case/whitespace variations
+            col_name_mapping = {}
+            
+            if missing_cols:
+                print(f"[WARNING] Required columns not found in manifest: {missing_cols}")
+                print(f"[WARNING] Available columns: {list(self.df.columns)}")
+                # Check for case-insensitive or whitespace variations
+                for missing_col in missing_cols[:]:  # Copy list to modify during iteration
+                    for df_col in self.df.columns:
+                        if missing_col.lower().strip() == df_col.lower().strip():
+                            print(f"[INFO] Found case/whitespace variation: '{missing_col}' -> '{df_col}'")
+                            col_name_mapping[missing_col] = df_col
+                            existing_cols.append(df_col)
+                            missing_cols.remove(missing_col)
+                            break
+                
+                # Raise error if critical columns are still missing
+                if existing_cols:
+                    print(f"[WARNING] Proceeding with existing columns: {existing_cols}")
+                else:
+                    raise KeyError(f"None of the required columns found in manifest. Required: {required_cols}, Available: {list(self.df.columns)}")
+            
+            # Update outputs mapping to use corrected column names
+            if col_name_mapping:
+                self.outputs = {key: col_name_mapping.get(col, col) for key, col in self.outputs.items()}
+                if self.label_col and self.label_col in col_name_mapping:
+                    self.label_col = col_name_mapping[self.label_col]
+            
+            # Drop rows where any required column has NaN (only for existing columns)
+            if existing_cols:
+                initial_len = len(self.df)
+                self.df = self.df.dropna(subset=existing_cols)
+                dropped_count = initial_len - len(self.df)
+                if dropped_count > 0:
+                    print(f"[INFO] Dropped {dropped_count} rows with NaN values in required columns: {existing_cols}")
 
         # optional filters
         filters = self._init_kwargs.get("filters", None)
@@ -133,6 +174,11 @@ class ManifestDataset(BaseComponent, Dataset):
         if self.outputs:
             sample = {}
             for key, col in self.outputs.items():
+                if col not in row.index:
+                    raise KeyError(
+                        f"Column '{col}' (required for output '{key}') not found in manifest. "
+                        f"Available columns: {list(self.df.columns)}"
+                    )
                 sample[key] = self._load_value(row[col])
             if self.return_path:
                 sample["paths"] = {k: str(row[c]) for k, c in self.outputs.items()}
