@@ -2,10 +2,12 @@
 # This file contains paths to all required configs and checkpoints
 
 diffusion:
-  config: experiments/Diffusion_Uncond/E5_Cosine_128/output/experiment_config.yaml
-  checkpoint: experiments/Diffusion_Uncond/E5_Cosine_128/checkpoints/unet_best.pt
+  config: experiments/diffusion/clip/regular_rooms/small_down_bottleneck_text_only.yaml
+  checkpoint: checkpoints/diff_clip_regular_rooms_small_down_bottleneck_text_only_checkpoint_best.pt
 
 autoencoder:
-  config: experiments/AEVAE_sweep/AE_large_latent_seg/output/autoencoder_config.yaml
-  checkpoint: experiments/AEVAE_sweep/AE_large_latent_seg/checkpoints/ae_latest.pt
+  # For standalone checkpoints, autoencoder config is embedded in diffusion checkpoint
+  # These paths are only used if the diffusion checkpoint doesn't contain decoder config
+  config: null
+  checkpoint: checkpoints/vae_checkpoint_best.pt
 

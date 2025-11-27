@@ -36,6 +36,30 @@ def main():
         default="ddim",
         help="Sampling mode"
     )
+    parser.add_argument(
+        "--text-emb",
+        type=str,
+        default=None,
+        help="Path to text embedding file (.pt)"
+    )
+    parser.add_argument(
+        "--pov-emb",
+        type=str,
+        default=None,
+        help="Path to POV embedding file (.pt)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Batch size for generation"
+    )
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=1.0,
+        help="Guidance scale for classifier-free guidance"
+    )
     
     args = parser.parse_args()
     
@@ -57,18 +81,17 @@ def main():
     if "model" in diffusion_cfg and "diffusion" in diffusion_cfg["model"]:
         diffusion_cfg = diffusion_cfg["model"]["diffusion"]
     
-    diffusion_cfg["autoencoder"] = {"config": ae_config, "checkpoint": ae_checkpoint}
-    
+    # Load config - for standalone checkpoints, config may come from checkpoint
     from training.utils import load_config
     config = load_config(diff_config)
-    diffusion = DiffusionModel.from_config(config, device=device)
     
-    state = torch.load(diff_checkpoint, map_location=device)
-    loaded_state = state.get("state_dict", state.get("model", state))
-    if loaded_state and list(loaded_state.keys())[0].startswith('module.'):
-        loaded_state = {k[7:]: v for k, v in loaded_state.items()}
-    diffusion.load_state_dict(loaded_state, strict=False)
+    # If autoencoder config is provided, merge it
+    if ae_config and ae_checkpoint:
+        config["autoencoder"] = {"config": ae_config, "checkpoint": ae_checkpoint}
     
+    # Load model from checkpoint (standalone checkpoint contains all needed info)
+    diffusion = DiffusionModel.load_checkpoint(diff_checkpoint, map_location=device, config=config)
+    diffusion = diffusion.to(device)
     diffusion.eval()
     
     method = args.mode
@@ -77,22 +100,48 @@ def main():
     else:
         num_steps = diffusion.scheduler.num_steps
     
-    batch_size = 4
+    batch_size = args.batch_size
     eta = 0.0
-    guidance_scale = 1.0
+    guidance_scale = args.guidance_scale
+    
+    # Load text and POV embeddings if provided
+    text_emb = None
+    pov_emb = None
+    
+    if args.text_emb:
+        text_emb = torch.load(args.text_emb, map_location=device)
+        if text_emb.dim() > 2:
+            text_emb = text_emb.flatten(start_dim=1)
+        # Expand to batch size if needed
+        if text_emb.shape[0] == 1 and batch_size > 1:
+            text_emb = text_emb.repeat(batch_size, 1)
+        print(f"Loaded text embedding: {text_emb.shape}")
+    
+    if args.pov_emb:
+        pov_emb = torch.load(args.pov_emb, map_location=device)
+        if pov_emb.dim() > 2:
+            pov_emb = pov_emb.flatten(start_dim=1)
+        # Expand to batch size if needed
+        if pov_emb.shape[0] == 1 and batch_size > 1:
+            pov_emb = pov_emb.repeat(batch_size, 1)
+        print(f"Loaded POV embedding: {pov_emb.shape}")
     
     with torch.no_grad():
         samples = diffusion.sample(
             batch_size=batch_size,
-            image=True,
-            cond=None,
             num_steps=num_steps,
             method=method,
             eta=eta,
             device=device,
             guidance_scale=guidance_scale,
+            text_emb=text_emb,
+            pov_emb=pov_emb,
             verbose=True
         )
+        
+        # Extract RGB from samples dict
+        if isinstance(samples, dict) and "rgb" in samples:
+            samples = samples["rgb"]
 
     # Save final samples
     output_path = Path(args.output)

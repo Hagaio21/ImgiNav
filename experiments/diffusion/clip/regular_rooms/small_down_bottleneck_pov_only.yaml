@@ -3,34 +3,31 @@ experiment:
   phase: diffusion_training
   save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_regular_rooms_small_down_bottleneck_pov_only
   epochs_target: 1000
-
 dataset:
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv
   outputs:
     latent: latent_path_vae_clip
     pov_emb: pov_embedding_path
-    # No text_emb - POV conditioning only
   filters:
     type:
     - room
     is_empty:
     - false
   return_path: false
-
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/experiments/clip/vae_clip/checkpoints/vae_clip_checkpoint_best.pt
+  checkpoint: C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImgiNav\checkpoints\vae_checkpoint_best.pt
   frozen: true
-
 latent_clamp_min: -6.0
 latent_clamp_max: 6.0
 scale_factor: 1.0
-
 embedding_projection:
   type: CLIPEmbeddingToSpatial
   output_channels: 48
-  spatial_size: [32, 32]  # Increased for better conditioning
+  spatial_size:
+  - 32
+  - 32
   combine_method: average
-
+  _clip_projections_embedded: true
 unet:
   type: UnetWithAttention
   in_channels: 4
@@ -44,15 +41,13 @@ unet:
   use_attention: true
   attention_heads: 2
   attention_at:
-    - downs
-    - bottleneck              # Attention at downs and bottleneck only
+  - downs
+  - bottleneck
   enable_cross_attention: true
   use_ema: false
-
 scheduler:
   type: LinearScheduler
   num_steps: 1000
-
 training:
   seed: 2024
   train_split: 0.8
@@ -78,4 +73,3 @@ training:
     key: pred_noise
     target: noise
     weight: 1.0
-

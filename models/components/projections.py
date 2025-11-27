@@ -966,13 +966,27 @@ class CLIPEmbeddingToSpatial(BaseEmbeddingToSpatial):
         clip_projections = self._init_kwargs.get("clip_projections", None)
         
         # Load or use provided CLIP projections
+        # Special case: if _clip_projections_embedded is True, 
+        # it means weights are in parent's state_dict and will be loaded later
+        embedded = self._init_kwargs.get("_clip_projections_embedded", False)
         if clip_projections is None:
-            raise ValueError(
-                "CLIPEmbeddingToSpatial requires clip_projections. "
-                "Can be: CLIPProjections instance, path to CLIP projection checkpoint, or path to VAE checkpoint with CLIP projections"
-            )
-        
-        if isinstance(clip_projections, str) or isinstance(clip_projections, Path):
+            if embedded:
+                # Create minimal CLIPProjections - weights will come from state_dict
+                # Import here to avoid circular import
+                self.clip_projections = CLIPProjections(
+                    projection_dim=256,
+                    text_dim=384,
+                    pov_dim=512
+                )
+                # Return early - don't process further since it's embedded
+                # The spatial_proj layers will be initialized below
+            else:
+                raise ValueError(
+                    "CLIPEmbeddingToSpatial requires clip_projections. "
+                    "Can be: CLIPProjections instance, path to CLIP projection checkpoint, or path to VAE checkpoint with CLIP projections. "
+                    "For standalone checkpoints, set _clip_projections_embedded=True in config."
+                )
+        elif isinstance(clip_projections, str) or isinstance(clip_projections, Path):
             checkpoint_path = Path(clip_projections)
             
             # Try loading as CLIP projection checkpoint first
