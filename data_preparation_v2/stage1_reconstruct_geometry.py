@@ -3,7 +3,7 @@
 Stage 1: Scene Geometry Reconstruction - FIXED VERSION v2
 
 Fixes:
-1. Floor = light gray, Wall = dark gray (for visibility in layouts)
+1. Floor = dark gray, Wall = light gray (for visibility in layouts)
 2. Furniture textures/colors are PRESERVED (not overwritten)
 3. Proper vertex color handling for GLB export
 """
@@ -33,16 +33,22 @@ def load_taxonomy(taxonomy_path: Path) -> Dict:
 
 def get_category_color(category: str, taxonomy: Dict) -> Tuple[int, int, int]:
     """Get color for a category from taxonomy."""
-    # Check new taxonomy structure with groups
-    for group in ["architecture", "doors", "windows", "furniture"]:
-        group_data = taxonomy.get(group, {})
-        if category in group_data:
-            return tuple(group_data[category]["color"])
-    
-    # Fallback to old flat structure
     category_to_color = taxonomy.get("category_to_color", {})
-    color = category_to_color.get(category, [127, 127, 127])
-    return tuple(color)
+    
+    # Try exact match first
+    if category in category_to_color:
+        return tuple(category_to_color[category])
+    
+    # Try lowercase match (taxonomy has "floor", "wall" in lowercase)
+    if category.lower() in category_to_color:
+        return tuple(category_to_color[category.lower()])
+    
+    # Try capitalized match
+    if category.capitalize() in category_to_color:
+        return tuple(category_to_color[category.capitalize()])
+    
+    # Fallback to default gray
+    return (127, 127, 127)
 
 
 def load_mesh(model_dir: Path, jid: str):
@@ -168,27 +174,46 @@ def ensure_mesh_visual(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     return mesh
 
 
-def create_arch_mesh(arch: Dict, arch_type: str) -> trimesh.Trimesh:
+def create_arch_mesh(arch: Dict, arch_type: str, taxonomy: Dict = None) -> trimesh.Trimesh:
     """
     Create an architectural mesh (wall/floor/door/window) from 3D-FRONT JSON data.
     
     Args:
         arch: Architectural element dictionary from 3D-FRONT JSON
         arch_type: "floor", "wall", "door", or "window"
+        taxonomy: Taxonomy dictionary for colors (optional)
     """
     vertices = np.array(arch["xyz"], dtype=np.float64).reshape(-1, 3)
     faces = np.array(arch["faces"], dtype=np.int64).reshape(-1, 3)
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
     
-    # Set different colors for each type
-    if arch_type == "floor":
-        color = [180, 180, 180, 255]  # Light gray for floor
-    elif arch_type == "door":
-        color = [255, 100, 100, 255]  # Red/salmon for doors
-    elif arch_type == "window":
-        color = [100, 200, 255, 255]  # Light blue for windows
+    # Get color from taxonomy or use defaults
+    # Taxonomy has lowercase keys: "floor", "wall", "Door", "Window"
+    if taxonomy:
+        category_to_color = taxonomy.get("category_to_color", {})
+        if arch_type == "floor":
+            color = category_to_color.get("floor", [200, 200, 200])
+        elif arch_type == "wall":
+            color = category_to_color.get("wall", [50, 50, 50])
+        elif arch_type == "door":
+            color = category_to_color.get("Door", [255, 100, 100])
+        elif arch_type == "window":
+            color = category_to_color.get("Window", [100, 200, 255])
+        else:
+            color = [127, 127, 127]
+        color = list(color) + [255]  # Add alpha
     else:
-        color = [60, 60, 60, 255]  # Dark gray for walls
+        # Fallback defaults matching taxonomy
+        if arch_type == "floor":
+            color = [200, 200, 200, 255]  # Light gray for floor
+        elif arch_type == "wall":
+            color = [50, 50, 50, 255]  # Dark gray for walls
+        elif arch_type == "door":
+            color = [255, 100, 100, 255]  # Red/salmon for doors
+        elif arch_type == "window":
+            color = [100, 200, 255, 255]  # Light blue for windows
+        else:
+            color = [127, 127, 127, 255]
     
     # Apply vertex colors using ColorVisuals
     n_vertices = len(mesh.vertices)
@@ -229,6 +254,10 @@ def apply_category_color(mesh: trimesh.Trimesh, category: str, taxonomy: Dict) -
         mesh=mesh_copy,
         vertex_colors=colors
     )
+    
+    # Debug log for floor/wall
+    if category in ('Floor', 'Wall', 'floor', 'wall'):
+        logger.debug(f"apply_category_color: {category} -> color={color}")
     
     return mesh_copy
 
@@ -310,19 +339,19 @@ def process_scene_geometry(
                     
                     if 'Floor' in arch_type_str:
                         category = 'Floor'
-                        mesh = create_arch_mesh(arch, "floor")
+                        mesh = create_arch_mesh(arch, "floor", taxonomy)
                         is_arch = True
                     elif 'Door' in arch_type_str or 'door' in arch_type_str:
                         category = 'Door'
-                        mesh = create_arch_mesh(arch, "door")
+                        mesh = create_arch_mesh(arch, "door", taxonomy)
                         is_arch = False  # Doors should be in graph
                     elif 'Window' in arch_type_str or 'window' in arch_type_str:
                         category = 'Window'
-                        mesh = create_arch_mesh(arch, "window")
+                        mesh = create_arch_mesh(arch, "window", taxonomy)
                         is_arch = False  # Windows should be in graph
                     else:
                         category = 'Wall'
-                        mesh = create_arch_mesh(arch, "wall")
+                        mesh = create_arch_mesh(arch, "wall", taxonomy)
                         is_arch = True
                     
                     if mesh is None or mesh.is_empty:
