@@ -14,8 +14,7 @@ export MKL_INTERFACE_LAYER=LP64
 cleanup() {
   local exit_code=$?
   echo "Cleaning up temporary files..."
-  rm -rf "${SHARD_SCENES_DIR:-}" 2>/dev/null || true
-  rm -f "${SHARD_PREFIX:-}"* 2>/dev/null || true
+  rm -f "${SHARD_PREFIX:-}"* || true
   if [ ${exit_code} -ne 0 ]; then
     exit ${exit_code}
   fi
@@ -45,7 +44,6 @@ mkdir -p "${TMPDIR_LOCAL}"
 JOB_UNIQUE_ID="${IDX}_$$"
 SHARD_PREFIX="${TMPDIR_LOCAL}/scenes_shard_${JOB_UNIQUE_ID}_"
 SHARD_TXT=""
-SHARD_SCENES_DIR="${TMPDIR_LOCAL}/filtered_scenes_shard_${JOB_UNIQUE_ID}"
 
 echo "=============================================================================="
 echo "Starting Stage 1 processing - Task ${IDX}/${N_SHARDS}"
@@ -78,63 +76,6 @@ fi
 SHARD_COUNT=$(wc -l < "${SHARD_TXT}")
 echo "Task ${IDX}/${N_SHARDS}: processing ${SHARD_COUNT} scenes"
 echo ""
-
-# Create temporary directory and hardlinks
-echo "Creating temporary scenes directory: ${SHARD_SCENES_DIR}"
-mkdir -p "${SHARD_SCENES_DIR}"
-
-echo "Creating hardlinks for scene files for shard ${IDX}..."
-declare -A SCENE_FILE_MAP
-while IFS= read -r -d '' scene_file; do
-  scene_basename=$(basename "${scene_file}")
-  scene_id="${scene_basename%.json}"
-  SCENE_FILE_MAP["${scene_id}"]="${scene_file}"
-done < <(find "${SCENES_ROOT}" -type f -name "*.json" -print0 2>/dev/null)
-
-echo "Found ${#SCENE_FILE_MAP[@]} scene files in ${SCENES_ROOT}"
-
-LINKED=0
-MISSING=0
-while IFS= read -r scene_id; do
-  scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)
-  if [ -z "${scene_id}" ]; then
-    continue
-  fi
-  
-  scene_file="${SCENE_FILE_MAP[${scene_id}]:-}"
-  
-  if [ -n "${scene_file}" ] && [ -f "${scene_file}" ]; then
-    # Try hardlink first, fallback to symlink if cross-filesystem
-    if ln "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
-      LINKED=$((LINKED + 1))
-    elif ln -s "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
-      LINKED=$((LINKED + 1))
-    else
-      echo "WARNING: Failed to link ${scene_id}.json (hardlink and symlink both failed)" >&2
-      MISSING=$((MISSING + 1))
-    fi
-  else
-    MISSING=$((MISSING + 1))
-  fi
-done < "${SHARD_TXT}"
-
-echo "Created ${LINKED} links (${MISSING} missing)"
-if [ ${LINKED} -eq 0 ]; then
-  echo "ERROR: No scene files were linked for shard ${IDX}" >&2
-  echo "This usually means SCENES_ROOT and TMPDIR are on different filesystems" >&2
-  echo "SCENES_ROOT: ${SCENES_ROOT}" >&2
-  echo "TMPDIR: ${TMPDIR_LOCAL}" >&2
-  exit 3
-fi
-
-# Verify files actually exist in the directory
-ACTUAL_FILES=$(find "${SHARD_SCENES_DIR}" -type f -name "*.json" 2>/dev/null | wc -l)
-if [ "${ACTUAL_FILES}" -eq 0 ]; then
-  echo "ERROR: No JSON files found in ${SHARD_SCENES_DIR} after linking" >&2
-  echo "This suggests hardlinks/symlinks failed silently" >&2
-  exit 3
-fi
-echo "Verified: ${ACTUAL_FILES} scene files in temporary directory"
 
 mkdir -p "${OUTPUT_GEOMETRY_DIR}"
 
@@ -181,7 +122,8 @@ echo "Starting at $(date)"
 
 STAGE1_ARGS=(
   "${STAGE1_SCRIPT}"
-  --scenes-dir "${SHARD_SCENES_DIR}"
+  --scenes-dir "${SCENES_ROOT}"
+  --scene-list "${SHARD_TXT}"
   --model-dir "${MODEL_DIR}"
   --model-info "${MODEL_INFO}"
   --taxonomy "${TAXONOMY_FILE}"
@@ -214,8 +156,7 @@ bsub -J "stage2_${IDX}" \
 }
 
 # Cleanup after submitting next stage
-rm -rf "${SHARD_SCENES_DIR}" 2>/dev/null || true
-rm -f "${SHARD_PREFIX}"* 2>/dev/null || true
+rm -f "${SHARD_PREFIX}"* || true
 
 echo ""
 echo "=============================================================================="

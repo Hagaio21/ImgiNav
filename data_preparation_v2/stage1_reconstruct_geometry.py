@@ -457,6 +457,7 @@ def process_one_scene(
 def main():
     parser = argparse.ArgumentParser(description="Stage 1: Reconstruct scene geometry (fixed v2)")
     parser.add_argument("--scenes-dir", required=True)
+    parser.add_argument("--scene-list", default=None, help="File containing scene IDs (one per line)")
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--model-info", required=True)
     parser.add_argument("--taxonomy", required=True)
@@ -472,10 +473,38 @@ def main():
     output_dir = Path(args.output_dir)
     texture_dir = Path(args.texture_dir) if args.texture_dir else None
     
-    scene_files = list(scenes_dir.glob("*.json"))
-    if not scene_files:
-        logger.error(f"No scene files found in {scenes_dir}")
-        return
+    # If scene-list is provided, read scene IDs and find files in scenes_dir
+    if args.scene_list:
+        scene_list_path = Path(args.scene_list)
+        if not scene_list_path.exists():
+            logger.error(f"Scene list file not found: {scene_list_path}")
+            return
+        
+        scene_ids = []
+        with open(scene_list_path, 'r') as f:
+            for line in f:
+                scene_id = line.strip()
+                if scene_id:
+                    scene_ids.append(scene_id)
+        
+        # Find scene files recursively in scenes_dir
+        scene_files = []
+        for scene_id in scene_ids:
+            found = list(scenes_dir.rglob(f"{scene_id}.json"))
+            if found:
+                scene_files.extend(found)
+            else:
+                logger.warning(f"Scene file not found: {scene_id}.json in {scenes_dir}")
+        
+        if not scene_files:
+            logger.error(f"No scene files found for {len(scene_ids)} scene IDs in {scenes_dir}")
+            return
+    else:
+        # Fallback: glob all JSON files in scenes_dir
+        scene_files = list(scenes_dir.glob("*.json"))
+        if not scene_files:
+            logger.error(f"No scene files found in {scenes_dir}")
+            return
     
     if args.limit:
         scene_files = scene_files[:args.limit]
