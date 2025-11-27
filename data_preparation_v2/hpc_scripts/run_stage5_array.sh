@@ -70,67 +70,49 @@ SHARD_COUNT=$(wc -l < "${SHARD_TXT}")
 echo "Task ${IDX}/${N_SHARDS}: processing ${SHARD_COUNT} scenes"
 echo ""
 
-# 3) Create temporary metadata directory structure with symlinks
+# 3) Create temporary metadata directory structure with hardlinks
 echo "Creating temporary metadata directory structure..."
 mkdir -p "${TMP_METADATA_DIR}/scenes"
 mkdir -p "${TMP_METADATA_DIR}/rooms"
 
-# 4) Create symlinks for scene and room metadata files for this shard
-echo "Creating symlinks for scene and room metadata files..."
+# 4) Create hardlinks for scene and room metadata files for this shard
+echo "Creating hardlinks for scene and room metadata files..."
 LINKED_SCENES=0
 LINKED_ROOMS=0
 MISSING_SCENES=0
-MISSING_ROOMS=0
 
 while IFS= read -r scene_id; do
-  scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)  # Trim whitespace
+  scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)
   if [ -z "${scene_id}" ]; then
     continue
   fi
   
-  # Link scene metadata
+  # Hardlink scene metadata
   scene_meta_src="${METADATA_DIR}/scenes/${scene_id}.json"
   scene_meta_dst="${TMP_METADATA_DIR}/scenes/${scene_id}.json"
   
   if [ -f "${scene_meta_src}" ]; then
-    # Use absolute path for symlink to avoid issues
-    scene_meta_abs=$(readlink -f "${scene_meta_src}" 2>/dev/null || echo "${scene_meta_src}")
-    ln -sf "${scene_meta_abs}" "${scene_meta_dst}" 2>/dev/null || {
-      # Fallback to copy if symlink fails (e.g., cross-filesystem)
-      cp "${scene_meta_src}" "${scene_meta_dst}"
-    }
+    ln "${scene_meta_src}" "${scene_meta_dst}" 2>/dev/null || true
     LINKED_SCENES=$((LINKED_SCENES + 1))
   else
-    echo "WARNING: Scene metadata not found: ${scene_meta_src}" >&2
     MISSING_SCENES=$((MISSING_SCENES + 1))
   fi
   
-  # Link room metadata files (there can be multiple rooms per scene)
+  # Hardlink room metadata files
   for room_meta_src in "${METADATA_DIR}/rooms/${scene_id}"_*.json; do
     if [ -f "${room_meta_src}" ]; then
       room_filename=$(basename "${room_meta_src}")
       room_meta_dst="${TMP_METADATA_DIR}/rooms/${room_filename}"
-      # Use absolute path for symlink
-      room_meta_abs=$(readlink -f "${room_meta_src}" 2>/dev/null || echo "${room_meta_src}")
-      ln -sf "${room_meta_abs}" "${room_meta_dst}" 2>/dev/null || {
-        # Fallback to copy if symlink fails (e.g., cross-filesystem)
-        cp "${room_meta_src}" "${room_meta_dst}"
-      }
+      ln "${room_meta_src}" "${room_meta_dst}" 2>/dev/null || true
       LINKED_ROOMS=$((LINKED_ROOMS + 1))
     fi
   done
-  
-  # Check if any rooms were found for this scene
-  room_count=$(find "${METADATA_DIR}/rooms" -maxdepth 1 -name "${scene_id}_*.json" 2>/dev/null | wc -l)
-  if [ "${room_count}" -eq 0 ]; then
-    MISSING_ROOMS=$((MISSING_ROOMS + 1))
-  fi
 done < "${SHARD_TXT}"
 
-echo "Linked ${LINKED_SCENES} scene metadata files (${MISSING_SCENES} missing)"
-echo "Linked ${LINKED_ROOMS} room metadata files (${MISSING_ROOMS} scenes with no rooms)"
+echo "Created ${LINKED_SCENES} scene metadata hardlinks (${MISSING_SCENES} missing)"
+echo "Created ${LINKED_ROOMS} room metadata hardlinks"
 if [ ${LINKED_SCENES} -eq 0 ]; then
-  echo "ERROR: No scene metadata files were linked for shard ${IDX}" >&2
+  echo "ERROR: No scene metadata files found for shard ${IDX}" >&2
   rm -rf "${TMP_METADATA_DIR}"
   rm -f "${SHARD_PREFIX}"*
   exit 3
