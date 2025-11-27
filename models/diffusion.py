@@ -4,162 +4,124 @@ from pathlib import Path
 import yaml
 
 from models.components.base_model import BaseModel
-from models.autoencoder import Autoencoder
 from models.decoder import Decoder
 from models.components.unet import UnetWithAttention
-from models.components.scheduler import SCHEDULER_REGISTRY
-from models.components.embedding_projection import EmbeddingToSpatial, CLIPEmbeddingToSpatial
+from models.components.registry import create_component, COMPONENT_REGISTRY
 
 
 class DiffusionModel(BaseModel):
     """Minimal end-to-end diffusion model for training."""
 
-    def _build(self):
-        # Check for dependency injection first (encoder/decoder objects passed directly)
-        encoder = self._init_kwargs.get("encoder", None)
-        decoder = self._init_kwargs.get("decoder", None)
+    def _load_model_from_checkpoint(self, checkpoint_path):
+        """
+        Load any BaseModel from checkpoint by inspecting its config.
         
-        if decoder is not None:
-            # Dependency injection: use provided decoder
-            self.decoder = decoder
-            self.encoder = encoder  # May be None
-            self.autoencoder = None
-            self._has_encoder = encoder is not None
-            self._is_vae = (encoder is not None and 
-                          hasattr(encoder, 'variational') and 
-                          encoder.variational)
-            
-            # Freeze if requested
-            if self._init_kwargs.get("frozen", False):
-                self.decoder.freeze()
-        else:
-            # Fall back to config-based loading (backward compatibility)
-            ae_cfg = self._init_kwargs.get("autoencoder", None)
-            decoder_cfg = self._init_kwargs.get("decoder", None)
-            
-            if ae_cfg:
-                ae_checkpoint = ae_cfg.get("checkpoint")
-                encoder_cfg = ae_cfg.get("encoder", {}) if isinstance(ae_cfg, dict) else {}
-                self._is_vae = isinstance(encoder_cfg, dict) and encoder_cfg.get("variational", False)
-                
-                if ae_checkpoint:
-                    autoencoder = Autoencoder.load_checkpoint(ae_checkpoint, map_location="cpu")
-                    self.decoder = autoencoder.decoder
-                    if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
-                        self._is_vae = getattr(autoencoder.encoder, 'variational', False)
-                else:
-                    decoder_subcfg = ae_cfg.get("decoder")
-                    if decoder_subcfg:
-                        decoder_subcfg = decoder_subcfg.copy()
-                        decoder_subcfg.pop("checkpoint", None)
-                        self.decoder = Decoder.from_config(decoder_subcfg)
-                    else:
-                        raise ValueError("Cannot build decoder: no checkpoint path and no decoder config in autoencoder config")
-                
-                self.encoder = None
-                self.autoencoder = None
-                self._has_encoder = False
-                if ae_cfg.get("frozen", False):
-                    self.decoder.freeze()
-            elif decoder_cfg:
-                decoder_checkpoint = decoder_cfg.get("checkpoint")
-                self._is_vae = False
-                if decoder_checkpoint:
-                    autoencoder = Autoencoder.load_checkpoint(decoder_checkpoint, map_location="cpu")
-                    self.decoder = autoencoder.decoder
-                    if hasattr(autoencoder, 'encoder') and autoencoder.encoder is not None:
-                        self._is_vae = getattr(autoencoder.encoder, 'variational', False)
-                else:
-                    decoder_cfg_copy = decoder_cfg.copy()
-                    decoder_cfg_copy.pop("checkpoint", None)
-                    self.decoder = Decoder.from_config(decoder_cfg_copy)
-                
-                self.encoder = None
-                self.autoencoder = None
-                self._has_encoder = False
-                if decoder_cfg.get("frozen", False):
-                    self.decoder.freeze()
+        Returns:
+            BaseModel instance with decoder attribute
+        """
+        path = Path(checkpoint_path)
+        payload = torch.load(path, map_location="cpu")
+        
+        config = payload.get("config")
+        if not config:
+            raise ValueError(f"Checkpoint {checkpoint_path} has no config")
+        
+        # Get model type from config
+        model_type = config.get("type")
+        if not model_type:
+            raise ValueError(f"Checkpoint config has no 'type' field")
+        
+        # Use component registry to get the model class
+        if model_type not in COMPONENT_REGISTRY:
+            raise ValueError(f"Unknown model type '{model_type}' in checkpoint. Available: {list(COMPONENT_REGISTRY.keys())}")
+        
+        model_cls = COMPONENT_REGISTRY[model_type]
+        if not issubclass(model_cls, BaseModel):
+            raise ValueError(f"Type '{model_type}' is not a BaseModel subclass")
+        
+        # Create model from config
+        model = model_cls.from_config(config)
+        
+        # Load state dict
+        state_dict = payload.get("state_dict", payload)
+        model.load_state_dict(state_dict, strict=False)
+        
+        return model
+    
+    def _setup_decoder(self, decoder=None, decoder_cfg=None, autoencoder_cfg=None):
+        """Setup decoder from various sources."""
+        if decoder is not None and not isinstance(decoder, dict):
+            # Dependency injection: use provided decoder instance
+            self.add_component("decoder", decoder)
+            frozen = self._init_kwargs.get("frozen", False)
+        elif autoencoder_cfg is not None:
+            # Load from autoencoder config
+            ae_checkpoint = autoencoder_cfg.get("checkpoint")
+            if ae_checkpoint:
+                # Load model from checkpoint and extract decoder
+                model = self._load_model_from_checkpoint(ae_checkpoint)
+                if not hasattr(model, 'decoder'):
+                    raise ValueError(f"Model loaded from {ae_checkpoint} has no 'decoder' attribute")
+                self.add_component("decoder", model.decoder)
             else:
-                raise ValueError("DiffusionModel requires either 'encoder'/'decoder' objects (dependency injection) or 'autoencoder'/'decoder' config")
+                # Build decoder from autoencoder config
+                decoder_subcfg = autoencoder_cfg.get("decoder")
+                if decoder_subcfg:
+                    decoder = self.create_component_from_config(decoder_subcfg, default_type="Decoder")
+                    self.add_component("decoder", decoder)
+                else:
+                    raise ValueError("Cannot build decoder: no checkpoint and no decoder config in autoencoder config")
+            frozen = autoencoder_cfg.get("frozen", False)
+        elif decoder_cfg is not None:
+            # Load from decoder config
+            decoder_checkpoint = decoder_cfg.get("checkpoint")
+            if decoder_checkpoint:
+                # Load model from checkpoint and extract decoder
+                model = self._load_model_from_checkpoint(decoder_checkpoint)
+                if not hasattr(model, 'decoder'):
+                    raise ValueError(f"Model loaded from {decoder_checkpoint} has no 'decoder' attribute")
+                self.add_component("decoder", model.decoder)
+            else:
+                # Build from decoder config
+                decoder = self.create_component_from_config(decoder_cfg, default_type="Decoder")
+                self.add_component("decoder", decoder)
+            frozen = decoder_cfg.get("frozen", False)
+        else:
+            raise ValueError("DiffusionModel requires decoder (object, decoder config, or autoencoder config)")
+        
+        if frozen:
+            self.decoder.freeze()
+
+    def _build(self):
+        # Setup decoder from various sources
+        decoder = self._init_kwargs.get("decoder", None)
+        decoder_cfg = self._init_kwargs.get("decoder", None)
+        autoencoder_cfg = self._init_kwargs.get("autoencoder", None)
+        
+        self._setup_decoder(
+            decoder=decoder if not isinstance(decoder, dict) else None,
+            decoder_cfg=decoder_cfg if isinstance(decoder_cfg, dict) else None,
+            autoencoder_cfg=autoencoder_cfg
+        )
         
         unet_cfg = self._init_kwargs.get("unet", {})
         sched_cfg = self._init_kwargs.get("scheduler", {})
 
         # Build embedding projection
         embedding_proj_cfg = self._init_kwargs.get("embedding_projection", None)
-        self.embedding_proj = None
         conditioning_channels = None
         
         if embedding_proj_cfg:
+            # Set default output_channels from UNet config if not specified
             if "output_channels" not in embedding_proj_cfg:
                 embedding_proj_cfg["output_channels"] = unet_cfg.get("base_channels", 96)
             conditioning_channels = embedding_proj_cfg.get("output_channels")
             
-            # Load CLIP projections from VAE if using CLIPEmbeddingToSpatial
-            embedding_proj_type = embedding_proj_cfg.get("type", "EmbeddingToSpatial")
-            if embedding_proj_type == "CLIPEmbeddingToSpatial":
-                # Try to get CLIP projections from injected autoencoder first
-                clip_projections = None
-                if hasattr(self, 'autoencoder') and self.autoencoder is not None:
-                    if hasattr(self.autoencoder, 'clip_projections') and self.autoencoder.clip_projections is not None:
-                        clip_projections = self.autoencoder.clip_projections
-                
-                # Fall back to loading from checkpoint if not injected
-                if clip_projections is None:
-                    ae_cfg = self._init_kwargs.get("autoencoder", None)
-                    if not ae_cfg or not ae_cfg.get("checkpoint"):
-                        raise ValueError(
-                            "CLIPEmbeddingToSpatial requires either an injected autoencoder with CLIP projections "
-                            "or autoencoder.checkpoint to load CLIP projections. "
-                            "This experiment requires CLIP projections from the VAE."
-                        )
-                    
-                    try:
-                        autoencoder = Autoencoder.load_checkpoint(ae_cfg.get("checkpoint"), map_location="cpu")
-                        if not hasattr(autoencoder, 'clip_projections') or autoencoder.clip_projections is None:
-                            raise ValueError(
-                                f"VAE checkpoint {ae_cfg.get('checkpoint')} does not have CLIP projections. "
-                                "This experiment requires a VAE trained with CLIP projections."
-                            )
-                        clip_projections = autoencoder.clip_projections
-                        print("✓ Loaded CLIP projections from VAE checkpoint for embedding projection")
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"Failed to load CLIP projections from VAE checkpoint: {e}\n"
-                            "This experiment requires CLIP projections. Cannot proceed without them."
-                        ) from e
-                else:
-                    print("✓ Using CLIP projections from injected autoencoder for embedding projection")
-                
-                embedding_proj_cfg["clip_projections"] = clip_projections
-            
-            # Create embedding projection
-            if embedding_proj_type == "CLIPEmbeddingToSpatial":
-                self.embedding_proj = CLIPEmbeddingToSpatial.from_config(embedding_proj_cfg)
-                # Verify CLIP projections are actually set
-                if not hasattr(self.embedding_proj, 'clip_projections') or self.embedding_proj.clip_projections is None:
-                    raise RuntimeError(
-                        "CLIPEmbeddingToSpatial was created but clip_projections is None. "
-                        "This experiment requires CLIP projections to work."
-                    )
-                print("✓ CLIPEmbeddingToSpatial initialized with CLIP projections")
-                
-                # Freeze CLIP projections (from VAE, should not be trained)
-                # But keep spatial_proj trainable (it learns to convert CLIP embeddings to spatial features)
-                if hasattr(self.embedding_proj, 'clip_projections') and self.embedding_proj.clip_projections is not None:
-                    for p in self.embedding_proj.clip_projections.parameters():
-                        p.requires_grad = False
-                    print("✓ CLIP projections frozen (from VAE)")
-                
-                # spatial_proj remains trainable - it learns to project CLIP joint space to spatial features
-                spatial_proj_params = sum(p.numel() for p in self.embedding_proj.spatial_proj.parameters())
-                print(f"✓ spatial_proj trainable ({spatial_proj_params:,} parameters)")
-            else:
-                self.embedding_proj = EmbeddingToSpatial.from_config(embedding_proj_cfg)
-                # For non-CLIP embedding projection, freeze everything
-                for p in self.embedding_proj.parameters():
-                    p.requires_grad = False
-                print("✓ Embedding projection frozen (only UNet will be trained)")
+            # Create embedding projection using unified registry
+            # create_component handles default type and all initialization
+            embedding_proj = self.create_component("embedding_projection", default_type="EmbeddingToSpatial")
+            if embedding_proj is not None:
+                self.add_component("embedding_projection", embedding_proj)
         
         # Build UNet
         unet_type = unet_cfg.get("type", "").lower()
@@ -180,131 +142,69 @@ class DiffusionModel(BaseModel):
             if "use_attention" not in unet_cfg:
                 unet_cfg["use_attention"] = False
         
-        self.unet = UnetWithAttention.from_config(unet_cfg)
-        
-        # Freeze UNet if requested
-        if unet_cfg.get("frozen", False):
-            self.unet.freeze()
-        if unet_cfg.get("freeze_downblocks", False):
-            self.unet.freeze_downblocks()
-        if unet_cfg.get("freeze_upblocks", False):
-            self.unet.freeze_upblocks()
-        freeze_blocks = unet_cfg.get("freeze_blocks", None)
-        if freeze_blocks:
-            self.unet.freeze_blocks(freeze_blocks)
+        # Use unified component registry for UNet
+        if "type" not in unet_cfg:
+            unet_cfg["type"] = "UnetWithAttention"
+        self.add_component("unet", create_component(unet_cfg))
 
-        # Build scheduler
-        sched_type = sched_cfg.get("type", "CosineScheduler")
-        if sched_type not in SCHEDULER_REGISTRY:
-            raise ValueError(f"Unknown scheduler: {sched_type}")
-        self.scheduler = SCHEDULER_REGISTRY[sched_type].from_config(sched_cfg)
+        # Build scheduler using unified component registry
+        if "type" not in sched_cfg:
+            sched_cfg["type"] = "CosineScheduler"
+        self.add_component("scheduler", create_component(sched_cfg))
         
         self.scale_factor = self._init_kwargs.get("scale_factor", 1.0)
         self._latent_clamp_min = self._init_kwargs.get("latent_clamp_min", -6.0)
         self._latent_clamp_max = self._init_kwargs.get("latent_clamp_max", 6.0)
         
-        self._write_model_statistics()
+        # Write model statistics if save_path is available
+        if hasattr(self, 'save_path') and self.save_path:
+            self._write_model_statistics()
 
-    def _write_model_statistics(self):
-        """Write model parameter statistics to Statistics.txt file."""
-        try:
-            save_path = self._init_kwargs.get("save_path", None)
-            if save_path is None:
-                exp_cfg = self._init_kwargs.get("experiment", {})
-                save_path = exp_cfg.get("save_path", None)
-            
-            if save_path is None:
-                return
-            
-            save_path = Path(save_path)
-            save_path.mkdir(parents=True, exist_ok=True)
-            stats_file = save_path / "Statistics.txt"
-            
-            unet_trainable = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
-            unet_total = sum(p.numel() for p in self.unet.parameters())
-            unet_frozen = unet_total - unet_trainable
-            
-            decoder_trainable = 0
-            decoder_total = 0
-            if hasattr(self, 'decoder'):
-                decoder_trainable = sum(p.numel() for p in self.decoder.parameters() if p.requires_grad)
-                decoder_total = sum(p.numel() for p in self.decoder.parameters())
-            
-            with open(stats_file, 'w') as f:
-                f.write("Model Statistics\n")
-                f.write("=" * 60 + "\n\n")
-                f.write("UNet Parameters:\n")
-                f.write(f"  Trainable: {unet_trainable:,} ({unet_trainable / 1_000_000:.2f}M)\n")
-                f.write(f"  Total: {unet_total:,} ({unet_total / 1_000_000:.2f}M)\n")
-                f.write(f"  Frozen: {unet_frozen:,} ({unet_frozen / 1_000_000:.2f}M)\n")
-                if hasattr(self, 'decoder'):
-                    f.write(f"\nDecoder Parameters (frozen):\n")
-                    f.write(f"  Total: {decoder_total:,} ({decoder_total / 1_000_000:.2f}M)\n")
-                f.write(f"\nTotal Trainable Parameters: {unet_trainable:,} ({unet_trainable / 1_000_000:.2f}M)\n")
-        except Exception as e:
-            import warnings
-            warnings.warn(f"Failed to write model statistics: {e}")
+    def _get_component_statistics(self):
+        """Get parameter statistics for all tracked components."""
+        stats = {}
+        for component, name in self._component_names.items():
+            if component is not None:
+                component_stats = self._get_module_statistics(component, label=name.capitalize())
+                if component_stats:
+                    # Add "(frozen)" suffix if all parameters are frozen
+                    if component_stats["trainable"] == 0:
+                        component_stats["label"] = f"{component_stats['label']} (frozen)"
+                    stats[name] = component_stats
+        return stats
 
-    def forward(self, x0_or_latents, t, cond=None, noise=None, text_emb=None, pov_emb=None):
-        # Validate CLIP projections are being used if configured
-        if self.embedding_proj is not None:
-            if isinstance(self.embedding_proj, CLIPEmbeddingToSpatial):
-                if not hasattr(self.embedding_proj, 'clip_projections') or self.embedding_proj.clip_projections is None:
-                    raise RuntimeError(
-                        "CLIPEmbeddingToSpatial is configured but clip_projections is None. "
-                        "This experiment requires CLIP projections. Cannot proceed."
-                    )
+    def forward(self, latents, t, noise=None, text_emb=None, pov_emb=None):
+        """
+        Forward pass of diffusion model.
         
-        if self.embedding_proj is not None and (text_emb is not None or pov_emb is not None):
-            conditioning_signal = self.embedding_proj(text_emb, pov_emb)
+        Args:
+            latents: Latent tensor [B, C, H, W]
+            t: Timestep tensor [B]
+            noise: Optional noise tensor (generated if None)
+            text_emb: Optional text embeddings
+            pov_emb: Optional POV embeddings
+        
+        Returns:
+            Dict with prediction outputs
+        """
+        # Prepare conditioning signal
+        embedding_proj = getattr(self, 'embedding_projection', None)
+        if embedding_proj is not None and (text_emb is not None or pov_emb is not None):
+            conditioning_signal = embedding_proj(text_emb, pov_emb)
         else:
             conditioning_signal = None
         
-        if self._has_encoder:
-            encoder_out = self.encoder(x0_or_latents)
-            if "latent" in encoder_out:
-                latents = encoder_out["latent"]
-            elif "mu" in encoder_out and "logvar" in encoder_out:
-                latents = encoder_out["mu"]
-            else:
-                raise ValueError(f"Encoder output must contain 'latent' or 'mu'/'logvar'. Got: {list(encoder_out.keys())}")
-            
-            if self.scale_factor != 1.0:
-                latents = latents * self.scale_factor
-            
-            if noise is None:
-                noise = self.scheduler.randn_like(latents)
-            elif noise.shape != latents.shape:
-                if noise.shape == x0_or_latents.shape:
-                    noise_out = self.encoder(noise)
-                    if "latent" in noise_out:
-                        noise = noise_out["latent"]
-                    elif "mu" in noise_out:
-                        noise = noise_out["mu"]
-                    else:
-                        noise = self.scheduler.randn_like(latents)
-                else:
-                    noise = self.scheduler.randn_like(latents)
-        else:
-            if isinstance(x0_or_latents, dict):
-                if "latent" in x0_or_latents:
-                    latents = x0_or_latents["latent"]
-                elif "mu" in x0_or_latents:
-                    latents = x0_or_latents["mu"]
-                else:
-                    raise ValueError(f"Latent dict must contain 'latent' or 'mu'. Got: {list(x0_or_latents.keys())}")
-            else:
-                latents = x0_or_latents
-            
-            if self.scale_factor != 1.0:
-                latents = latents * self.scale_factor
-            
-            if noise is None:
-                noise = self.scheduler.randn_like(latents)
+        # Prepare noise
+        if noise is None or noise.shape != latents.shape:
+            noise = self.scheduler.randn_like(latents)
+        
+        # Apply scale factor
+        if self.scale_factor != 1.0:
+            latents = latents * self.scale_factor
 
         result = self.scheduler.add_noise(latents, noise, t, return_scaled_noise=True)
         noisy_latents, noise_used = result
-        pred_noise = self.unet(noisy_latents, t, cond=None, conditioning_signal=conditioning_signal)
+        pred_noise = self.unet(noisy_latents, t, conditioning_signal=conditioning_signal)
 
         device_obj = noisy_latents.device
         alpha_bars = self.scheduler.alpha_bars.to(device_obj)
@@ -320,7 +220,7 @@ class DiffusionModel(BaseModel):
             "noise": noise_used,
         }
 
-    def sample(self, batch_size=1, latent_shape=None, cond=None, num_steps=50, 
+    def sample(self, batch_size=1, latent_shape=None, num_steps=50, 
                method="ddim", eta=0.0, device=None, return_history=False, verbose=False, 
                guidance_scale=1.0, text_emb=None, pov_emb=None):
  
@@ -348,44 +248,31 @@ class DiffusionModel(BaseModel):
         history = [] if return_history else None
         
         # Prepare conditioning signal for conditional pass
-        if self.embedding_proj is not None and (text_emb is not None or pov_emb is not None):
-            conditioning_signal = self.embedding_proj(text_emb, pov_emb)
+        embedding_proj = getattr(self, 'embedding_projection', None)
+        if embedding_proj is not None and (text_emb is not None or pov_emb is not None):
+            conditioning_signal = embedding_proj(text_emb, pov_emb)
             
             # For CFG, prepare unconditional (zero) conditioning signal
             # This must match what was used during training: zero embeddings passed through embedding_proj
-            # During training, CFG dropout sets both text_emb and pov_emb to zeros_like (if they exist)
-            # or creates zero tensors (if they don't exist), then passes both through embedding_proj
+            # During training, CFG dropout sets text_emb and pov_emb to None (or zeros)
+            # The embedding_proj handles None inputs by returning zeros through its projections
             use_cfg = guidance_scale > 1.0
             if use_cfg:
-                # Create zero embeddings matching the conditional embeddings
-                # Get dtype and device from existing embeddings or model parameters
+                # For unconditional signal, pass None to embedding_proj
+                # The projections will handle None by returning zeros of the correct shape
+                # This matches training behavior where None/zero embeddings are passed through the projection
+                # Need to provide batch_size and device if both embeddings are None
                 if text_emb is not None:
                     batch_size_cfg = text_emb.shape[0]
                     device_cfg = text_emb.device
-                    dtype_cfg = text_emb.dtype
-                    zero_text_emb = torch.zeros_like(text_emb)
                 elif pov_emb is not None:
                     batch_size_cfg = pov_emb.shape[0]
                     device_cfg = pov_emb.device
-                    dtype_cfg = pov_emb.dtype
-                    zero_text_emb = torch.zeros((batch_size_cfg, 384), device=device_cfg, dtype=dtype_cfg)
                 else:
-                    # Fallback: use batch_size and device from function args
                     batch_size_cfg = batch_size
                     device_cfg = device
-                    param_dtype = next(self.embedding_proj.parameters()).dtype
-                    dtype_cfg = param_dtype
-                    zero_text_emb = torch.zeros((batch_size_cfg, 384), device=device_cfg, dtype=dtype_cfg)
                 
-                # Create zero pov_emb (always needed for embedding_proj)
-                if pov_emb is not None:
-                    zero_pov_emb = torch.zeros_like(pov_emb)
-                else:
-                    zero_pov_emb = torch.zeros((batch_size_cfg, 512), device=device_cfg, dtype=dtype_cfg)
-                
-                # Project zero embeddings through embedding_proj to get the same projected zero signal as training
-                # This matches training behavior where zero embeddings are passed through the projection
-                unconditional_signal = self.embedding_proj(zero_text_emb, zero_pov_emb)
+                unconditional_signal = embedding_proj(None, None, batch_size=batch_size_cfg, device=device_cfg)
             else:
                 unconditional_signal = None
         else:
@@ -402,14 +289,15 @@ class DiffusionModel(BaseModel):
             with torch.no_grad():
                 self.unet.eval()
                 
+                # Always compute conditional prediction
+                cond_pred = self.unet(latents, t_batch, conditioning_signal=conditioning_signal)
+                
+                # Apply CFG if needed
                 if use_cfg:
-                    # Conditional prediction with actual conditioning signal
-                    cond_pred = self.unet(latents, t_batch, cond=None, conditioning_signal=conditioning_signal)
-                    # Unconditional prediction with projected zero signal (matches training)
-                    uncond_pred = self.unet(latents, t_batch, cond=None, conditioning_signal=unconditional_signal)
+                    uncond_pred = self.unet(latents, t_batch, conditioning_signal=unconditional_signal)
                     pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
                 else:
-                    pred_noise = self.unet(latents, t_batch, cond=None, conditioning_signal=conditioning_signal)
+                    pred_noise = cond_pred
             
             if method == "ddim":
                 alpha_bars = self.scheduler.alpha_bars.to(device)
@@ -488,24 +376,13 @@ class DiffusionModel(BaseModel):
         return cls.from_config(cfg)
 
     def to_config(self):
-        cfg = {
-            "type": "DiffusionModel",
-            "unet": self.unet.to_config(),
-            "scheduler": self.scheduler.to_config(),
-        }
-        if self._has_encoder:
-            cfg["autoencoder"] = self.autoencoder.to_config()
-        else:
-            cfg["decoder"] = self.decoder.to_config()
+        cfg = {"type": "DiffusionModel"}
+        cfg = self._components_to_config(cfg)
+        
+        # Non-component config values
         if hasattr(self, 'scale_factor') and self.scale_factor != 1.0:
             cfg["scale_factor"] = self.scale_factor
-        if hasattr(self, 'embedding_proj') and self.embedding_proj is not None:
-            embedding_cfg = self.embedding_proj.to_config()
-            if isinstance(self.embedding_proj, CLIPEmbeddingToSpatial):
-                embedding_cfg["type"] = "CLIPEmbeddingToSpatial"
-            else:
-                embedding_cfg["type"] = "EmbeddingToSpatial"
-            cfg["embedding_projection"] = embedding_cfg
+        
         return cfg
 
     def save_checkpoint(self, path, include_config=True, **extra_state):

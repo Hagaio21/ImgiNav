@@ -11,295 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from models.components.base_component import BaseComponent
 from .base_loss import LossComponent, register_loss
-
-
-class CLIPProjections(BaseComponent):
-    """
-    Standalone CLIP projection layers that can be attached to a model.
-    These project VAE features, text embeddings, and POV embeddings to a joint space.
-    
-    Supports both global and spatial alignment modes:
-    - Global mode (default): Pools spatial features to global, aligns global-to-global
-    - Spatial mode: Preserves spatial structure, projects global conditions to spatial dimensions
-    """
-    def _build(self):
-        self.projection_dim = self._init_kwargs.get("projection_dim", 256)
-        self.text_dim = self._init_kwargs.get("text_dim", 384)
-        self.pov_dim = self._init_kwargs.get("pov_dim", 512)
-        self._latent_dim = self._init_kwargs.get("latent_dim", None)
-        self.spatial_alignment = self._init_kwargs.get("spatial_alignment", False)
-        
-        # Text embedding -> joint space
-        self.text_proj = nn.Sequential(
-            nn.Linear(self.text_dim, self.projection_dim * 2),
-            nn.LayerNorm(self.projection_dim * 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(self.projection_dim * 2, self.projection_dim),
-            nn.LayerNorm(self.projection_dim)
-        )
-        
-        # POV embedding -> joint space
-        self.pov_proj = nn.Sequential(
-            nn.Linear(self.pov_dim, self.projection_dim * 2),
-            nn.LayerNorm(self.projection_dim * 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(self.projection_dim * 2, self.projection_dim),
-            nn.LayerNorm(self.projection_dim)
-        )
-        
-        # VAE latent features -> joint space (will be initialized dynamically)
-        self.latent_proj = None
-        if self._latent_dim is not None:
-            self._init_latent_proj(self._latent_dim)
-        
-        # Spatial projection for global conditions (only used in spatial_alignment mode)
-        # Projects global embeddings to spatial feature maps
-        self.spatial_text_proj = None
-        self.spatial_pov_proj = None
-        if self.spatial_alignment:
-            # These will be initialized dynamically based on spatial dimensions
-            self._spatial_h = None
-            self._spatial_w = None
-    
-    def _init_latent_proj(self, latent_dim, device=None):
-        """Initialize latent projection."""
-        if self.latent_proj is None or self._latent_dim != latent_dim:
-            self._latent_dim = latent_dim
-            proj = nn.Sequential(
-                nn.Linear(latent_dim, self.projection_dim * 2),
-                nn.LayerNorm(self.projection_dim * 2),
-                nn.GELU(),
-                nn.Dropout(0.1),
-                nn.Linear(self.projection_dim * 2, self.projection_dim),
-                nn.LayerNorm(self.projection_dim)
-            )
-            if device is not None:
-                proj = proj.to(device)
-            self.latent_proj = proj
-    
-    def _init_spatial_projections(self, h, w, device=None):
-        """Initialize spatial projections for global conditions."""
-        # Validate dimensions to prevent memory issues
-        if h is None or w is None:
-            raise ValueError(f"Invalid spatial dimensions: h={h}, w={w}")
-        
-        # Convert to int if they're tensors
-        if isinstance(h, torch.Tensor):
-            h = int(h.item())
-        if isinstance(w, torch.Tensor):
-            w = int(w.item())
-        
-        h, w = int(h), int(w)
-        
-        # Safety check: if dimensions are unreasonably large, something is wrong
-        # Latent features should typically be 32x32, 64x64, or at most 128x128
-        MAX_SPATIAL_DIM = 512  # Reasonable upper bound
-        if h > MAX_SPATIAL_DIM or w > MAX_SPATIAL_DIM:
-            raise ValueError(
-                f"Spatial dimensions are too large: H={h}, W={w}. "
-                f"This suggests latent_features has wrong shape. "
-                f"Expected latent features (e.g., 32x32, 64x64), got {h}x{w}. "
-                f"Check that latent_features is from encoder output, not raw image."
-            )
-        
-        if self._spatial_h == h and self._spatial_w == w and self.spatial_text_proj is not None:
-            return  # Already initialized
-        
-        self._spatial_h = h
-        self._spatial_w = w
-        
-        # More efficient approach: first project to projection_dim, then expand spatially
-        # This avoids creating huge Linear layers (projection_dim * H * W can be millions)
-        # Step 1: Project to joint space (projection_dim)
-        # Step 2: Expand to spatial using interpolation or small expansion
-        
-        # Project global text embedding: text_dim -> projection_dim -> spatial
-        self.spatial_text_proj = nn.Sequential(
-            nn.Linear(self.text_dim, self.projection_dim * 2),
-            nn.LayerNorm(self.projection_dim * 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(self.projection_dim * 2, self.projection_dim)
-        )
-        
-        # Project global POV embedding: pov_dim -> projection_dim -> spatial
-        self.spatial_pov_proj = nn.Sequential(
-            nn.Linear(self.pov_dim, self.projection_dim * 2),
-            nn.LayerNorm(self.projection_dim * 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(self.projection_dim * 2, self.projection_dim)
-        )
-        
-        if device is not None:
-            self.spatial_text_proj = self.spatial_text_proj.to(device)
-            self.spatial_pov_proj = self.spatial_pov_proj.to(device)
-    
-    def forward(self, latent_features, text_emb, pov_emb, combine_method="average"):
-        """
-        Project all embeddings to joint space.
-        
-        Args:
-            latent_features: VAE features [B, C, H, W] or [B, D]
-            text_emb: Text embeddings [B, text_dim]
-            pov_emb: POV embeddings [B, pov_dim] or None (for scenes)
-            combine_method: How to combine text and POV ("add", "concat", "average")
-        
-        Returns:
-            Global mode: (latent_proj, combined_emb) where both are [B, projection_dim]
-            Spatial mode: (latent_proj, combined_emb) where both are [B, projection_dim, H, W]
-        """
-        if self.spatial_alignment and latent_features.dim() == 4:
-            # Spatial alignment mode: preserve spatial structure
-            B, C, H, W = latent_features.shape
-            
-            # Validate input shape - latent features should be small (e.g., 32x32, 64x64)
-            # If H or W are very large, this might be the raw image instead of latent features
-            if H > 512 or W > 512:
-                raise ValueError(
-                    f"latent_features has unreasonably large spatial dimensions: {H}x{W}. "
-                    f"Expected latent features from encoder (typically 32x32, 64x64, or at most 128x128). "
-                    f"Got shape: {latent_features.shape}. "
-                    f"This suggests the input might be a raw image instead of encoder features. "
-                    f"Check that you're passing encoder output, not the original image."
-                )
-            
-            # Initialize spatial projections if needed
-            self._init_spatial_projections(H, W, latent_features.device)
-            
-            # Project VAE features spatially: [B, C, H, W] -> [B, projection_dim, H, W]
-            # Use 1x1 conv to project channels
-            # In spatial mode, we MUST use Conv2d, not Linear
-            # Check if we need to recreate (if None, dimension changed, or if it's a Linear layer)
-            is_conv2d = False
-            if self.latent_proj is not None:
-                # Check if first layer is Conv2d (spatial mode) or Linear (global mode)
-                try:
-                    first_layer = self.latent_proj[0]
-                    is_conv2d = isinstance(first_layer, nn.Conv2d)
-                except (IndexError, TypeError):
-                    is_conv2d = False
-            
-            needs_conv2d = (
-                self.latent_proj is None or 
-                self._latent_dim != C or
-                not is_conv2d  # Must be Conv2d for spatial mode
-            )
-            
-            if needs_conv2d:
-                self._latent_dim = C
-                # Use Conv2d for spatial projection instead of Linear
-                self.latent_proj = nn.Sequential(
-                    nn.Conv2d(C, self.projection_dim * 2, 1),
-                    nn.GroupNorm(8, self.projection_dim * 2),
-                    nn.GELU(),
-                    nn.Dropout2d(0.1),
-                    nn.Conv2d(self.projection_dim * 2, self.projection_dim, 1),
-                    nn.GroupNorm(8, self.projection_dim)
-                ).to(latent_features.device)
-            
-            latent_proj = self.latent_proj(latent_features)  # [B, projection_dim, H, W]
-            latent_proj = F.normalize(latent_proj, p=2, dim=1)  # Normalize per spatial location
-            
-            # Project global conditions to joint space, then expand to spatial dimensions
-            text_emb_flat = text_emb.flatten(start_dim=1) if text_emb.dim() > 2 else text_emb
-            # Ensure embeddings match projection dtype (for mixed precision training)
-            if self.spatial_text_proj is not None:
-                proj_dtype = next(self.spatial_text_proj.parameters()).dtype
-                text_emb_flat = text_emb_flat.to(dtype=proj_dtype)
-            text_proj = self.spatial_text_proj(text_emb_flat)  # [B, projection_dim]
-            text_proj = F.normalize(text_proj, p=2, dim=1)
-            # Expand to spatial: [B, projection_dim] -> [B, projection_dim, 1, 1] -> [B, projection_dim, H, W]
-            text_spatial = text_proj.unsqueeze(-1).unsqueeze(-1)  # [B, projection_dim, 1, 1]
-            text_spatial = F.interpolate(text_spatial, size=(H, W), mode='bilinear', align_corners=False)  # [B, projection_dim, H, W]
-            text_spatial = F.normalize(text_spatial, p=2, dim=1)
-            
-            if pov_emb is None:
-                combined_emb = text_spatial
-            else:
-                pov_emb_flat = pov_emb.flatten(start_dim=1) if pov_emb.dim() > 2 else pov_emb
-                # Ensure embeddings match projection dtype (for mixed precision training)
-                if self.spatial_pov_proj is not None:
-                    proj_dtype = next(self.spatial_pov_proj.parameters()).dtype
-                    pov_emb_flat = pov_emb_flat.to(dtype=proj_dtype)
-                pov_proj = self.spatial_pov_proj(pov_emb_flat)  # [B, projection_dim]
-                pov_proj = F.normalize(pov_proj, p=2, dim=1)
-                # Expand to spatial: [B, projection_dim] -> [B, projection_dim, 1, 1] -> [B, projection_dim, H, W]
-                pov_spatial = pov_proj.unsqueeze(-1).unsqueeze(-1)  # [B, projection_dim, 1, 1]
-                pov_spatial = F.interpolate(pov_spatial, size=(H, W), mode='bilinear', align_corners=False)  # [B, projection_dim, H, W]
-                pov_spatial = F.normalize(pov_spatial, p=2, dim=1)
-                
-                # Combine text and POV spatially
-                if combine_method == "add":
-                    combined_emb = text_spatial + pov_spatial
-                elif combine_method == "average":
-                    combined_emb = (text_spatial + pov_spatial) / 2.0
-                else:
-                    combined_emb = (text_spatial + pov_spatial) / 2.0
-                
-                combined_emb = F.normalize(combined_emb, p=2, dim=1)
-            
-            return latent_proj, combined_emb
-        
-        # Global alignment mode (original behavior)
-        # Flatten spatial dimensions if needed
-        if latent_features.dim() > 2:
-            if latent_features.dim() == 4:
-                latent_features = F.adaptive_avg_pool2d(latent_features, 1).squeeze(-1).squeeze(-1)
-            else:
-                latent_features = latent_features.flatten(start_dim=1)
-        
-        # Initialize projection if needed (or re-initialize if dimension changed)
-        latent_dim = latent_features.shape[1]
-        if self.latent_proj is None or self._latent_dim != latent_dim:
-            self._init_latent_proj(latent_dim, latent_features.device)
-        
-        # Flatten embeddings if needed and ensure consistent dtype
-        if text_emb.dim() > 2:
-            text_emb = text_emb.flatten(start_dim=1)
-        if pov_emb is not None and pov_emb.dim() > 2:
-            pov_emb = pov_emb.flatten(start_dim=1)
-        
-        # Ensure embeddings match projection dtype (projections are float32)
-        text_emb = text_emb.to(dtype=next(self.text_proj.parameters()).dtype)
-        if pov_emb is not None:
-            pov_emb = pov_emb.to(dtype=next(self.pov_proj.parameters()).dtype)
-        latent_features = latent_features.to(dtype=next(self.latent_proj.parameters()).dtype)
-        
-        # Project to joint space
-        latent_proj = self.latent_proj(latent_features)
-        text_proj = self.text_proj(text_emb)
-        
-        # Normalize
-        latent_proj = F.normalize(latent_proj, p=2, dim=1)
-        text_proj = F.normalize(text_proj, p=2, dim=1)
-        
-        # Handle missing pov_emb (scenes don't have POV embeddings)
-        if pov_emb is None:
-            # For scenes, use only text_emb as the combined embedding
-            combined_emb = text_proj
-        else:
-            # Flatten POV embedding if needed
-            if pov_emb.dim() > 2:
-                pov_emb = pov_emb.flatten(start_dim=1)
-            
-            # Project POV to joint space
-            pov_proj = self.pov_proj(pov_emb)
-            pov_proj = F.normalize(pov_proj, p=2, dim=1)
-            
-            # Combine text and POV
-            if combine_method == "add":
-                combined_emb = text_proj + pov_proj
-            elif combine_method == "average":
-                combined_emb = (text_proj + pov_proj) / 2.0
-            else:
-                combined_emb = (text_proj + pov_proj) / 2.0
-        
-        combined_emb = F.normalize(combined_emb, p=2, dim=1)
-        
-        return latent_proj, combined_emb
+from models.components.projections import CLIPProjections
 
 
 @register_loss
@@ -311,19 +23,20 @@ class CLIPLoss(LossComponent):
     - VAE encoder features (projected) are close to matching text/POV embeddings
     - VAE encoder features are far from non-matching embeddings
     
+    NOTE: CLIPLoss does NOT create its own projections. It uses the model's CLIPProjections
+    which must be set via set_projections() before use. This ensures projections are shared
+    and trained jointly with the model.
+    
     Config:
         key: Key in preds for VAE latent features (default: "latent_features")
         text_key: Key in targets for text embeddings (default: "text_emb")
         pov_key: Key in targets for POV embeddings (default: "pov_emb")
         temperature: Temperature for contrastive loss (default: 0.07)
         weight: Loss weight (default: 0.1)
-        projection_dim: Dimension for joint embedding space (default: 256)
-        latent_dim: Dimension of latent features (will be inferred if not provided)
-        text_dim: Dimension of text embeddings (default: 384)
-        pov_dim: Dimension of POV embeddings (default: 512)
         combine_method: How to combine text and POV embeddings: "add", "concat", "average" (default: "average")
         spatial_alignment: If True, preserves spatial structure and aligns per-pixel (default: False)
                           When True, projects global conditions to spatial dimensions for alignment
+                          (inferred from model's CLIPProjections if not specified)
     """
     
     def _build(self):
@@ -332,37 +45,27 @@ class CLIPLoss(LossComponent):
         self.text_key = self._init_kwargs.get("text_key", "text_emb")
         self.pov_key = self._init_kwargs.get("pov_key", "pov_emb")
         self.temperature = self._init_kwargs.get("temperature", 0.07)
-        self.projection_dim = self._init_kwargs.get("projection_dim", 256)
         self.combine_method = self._init_kwargs.get("combine_method", "average")
         
-        # Embedding dimensions
-        text_dim = self._init_kwargs.get("text_dim", 384)
-        pov_dim = self._init_kwargs.get("pov_dim", 512)
-        latent_dim = self._init_kwargs.get("latent_dim", None)
-        spatial_alignment = self._init_kwargs.get("spatial_alignment", False)
-        
-        # Check if projections are provided from model (attached to Autoencoder)
-        # If not, create our own
-        self.use_model_projections = self._init_kwargs.get("use_model_projections", False)
-        self.spatial_alignment = spatial_alignment
-        
-        if not self.use_model_projections:
-            # Create our own projection layers - BaseComponent accepts **kwargs
-            self.projections = CLIPProjections(
-                projection_dim=self.projection_dim,
-                text_dim=text_dim,
-                pov_dim=pov_dim,
-                latent_dim=latent_dim,
-                spatial_alignment=spatial_alignment
-            )
-        else:
-            # Will use projections from model (set via set_projections method)
-            self.projections = None
+        # Projections must be set from model (via set_projections)
+        # CLIPLoss does not create its own projections - it uses the model's projections
+        # This ensures the projections are shared and trained jointly with the model
+        self.projections = None
+        self.spatial_alignment = self._init_kwargs.get("spatial_alignment", False)
     
     def set_projections(self, projections):
-        """Set projection layers from model (when attached to Autoencoder)."""
+        """
+        Set projection layers from model (required).
+        
+        CLIPLoss uses the model's CLIPProjections to ensure they are shared
+        and trained jointly. This method must be called before using the loss.
+        """
+        if projections is None:
+            raise ValueError("CLIPLoss requires projections to be set via set_projections()")
         self.projections = projections
-        self.use_model_projections = True
+        # Infer spatial_alignment from projections if not explicitly set
+        if hasattr(projections, 'spatial_alignment'):
+            self.spatial_alignment = projections.spatial_alignment
     
     def forward(self, preds, targets):
         """
@@ -409,10 +112,13 @@ class CLIPLoss(LossComponent):
             # Return zero loss connected to computation graph via latent_features
             return (latent_features * 0.0).sum() * 0.0, {}
         
-        # Use projections (either from model or our own)
+        # Use projections from model (must be set via set_projections)
         if self.projections is None:
-            # Return zero loss connected to computation graph via latent_features
-            return (latent_features * 0.0).sum() * 0.0, {}
+            raise RuntimeError(
+                "CLIPLoss.projections is None! "
+                "Projections must be set via set_projections() before using the loss. "
+                "This should be done automatically by the training script."
+            )
         
         # text_emb and pov_emb are pre-computed and may be detached
         # This is fine - the projections will still compute gradients for their parameters

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 from models.components.base_model import BaseModel
+from models.utils import reparameterize
 from .encoder import Encoder
 from .decoder import Decoder
 
@@ -10,39 +11,23 @@ class Autoencoder(BaseModel):
     def _build(self):
         encoder_cfg = self._init_kwargs.get("encoder", None)
         decoder_cfg = self._init_kwargs.get("decoder", None)
-        clip_projection_cfg = self._init_kwargs.get("clip_projection", None)
 
         if encoder_cfg is None or decoder_cfg is None:
             raise ValueError("Autoencoder requires both 'encoder' and 'decoder' configs.")
 
-        self.encoder = Encoder.from_config(encoder_cfg)
-        self.decoder = Decoder.from_config(decoder_cfg)
+        # Use unified component registry for all components
+        self.add_component("encoder", self.create_component("encoder", default_type="Encoder"))
+        self.add_component("decoder", self.create_component("decoder", default_type="Decoder"))
         
-        # Optional CLIP projection layers (for joint embedding space training)
-        self.clip_projections = None
+        # Optional CLIP projection layers - only if explicitly provided in config
+        # This allows training projections jointly with the VAE, but must be explicit
+        clip_projection_cfg = self._init_kwargs.get("clip_projection", None)
         if clip_projection_cfg is not None:
-            from models.losses.clip_loss import CLIPProjections
-            # Create projection layers - BaseComponent accepts **kwargs
-            if isinstance(clip_projection_cfg, dict):
-                self.clip_projections = CLIPProjections(**clip_projection_cfg)
-            else:
-                # If it's already an instance, use it directly
-                self.clip_projections = clip_projection_cfg
-            # Ensure projections are registered as a submodule (for parameter tracking)
-            # This is already done by assigning to self.clip_projections, but make it explicit
-            self.add_module('clip_projections', self.clip_projections)
-            # Mark that we're using CLIP projections
-            self._has_clip_projections = True
-        else:
-            self._has_clip_projections = False
-
-        if encoder_cfg.get("frozen", False):
-            self.encoder.freeze()
-        if decoder_cfg.get("frozen", False):
-            self.decoder.freeze()
+            self._setup_projection("clip_projection", default_type="CLIPProjections")
         
         # Write model statistics if save_path is available
-        self._write_model_statistics()
+        if hasattr(self, 'save_path') and self.save_path:
+            self._write_model_statistics()
 
     def forward(self, x):
 
@@ -69,239 +54,172 @@ class Autoencoder(BaseModel):
 
     def to_config(self):
         cfg = super().to_config()
-        cfg["encoder"] = self.encoder.to_config()
-        cfg["decoder"] = self.decoder.to_config()
-        # Include CLIP projection config if it exists (now uses BaseComponent.to_config())
-        if hasattr(self, 'clip_projections') and self.clip_projections is not None:
-            cfg["clip_projection"] = self.clip_projections.to_config()
+        cfg = self._components_to_config(cfg)
+        # Don't include clip_projection in config - it's a separate component
+        cfg.pop("clip_projection", None)
         return cfg
     
-    # -----------------------
-    # Component-level checkpointing
-    # -----------------------
-    def save_encoder_checkpoint(self, path, include_config=True):
-        """Save only the encoder as a separate checkpoint."""
-        self.encoder.save_checkpoint(path, include_config=include_config)
-    
-    def save_decoder_checkpoint(self, path, include_config=True):
-        """Save only the decoder as a separate checkpoint."""
-        self.decoder.save_checkpoint(path, include_config=include_config)
-    
-    @classmethod
-    def load_encoder_checkpoint(cls, path, map_location="cpu"):
-        """Load only the encoder from a separate checkpoint."""
-        return Encoder.load_checkpoint(path, map_location=map_location)
-    
-    @classmethod
-    def load_decoder_checkpoint(cls, path, map_location="cpu"):
-        """Load only the decoder from a separate checkpoint."""
-        return Decoder.load_checkpoint(path, map_location=map_location)
-    
-    @classmethod
-    def from_separate_checkpoints(cls, encoder_path, decoder_path, map_location="cpu"):
+    def save_checkpoint(self, path, include_config=True, exclude_projections=True, **extra_state):
         """
-        Build an Autoencoder from separate encoder and decoder checkpoints.
+        Save autoencoder checkpoint, excluding projection components.
+        
+        Projections are separate components that should be saved separately by the trainer.
+        This keeps the autoencoder checkpoint focused on encoder/decoder only.
         
         Args:
-            encoder_path: Path to encoder checkpoint
-            decoder_path: Path to decoder checkpoint
+            path: Path to save checkpoint
+            include_config: Whether to include model config
+            exclude_projections: If True, exclude any projection components from state_dict
+            **extra_state: Additional state to save
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Get state dict, excluding projection components
+        state_dict = self.state_dict()
+        
+        if exclude_projections:
+            # Filter out any projection component keys (clip_projection, projection, etc.)
+            filtered_state_dict = {}
+            for key, value in state_dict.items():
+                # Skip keys that start with common projection component names
+                if not any(key.startswith(proj_prefix + ".") for proj_prefix in 
+                          ["clip_projection", "clip_projections", "projection", "projections"]):
+                    filtered_state_dict[key] = value
+            state_dict = filtered_state_dict
+        
+        payload = {"state_dict": state_dict}
+        if include_config:
+            payload["config"] = self.to_config()
+        payload.update(extra_state)
+        torch.save(payload, path)
+    
+    @classmethod
+    def from_component_checkpoints(cls, component_paths, map_location="cpu"):
+        """
+        Build an Autoencoder from component checkpoints.
+        
+        Args:
+            component_paths: Dict mapping component names to checkpoint paths
+                           (e.g., {"encoder": "path/to/encoder.pt", "decoder": "path/to/decoder.pt"})
             map_location: Device to load on
             
         Returns:
-            Autoencoder instance with loaded encoder and decoder
+            Autoencoder instance with loaded components
         """
-        encoder = cls.load_encoder_checkpoint(encoder_path, map_location)
-        decoder = cls.load_decoder_checkpoint(decoder_path, map_location)
+        # Load components
+        loaded_components = {}
+        for name, path in component_paths.items():
+            loaded_components[name] = cls.load_component_checkpoint(name, path, map_location)
         
-        # Create autoencoder with loaded components
-        ae = cls(encoder=encoder.to_config(), decoder=decoder.to_config())
-        ae.encoder = encoder
-        ae.decoder = decoder
-        return ae
+        # Build config from loaded components
+        config = {name: comp.to_config() for name, comp in loaded_components.items()}
+        
+        # Create model with config
+        model = cls(**config)
+        
+        # Replace with loaded components (in case of any state differences)
+        for name, component in loaded_components.items():
+            setattr(model, name, component)
+            model.add_component(name, component)
+        
+        return model
     
-    def _write_model_statistics(self):
-        """Write model parameter statistics to Statistics.txt file."""
-        try:
-            # Get save path from experiment config if available
-            save_path = self._init_kwargs.get("save_path", None)
-            if save_path is None:
-                # Try to get from experiment config in parent kwargs
-                exp_cfg = self._init_kwargs.get("experiment", {})
-                save_path = exp_cfg.get("save_path", None)
-            
-            if save_path is None:
-                return  # No save path available, skip writing
-            
-            save_path = Path(save_path)
-            save_path.mkdir(parents=True, exist_ok=True)
-            stats_file = save_path / "Statistics.txt"
-            
-            # Count parameters
-            encoder_trainable = sum(p.numel() for p in self.encoder.parameters() if p.requires_grad)
-            encoder_total = sum(p.numel() for p in self.encoder.parameters())
-            encoder_frozen = encoder_total - encoder_trainable
-            
-            decoder_trainable = sum(p.numel() for p in self.decoder.parameters() if p.requires_grad)
-            decoder_total = sum(p.numel() for p in self.decoder.parameters())
-            decoder_frozen = decoder_total - decoder_trainable
-            
-            total_trainable = encoder_trainable + decoder_trainable
-            total_params = encoder_total + decoder_total
-            
-            # Write statistics
-            with open(stats_file, 'w') as f:
-                f.write("Model Statistics\n")
-                f.write("=" * 60 + "\n\n")
-                f.write("Encoder Parameters:\n")
-                f.write(f"  Trainable: {encoder_trainable:,} ({encoder_trainable / 1_000_000:.2f}M)\n")
-                f.write(f"  Total: {encoder_total:,} ({encoder_total / 1_000_000:.2f}M)\n")
-                f.write(f"  Frozen: {encoder_frozen:,} ({encoder_frozen / 1_000_000:.2f}M)\n")
-                f.write(f"\nDecoder Parameters:\n")
-                f.write(f"  Trainable: {decoder_trainable:,} ({decoder_trainable / 1_000_000:.2f}M)\n")
-                f.write(f"  Total: {decoder_total:,} ({decoder_total / 1_000_000:.2f}M)\n")
-                f.write(f"  Frozen: {decoder_frozen:,} ({decoder_frozen / 1_000_000:.2f}M)\n")
-                f.write(f"\nTotal Trainable Parameters: {total_trainable:,} ({total_trainable / 1_000_000:.2f}M)\n")
-                f.write(f"Total Parameters: {total_params:,} ({total_params / 1_000_000:.2f}M)\n")
-        except Exception as e:
-            # Don't fail model building if statistics writing fails
-            import warnings
-            warnings.warn(f"Failed to write model statistics: {e}")
+    def _get_component_statistics(self):
+        """Get parameter statistics for encoder and decoder components."""
+        stats = {}
+        
+        encoder_stats = self._get_module_statistics(self.encoder, label="Encoder")
+        if encoder_stats:
+            stats["encoder"] = encoder_stats
+        
+        decoder_stats = self._get_module_statistics(self.decoder, label="Decoder")
+        if decoder_stats:
+            stats["decoder"] = decoder_stats
+        
+        return stats
+
+
+class VAE(Autoencoder):
+    """
+    Variational Autoencoder - subclass of Autoencoder.
     
-    # -----------------------
-    # VAE Metadata Management
-    # -----------------------
+    VAE uses a variational encoder that outputs mu and logvar instead of deterministic latents.
+    The encoder config will automatically have variational=True set.
+    """
     
-    @staticmethod
-    def save_metadata(output_dir: Path, exp_name: str, latent_stats: dict):
+    def _build(self):
+        encoder_cfg = self._init_kwargs.get("encoder", None)
+        decoder_cfg = self._init_kwargs.get("decoder", None)
+
+        if encoder_cfg is None or decoder_cfg is None:
+            raise ValueError("VAE requires both 'encoder' and 'decoder' configs.")
+
+        # Ensure encoder and decoder configs use VAE types
+        self._ensure_component_type("encoder", "VAEEncoder")
+        self._ensure_component_type("decoder", "VAEDecoder")
+
+        # Use unified component registry for all components
+        self.add_component("encoder", self.create_component("encoder", default_type="VAEEncoder"))
+        self.add_component("decoder", self.create_component("decoder", default_type="VAEDecoder"))
+        
+        # Optional CLIP projection layers - only if explicitly provided in config
+        # This allows training projections jointly with the VAE, but must be explicit
+        clip_projection_cfg = self._init_kwargs.get("clip_projection", None)
+        if clip_projection_cfg is not None:
+            self._setup_projection("clip_projection", default_type="CLIPProjections")
+        
+        # Verify encoder and decoder are correct types
+        from .encoder import VAEEncoder
+        from .decoder import VAEDecoder
+        self._validate_component_type(self.encoder, VAEEncoder, "encoder")
+        self._validate_component_type(self.decoder, VAEDecoder, "decoder")
+        
+        # Write model statistics if save_path is available
+        if hasattr(self, 'save_path') and self.save_path:
+            self._write_model_statistics()
+    
+    def encode(self, x):
         """
-        Save VAE metadata file with latent statistics for scale_factor and clamp values.
-        
-        Args:
-            output_dir: Output directory path
-            exp_name: Experiment name
-            latent_stats: Dictionary with latent statistics (from compute_latent_statistics)
-        """
-        if not latent_stats or len(latent_stats) == 0:
-            return
-        
-        import json
-        
-        # Extract statistics
-        latent_std = latent_stats.get("LatentStats_Std", None)
-        latent_mean = latent_stats.get("LatentStats_Mean", 0.0)
-        latent_min = latent_stats.get("LatentStats_Min", None)
-        latent_max = latent_stats.get("LatentStats_Max", None)
-        
-        # Calculate scale_factor (1.0 / std to normalize to unit variance)
-        scale_factor = 1.0 / latent_std if latent_std and latent_std > 0 else 1.0
-        
-        # Calculate clamp values (based on std: typically ±6σ covers 99.7% of data)
-        # Or use actual min/max if available
-        if latent_min is not None and latent_max is not None:
-            # Use actual min/max with some margin
-            clamp_min = latent_min - 0.5  # Small margin
-            clamp_max = latent_max + 0.5  # Small margin
-        else:
-            # Fallback to std-based clamping (±6σ)
-            clamp_min = -6.0
-            clamp_max = 6.0
-        
-        # Extract per-channel stats if available
-        per_channel_mean = None
-        per_channel_std = None
-        per_channel_min = None
-        per_channel_max = None
-        
-        if "LatentStats_MeanPerCh" in latent_stats:
-            per_channel_mean = json.loads(latent_stats["LatentStats_MeanPerCh"])
-        if "LatentStats_StdPerCh" in latent_stats:
-            per_channel_std = json.loads(latent_stats["LatentStats_StdPerCh"])
-        if "LatentStats_MinPerCh" in latent_stats:
-            per_channel_min = json.loads(latent_stats["LatentStats_MinPerCh"])
-        if "LatentStats_MaxPerCh" in latent_stats:
-            per_channel_max = json.loads(latent_stats["LatentStats_MaxPerCh"])
-        
-        # Build metadata dictionary
-        metadata = {
-            "experiment_name": exp_name,
-            "latent_statistics": {
-                "global": {
-                    "mean": float(latent_mean),
-                    "std": float(latent_std) if latent_std else None,
-                    "min": float(latent_min) if latent_min is not None else None,
-                    "max": float(latent_max) if latent_max is not None else None,
-                },
-                "per_channel": {
-                    "mean": per_channel_mean,
-                    "std": per_channel_std,
-                    "min": per_channel_min,
-                    "max": per_channel_max,
-                } if per_channel_mean is not None else None,
-            },
-            "recommended_values": {
-                "scale_factor": float(scale_factor),
-                "latent_clamp_min": float(clamp_min),
-                "latent_clamp_max": float(clamp_max),
-            },
-            "notes": {
-                "scale_factor": "1.0 / std, normalizes latents to unit variance",
-                "latent_clamp_min": "Minimum value for clamping latents during diffusion",
-                "latent_clamp_max": "Maximum value for clamping latents during diffusion",
-            }
-        }
-        
-        # Save metadata file
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        metadata_path = output_dir / f"{exp_name}_metadata.json"
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-    
-    @staticmethod
-    def load_metadata(checkpoint_path: Path):
-        """
-        Load VAE metadata JSON file and extract recommended values.
-        
-        Args:
-            checkpoint_path: Path to autoencoder checkpoint
+        Encode input to variational latent representation.
         
         Returns:
-            dict with 'scale_factor', 'latent_clamp_min', 'latent_clamp_max', or None if not found
+            Dictionary: {"mu": mu, "logvar": logvar, "latent_features": features}
         """
-        import json
+        return self.encoder(x)
+    
+    def reparameterize(self, mu, logvar):
+        """
+        Reparameterization trick for VAE.
         
-        checkpoint_path = Path(checkpoint_path)
-        if not checkpoint_path.exists():
-            return None
+        Args:
+            mu: Mean tensor [B, C, H, W]
+            logvar: Log variance tensor [B, C, H, W]
         
-        # Metadata file is typically in the parent directory of checkpoints/
-        # e.g., /work3/.../vae_clip/checkpoints/vae_clip_checkpoint_best.pt
-        # -> /work3/.../vae_clip/vae_clip_metadata.json
-        checkpoint_dir = checkpoint_path.parent  # checkpoints/
-        vae_dir = checkpoint_dir.parent  # vae_clip/
+        Returns:
+            Latent tensor z [B, C, H, W]
+        """
+        return reparameterize(mu, logvar)
+    
+    def sample(self, x, deterministic=False):
+        """
+        Sample from VAE latent distribution.
         
-        # Try to find metadata file - could be named {exp_name}_metadata.json
-        # Look for any *_metadata.json in the VAE directory
-        metadata_files = list(vae_dir.glob("*_metadata.json"))
+        Args:
+            x: Input tensor [B, C, H, W]
+            deterministic: If True, use mu as latent (no sampling). If False, sample from distribution.
         
-        if not metadata_files:
-            return None
+        Returns:
+            Dictionary with sampled latent and encoder outputs
+        """
+        encoder_out = self.encode(x)
+        mu = encoder_out["mu"]
+        logvar = encoder_out["logvar"]
         
-        # Use the first metadata file found (or could match by experiment name)
-        metadata_path = metadata_files[0]
+        if deterministic:
+            z = mu
+        else:
+            z = self.reparameterize(mu, logvar)
         
-        try:
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-            
-            recommended = metadata.get("recommended_values", {})
-            if recommended:
-                return {
-                    "scale_factor": recommended.get("scale_factor"),
-                    "latent_clamp_min": recommended.get("latent_clamp_min"),
-                    "latent_clamp_max": recommended.get("latent_clamp_max")
-                }
-        except Exception as e:
-            print(f"Warning: Failed to load VAE metadata from {metadata_path}: {e}")
-        
-        return None
+        return {"latent": z, **encoder_out}
+    

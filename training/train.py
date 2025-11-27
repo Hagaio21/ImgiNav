@@ -467,7 +467,8 @@ def main():
                     # Extract latent statistics from validation logs
                     latent_stats = {k: v for k, v in val_logs.items() if k.startswith("LatentStats_")}
                     if latent_stats:
-                        Autoencoder.save_metadata(output_dir, exp_name, latent_stats)
+                        from training.utils import save_vae_metadata
+                        save_vae_metadata(output_dir, exp_name, latent_stats)
             else:
                 epochs_without_improvement += 1
             
@@ -558,7 +559,8 @@ def main():
             # Check if metadata already exists (from best checkpoint save)
             metadata_path = output_dir / f"{exp_name}_metadata.json"
             if not metadata_path.exists():
-                Autoencoder.save_metadata(output_dir, exp_name, latent_stats)
+                from training.utils import save_vae_metadata
+                save_vae_metadata(output_dir, exp_name, latent_stats)
 
 
 if __name__ == "__main__":

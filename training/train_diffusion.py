@@ -83,20 +83,10 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for diffusion training - computes loss only (Trainer handles backward/step)."""
     device_obj = trainer.device
     
-    # Get latents
+    # Get latents - must be provided in batch (pre-encoded)
     latents = batch.get("latent")
     if latents is None:
-        if "rgb" in batch and model._has_encoder:
-            with torch.no_grad():
-                encoder_out = model.encoder(batch["rgb"])
-                if "latent" in encoder_out:
-                    latents = encoder_out["latent"]
-                elif "mu" in encoder_out:
-                    latents = encoder_out["mu"]
-                else:
-                    raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
-        else:
-            raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
+        raise ValueError("Dataset must provide 'latent' key. Encoding should be done before training.")
     
     # Get training config from trainer or use defaults
     use_non_uniform_sampling = getattr(trainer, 'use_non_uniform_sampling', False)
@@ -113,9 +103,6 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
         # Uniform sampling (default)
         t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
     noise = model.scheduler.randn_like(latents)
-    
-    # No type-based conditioning - only using control signals (text_emb, pov_emb)
-    cond = None
 
     # Extract embeddings if available (for cross-attention conditioning)
     text_emb = batch.get("text_emb", None)
@@ -176,7 +163,7 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
     # Forward pass and loss computation (Trainer handles scaling for gradient accumulation)
     if trainer.use_amp:
         with torch.amp.autocast('cuda'):
-            outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+            outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
             preds = {
                 "pred_noise": outputs["pred_noise"],
                 "scheduler": model.scheduler,
@@ -185,7 +172,7 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
             targets = {"noise": noise}
             loss, logs = loss_fn(preds, targets)
     else:
-        outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+        outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
         preds = {
             "pred_noise": outputs["pred_noise"],
             "scheduler": model.scheduler,
@@ -203,27 +190,15 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for diffusion evaluation - computes loss only."""
     device_obj = trainer.device
     
-    # Get latents
+    # Get latents - must be provided in batch (pre-encoded)
     latents = batch.get("latent")
     if latents is None:
-        if "rgb" in batch and model._has_encoder:
-            encoder_out = model.encoder(batch["rgb"])
-            if "latent" in encoder_out:
-                latents = encoder_out["latent"]
-            elif "mu" in encoder_out:
-                latents = encoder_out["mu"]
-            else:
-                raise ValueError(f"Encoder output must contain 'latent' or 'mu'. Got: {list(encoder_out.keys())}")
-        else:
-            raise ValueError("Dataset must provide 'latent' key (for pre-embedded) or 'rgb' key (for on-the-fly encoding)")
+        raise ValueError("Dataset must provide 'latent' key. Encoding should be done before training.")
     
     # Sample random timesteps (uniform for evaluation)
     num_steps = model.scheduler.num_steps
     t = torch.randint(0, num_steps, (latents.shape[0],), device=device_obj)
     noise = model.scheduler.randn_like(latents)
-    
-    # No type-based conditioning - only using control signals (text_emb, pov_emb)
-    cond = None
     
     # Extract embeddings if available (for cross-attention conditioning)
     text_emb = batch.get("text_emb", None)
@@ -277,7 +252,7 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     # Forward pass and loss computation (no cfg_dropout during evaluation)
     if trainer.use_amp:
         with torch.amp.autocast('cuda'):
-            outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+            outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
             preds = {
                 "pred_noise": outputs["pred_noise"],
                 "scheduler": model.scheduler,
@@ -286,7 +261,7 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
             targets = {"noise": noise}
             loss, logs = loss_fn(preds, targets)
     else:
-        outputs = model(latents, t, cond=cond, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
+        outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
         preds = {
             "pred_noise": outputs["pred_noise"],
             "scheduler": model.scheduler,
@@ -554,7 +529,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             num_steps=ddim_steps,
             method="ddim",
             eta=0.0,
-            cond=None,
             guidance_scale=1.0,
             text_emb=dummy_text,
             pov_emb=dummy_pov,
@@ -649,9 +623,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     else:
         pov_emb = None  # Don't create zero tensor - let model handle it if needed
     
-    # No type-based conditioning
-    cond = None
-    
     # Generate conditioned samples using DDIM (50 steps)
     ddim_steps = 50
     
@@ -661,7 +632,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             num_steps=ddim_steps,
             method="ddim",
             eta=0.0,
-            cond=cond,
             guidance_scale=guidance_scale,
             text_emb=text_emb,
             pov_emb=pov_emb,
@@ -787,7 +757,8 @@ def main():
     if ae_cfg and isinstance(ae_cfg, dict):
         ae_checkpoint = ae_cfg.get("checkpoint")
         if ae_checkpoint:
-            vae_metadata = Autoencoder.load_metadata(ae_checkpoint)
+            from training.utils import load_vae_metadata
+            vae_metadata = load_vae_metadata(ae_checkpoint)
     
     # Get scale_factor from config or VAE metadata (should be part of VAE statistics)
     # Check both diffusion section and top-level config

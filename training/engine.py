@@ -257,6 +257,44 @@ class Trainer:
         
         return avg_loss, avg_logs
     
+    def save_projection_components(self, output_dir, exp_name, epoch=None):
+        """
+        Save projection components separately from the main model.
+        
+        Projections (like CLIP projections) are separate components that should
+        be saved independently. This method finds and saves any projection components.
+        
+        Args:
+            output_dir: Output directory for checkpoints
+            exp_name: Experiment name
+            epoch: Optional epoch number for filename
+        
+        Returns:
+            Dict mapping projection names to saved paths
+        """
+        saved_paths = {}
+        
+        # Check for common projection component names
+        projection_names = ["clip_projection", "clip_projections", "projection", "projections"]
+        
+        for proj_name in projection_names:
+            if hasattr(self.model, proj_name):
+                projection = getattr(self.model, proj_name)
+                if projection is not None and hasattr(projection, 'save_checkpoint'):
+                    # Determine filename
+                    if epoch is not None:
+                        filename = f"{exp_name}_{proj_name}_epoch_{epoch:03d}.pt"
+                    else:
+                        filename = f"{exp_name}_{proj_name}.pt"
+                    
+                    proj_path = output_dir / "checkpoints" / filename
+                    proj_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    projection.save_checkpoint(proj_path, include_config=True)
+                    saved_paths[proj_name] = str(proj_path)
+        
+        return saved_paths
+    
     def save_training_checkpoint(
         self,
         output_dir: Path,
@@ -294,14 +332,20 @@ class Trainer:
         if self.scaler is not None:
             extra_state["scaler_state"] = self.scaler.state_dict()
         
-        # Save latest checkpoint
+        # Save latest checkpoint (excludes projections - they're saved separately)
         latest_path = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
-        self.model.save_checkpoint(latest_path, include_config=True, **extra_state)
+        self.model.save_checkpoint(latest_path, include_config=True, exclude_projections=True, **extra_state)
         
         # Save best checkpoint if this is the best
         if is_best:
             best_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
-            self.model.save_checkpoint(best_path, include_config=True, **extra_state)
+            self.model.save_checkpoint(best_path, include_config=True, exclude_projections=True, **extra_state)
+        
+        # Save projection components separately
+        saved_projections = self.save_projection_components(output_dir, exp_name, epoch=epoch)
+        if saved_projections:
+            for proj_name, proj_path in saved_projections.items():
+                print(f"Saved {proj_name} separately to: {proj_path}")
     
     def load_training_checkpoint(
         self,

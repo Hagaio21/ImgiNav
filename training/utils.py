@@ -148,16 +148,29 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
 
 
 def build_model(config):
-    """Build autoencoder from config."""
+    """Build autoencoder or VAE from config using registry."""
+    from models.components.registry import create_component
+    
     ae_cfg = config["autoencoder"].copy() if isinstance(config["autoencoder"], dict) else config["autoencoder"]
     # Pass save_path from experiment config so model can write statistics
     exp_cfg = config.get("experiment", {})
     if isinstance(ae_cfg, dict) and exp_cfg.get("save_path"):
         ae_cfg["save_path"] = exp_cfg["save_path"]
-    model = Autoencoder.from_config(ae_cfg)
+    
+    # Use registry to build (automatically handles Autoencoder vs VAE)
+    if isinstance(ae_cfg, dict):
+        if "type" not in ae_cfg:
+            # Default to Autoencoder, but check if encoder is variational to infer VAE
+            encoder_cfg = ae_cfg.get("encoder", {})
+            if isinstance(encoder_cfg, dict) and encoder_cfg.get("variational", False):
+                ae_cfg["type"] = "VAE"
+            else:
+                ae_cfg["type"] = "Autoencoder"
+        model = create_component(ae_cfg)
+    else:
+        # Backward compatibility: direct instantiation
+        model = Autoencoder.from_config(ae_cfg)
     return model
-
-
 
 
 def build_dataset(config):
@@ -397,3 +410,144 @@ def load_training_history_from_csv(metrics_csv_path, start_epoch):
         return df_filtered.to_dict('records')
     except Exception:
         return []
+
+
+# -----------------------
+# VAE Metadata Management
+# -----------------------
+
+def save_vae_metadata(output_dir: Path, exp_name: str, latent_stats: dict):
+    """
+    Save VAE metadata file with latent statistics for scale_factor and clamp values.
+    
+    This metadata is used by diffusion models to configure scale_factor and latent clamping.
+    
+    Args:
+        output_dir: Output directory path
+        exp_name: Experiment name
+        latent_stats: Dictionary with latent statistics (from compute_latent_statistics)
+    """
+    if not latent_stats or len(latent_stats) == 0:
+        return
+    
+    import json
+    
+    # Extract statistics
+    latent_std = latent_stats.get("LatentStats_Std", None)
+    latent_mean = latent_stats.get("LatentStats_Mean", 0.0)
+    latent_min = latent_stats.get("LatentStats_Min", None)
+    latent_max = latent_stats.get("LatentStats_Max", None)
+    
+    # Calculate scale_factor (1.0 / std to normalize to unit variance)
+    scale_factor = 1.0 / latent_std if latent_std and latent_std > 0 else 1.0
+    
+    # Calculate clamp values (based on std: typically ±6σ covers 99.7% of data)
+    # Or use actual min/max if available
+    if latent_min is not None and latent_max is not None:
+        # Use actual min/max with some margin
+        clamp_min = latent_min - 0.5  # Small margin
+        clamp_max = latent_max + 0.5  # Small margin
+    else:
+        # Fallback to std-based clamping (±6σ)
+        clamp_min = -6.0
+        clamp_max = 6.0
+    
+    # Extract per-channel stats if available
+    per_channel_mean = None
+    per_channel_std = None
+    per_channel_min = None
+    per_channel_max = None
+    
+    if "LatentStats_MeanPerCh" in latent_stats:
+        per_channel_mean = json.loads(latent_stats["LatentStats_MeanPerCh"])
+    if "LatentStats_StdPerCh" in latent_stats:
+        per_channel_std = json.loads(latent_stats["LatentStats_StdPerCh"])
+    if "LatentStats_MinPerCh" in latent_stats:
+        per_channel_min = json.loads(latent_stats["LatentStats_MinPerCh"])
+    if "LatentStats_MaxPerCh" in latent_stats:
+        per_channel_max = json.loads(latent_stats["LatentStats_MaxPerCh"])
+    
+    # Build metadata dictionary
+    metadata = {
+        "experiment_name": exp_name,
+        "latent_statistics": {
+            "global": {
+                "mean": float(latent_mean),
+                "std": float(latent_std) if latent_std else None,
+                "min": float(latent_min) if latent_min is not None else None,
+                "max": float(latent_max) if latent_max is not None else None,
+            },
+            "per_channel": {
+                "mean": per_channel_mean,
+                "std": per_channel_std,
+                "min": per_channel_min,
+                "max": per_channel_max,
+            } if per_channel_mean is not None else None,
+        },
+        "recommended_values": {
+            "scale_factor": float(scale_factor),
+            "latent_clamp_min": float(clamp_min),
+            "latent_clamp_max": float(clamp_max),
+        },
+        "notes": {
+            "scale_factor": "1.0 / std, normalizes latents to unit variance",
+            "latent_clamp_min": "Minimum value for clamping latents during diffusion",
+            "latent_clamp_max": "Maximum value for clamping latents during diffusion",
+        }
+    }
+    
+    # Save metadata file
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = output_dir / f"{exp_name}_metadata.json"
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+
+def load_vae_metadata(checkpoint_path: Path):
+    """
+    Load VAE metadata JSON file and extract recommended values.
+    
+    Args:
+        checkpoint_path: Path to autoencoder checkpoint
+    
+    Returns:
+        dict with 'scale_factor', 'latent_clamp_min', 'latent_clamp_max', or None if not found
+    """
+    import json
+    
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        return None
+    
+    # Metadata file is typically in the parent directory of checkpoints/
+    # e.g., /work3/.../vae_clip/checkpoints/vae_clip_checkpoint_best.pt
+    # -> /work3/.../vae_clip/vae_clip_metadata.json
+    checkpoint_dir = checkpoint_path.parent  # checkpoints/
+    vae_dir = checkpoint_dir.parent  # vae_clip/
+    
+    # Try to find metadata file - could be named {exp_name}_metadata.json
+    # Look for any *_metadata.json in the VAE directory
+    metadata_files = list(vae_dir.glob("*_metadata.json"))
+    
+    if not metadata_files:
+        return None
+    
+    # Use the first metadata file found (or could match by experiment name)
+    metadata_path = metadata_files[0]
+    
+    try:
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        recommended = metadata.get("recommended_values", {})
+        if recommended:
+            return {
+                "scale_factor": recommended.get("scale_factor"),
+                "latent_clamp_min": recommended.get("latent_clamp_min"),
+                "latent_clamp_max": recommended.get("latent_clamp_max")
+            }
+    except Exception as e:
+        print(f"Warning: Failed to load VAE metadata from {metadata_path}: {e}")
+    
+    return None

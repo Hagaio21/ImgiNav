@@ -1,0 +1,63 @@
+experiment:
+  name: "test_autoencoder"
+  phase: "autoencoder_training"
+  save_path: "tests/outputs/test_autoencoder"
+
+dataset:
+  manifest: "tests/fixtures/test_manifest.csv"
+  outputs:
+    rgb: "layout_path"
+  filters:
+    is_empty: [false]
+  return_path: false
+  transform:
+    type: Compose
+    transforms:
+      - type: Resize
+        size: [64, 64]
+        interpolation: nearest
+      - type: ToTensor
+      - type: Normalize
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]
+
+autoencoder:
+  encoder:
+    in_channels: 3
+    latent_channels: 4
+    base_channels: 16
+    downsampling_steps: 2
+    activation: SiLU
+    norm_groups: 4
+    variational: false
+  
+  decoder:
+    latent_channels: 4
+    base_channels: 16
+    upsampling_steps: 2
+    activation: SiLU
+    norm_groups: 4
+    heads:
+      - type: RGBHead
+        name: rgb
+        out_channels: 3
+        final_activation: tanh
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 2
+  num_workers: 0
+  shuffle: true
+  epochs: 1
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  use_amp: false
+  loss:
+    type: MSELoss
+    key: rgb
+    target: rgb
+    weight: 1.0
+
