@@ -13,6 +13,10 @@ set -euo pipefail
 # CONFIGURATION - UPDATE THESE PATHS
 # =============================================================================
 SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"  # Original 3D-FRONT scenes directory
+# MODEL_DIR should point to the directory containing model folders (e.g., {jid}/raw_model.obj)
+# The structure should be: MODEL_DIR/{jid}/raw_model.obj or MODEL_DIR/{jid}/raw_model.glb
+# If models are in a subdirectory, use: MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/3D-FUTURE-model"
+# If models are directly in 3D-FUTURE-model, use: MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model"
 MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/3D-FUTURE-model"
 MODEL_INFO="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/model_info.json"
 TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/taxonomy.json"
@@ -139,6 +143,39 @@ if [ ! -f "${MODEL_INFO}" ]; then
   rm -f "${SHARD_PREFIX}"*
   exit 1
 fi
+
+# Verify MODEL_DIR structure - check if it contains model subdirectories
+echo "Verifying MODEL_DIR structure..."
+MODEL_COUNT=$(find "${MODEL_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+if [ "${MODEL_COUNT}" -eq 0 ]; then
+  echo "WARNING: MODEL_DIR appears empty or incorrect: ${MODEL_DIR}" >&2
+  echo "Expected structure: ${MODEL_DIR}/{jid}/raw_model.obj" >&2
+  echo "Checking for alternative structure..." >&2
+  # Try parent directory
+  PARENT_MODEL_DIR=$(dirname "${MODEL_DIR}")
+  if [ -d "${PARENT_MODEL_DIR}/3D-FUTURE-model" ]; then
+    echo "Found alternative: ${PARENT_MODEL_DIR}/3D-FUTURE-model" >&2
+  fi
+  # Don't exit - let it try and fail with a clearer error message
+else
+  echo "Found ${MODEL_COUNT} model directories in ${MODEL_DIR}"
+  # Check if at least one has raw_model.obj
+  SAMPLE_MODEL=$(find "${MODEL_DIR}" -mindepth 2 -maxdepth 2 -name "raw_model.obj" 2>/dev/null | head -1)
+  if [ -n "${SAMPLE_MODEL}" ]; then
+    echo "Verified: Found sample model at ${SAMPLE_MODEL}"
+  else
+    echo "WARNING: No raw_model.obj files found in model subdirectories" >&2
+    echo "Checking for raw_model.glb instead..." >&2
+    SAMPLE_GLB=$(find "${MODEL_DIR}" -mindepth 2 -maxdepth 2 -name "raw_model.glb" 2>/dev/null | head -1)
+    if [ -n "${SAMPLE_GLB}" ]; then
+      echo "Found GLB model at ${SAMPLE_GLB}"
+    else
+      echo "ERROR: No model files (raw_model.obj or raw_model.glb) found in ${MODEL_DIR}" >&2
+      echo "Please verify MODEL_DIR path is correct" >&2
+    fi
+  fi
+fi
+echo ""
 
 if [ ! -f "${TAXONOMY_FILE}" ]; then
   echo "ERROR: taxonomy.json not found at: ${TAXONOMY_FILE}" >&2
