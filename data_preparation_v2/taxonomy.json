@@ -386,307 +386,307 @@
     "wardrobe/clothes rail": "Others"
   },
   "category_to_color": {
+    "Unknown": [
+      127,
+      127,
+      127
+    ],
     "Bar": [
-      162,
-      37,
-      190
+      127,
+      78,
+      51
     ],
     "Barstool": [
-      132,
-      190,
-      37
+      53,
+      127,
+      51
     ],
     "Bed Frame": [
-      190,
-      37,
-      88
+      127,
+      51,
+      51
     ],
     "Bookcase / jewelry Armoire": [
-      190,
-      117,
-      37
+      51,
+      93,
+      127
     ],
     "Bunk Bed": [
-      242,
-      72,
-      100
-    ],
-    "Ceiling": [
-      220,
-      220,
-      220
+      146,
+      48,
+      49
     ],
     "Ceiling Lamp": [
-      37,
-      190,
-      74
+      117,
+      51,
+      127
     ],
     "Chaise Longue Sofa": [
-      37,
-      45,
-      190
+      127,
+      127,
+      51
     ],
     "Children Cabinet": [
-      242,
-      189,
-      72
+      50,
+      97,
+      135
     ],
     "Classic Chinese Chair": [
-      149,
-      242,
-      72
+      52,
+      143,
+      49
     ],
     "Coffee Table": [
-      165,
-      146,
-      32
+      49,
+      101,
+      143
     ],
     "Corner/Side Table": [
-      238,
-      242,
-      72
+      47,
+      105,
+      152
     ],
     "Couch Bed": [
       165,
-      32,
-      32
+      44,
+      45
     ],
     "Desk": [
-      238,
-      72,
-      242
+      156,
+      86,
+      46
     ],
     "Dining Chair": [
-      70,
-      165,
-      32
+      49,
+      160,
+      45
     ],
     "Dining Table": [
-      165,
-      32,
-      146
+      184,
+      90,
+      36
+    ],
+    "Double Bed": [
+      184,
+      36,
+      38
+    ],
+    "Drawer Chest / Corner cabinet": [
+      45,
+      108,
+      160
+    ],
+    "Dressing Chair": [
+      44,
+      176,
+      40
+    ],
+    "Dressing Table": [
+      213,
+      91,
+      21
+    ],
+    "Floor Lamp": [
+      150,
+      44,
+      165
+    ],
+    "Folding chair": [
+      37,
+      193,
+      33
+    ],
+    "Footstool / Sofastool / Bed End Stool / Stool": [
+      255,
+      127,
+      0
+    ],
+    "Hanging Chair": [
+      29,
+      209,
+      23
+    ],
+    "Kids Bed": [
+      204,
+      27,
+      28
+    ],
+    "King-size Bed": [
+      223,
+      14,
+      16
+    ],
+    "L-shaped Sofa": [
+      141,
+      141,
+      49
+    ],
+    "Lazy Sofa": [
+      156,
+      156,
+      46
+    ],
+    "Lounge Chair / Book-chair / Computer Chair": [
+      19,
+      225,
+      12
+    ],
+    "Lounge Chair / Cafe Chair / Office Chair": [
+      7,
+      242,
+      0
+    ],
+    "Loveseat Sofa": [
+      170,
+      170,
+      42
+    ],
+    "Nightstand": [
+      43,
+      112,
+      168
+    ],
+    "Pendant Lamp": [
+      181,
+      27,
+      204
+    ],
+    "Round End Table": [
+      40,
+      115,
+      176
+    ],
+    "Shelf": [
+      36,
+      118,
+      184
+    ],
+    "Shoe Cabinet": [
+      33,
+      121,
+      193
+    ],
+    "Sideboard / Side Cabinet / Console": [
+      28,
+      123,
+      201
+    ],
+    "Sideboard / Side Cabinet / Console Table": [
+      242,
+      88,
+      0
+    ],
+    "Single bed": [
+      242,
+      0,
+      2
+    ],
+    "TV Stand": [
+      23,
+      126,
+      209
+    ],
+    "Tea Table": [
+      18,
+      128,
+      217
+    ],
+    "Three-Seat / Multi-person sofa": [
+      184,
+      184,
+      36
+    ],
+    "Three-Seat / Multi-seat Sofa": [
+      199,
+      199,
+      29
+    ],
+    "Two-seat Sofa": [
+      213,
+      213,
+      21
+    ],
+    "U-shaped Sofa": [
+      227,
+      227,
+      11
+    ],
+    "Wall Lamp": [
+      210,
+      0,
+      242
+    ],
+    "Wardrobe": [
+      12,
+      130,
+      225
+    ],
+    "Wine Cabinet": [
+      6,
+      131,
+      234
+    ],
+    "Wine Cooler": [
+      0,
+      133,
+      242
+    ],
+    "armchair": [
+      242,
+      242,
+      0
+    ],
+    "ceiling": [
+      255,
+      255,
+      255
+    ],
+    "floor": [
+      200,
+      200,
+      200
+    ],
+    "wall": [
+      50,
+      50,
+      50
     ],
     "Door": [
       255,
       100,
       100
     ],
-    "Double Bed": [
-      242,
-      100,
-      72
-    ],
-    "Drawer Chest / Corner cabinet": [
-      118,
-      139,
-      27
-    ],
-    "Dressing Chair": [
-      92,
-      242,
-      72
-    ],
-    "Dressing Table": [
-      242,
-      72,
-      189
-    ],
-    "Floor": [
-      60,
-      60,
-      60
-    ],
-    "Floor Lamp": [
-      72,
-      242,
-      140
-    ],
-    "Folding chair": [
-      27,
-      139,
-      33
-    ],
-    "Footstool / Sofastool / Bed End Stool / Stool": [
-      30,
-      186,
-      203
-    ],
-    "Hanging Chair": [
-      177,
-      242,
-      72
-    ],
-    "Kids Bed": [
-      139,
-      65,
-      27
-    ],
-    "King-size Bed": [
-      242,
-      72,
-      129
-    ],
-    "L-shaped Sofa": [
-      92,
-      72,
-      242
-    ],
-    "Lazy Sofa": [
-      70,
-      32,
-      165
-    ],
-    "Lounge Chair / Book-chair / Computer Chair": [
-      71,
-      127,
-      25
-    ],
-    "Lounge Chair / Cafe Chair / Office Chair": [
-      120,
-      242,
-      72
-    ],
-    "Loveseat Sofa": [
-      149,
-      72,
-      242
-    ],
-    "Nightstand": [
-      242,
-      160,
-      72
-    ],
-    "Pendant Lamp": [
-      32,
-      165,
-      108
-    ],
-    "Round End Table": [
-      127,
-      95,
-      25
-    ],
-    "Shelf": [
-      242,
-      217,
-      72
-    ],
-    "Shoe Cabinet": [
-      125,
-      127,
-      25
-    ],
-    "Sideboard / Side Cabinet / Console": [
-      210,
-      242,
-      72
-    ],
-    "Sideboard / Side Cabinet / Console Table": [
-      139,
-      27,
-      86
-    ],
-    "Single bed": [
-      127,
-      25,
-      42
-    ],
-    "TV Stand": [
-      127,
-      78,
-      25
-    ],
-    "Tea Table": [
-      242,
-      189,
-      72
-    ],
-    "Three-Seat / Multi-person sofa": [
-      97,
-      27,
-      139
-    ],
-    "Three-Seat / Multi-seat Sofa": [
-      72,
-      80,
-      242
-    ],
-    "Two-seat Sofa": [
-      37,
-      25,
-      127
-    ],
-    "U-shaped Sofa": [
-      120,
-      72,
-      242
-    ],
-    "UnknownCategory": [
-      153,
-      137,
-      142
-    ],
-    "Wall": [
-      180,
-      180,
-      180
-    ],
-    "Wall Lamp": [
-      72,
-      242,
-      197
-    ],
-    "Wardrobe": [
-      127,
-      112,
-      25
-    ],
     "Window": [
       100,
       200,
       255
-    ],
-    "Wine Cabinet": [
-      238,
-      242,
-      72
-    ],
-    "Wine Cooler": [
-      108,
-      127,
-      25
-    ],
-    "armchair": [
-      71,
-      25,
-      127
     ]
   },
   "supercategory_to_color": {
+    "Unknown": [
+      127,
+      127,
+      127
+    ],
     "Bed": [
-      229,
-      57,
-      57
+      228,
+      26,
+      28
     ],
     "Cabinet/Shelf/Desk": [
-      229,
-      204,
-      57
+      55,
+      126,
+      184
     ],
     "Chair": [
-      106,
-      229,
-      57
+      77,
+      175,
+      74
     ],
     "Lighting": [
-      57,
-      229,
-      155
-    ],
-    "Openings": [
-      200,
-      150,
-      150
+      152,
+      78,
+      163
     ],
     "Others": [
       127,
@@ -694,91 +694,97 @@
       127
     ],
     "Pier/Stool": [
-      57,
-      155,
-      229
+      255,
+      127,
+      0
     ],
     "Sofa": [
-      106,
-      57,
-      229
+      255,
+      255,
+      51
     ],
     "Structure": [
-      100,
-      100,
-      100
+      0,
+      0,
+      0
     ],
     "Table": [
-      229,
-      57,
-      204
+      166,
+      86,
+      40
+    ],
+    "Openings": [
+      177,
+      150,
+      177
     ]
   },
   "color_to_category": {
-    "162,37,190": "Bar",
-    "132,190,37": "Barstool",
-    "190,37,88": "Bed Frame",
-    "190,117,37": "Bookcase / jewelry Armoire",
-    "242,72,100": "Bunk Bed",
-    "220,220,220": "Ceiling",
-    "37,190,74": "Ceiling Lamp",
-    "37,45,190": "Chaise Longue Sofa",
-    "242,189,72": "Tea Table",
-    "149,242,72": "Classic Chinese Chair",
-    "165,146,32": "Coffee Table",
-    "238,242,72": "Wine Cabinet",
-    "165,32,32": "Couch Bed",
-    "238,72,242": "Desk",
-    "70,165,32": "Dining Chair",
-    "165,32,146": "Dining Table",
+    "127,127,127": "Unknown",
+    "127,78,51": "Bar",
+    "53,127,51": "Barstool",
+    "127,51,51": "Bed Frame",
+    "51,93,127": "Bookcase / jewelry Armoire",
+    "146,48,49": "Bunk Bed",
+    "117,51,127": "Ceiling Lamp",
+    "127,127,51": "Chaise Longue Sofa",
+    "50,97,135": "Children Cabinet",
+    "52,143,49": "Classic Chinese Chair",
+    "49,101,143": "Coffee Table",
+    "47,105,152": "Corner/Side Table",
+    "165,44,45": "Couch Bed",
+    "156,86,46": "Desk",
+    "49,160,45": "Dining Chair",
+    "184,90,36": "Dining Table",
+    "184,36,38": "Double Bed",
+    "45,108,160": "Drawer Chest / Corner cabinet",
+    "44,176,40": "Dressing Chair",
+    "213,91,21": "Dressing Table",
+    "150,44,165": "Floor Lamp",
+    "37,193,33": "Folding chair",
+    "255,127,0": "Footstool / Sofastool / Bed End Stool / Stool",
+    "29,209,23": "Hanging Chair",
+    "204,27,28": "Kids Bed",
+    "223,14,16": "King-size Bed",
+    "141,141,49": "L-shaped Sofa",
+    "156,156,46": "Lazy Sofa",
+    "19,225,12": "Lounge Chair / Book-chair / Computer Chair",
+    "7,242,0": "Lounge Chair / Cafe Chair / Office Chair",
+    "170,170,42": "Loveseat Sofa",
+    "43,112,168": "Nightstand",
+    "181,27,204": "Pendant Lamp",
+    "40,115,176": "Round End Table",
+    "36,118,184": "Shelf",
+    "33,121,193": "Shoe Cabinet",
+    "28,123,201": "Sideboard / Side Cabinet / Console",
+    "242,88,0": "Sideboard / Side Cabinet / Console Table",
+    "242,0,2": "Single bed",
+    "23,126,209": "TV Stand",
+    "18,128,217": "Tea Table",
+    "184,184,36": "Three-Seat / Multi-person sofa",
+    "199,199,29": "Three-Seat / Multi-seat Sofa",
+    "213,213,21": "Two-seat Sofa",
+    "227,227,11": "U-shaped Sofa",
+    "210,0,242": "Wall Lamp",
+    "12,130,225": "Wardrobe",
+    "6,131,234": "Wine Cabinet",
+    "0,133,242": "Wine Cooler",
+    "242,242,0": "armchair",
+    "255,255,255": "ceiling",
+    "200,200,200": "floor",
+    "50,50,50": "wall",
     "255,100,100": "Door",
-    "242,100,72": "Double Bed",
-    "118,139,27": "Drawer Chest / Corner cabinet",
-    "92,242,72": "Dressing Chair",
-    "242,72,189": "Dressing Table",
-    "60,60,60": "Floor",
-    "72,242,140": "Floor Lamp",
-    "27,139,33": "Folding chair",
-    "30,186,203": "Footstool / Sofastool / Bed End Stool / Stool",
-    "177,242,72": "Hanging Chair",
-    "139,65,27": "Kids Bed",
-    "242,72,129": "King-size Bed",
-    "92,72,242": "L-shaped Sofa",
-    "70,32,165": "Lazy Sofa",
-    "71,127,25": "Lounge Chair / Book-chair / Computer Chair",
-    "120,242,72": "Lounge Chair / Cafe Chair / Office Chair",
-    "149,72,242": "Loveseat Sofa",
-    "242,160,72": "Nightstand",
-    "32,165,108": "Pendant Lamp",
-    "127,95,25": "Round End Table",
-    "242,217,72": "Shelf",
-    "125,127,25": "Shoe Cabinet",
-    "210,242,72": "Sideboard / Side Cabinet / Console",
-    "139,27,86": "Sideboard / Side Cabinet / Console Table",
-    "127,25,42": "Single bed",
-    "127,78,25": "TV Stand",
-    "97,27,139": "Three-Seat / Multi-person sofa",
-    "72,80,242": "Three-Seat / Multi-seat Sofa",
-    "37,25,127": "Two-seat Sofa",
-    "120,72,242": "U-shaped Sofa",
-    "153,137,142": "UnknownCategory",
-    "180,180,180": "Wall",
-    "72,242,197": "Wall Lamp",
-    "127,112,25": "Wardrobe",
-    "100,200,255": "Window",
-    "108,127,25": "Wine Cooler",
-    "71,25,127": "armchair"
+    "100,200,255": "Window"
   },
   "color_to_super": {
-    "229,57,57": "Bed",
-    "229,204,57": "Cabinet/Shelf/Desk",
-    "106,229,57": "Chair",
-    "57,229,155": "Lighting",
-    "200,150,150": "Openings",
     "127,127,127": "Others",
-    "57,155,229": "Pier/Stool",
-    "106,57,229": "Sofa",
-    "100,100,100": "Structure",
-    "229,57,204": "Table"
+    "228,26,28": "Bed",
+    "55,126,184": "Cabinet/Shelf/Desk",
+    "77,175,74": "Chair",
+    "152,78,163": "Lighting",
+    "255,127,0": "Pier/Stool",
+    "255,255,51": "Sofa",
+    "0,0,0": "Structure",
+    "166,86,40": "Table"
   }
 }
