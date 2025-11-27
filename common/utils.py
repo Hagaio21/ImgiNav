@@ -90,7 +90,18 @@ def _register_numpy_constructor():
     )
 
 
-def load_config_with_profile(config_path: str = None, profile: str = None) -> Dict:
+def load_config_with_profile(config_path: str = None, profile: str = None, resolve_checkpoints: bool = True) -> Dict:
+    """
+    Load configuration file with optional profile support and checkpoint registry resolution.
+    
+    Args:
+        config_path: Path to config file
+        profile: Profile name to use (overrides config's profile setting)
+        resolve_checkpoints: If True, automatically resolve checkpoint registry references (default: True)
+    
+    Returns:
+        Loaded and resolved configuration dictionary
+    """
     if not config_path:
         return {}
     
@@ -127,7 +138,22 @@ def load_config_with_profile(config_path: str = None, profile: str = None) -> Di
         
         base_config = {k: v for k, v in data.items() if k not in ("profiles", "profile")}
         base_config.update(data["profiles"][profile_name])
-        return base_config
+        data = base_config
+    
+    # Resolve checkpoint registry references if enabled
+    if resolve_checkpoints:
+        try:
+            from common.checkpoint_registry import resolve_checkpoint_in_config
+            # Use None for base_dir so registry uses BASE_DIR (project root)
+            # This ensures registry paths resolve correctly regardless of config location
+            data = resolve_checkpoint_in_config(data, base_dir=None)
+        except ImportError:
+            # Registry module not available, skip resolution
+            pass
+        except Exception as e:
+            # Warn but don't fail if registry resolution fails
+            import warnings
+            warnings.warn(f"Failed to resolve checkpoint registry references: {e}", UserWarning)
     
     return data
 

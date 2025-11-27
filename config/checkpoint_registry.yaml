@@ -1,0 +1,55 @@
+# Checkpoint Registry
+# Central registry for all checkpoints used in the project
+# Allows configs to reference checkpoints by name instead of hardcoded paths
+# Supports different paths for local and HPC environments
+
+# Environment detection:
+# - If IMGINAV_ENV=local or not set, uses 'local' paths
+# - If IMGINAV_ENV=hpc or HPC-related env vars detected, uses 'hpc' paths
+# - Falls back to 'local' if environment not detected
+
+checkpoints:
+  # VAE/Autoencoder checkpoints
+  vae_best:
+    local: checkpoints/vae_checkpoint_best.pt
+    hpc: ${IMGINAV_ROOT}/checkpoints/vae_checkpoint_best.pt
+    description: "Standalone VAE checkpoint (without CLIP projections)"
+  
+  vae_clip_original:
+    local: checkpoints/backups/vae_clip_checkpoint_best.pt
+    hpc: ${IMGINAV_ROOT}/checkpoints/backups/vae_clip_checkpoint_best.pt
+    description: "Original VAE checkpoint with CLIP projections (backup)"
+  
+  # CLIP Projection checkpoints
+  clip_projection_best:
+    local: checkpoints/clip_projection_checkpoint_best.pt
+    hpc: ${IMGINAV_ROOT}/checkpoints/clip_projection_checkpoint_best.pt
+    description: "Standalone CLIP projection checkpoint"
+  
+  # Diffusion checkpoints
+  diffusion_small_text_only:
+    local: checkpoints/diff_clip_regular_rooms_small_down_bottleneck_text_only_checkpoint_best.pt
+    hpc: ${IMGINAV_ROOT}/checkpoints/diff_clip_regular_rooms_small_down_bottleneck_text_only_checkpoint_best.pt
+    description: "Small diffusion model with text-only conditioning"
+  
+  diffusion_small_pov_only:
+    local: checkpoints/diff_clip_regular_rooms_small_down_bottleneck_pov_only_checkpoint_best.pt
+    hpc: ${IMGINAV_ROOT}/checkpoints/diff_clip_regular_rooms_small_down_bottleneck_pov_only_checkpoint_best.pt
+    description: "Small diffusion model with POV-only conditioning"
+  
+  diffusion_small_both:
+    local: checkpoints/diff_clip_regular_rooms_small_down_bottleneck_checkpoint_best.pt
+    hpc: ${IMGINAV_ROOT}/checkpoints/diff_clip_regular_rooms_small_down_bottleneck_checkpoint_best.pt
+    description: "Small diffusion model with both text and POV conditioning"
+  
+  # Embedding checkpoints
+  text_embedding:
+    local: checkpoints/text_embedding.pt
+    hpc: ${IMGINAV_ROOT}/checkpoints/text_embedding.pt
+    description: "Text embedding tensor for inference"
+
+# Default environment paths (used if specific environment not found)
+defaults:
+  local: checkpoints
+  hpc: ${IMGINAV_ROOT}/checkpoints
+
