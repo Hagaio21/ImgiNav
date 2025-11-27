@@ -26,7 +26,7 @@ trap cleanup EXIT
 # CONFIGURATION - UPDATE THESE PATHS
 # =============================================================================
 SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
-MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/3D-FUTURE-model"
+MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model"
 MODEL_INFO="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/model_info.json"
 TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/taxonomy.json"
 TEXTURE_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FRONT-texture"
@@ -157,63 +157,10 @@ fi
 # Verify paths
 if [ ! -f "${MODEL_INFO}" ]; then
   echo "ERROR: model_info.json not found at: ${MODEL_INFO}" >&2
+  echo "Checking for model_info.json in model directory..." >&2
+  find "${MODEL_DIR}" -name "model_info.json" -type f
   exit 1
 fi
-
-# Verify MODEL_DIR structure - check if it contains model subdirectories
-echo "Verifying MODEL_DIR structure..."
-if [ ! -d "${MODEL_DIR}" ]; then
-  echo "WARNING: MODEL_DIR does not exist: ${MODEL_DIR}" >&2
-  echo "Checking for alternative paths..." >&2
-  # Try without subdirectory (matches old working script)
-  ALTERNATIVE_MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model"
-  if [ -d "${ALTERNATIVE_MODEL_DIR}" ]; then
-    echo "Found alternative MODEL_DIR: ${ALTERNATIVE_MODEL_DIR}" >&2
-    echo "Updating MODEL_DIR to use alternative path..." >&2
-    MODEL_DIR="${ALTERNATIVE_MODEL_DIR}"
-  else
-    echo "ERROR: Neither MODEL_DIR path exists:" >&2
-    echo "  - ${MODEL_DIR}" >&2
-    echo "  - ${ALTERNATIVE_MODEL_DIR}" >&2
-    echo "Please verify the 3D-FUTURE-model directory path" >&2
-    exit 1
-  fi
-fi
-
-MODEL_COUNT=$(find "${MODEL_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l || echo "0")
-if [ "${MODEL_COUNT}" -eq 0 ]; then
-  echo "WARNING: MODEL_DIR appears empty or incorrect: ${MODEL_DIR}" >&2
-  echo "Expected structure: ${MODEL_DIR}/{jid}/raw_model.obj" >&2
-  echo "Checking for alternative structure..." >&2
-  # Try parent directory
-  PARENT_MODEL_DIR=$(dirname "${MODEL_DIR}")
-  if [ -d "${PARENT_MODEL_DIR}/3D-FUTURE-model" ]; then
-    echo "Found alternative: ${PARENT_MODEL_DIR}/3D-FUTURE-model" >&2
-  fi
-  # Don't exit - let it try and fail with a clearer error message
-else
-  echo "Found ${MODEL_COUNT} model directories in ${MODEL_DIR}"
-  # Check if at least one has raw_model.obj
-  SAMPLE_MODEL=$(find "${MODEL_DIR}" -mindepth 2 -maxdepth 2 -name "raw_model.obj" 2>/dev/null | head -1 || echo "")
-  if [ -n "${SAMPLE_MODEL}" ]; then
-    echo "Verified: Found sample model at ${SAMPLE_MODEL}"
-  else
-    echo "WARNING: No raw_model.obj files found in model subdirectories" >&2
-    echo "Checking for raw_model.glb instead..." >&2
-    SAMPLE_GLB=$(find "${MODEL_DIR}" -mindepth 2 -maxdepth 2 -name "raw_model.glb" 2>/dev/null | head -1 || echo "")
-    if [ -n "${SAMPLE_GLB}" ]; then
-      echo "Found GLB model at ${SAMPLE_GLB}"
-    else
-      echo "ERROR: No model files (raw_model.obj or raw_model.glb) found in ${MODEL_DIR}" >&2
-      echo "Please verify MODEL_DIR path is correct" >&2
-      echo "Trying to list first few directories in MODEL_DIR:" >&2
-      ls -la "${MODEL_DIR}" | head -10 >&2 || true
-      exit 1
-    fi
-  fi
-fi
-echo "Using MODEL_DIR: ${MODEL_DIR}"
-echo ""
 
 if [ ! -f "${TAXONOMY_FILE}" ]; then
   echo "ERROR: taxonomy.json not found at: ${TAXONOMY_FILE}" >&2
