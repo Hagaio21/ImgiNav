@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Stage 3: Layout Rendering - FIXED VERSION v6
+Stage 3: Layout Rendering
 
-Fixes:
-1. Room filtering now properly clips to room bbox
-2. Floor and wall have different colors in textured version
-3. Room layouts show only the room content, not entire scene
-4. Uses taxonomy colors for doors/windows
-5. HPC mode with Xvfb for headless rendering
+Features:
+- Scene list support (--scene-list with scene IDs)
+- Room filtering properly clips to room bbox
+- Floor and wall have different colors in textured version
+- Room layouts show only the room content, not entire scene
+- Uses taxonomy colors for doors/windows
+- HPC mode with Xvfb for headless rendering (only when --hpc flag is set)
 """
 
 import argparse
@@ -68,6 +69,17 @@ def cleanup_hpc_rendering():
 def safe_mkdir(path: Path):
     """Create directory if it doesn't exist."""
     path.mkdir(parents=True, exist_ok=True)
+
+
+def load_scene_list(scene_list_path: Path) -> List[str]:
+    """Load scene IDs from a text file (one per line)."""
+    scenes = []
+    with open(scene_list_path, "r", encoding="utf-8") as f:
+        for line in f:
+            scene_id = line.strip()
+            if scene_id and not scene_id.startswith("#"):
+                scenes.append(scene_id)
+    return scenes
 
 
 def load_glb_with_transforms(glb_path: Path) -> List[trimesh.Trimesh]:
@@ -550,17 +562,18 @@ def process_one_scene(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Stage 3: Render layouts (v6 - with taxonomy colors)")
-    parser.add_argument("--geometry-dir", required=True)
-    parser.add_argument("--metadata-dir", required=True)
+    parser = argparse.ArgumentParser(description="Stage 3: Render layouts")
+    parser.add_argument("--geometry-dir", required=True, help="Directory containing geometry GLB files")
+    parser.add_argument("--metadata-dir", required=True, help="Directory containing metadata JSON files")
     parser.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--resolution", type=int, default=512)
+    parser.add_argument("--output-dir", required=True, help="Output directory for layout images")
+    parser.add_argument("--scene-list", type=str, default=None, help="Path to text file with scene IDs (one per line)")
+    parser.add_argument("--resolution", type=int, default=512, help="Output image resolution")
     parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of scenes to process")
     args = parser.parse_args()
     
-    # Set up HPC rendering if requested
+    # Set up HPC rendering only if --hpc flag is set
     if args.hpc:
         if not setup_hpc_rendering():
             logger.error("Failed to set up HPC rendering, exiting")
@@ -577,53 +590,78 @@ def main():
         door_color, window_color = get_door_window_colors(taxonomy)
         logger.info(f"Door color: {door_color}, Window color: {window_color}")
         
-        scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
-        if not scene_meta_files:
-            logger.error(f"No scene metadata found")
-            return
+        # Determine which scenes to process
+        if args.scene_list:
+            # Load scene IDs from file
+            scene_list_path = Path(args.scene_list)
+            if not scene_list_path.exists():
+                logger.error(f"Scene list not found: {scene_list_path}")
+                return
+            
+            scene_ids = load_scene_list(scene_list_path)
+            logger.info(f"Loaded {len(scene_ids)} scene IDs from {scene_list_path}")
+        else:
+            # Discover scenes from metadata directory
+            scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
+            if not scene_meta_files:
+                logger.error(f"No scene metadata found in {metadata_dir / 'scenes'}")
+                return
+            scene_ids = [f.stem for f in scene_meta_files]
+            logger.info(f"Discovered {len(scene_ids)} scenes from metadata directory")
         
         if args.limit:
-            scene_meta_files = scene_meta_files[:args.limit]
+            scene_ids = scene_ids[:args.limit]
         
-        logger.info(f"Processing {len(scene_meta_files)} scenes...")
+        logger.info(f"Processing {len(scene_ids)} scenes...")
         
         success_count = 0
+        skip_count = 0
         
-        for i, scene_meta_path in enumerate(scene_meta_files, 1):
-            scene_id = scene_meta_path.stem
+        for i, scene_id in enumerate(scene_ids, 1):
+            # Load scene metadata
+            scene_meta_path = metadata_dir / "scenes" / f"{scene_id}.json"
+            if not scene_meta_path.exists():
+                logger.warning(f"Scene metadata not found: {scene_meta_path}")
+                skip_count += 1
+                continue
             
             with open(scene_meta_path, "r") as f:
                 scene_metadata = json.load(f)
             
+            # Check for GLB files
             tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
             seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
             
             if not tex_glb.exists() or not seg_glb.exists():
                 logger.warning(f"GLB not found for {scene_id}")
+                skip_count += 1
                 continue
             
+            # Load room metadata
             rooms_metadata = []
-            for room_meta_path in (metadata_dir / "rooms").glob(f"{scene_id}_*.json"):
-                with open(room_meta_path, "r") as f:
-                    room_data = json.load(f)
-                    if room_data.get("scene_id") == scene_id:
-                        rooms_metadata.append(room_data)
+            rooms_dir = metadata_dir / "rooms"
+            if rooms_dir.exists():
+                for room_meta_path in rooms_dir.glob(f"{scene_id}_*.json"):
+                    with open(room_meta_path, "r") as f:
+                        room_data = json.load(f)
+                        if room_data.get("scene_id") == scene_id:
+                            rooms_metadata.append(room_data)
             
-            success, _ = process_one_scene(
+            success, error = process_one_scene(
                 scene_id, tex_glb, seg_glb, scene_metadata, rooms_metadata,
                 output_dir, args.resolution, door_color=door_color, window_color=window_color
             )
             
             if success:
                 success_count += 1
-                logger.info(f"[{i}/{len(scene_meta_files)}] ✓ {scene_id}")
+                logger.info(f"[{i}/{len(scene_ids)}] ✓ {scene_id}")
             else:
-                logger.warning(f"[{i}/{len(scene_meta_files)}] ✗ {scene_id}")
+                logger.warning(f"[{i}/{len(scene_ids)}] ✗ {scene_id}: {error}")
         
-        logger.info(f"\nDone: {success_count}/{len(scene_meta_files)}")
+        logger.info(f"\nDone: {success_count}/{len(scene_ids)} succeeded, {skip_count} skipped")
     
     finally:
-        # Clean up HPC rendering
+        # Clean up HPC rendering only if it was set up
         if args.hpc:
             cleanup_hpc_rendering()
 
