@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Stage 3: Layout Rendering - FIXED VERSION v5
+Stage 3: Layout Rendering - FIXED VERSION v6
 
 Fixes:
 1. Room filtering now properly clips to room bbox
 2. Floor and wall have different colors in textured version
 3. Room layouts show only the room content, not entire scene
+4. Uses taxonomy colors for doors/windows
+5. HPC mode with Xvfb for headless rendering
 """
 
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -23,6 +26,43 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Global Xvfb display reference
+_xvfb_display = None
+
+
+def setup_hpc_rendering() -> bool:
+    """
+    Set up Xvfb virtual display for HPC headless rendering.
+    
+    Returns True if successful, False otherwise.
+    """
+    global _xvfb_display
+    
+    try:
+        from xvfbwrapper import Xvfb
+        _xvfb_display = Xvfb(width=1280, height=720)
+        _xvfb_display.start()
+        logger.info(f"Xvfb started on display :{_xvfb_display.new_display}")
+        return True
+    except ImportError:
+        logger.error("xvfbwrapper not installed. Install with: pip install xvfbwrapper")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to start Xvfb: {e}")
+        return False
+
+
+def cleanup_hpc_rendering():
+    """Clean up Xvfb display."""
+    global _xvfb_display
+    if _xvfb_display is not None:
+        try:
+            _xvfb_display.stop()
+            logger.info("Xvfb stopped")
+        except Exception:
+            pass
+        _xvfb_display = None
 
 
 def safe_mkdir(path: Path):
@@ -516,63 +556,76 @@ def main():
     parser.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--resolution", type=int, default=512)
+    parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
+    
+    # Set up HPC rendering if requested
+    if args.hpc:
+        if not setup_hpc_rendering():
+            logger.error("Failed to set up HPC rendering, exiting")
+            return
     
     geometry_dir = Path(args.geometry_dir)
     metadata_dir = Path(args.metadata_dir)
     taxonomy_path = Path(args.taxonomy)
     output_dir = Path(args.output_dir)
     
-    # Load taxonomy for colors
-    taxonomy = load_taxonomy(taxonomy_path)
-    door_color, window_color = get_door_window_colors(taxonomy)
-    logger.info(f"Door color: {door_color}, Window color: {window_color}")
-    
-    scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
-    if not scene_meta_files:
-        logger.error(f"No scene metadata found")
-        return
-    
-    if args.limit:
-        scene_meta_files = scene_meta_files[:args.limit]
-    
-    logger.info(f"Processing {len(scene_meta_files)} scenes...")
-    
-    success_count = 0
-    
-    for i, scene_meta_path in enumerate(scene_meta_files, 1):
-        scene_id = scene_meta_path.stem
+    try:
+        # Load taxonomy for colors
+        taxonomy = load_taxonomy(taxonomy_path)
+        door_color, window_color = get_door_window_colors(taxonomy)
+        logger.info(f"Door color: {door_color}, Window color: {window_color}")
         
-        with open(scene_meta_path, "r") as f:
-            scene_metadata = json.load(f)
+        scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
+        if not scene_meta_files:
+            logger.error(f"No scene metadata found")
+            return
         
-        tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
-        seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
+        if args.limit:
+            scene_meta_files = scene_meta_files[:args.limit]
         
-        if not tex_glb.exists() or not seg_glb.exists():
-            logger.warning(f"GLB not found for {scene_id}")
-            continue
+        logger.info(f"Processing {len(scene_meta_files)} scenes...")
         
-        rooms_metadata = []
-        for room_meta_path in (metadata_dir / "rooms").glob(f"{scene_id}_*.json"):
-            with open(room_meta_path, "r") as f:
-                room_data = json.load(f)
-                if room_data.get("scene_id") == scene_id:
-                    rooms_metadata.append(room_data)
+        success_count = 0
         
-        success, _ = process_one_scene(
-            scene_id, tex_glb, seg_glb, scene_metadata, rooms_metadata,
-            output_dir, args.resolution, door_color=door_color, window_color=window_color
-        )
+        for i, scene_meta_path in enumerate(scene_meta_files, 1):
+            scene_id = scene_meta_path.stem
+            
+            with open(scene_meta_path, "r") as f:
+                scene_metadata = json.load(f)
+            
+            tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
+            seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
+            
+            if not tex_glb.exists() or not seg_glb.exists():
+                logger.warning(f"GLB not found for {scene_id}")
+                continue
+            
+            rooms_metadata = []
+            for room_meta_path in (metadata_dir / "rooms").glob(f"{scene_id}_*.json"):
+                with open(room_meta_path, "r") as f:
+                    room_data = json.load(f)
+                    if room_data.get("scene_id") == scene_id:
+                        rooms_metadata.append(room_data)
+            
+            success, _ = process_one_scene(
+                scene_id, tex_glb, seg_glb, scene_metadata, rooms_metadata,
+                output_dir, args.resolution, door_color=door_color, window_color=window_color
+            )
+            
+            if success:
+                success_count += 1
+                logger.info(f"[{i}/{len(scene_meta_files)}] ✓ {scene_id}")
+            else:
+                logger.warning(f"[{i}/{len(scene_meta_files)}] ✗ {scene_id}")
         
-        if success:
-            success_count += 1
-            logger.info(f"[{i}/{len(scene_meta_files)}] ✓ {scene_id}")
-        else:
-            logger.warning(f"[{i}/{len(scene_meta_files)}] ✗ {scene_id}")
+        logger.info(f"\nDone: {success_count}/{len(scene_meta_files)}")
     
-    logger.info(f"\nDone: {success_count}/{len(scene_meta_files)}")
+    finally:
+        # Clean up HPC rendering
+        if args.hpc:
+            cleanup_hpc_rendering()
 
 
 if __name__ == "__main__":

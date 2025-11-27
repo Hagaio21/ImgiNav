@@ -5,11 +5,13 @@ Stage 4: POV Rendering - FIXED VERSION v2
 Fast POV rendering with proper camera positioning.
 - Camera at doorway, OUTSIDE the room, looking IN
 - Uses pyrender if available, fast fallback otherwise
+- Supports HPC mode with Xvfb for headless rendering
 """
 
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -22,6 +24,97 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Global Xvfb display reference
+_xvfb_display = None
+
+
+def setup_hpc_rendering(backend: str = "auto") -> bool:
+    """
+    Set up rendering backend for HPC headless rendering.
+    
+    Args:
+        backend: One of "auto", "egl", "osmesa", "xvfb"
+    
+    Returns True if successful, False otherwise.
+    """
+    global _xvfb_display
+    
+    if backend == "auto":
+        # Try backends in order: xvfb first (most reliable on CPU nodes), then others
+        for try_backend in ["xvfb", "osmesa", "egl"]:
+            if setup_hpc_rendering(try_backend):
+                return True
+        return False
+    
+    elif backend == "xvfb":
+        try:
+            from xvfbwrapper import Xvfb
+            _xvfb_display = Xvfb(width=1280, height=720)
+            _xvfb_display.start()
+            logger.info(f"Xvfb started on display :{_xvfb_display.new_display}")
+            
+            # Test if pyrender works
+            try:
+                import pyrender
+                renderer = pyrender.OffscreenRenderer(64, 64)
+                renderer.delete()
+                logger.info("Xvfb backend working with pyrender")
+                return True
+            except Exception as e:
+                logger.warning(f"Xvfb started but pyrender failed: {e}")
+                _xvfb_display.stop()
+                _xvfb_display = None
+                return False
+                
+        except ImportError:
+            logger.debug("xvfbwrapper not installed")
+            return False
+        except Exception as e:
+            logger.debug(f"Xvfb backend failed: {e}")
+            return False
+    
+    elif backend == "egl":
+        try:
+            os.environ["PYOPENGL_PLATFORM"] = "egl"
+            import pyrender
+            renderer = pyrender.OffscreenRenderer(64, 64)
+            renderer.delete()
+            logger.info("Using EGL backend (GPU headless)")
+            return True
+        except Exception as e:
+            logger.debug(f"EGL backend failed: {e}")
+            if "PYOPENGL_PLATFORM" in os.environ:
+                del os.environ["PYOPENGL_PLATFORM"]
+            return False
+    
+    elif backend == "osmesa":
+        try:
+            os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+            import pyrender
+            renderer = pyrender.OffscreenRenderer(64, 64)
+            renderer.delete()
+            logger.info("Using OSMesa backend (CPU software)")
+            return True
+        except Exception as e:
+            logger.debug(f"OSMesa backend failed: {e}")
+            if "PYOPENGL_PLATFORM" in os.environ:
+                del os.environ["PYOPENGL_PLATFORM"]
+            return False
+    
+    return False
+
+
+def cleanup_hpc_rendering():
+    """Clean up any resources used by the rendering backend."""
+    global _xvfb_display
+    if _xvfb_display is not None:
+        try:
+            _xvfb_display.stop()
+            logger.info("Xvfb stopped")
+        except Exception:
+            pass
+        _xvfb_display = None
 
 
 # ============================================================================
@@ -517,7 +610,11 @@ def main():
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fov", type=float, default=60.0)
-    parser.add_argument("--no-pyrender", action="store_true")
+    parser.add_argument("--no-pyrender", action="store_true", help="Disable pyrender, use fallback")
+    parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
+    parser.add_argument("--backend", type=str, default="auto", 
+                        choices=["auto", "egl", "osmesa", "xvfb"],
+                        help="Rendering backend (used with --hpc): auto, egl, osmesa, or xvfb")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--workers", type=int, default=1, help="Number of parallel workers")
     args = parser.parse_args()
@@ -527,63 +624,75 @@ def main():
     output_dir = Path(args.output_dir)
     use_pyrender = not args.no_pyrender
     
-    scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
-    if not scene_meta_files:
-        logger.error("No scene metadata found")
-        return
+    # Set up HPC rendering if requested
+    if args.hpc and use_pyrender:
+        if not setup_hpc_rendering(args.backend):
+            logger.warning("No HPC rendering backend available, falling back to software renderer")
+            use_pyrender = False
     
-    if args.limit:
-        scene_meta_files = scene_meta_files[:args.limit]
+    try:
+        scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
+        if not scene_meta_files:
+            logger.error("No scene metadata found")
+            return
+        
+        if args.limit:
+            scene_meta_files = scene_meta_files[:args.limit]
+        
+        total_scenes = len(scene_meta_files)
+        logger.info(f"Processing {total_scenes} scenes...")
+        
+        import time
+        start_time = time.time()
+        success_count = 0
+        
+        for i, scene_meta_path in enumerate(scene_meta_files, 1):
+            scene_id = scene_meta_path.stem
+            
+            with open(scene_meta_path, "r") as f:
+                scene_meta = json.load(f)
+            
+            tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
+            seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
+            
+            if not tex_glb.exists() or not seg_glb.exists():
+                logger.warning(f"GLB not found for {scene_id}")
+                continue
+            
+            rooms_metadata = []
+            for room_meta_path in (metadata_dir / "rooms").glob(f"{scene_id}_*.json"):
+                with open(room_meta_path, "r") as f:
+                    room_data = json.load(f)
+                    if room_data.get("scene_id") == scene_id:
+                        rooms_metadata.append(room_data)
+            
+            if not rooms_metadata:
+                logger.warning(f"No room metadata for {scene_id}")
+                continue
+            
+            success, _ = process_one_scene(
+                scene_id, tex_glb, seg_glb, scene_meta, rooms_metadata,
+                output_dir, args.width, args.height, args.fov, use_pyrender
+            )
+            
+            if success:
+                success_count += 1
+            
+            # Progress and ETA
+            elapsed = time.time() - start_time
+            avg_time = elapsed / i
+            remaining = (total_scenes - i) * avg_time
+            eta_hours = remaining / 3600
+            
+            logger.info(f"[{i}/{total_scenes}] {'✓' if success else '✗'} {scene_id} | ETA: {eta_hours:.1f}h")
+        
+        total_time = time.time() - start_time
+        logger.info(f"\nDone: {success_count}/{total_scenes} in {total_time/3600:.1f} hours")
     
-    total_scenes = len(scene_meta_files)
-    logger.info(f"Processing {total_scenes} scenes...")
-    
-    import time
-    start_time = time.time()
-    success_count = 0
-    
-    for i, scene_meta_path in enumerate(scene_meta_files, 1):
-        scene_id = scene_meta_path.stem
-        
-        with open(scene_meta_path, "r") as f:
-            scene_meta = json.load(f)
-        
-        tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
-        seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
-        
-        if not tex_glb.exists() or not seg_glb.exists():
-            logger.warning(f"GLB not found for {scene_id}")
-            continue
-        
-        rooms_metadata = []
-        for room_meta_path in (metadata_dir / "rooms").glob(f"{scene_id}_*.json"):
-            with open(room_meta_path, "r") as f:
-                room_data = json.load(f)
-                if room_data.get("scene_id") == scene_id:
-                    rooms_metadata.append(room_data)
-        
-        if not rooms_metadata:
-            logger.warning(f"No room metadata for {scene_id}")
-            continue
-        
-        success, _ = process_one_scene(
-            scene_id, tex_glb, seg_glb, scene_meta, rooms_metadata,
-            output_dir, args.width, args.height, args.fov, use_pyrender
-        )
-        
-        if success:
-            success_count += 1
-        
-        # Progress and ETA
-        elapsed = time.time() - start_time
-        avg_time = elapsed / i
-        remaining = (total_scenes - i) * avg_time
-        eta_hours = remaining / 3600
-        
-        logger.info(f"[{i}/{total_scenes}] {'✓' if success else '✗'} {scene_id} | ETA: {eta_hours:.1f}h")
-    
-    total_time = time.time() - start_time
-    logger.info(f"\nDone: {success_count}/{total_scenes} in {total_time/3600:.1f} hours")
+    finally:
+        # Clean up HPC rendering
+        if args.hpc:
+            cleanup_hpc_rendering()
 
 
 if __name__ == "__main__":
