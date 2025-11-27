@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Stage 4: POV Rendering - FIXED VERSION v2
+Stage 4: POV Rendering
 
-Fast POV rendering with proper camera positioning.
+Features:
+- Scene list support (--scene-list with scene IDs)
 - Camera at doorway, OUTSIDE the room, looking IN
 - Uses pyrender if available, fast fallback otherwise
-- Supports HPC mode with Xvfb for headless rendering
+- HPC mode with Xvfb for headless rendering (only when --hpc flag is set)
 """
 
 import argparse
@@ -115,6 +116,17 @@ def cleanup_hpc_rendering():
         except Exception:
             pass
         _xvfb_display = None
+
+
+def load_scene_list(scene_list_path: Path) -> List[str]:
+    """Load scene IDs from a text file (one per line)."""
+    scenes = []
+    with open(scene_list_path, "r", encoding="utf-8") as f:
+        for line in f:
+            scene_id = line.strip()
+            if scene_id and not scene_id.startswith("#"):
+                scenes.append(scene_id)
+    return scenes
 
 
 # ============================================================================
@@ -603,20 +615,20 @@ def process_one_scene(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Stage 4: Render POVs (v2)")
-    parser.add_argument("--geometry-dir", required=True)
-    parser.add_argument("--metadata-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--fov", type=float, default=60.0)
-    parser.add_argument("--no-pyrender", action="store_true", help="Disable pyrender, use fallback")
+    parser = argparse.ArgumentParser(description="Stage 4: Render POVs")
+    parser.add_argument("--geometry-dir", required=True, help="Directory containing geometry GLB files")
+    parser.add_argument("--metadata-dir", required=True, help="Directory containing metadata JSON files")
+    parser.add_argument("--output-dir", required=True, help="Output directory for POV images")
+    parser.add_argument("--scene-list", type=str, default=None, help="Path to text file with scene IDs (one per line)")
+    parser.add_argument("--width", type=int, default=1280, help="Output image width")
+    parser.add_argument("--height", type=int, default=720, help="Output image height")
+    parser.add_argument("--fov", type=float, default=60.0, help="Camera field of view in degrees")
+    parser.add_argument("--no-pyrender", action="store_true", help="Disable pyrender, use software fallback")
     parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
     parser.add_argument("--backend", type=str, default="auto", 
                         choices=["auto", "egl", "osmesa", "xvfb"],
                         help="Rendering backend (used with --hpc): auto, egl, osmesa, or xvfb")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--workers", type=int, default=1, help="Number of parallel workers")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of scenes to process")
     args = parser.parse_args()
     
     geometry_dir = Path(args.geometry_dir)
@@ -624,53 +636,79 @@ def main():
     output_dir = Path(args.output_dir)
     use_pyrender = not args.no_pyrender
     
-    # Set up HPC rendering if requested
+    # Set up HPC rendering only if --hpc flag is set
     if args.hpc and use_pyrender:
         if not setup_hpc_rendering(args.backend):
             logger.warning("No HPC rendering backend available, falling back to software renderer")
             use_pyrender = False
     
     try:
-        scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
-        if not scene_meta_files:
-            logger.error("No scene metadata found")
-            return
+        # Determine which scenes to process
+        if args.scene_list:
+            # Load scene IDs from file
+            scene_list_path = Path(args.scene_list)
+            if not scene_list_path.exists():
+                logger.error(f"Scene list not found: {scene_list_path}")
+                return
+            
+            scene_ids = load_scene_list(scene_list_path)
+            logger.info(f"Loaded {len(scene_ids)} scene IDs from {scene_list_path}")
+        else:
+            # Discover scenes from metadata directory
+            scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
+            if not scene_meta_files:
+                logger.error(f"No scene metadata found in {metadata_dir / 'scenes'}")
+                return
+            scene_ids = [f.stem for f in scene_meta_files]
+            logger.info(f"Discovered {len(scene_ids)} scenes from metadata directory")
         
         if args.limit:
-            scene_meta_files = scene_meta_files[:args.limit]
+            scene_ids = scene_ids[:args.limit]
         
-        total_scenes = len(scene_meta_files)
+        total_scenes = len(scene_ids)
         logger.info(f"Processing {total_scenes} scenes...")
         
         import time
         start_time = time.time()
         success_count = 0
+        skip_count = 0
         
-        for i, scene_meta_path in enumerate(scene_meta_files, 1):
-            scene_id = scene_meta_path.stem
+        for i, scene_id in enumerate(scene_ids, 1):
+            # Load scene metadata
+            scene_meta_path = metadata_dir / "scenes" / f"{scene_id}.json"
+            if not scene_meta_path.exists():
+                logger.warning(f"Scene metadata not found: {scene_meta_path}")
+                skip_count += 1
+                continue
             
             with open(scene_meta_path, "r") as f:
                 scene_meta = json.load(f)
             
+            # Check for GLB files
             tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
             seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
             
             if not tex_glb.exists() or not seg_glb.exists():
                 logger.warning(f"GLB not found for {scene_id}")
+                skip_count += 1
                 continue
             
+            # Load room metadata
             rooms_metadata = []
-            for room_meta_path in (metadata_dir / "rooms").glob(f"{scene_id}_*.json"):
-                with open(room_meta_path, "r") as f:
-                    room_data = json.load(f)
-                    if room_data.get("scene_id") == scene_id:
-                        rooms_metadata.append(room_data)
+            rooms_dir = metadata_dir / "rooms"
+            if rooms_dir.exists():
+                for room_meta_path in rooms_dir.glob(f"{scene_id}_*.json"):
+                    with open(room_meta_path, "r") as f:
+                        room_data = json.load(f)
+                        if room_data.get("scene_id") == scene_id:
+                            rooms_metadata.append(room_data)
             
             if not rooms_metadata:
                 logger.warning(f"No room metadata for {scene_id}")
+                skip_count += 1
                 continue
             
-            success, _ = process_one_scene(
+            success, error = process_one_scene(
                 scene_id, tex_glb, seg_glb, scene_meta, rooms_metadata,
                 output_dir, args.width, args.height, args.fov, use_pyrender
             )
@@ -684,13 +722,14 @@ def main():
             remaining = (total_scenes - i) * avg_time
             eta_hours = remaining / 3600
             
-            logger.info(f"[{i}/{total_scenes}] {'✓' if success else '✗'} {scene_id} | ETA: {eta_hours:.1f}h")
+            status = '✓' if success else '✗'
+            logger.info(f"[{i}/{total_scenes}] {status} {scene_id} | ETA: {eta_hours:.1f}h")
         
         total_time = time.time() - start_time
-        logger.info(f"\nDone: {success_count}/{total_scenes} in {total_time/3600:.1f} hours")
+        logger.info(f"\nDone: {success_count}/{total_scenes} succeeded, {skip_count} skipped in {total_time/3600:.1f} hours")
     
     finally:
-        # Clean up HPC rendering
+        # Clean up HPC rendering only if it was set up
         if args.hpc:
             cleanup_hpc_rendering()
 

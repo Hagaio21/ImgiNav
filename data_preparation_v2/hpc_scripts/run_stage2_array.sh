@@ -23,14 +23,24 @@ N_SHARDS=10                                          # Must match [1-10] above
 STAGE2_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/stage2_compile_metadata.py"
 # =============================================================================
 
-IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
+# Accept shard info from previous stage if provided, otherwise extract
+if [ $# -ge 2 ]; then
+  IDX="$1"
+  SHARD_TXT="$2"
+  echo "Received shard info from previous stage: IDX=${IDX}, SHARD_TXT=${SHARD_TXT}"
+else
+  IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
+  SHARD_TXT=""
+fi
+
 TMPDIR_LOCAL="${TMPDIR:-/tmp}"
-# Ensure TMPDIR exists
 mkdir -p "${TMPDIR_LOCAL}"
-JOB_UNIQUE_ID="${IDX}_$$"                           # Unique ID for this job instance
+JOB_UNIQUE_ID="${IDX}_$$"
 SHARD_PREFIX="${TMPDIR_LOCAL}/scenes_shard_${JOB_UNIQUE_ID}_"
-SHARD_TXT=""                                        # will set below
 SHARD_SCENES_DIR="${TMPDIR_LOCAL}/filtered_scenes_shard_${JOB_UNIQUE_ID}"
+
+STAGE3_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/run_stage3_array.sh"
+SCRIPT_DIR="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts"
 
 echo "=============================================================================="
 echo "Starting Stage 2 processing - Task ${IDX}/${N_SHARDS}"
@@ -46,26 +56,25 @@ if [ ! -f "${VALID_SCENES_FILE}" ]; then
   exit 1
 fi
 
-# 2) Extract this job's shard from valid_scenes.txt
-# Calculate line ranges for this shard
-TOTAL_LINES=$(wc -l < "${VALID_SCENES_FILE}")
-LINES_PER_SHARD=$(( (TOTAL_LINES + N_SHARDS - 1) / N_SHARDS ))
-START_LINE=$(( (IDX - 1) * LINES_PER_SHARD + 1 ))
-END_LINE=$(( IDX * LINES_PER_SHARD ))
-
-echo "Extracting shard ${IDX} (lines ${START_LINE}-${END_LINE} from ${TOTAL_LINES} total lines)..."
-SHARD_TXT="${SHARD_PREFIX}${IDX}.txt"
-# Ensure parent directory exists
-mkdir -p "$(dirname "${SHARD_TXT}")"
-sed -n "${START_LINE},${END_LINE}p" "${VALID_SCENES_FILE}" > "${SHARD_TXT}" || {
-  echo "ERROR: Failed to extract shard from ${VALID_SCENES_FILE}" >&2
-  exit 2
-}
-
-# Safety: ensure shard not empty
-if [ ! -s "${SHARD_TXT}" ]; then
-  echo "ERROR: shard ${IDX} is empty (file: ${SHARD_TXT})." >&2
-  exit 2
+# 2) Extract shard if not provided
+if [ -z "${SHARD_TXT}" ] || [ ! -f "${SHARD_TXT}" ]; then
+  TOTAL_LINES=$(wc -l < "${VALID_SCENES_FILE}")
+  LINES_PER_SHARD=$(( (TOTAL_LINES + N_SHARDS - 1) / N_SHARDS ))
+  START_LINE=$(( (IDX - 1) * LINES_PER_SHARD + 1 ))
+  END_LINE=$(( IDX * LINES_PER_SHARD ))
+  
+  echo "Extracting shard ${IDX} (lines ${START_LINE}-${END_LINE} from ${TOTAL_LINES} total lines)..."
+  SHARD_TXT="${SHARD_PREFIX}${IDX}.txt"
+  mkdir -p "$(dirname "${SHARD_TXT}")"
+  sed -n "${START_LINE},${END_LINE}p" "${VALID_SCENES_FILE}" > "${SHARD_TXT}" || {
+    echo "ERROR: Failed to extract shard from ${VALID_SCENES_FILE}" >&2
+    exit 2
+  }
+  
+  if [ ! -s "${SHARD_TXT}" ]; then
+    echo "ERROR: shard ${IDX} is empty (file: ${SHARD_TXT})." >&2
+    exit 2
+  fi
 fi
 
 SHARD_COUNT=$(wc -l < "${SHARD_TXT}")
@@ -183,9 +192,21 @@ echo "Stage 2 completed at $(date)"
 echo ""
 
 # 10) Cleanup temporary files
-echo "Cleaning up temporary files..."
 rm -rf "${SHARD_SCENES_DIR}"
 rm -f "${SHARD_PREFIX}"*
+
+# Submit Stage 3 for this shard
+echo "Submitting Stage 3 for shard ${IDX}..."
+bsub -J "stage3_${IDX}" \
+  -o "${SCRIPT_DIR}/logs/stage3.${IDX}.%J.out" \
+  -e "${SCRIPT_DIR}/logs/stage3.${IDX}.%J.err" \
+  -n 8 \
+  -R "rusage[mem=8000]" \
+  -W 10:00 \
+  -q hpc \
+  bash "${STAGE3_SCRIPT}" "${IDX}" "${SHARD_TXT}" || {
+  echo "WARNING: Failed to submit Stage 3 for shard ${IDX}" >&2
+}
 
 echo ""
 echo "=============================================================================="
