@@ -1,0 +1,217 @@
+#!/bin/bash
+#BSUB -J stage1_stage2[1-10]                    # 10 parallel workers
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage1_stage2.%I.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage1_stage2.%I.%J.err
+#BSUB -n 8
+#BSUB -R "rusage[mem=8000]"
+#BSUB -W 10:00
+#BSUB -q hpc
+
+set -euo pipefail
+
+# =============================================================================
+# CONFIGURATION - UPDATE THESE PATHS
+# =============================================================================
+SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"  # Original 3D-FRONT scenes directory
+MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/3D-FUTURE-model"
+MODEL_INFO="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/model_info.json"
+TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/taxonomy.json"
+TEXTURE_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FRONT-texture"  # Optional, can be empty
+VALID_SCENES_FILE="/work3/s233249/ImgiNav/ImgiNav/valid_scenes.txt"
+OUTPUT_GEOMETRY_DIR="/work3/s233249/ImgiNav/dataset_v2/geometry"
+OUTPUT_METADATA_DIR="/work3/s233249/ImgiNav/dataset_v2/metadata"
+
+N_SHARDS=10                                          # Must match [1-10] above
+STAGE1_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/stage1_reconstruct_geometry.py"
+STAGE2_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/stage2_compile_metadata.py"
+# =============================================================================
+
+IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
+TMPDIR_LOCAL="${TMPDIR:-/tmp}"
+JOB_UNIQUE_ID="${IDX}_$$"                           # Unique ID for this job instance
+SHARD_PREFIX="${TMPDIR_LOCAL}/scenes_shard_${JOB_UNIQUE_ID}_"
+SHARD_TXT=""                                        # will set below
+SHARD_SCENES_DIR="${TMPDIR_LOCAL}/filtered_scenes_shard_${JOB_UNIQUE_ID}"
+
+echo "=============================================================================="
+echo "Starting Stage 1 & 2 processing - Task ${IDX}/${N_SHARDS}"
+echo "=============================================================================="
+echo "Scenes root: ${SCENES_ROOT}"
+echo "Output geometry dir: ${OUTPUT_GEOMETRY_DIR}"
+echo "Output metadata dir: ${OUTPUT_METADATA_DIR}"
+echo "Valid scenes file: ${VALID_SCENES_FILE}"
+echo ""
+
+# 1) Check if valid_scenes.txt exists
+if [ ! -f "${VALID_SCENES_FILE}" ]; then
+  echo "ERROR: valid_scenes.txt not found at: ${VALID_SCENES_FILE}" >&2
+  exit 1
+fi
+
+# 2) Extract this job's shard from valid_scenes.txt
+# Calculate line ranges for this shard
+TOTAL_LINES=$(wc -l < "${VALID_SCENES_FILE}")
+LINES_PER_SHARD=$(( (TOTAL_LINES + N_SHARDS - 1) / N_SHARDS ))
+START_LINE=$(( (IDX - 1) * LINES_PER_SHARD + 1 ))
+END_LINE=$(( IDX * LINES_PER_SHARD ))
+
+echo "Extracting shard ${IDX} (lines ${START_LINE}-${END_LINE} from ${TOTAL_LINES} total lines)..."
+SHARD_TXT="${SHARD_PREFIX}${IDX}.txt"
+sed -n "${START_LINE},${END_LINE}p" "${VALID_SCENES_FILE}" > "${SHARD_TXT}"
+
+# Safety: ensure shard not empty
+if [ ! -s "${SHARD_TXT}" ]; then
+  echo "ERROR: shard ${IDX} is empty (file: ${SHARD_TXT})." >&2
+  exit 2
+fi
+
+SHARD_COUNT=$(wc -l < "${SHARD_TXT}")
+echo "Task ${IDX}/${N_SHARDS}: processing ${SHARD_COUNT} scenes"
+echo ""
+
+# 4) Create temporary directory for this shard's scene files
+echo "Creating temporary scenes directory: ${SHARD_SCENES_DIR}"
+mkdir -p "${SHARD_SCENES_DIR}"
+
+# 5) Copy scene files for this shard
+echo "Copying scene files for shard ${IDX}..."
+COPIED=0
+MISSING=0
+while IFS= read -r scene_id; do
+  scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)  # Trim whitespace
+  if [ -z "${scene_id}" ]; then
+    continue
+  fi
+  
+  scene_file="${SCENES_ROOT}/${scene_id}.json"
+  if [ -f "${scene_file}" ]; then
+    cp "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json"
+    COPIED=$((COPIED + 1))
+  else
+    echo "WARNING: Scene file not found: ${scene_file}" >&2
+    MISSING=$((MISSING + 1))
+  fi
+done < "${SHARD_TXT}"
+
+echo "Copied ${COPIED} scene files (${MISSING} missing)"
+if [ ${COPIED} -eq 0 ]; then
+  echo "ERROR: No scene files were copied for shard ${IDX}" >&2
+  rm -rf "${SHARD_SCENES_DIR}"
+  rm -f "${SHARD_PREFIX}"*
+  exit 3
+fi
+
+# 6) Create output directories if they don't exist
+mkdir -p "${OUTPUT_GEOMETRY_DIR}"
+mkdir -p "${OUTPUT_METADATA_DIR}"
+
+# 7) Robust conda activation (non-interactive safe)
+echo "Activating conda environment..."
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$HOME/miniconda3/etc/profile.d/conda.sh"
+  conda activate imginav || {
+    echo "WARNING: Failed to activate imginav environment, trying scenefactor..." >&2
+    conda activate scenefactor || {
+      echo "ERROR: Failed to activate any conda environment" >&2
+      exit 1
+    }
+  }
+elif [ -x "$HOME/miniconda3/bin/conda" ]; then
+  eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
+  conda activate imginav || {
+    echo "WARNING: Failed to activate imginav environment, trying scenefactor..." >&2
+    conda activate scenefactor || {
+      echo "ERROR: Failed to activate any conda environment" >&2
+      exit 1
+    }
+  }
+fi
+
+# 8) Check if required files exist before processing
+if [ ! -f "${MODEL_INFO}" ]; then
+  echo "ERROR: model_info.json not found at: ${MODEL_INFO}" >&2
+  echo "Checking for model_info.json in model directory..." >&2
+  find "${MODEL_DIR}" -name "model_info.json" -type f
+  rm -rf "${SHARD_SCENES_DIR}"
+  rm -f "${SHARD_PREFIX}"*
+  exit 1
+fi
+
+if [ ! -f "${TAXONOMY_FILE}" ]; then
+  echo "ERROR: taxonomy.json not found at: ${TAXONOMY_FILE}" >&2
+  rm -rf "${SHARD_SCENES_DIR}"
+  rm -f "${SHARD_PREFIX}"*
+  exit 1
+fi
+
+# 9) Check required dependencies
+echo "Checking Python dependencies..."
+python -c "import trimesh, numpy, scipy, json" || {
+  echo "ERROR: Required Python packages not available" >&2
+  rm -rf "${SHARD_SCENES_DIR}"
+  rm -f "${SHARD_PREFIX}"*
+  exit 1
+}
+
+# 10) Run Stage 1 processing
+echo ""
+echo "=============================================================================="
+echo "Running Stage 1: Reconstruct Geometry"
+echo "=============================================================================="
+echo "Starting at $(date)"
+
+STAGE1_ARGS=(
+  "${STAGE1_SCRIPT}"
+  --scenes-dir "${SHARD_SCENES_DIR}"
+  --model-dir "${MODEL_DIR}"
+  --model-info "${MODEL_INFO}"
+  --taxonomy "${TAXONOMY_FILE}"
+  --output-dir "${OUTPUT_GEOMETRY_DIR}"
+)
+
+# Add texture-dir if it exists and is not empty
+if [ -n "${TEXTURE_DIR:-}" ] && [ -d "${TEXTURE_DIR}" ]; then
+  STAGE1_ARGS+=(--texture-dir "${TEXTURE_DIR}")
+fi
+
+python "${STAGE1_ARGS[@]}" || {
+  echo "ERROR: Stage 1 failed for task ${IDX}" >&2
+  rm -rf "${SHARD_SCENES_DIR}"
+  rm -f "${SHARD_PREFIX}"*
+  exit 1
+}
+
+echo "Stage 1 completed at $(date)"
+echo ""
+
+# 11) Run Stage 2 processing
+echo "=============================================================================="
+echo "Running Stage 2: Compile Metadata"
+echo "=============================================================================="
+echo "Starting at $(date)"
+
+python "${STAGE2_SCRIPT}" \
+  --scenes-dir "${SHARD_SCENES_DIR}" \
+  --model-info "${MODEL_INFO}" \
+  --taxonomy "${TAXONOMY_FILE}" \
+  --output-dir "${OUTPUT_METADATA_DIR}" || {
+  echo "ERROR: Stage 2 failed for task ${IDX}" >&2
+  rm -rf "${SHARD_SCENES_DIR}"
+  rm -f "${SHARD_PREFIX}"*
+  exit 1
+}
+
+echo "Stage 2 completed at $(date)"
+echo ""
+
+# 12) Cleanup temporary files
+echo "Cleaning up temporary files..."
+rm -rf "${SHARD_SCENES_DIR}"
+rm -f "${SHARD_PREFIX}"*
+
+echo ""
+echo "=============================================================================="
+echo "Task ${IDX}/${N_SHARDS} completed successfully at $(date)"
+echo "=============================================================================="
+
