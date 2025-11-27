@@ -98,7 +98,11 @@ while IFS= read -r scene_id; do
   
   if [ -f "${scene_meta_src}" ]; then
     # Use absolute path for symlink to avoid issues
-    ln -sf "$(readlink -f "${scene_meta_src}" || echo "${scene_meta_src}")" "${scene_meta_dst}" 2>/dev/null || cp "${scene_meta_src}" "${scene_meta_dst}"
+    scene_meta_abs=$(readlink -f "${scene_meta_src}" 2>/dev/null || echo "${scene_meta_src}")
+    ln -sf "${scene_meta_abs}" "${scene_meta_dst}" 2>/dev/null || {
+      # Fallback to copy if symlink fails (e.g., cross-filesystem)
+      cp "${scene_meta_src}" "${scene_meta_dst}"
+    }
     LINKED_SCENES=$((LINKED_SCENES + 1))
   else
     # Only warn if we're in verbose mode, otherwise just count
@@ -113,7 +117,12 @@ while IFS= read -r scene_id; do
     if [ -f "${room_meta_src}" ]; then
       room_filename=$(basename "${room_meta_src}")
       room_meta_dst="${TMP_METADATA_DIR}/rooms/${room_filename}"
-      ln -s "${room_meta_src}" "${room_meta_dst}" 2>/dev/null || cp "${room_meta_src}" "${room_meta_dst}"
+      # Use absolute path for symlink
+      room_meta_abs=$(readlink -f "${room_meta_src}" 2>/dev/null || echo "${room_meta_src}")
+      ln -sf "${room_meta_abs}" "${room_meta_dst}" 2>/dev/null || {
+        # Fallback to copy if symlink fails (e.g., cross-filesystem)
+        cp "${room_meta_src}" "${room_meta_dst}"
+      }
       LINKED_ROOMS=$((LINKED_ROOMS + 1))
     fi
   done

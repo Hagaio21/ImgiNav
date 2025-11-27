@@ -76,9 +76,9 @@ echo ""
 echo "Creating temporary scenes directory: ${SHARD_SCENES_DIR}"
 mkdir -p "${SHARD_SCENES_DIR}"
 
-# 4) Copy scene files for this shard
-echo "Copying scene files for shard ${IDX}..."
-COPIED=0
+# 4) Create symlinks for scene files for this shard (more efficient than copying)
+echo "Creating symlinks for scene files for shard ${IDX}..."
+LINKED=0
 MISSING=0
 while IFS= read -r scene_id; do
   scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)  # Trim whitespace
@@ -90,17 +90,22 @@ while IFS= read -r scene_id; do
   scene_file=$(find "${SCENES_ROOT}" -type f -name "${scene_id}.json" 2>/dev/null | head -1)
   
   if [ -n "${scene_file}" ] && [ -f "${scene_file}" ]; then
-    cp "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json"
-    COPIED=$((COPIED + 1))
+    # Use absolute path for symlink to avoid issues
+    scene_file_abs=$(readlink -f "${scene_file}" 2>/dev/null || echo "${scene_file}")
+    ln -sf "${scene_file_abs}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null || {
+      # Fallback to copy if symlink fails (e.g., cross-filesystem)
+      cp "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json"
+    }
+    LINKED=$((LINKED + 1))
   else
     echo "WARNING: Scene file not found: ${scene_id}.json (searched in ${SCENES_ROOT})" >&2
     MISSING=$((MISSING + 1))
   fi
 done < "${SHARD_TXT}"
 
-echo "Copied ${COPIED} scene files (${MISSING} missing)"
-if [ ${COPIED} -eq 0 ]; then
-  echo "ERROR: No scene files were copied for shard ${IDX}" >&2
+echo "Linked ${LINKED} scene files (${MISSING} missing)"
+if [ ${LINKED} -eq 0 ]; then
+  echo "ERROR: No scene files were linked for shard ${IDX}" >&2
   rm -rf "${SHARD_SCENES_DIR}"
   rm -f "${SHARD_PREFIX}"*
   exit 3
