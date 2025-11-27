@@ -100,32 +100,54 @@ def compute_latent_statistics(all_latents):
 # Step functions for Trainer
 def ae_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for autoencoder training - computes loss only (Trainer handles backward/step)."""
+    from models.components.dataflow import DataFlow
+    
+    # Wrap batch in DataFlow for tracking
+    batch_dataflow = DataFlow(batch, source_component="Dataset")
+    
     # Forward pass with AMP if enabled
     if trainer.use_amp:
         with torch.amp.autocast('cuda'):
-            outputs = model(batch["rgb"])
-            loss, logs = loss_fn(outputs, batch)
+            outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
+            # Loss functions work with DataFlow since it's dict-like
+            loss, logs = loss_fn(outputs, batch_dataflow)
     else:
-        outputs = model(batch["rgb"])
-        loss, logs = loss_fn(outputs, batch)
+        outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
+        # Loss functions work with DataFlow since it's dict-like
+        loss, logs = loss_fn(outputs, batch_dataflow)
     
-    # Return outputs for latent collection
-    return loss, logs, outputs
+    # Return outputs for latent collection (convert DataFlow to dict if needed)
+    if isinstance(outputs, DataFlow):
+        outputs_dict = outputs.to_dict()
+    else:
+        outputs_dict = outputs
+    return loss, logs, outputs_dict
 
 
 def ae_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for autoencoder evaluation - computes loss only."""
+    from models.components.dataflow import DataFlow
+    
+    # Wrap batch in DataFlow for tracking
+    batch_dataflow = DataFlow(batch, source_component="Dataset")
+    
     # Forward pass with AMP if enabled
     if trainer.use_amp:
         with torch.amp.autocast('cuda'):
-            outputs = model(batch["rgb"])
-            loss, logs = loss_fn(outputs, batch)
+            outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
+            # Loss functions work with DataFlow since it's dict-like
+            loss, logs = loss_fn(outputs, batch_dataflow)
     else:
-        outputs = model(batch["rgb"])
-        loss, logs = loss_fn(outputs, batch)
+        outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
+        # Loss functions work with DataFlow since it's dict-like
+        loss, logs = loss_fn(outputs, batch_dataflow)
     
-    # Return outputs for latent collection
-    return loss, logs, outputs
+    # Return outputs for latent collection (convert DataFlow to dict if needed)
+    if isinstance(outputs, DataFlow):
+        outputs_dict = outputs.to_dict()
+    else:
+        outputs_dict = outputs
+    return loss, logs, outputs_dict
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=8, target_size=256, exp_name=None):

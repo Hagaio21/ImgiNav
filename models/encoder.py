@@ -45,14 +45,40 @@ class Encoder(BaseComponent):
         """
         Forward pass. Returns deterministic latent.
         
+        Args:
+            x: Input tensor [B, C, H, W] or DataFlow containing input
+        
         Returns:
-            Dictionary: {"latent": z, "latent_features": features}
+            DataFlow: {"latent": z, "latent_features": features}
         """
+        # Handle DataFlow input
+        if isinstance(x, dict) and not isinstance(x, torch.Tensor):
+            # If it's a dict-like (DataFlow or dict), extract input
+            # Try common input keys
+            if "rgb" in x:
+                x = x["rgb"]
+            elif "input" in x:
+                x = x["input"]
+            elif "x" in x:
+                x = x["x"]
+            elif len(x) == 1:
+                # Single key dict, use the value
+                x = next(iter(x.values()))
+            else:
+                # Multiple keys, try to infer or use first tensor
+                for key in ["rgb", "input", "x", "data"]:
+                    if key in x:
+                        x = x[key]
+                        break
+                else:
+                    # Use first tensor value
+                    x = next(v for v in x.values() if isinstance(v, torch.Tensor))
+        
         # Extract features
         features = self.feature_extractor(x)
         # Project features to latent
         z = self.latent_proj(features)
-        return {"latent": z, "latent_features": features}
+        return self._to_dataflow({"latent": z, "latent_features": features})
     
     def get_input_shape(self, batch_size=1):
         """Get expected input shape."""
@@ -97,16 +123,38 @@ class VAEEncoder(Encoder):
         """
         Forward pass. Returns mu and logvar for VAE.
         
+        Args:
+            x: Input tensor [B, C, H, W] or DataFlow containing input
+        
         Returns:
-            Dictionary: {"mu": mu, "logvar": logvar, "latent_features": features}
+            DataFlow: {"mu": mu, "logvar": logvar, "latent_features": features}
         """
+        # Handle DataFlow input (same as parent Encoder)
+        if isinstance(x, dict) and not isinstance(x, torch.Tensor):
+            # If it's a dict-like (DataFlow or dict), extract input
+            if "rgb" in x:
+                x = x["rgb"]
+            elif "input" in x:
+                x = x["input"]
+            elif "x" in x:
+                x = x["x"]
+            elif len(x) == 1:
+                x = next(iter(x.values()))
+            else:
+                for key in ["rgb", "input", "x", "data"]:
+                    if key in x:
+                        x = x[key]
+                        break
+                else:
+                    x = next(v for v in x.values() if isinstance(v, torch.Tensor))
+        
         # Extract features (from parent)
         features = self.feature_extractor(x)
         
         # VAE mode: project features to mu and logvar
         mu = self.mu_head(features)
         logvar = self.logvar_head(features)
-        return {"mu": mu, "logvar": logvar, "latent_features": features}
+        return self._to_dataflow({"mu": mu, "logvar": logvar, "latent_features": features})
     
     def get_output_shape(self, batch_size=1):
         """Get expected output shape."""

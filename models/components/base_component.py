@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import yaml
 from pathlib import Path
+from .dataflow import DataFlow
 
 
 def load_checkpoint_weights(path, map_location="cpu"):
@@ -40,6 +41,65 @@ class BaseComponent(nn.Module):
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError
+    
+    def _ensure_dataflow(self, data, source_component=None):
+        """
+        Ensure input is a DataFlow object.
+        
+        Args:
+            data: DataFlow, dict, tensor, or other value
+            source_component: Source component name (if creating new DataFlow)
+        
+        Returns:
+            DataFlow object
+        """
+        comp_name = self.__class__.__name__
+        
+        if isinstance(data, DataFlow):
+            # Mark that this DataFlow is being consumed by this component
+            data.mark_consumed_by(comp_name)
+            return data
+        elif isinstance(data, dict):
+            return DataFlow(data, source_component=source_component or comp_name)
+        elif isinstance(data, torch.Tensor):
+            # Wrap single tensor in DataFlow with default key
+            return DataFlow.wrap(data, key="data", source_component=source_component or comp_name)
+        else:
+            # For other types, wrap in DataFlow
+            return DataFlow.wrap(data, key="data", source_component=source_component or comp_name)
+    
+    def _to_dataflow(self, output, source_component=None):
+        """
+        Convert output to DataFlow if it's not already.
+        
+        Args:
+            output: Output from forward pass (dict, tensor, DataFlow, etc.)
+            source_component: Source component name
+        
+        Returns:
+            DataFlow object
+        """
+        comp_name = source_component or self.__class__.__name__
+        
+        if isinstance(output, DataFlow):
+            # If output is already DataFlow, mark it as consumed by this component
+            # and update source if needed
+            if output.source_component != comp_name:
+                output._input_from = output.source_component
+                output.source_component = comp_name
+            return output
+        elif isinstance(output, dict):
+            return DataFlow(output, source_component=comp_name)
+        elif isinstance(output, torch.Tensor):
+            # Wrap single tensor in DataFlow with default key
+            return DataFlow.wrap(output, key="output", source_component=comp_name)
+        elif isinstance(output, (tuple, list)):
+            # For tuples/lists, convert to dict with indexed keys
+            data = {f"output_{i}": item for i, item in enumerate(output)}
+            return DataFlow(data, source_component=comp_name)
+        else:
+            # For other types, wrap in DataFlow
+            return DataFlow.wrap(output, key="output", source_component=comp_name)
 
     # -----------------------
     # Config I/O

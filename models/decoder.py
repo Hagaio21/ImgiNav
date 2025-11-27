@@ -50,27 +50,28 @@ class Decoder(BaseComponent):
 
     def forward(self, z_or_dict):
         """
-        Forward pass. Accepts dict with latent tensor.
+        Forward pass. Accepts dict/DataFlow with latent tensor.
         
         Args:
-            z_or_dict: Dictionary containing "latent": tensor z
+            z_or_dict: DataFlow or dict containing "latent": tensor z
         
         Returns:
-            Dictionary with outputs from all heads
+            DataFlow with outputs from all heads
         """
+        # Handle DataFlow or dict input
         if isinstance(z_or_dict, dict):
             if "latent" not in z_or_dict:
-                raise ValueError(f"Decoder expects dict with 'latent' key. Got keys: {list(z_or_dict.keys())}")
+                raise ValueError(f"Decoder expects dict/DataFlow with 'latent' key. Got keys: {list(z_or_dict.keys())}")
             z = z_or_dict["latent"]
         else:
-            raise TypeError(f"Decoder forward expects dict, got {type(z_or_dict)}")
+            raise TypeError(f"Decoder forward expects dict/DataFlow, got {type(z_or_dict)}")
         
         feats = self.shared_decoder(z)
         outputs = {name: head(feats) for name, head in self.heads.items()}
         
         # Keep RGB in [-1, 1] range (tanh output) for training compatibility
         # Conversion to [0, 255] should be done when saving images, not here
-        return outputs
+        return self._to_dataflow(outputs)
     
     def get_input_shape(self, batch_size=1):
         """Get expected input shape."""
@@ -140,4 +141,4 @@ class VAEDecoder(Decoder):
         
         # Keep RGB in [-1, 1] range (tanh output) for training compatibility
         # Conversion to [0, 255] should be done when saving images, not here
-        return outputs
+        return self._to_dataflow(outputs)

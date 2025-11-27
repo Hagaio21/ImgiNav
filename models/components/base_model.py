@@ -194,10 +194,7 @@ class BaseModel(BaseComponent):
         shapes = {}
         for component, name in self._component_names.items():
             if component is not None and hasattr(component, 'get_shape_info'):
-                try:
-                    shapes[name] = component.get_shape_info(batch_size=batch_size)
-                except Exception as e:
-                    shapes[name] = {"error": str(e)}
+                shapes[name] = component.get_shape_info(batch_size=batch_size)
         return shapes
     
     def _get_module_statistics(self, module, label=None, include_shapes=True):
@@ -236,12 +233,8 @@ class BaseModel(BaseComponent):
         
         # Add shape information if requested and available
         if include_shapes and hasattr(module, 'get_shape_info'):
-            try:
-                shapes = module.get_shape_info(batch_size=1)
-                stats["shapes"] = shapes
-            except Exception:
-                # If shape info fails, just skip it
-                pass
+            shapes = module.get_shape_info(batch_size=1)
+            stats["shapes"] = shapes
         
         return stats
     
@@ -423,10 +416,9 @@ class BaseModel(BaseComponent):
             from graphviz import Digraph
             use_graphviz = True
         except ImportError:
-            use_graphviz = False
             if format not in ['text']:
-                print("Warning: graphviz not installed. Falling back to text format.")
-                format = 'text'
+                raise ImportError("graphviz not installed. Install with: pip install graphviz")
+            use_graphviz = False
         
         # Build graph structure
         nodes = {}
@@ -473,99 +465,11 @@ class BaseModel(BaseComponent):
                     }
                     edges.append((name, sub_full_name, 'contains', None))
         
-        # Analyze forward pass to detect data flow
-        forward_edges = self._analyze_forward_interactions()
-        edges.extend(forward_edges)
-        
         # Generate visualization
         if use_graphviz and format != 'text':
             return self._create_graphviz_graph(nodes, edges, output_path, format, include_shapes)
         else:
             return self._create_text_graph(nodes, edges, include_shapes)
-    
-    def _analyze_forward_interactions(self):
-        """
-        Analyze forward method to detect component interactions.
-        Returns list of (source, target, interaction_type, shape_info) tuples.
-        """
-        edges = []
-        
-        # Get forward method source code
-        import inspect
-        try:
-            source = inspect.getsource(self.forward)
-        except:
-            return edges
-        
-        # Simple pattern matching for common interactions
-        # Check for direct component calls in forward
-        for component, name in self._component_names.items():
-            if component is None:
-                continue
-            
-            # Look for patterns like self.component_name(...)
-            patterns = [
-                f"self.{name}(",
-                f"self.{name}.",
-                f".{name}(",
-            ]
-            
-            for pattern in patterns:
-                if pattern in source:
-                    # Try to determine what calls this component
-                    model_name = self.__class__.__name__
-                    
-                    # Get shape info if available
-                    shape_info = None
-                    if hasattr(component, 'get_shape_info'):
-                        try:
-                            shape_info = component.get_shape_info(batch_size=1)
-                        except:
-                            pass
-                    
-                    edges.append((model_name, name, 'forward', shape_info))
-        
-        # Special cases for known architectures
-        if hasattr(self, 'encoder') and hasattr(self, 'decoder'):
-            # Autoencoder: encoder -> decoder
-            encoder_name = None
-            decoder_name = None
-            for comp, name in self._component_names.items():
-                if comp == getattr(self, 'encoder', None):
-                    encoder_name = name
-                if comp == getattr(self, 'decoder', None):
-                    decoder_name = name
-            
-            if encoder_name and decoder_name:
-                edges.append((encoder_name, decoder_name, 'data_flow', None))
-        
-        if hasattr(self, 'embedding_projection') and hasattr(self, 'unet'):
-            # Diffusion: embedding_projection -> unet (conditioning)
-            proj_name = None
-            unet_name = None
-            for comp, name in self._component_names.items():
-                if comp == getattr(self, 'embedding_projection', None):
-                    proj_name = name
-                if comp == getattr(self, 'unet', None):
-                    unet_name = name
-            
-            if proj_name and unet_name:
-                edges.append((proj_name, unet_name, 'conditioning', None))
-        
-        if hasattr(self, 'scheduler') and hasattr(self, 'unet'):
-            # Diffusion: scheduler provides noise, unet predicts
-            sched_name = None
-            unet_name = None
-            for comp, name in self._component_names.items():
-                if comp == getattr(self, 'scheduler', None):
-                    sched_name = name
-                if comp == getattr(self, 'unet', None):
-                    unet_name = name
-            
-            if sched_name and unet_name:
-                edges.append((sched_name, unet_name, 'noise_schedule', None))
-        
-        return edges
     
     def _create_graphviz_graph(self, nodes, edges, output_path, format, include_shapes):
         """Create Graphviz visualization."""
@@ -599,18 +503,6 @@ class BaseModel(BaseComponent):
             
             # Create edge label
             edge_label = interaction_type
-            if include_shapes and shape_info:
-                # Add shape info to label
-                if isinstance(shape_info, dict):
-                    out_shape = shape_info.get('output')
-                    if out_shape:
-                        if isinstance(out_shape, dict):
-                            # Multiple outputs - show first
-                            first_key = list(out_shape.keys())[0]
-                            shape_str = str(out_shape[first_key])[:30]  # Truncate
-                        else:
-                            shape_str = str(out_shape)[:30]
-                        edge_label += f"\n{shape_str}"
             
             # Different edge styles for different interaction types
             edge_style = 'solid'
@@ -618,14 +510,6 @@ class BaseModel(BaseComponent):
             if interaction_type == 'contains':
                 edge_style = 'dashed'
                 edge_color = 'gray'
-            elif interaction_type == 'data_flow':
-                edge_color = 'blue'
-            elif interaction_type == 'conditioning':
-                edge_color = 'green'
-            elif interaction_type == 'forward':
-                edge_color = 'red'
-            elif interaction_type == 'noise_schedule':
-                edge_color = 'purple'
             
             graph.edge(source, target, label=edge_label, style=edge_style, color=edge_color)
         
@@ -646,7 +530,6 @@ class BaseModel(BaseComponent):
         
         # Group edges by type
         contains_edges = [e for e in edges if len(e) > 2 and e[2] == 'contains']
-        flow_edges = [e for e in edges if len(e) > 2 and e[2] != 'contains']
         
         lines.append("Component Hierarchy:")
         lines.append("-" * 60)
@@ -654,20 +537,22 @@ class BaseModel(BaseComponent):
             source, target = edge[0], edge[1]
             lines.append(f"  {source} ──contains──> {target}")
         
-        lines.append("")
-        lines.append("Data Flow:")
-        lines.append("-" * 60)
-        for edge in flow_edges:
-            source, target, interaction = edge[0], edge[1], edge[2]
-            shape_info = edge[3] if len(edge) > 3 else None
-            
-            line = f"  {source} ──{interaction}──> {target}"
-            if include_shapes and shape_info:
-                if isinstance(shape_info, dict):
-                    out_shape = shape_info.get('output')
-                    if out_shape:
-                        line += f" [shape: {out_shape}]"
-            lines.append(line)
+        # Add component details if available
+        if include_shapes:
+            lines.append("")
+            lines.append("Component Details:")
+            lines.append("-" * 60)
+            for name, node_data in nodes.items():
+                if node_data.get('type') == 'component':
+                    component = node_data.get('component')
+                    if component is not None:
+                        if hasattr(component, 'get_input_shape'):
+                            in_shape = component.get_input_shape(batch_size=1)
+                            out_shape = component.get_output_shape(batch_size=1) if hasattr(component, 'get_output_shape') else None
+                            lines.append(f"  {name}:")
+                            lines.append(f"    Input:  {in_shape}")
+                            if out_shape:
+                                lines.append(f"    Output: {out_shape}")
         
         lines.append("")
         lines.append("=" * 60)

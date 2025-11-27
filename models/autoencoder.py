@@ -2,12 +2,14 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 from models.components.base_model import BaseModel
+from models.components.dataflow import DataFlow
 from models.utils import reparameterize
 from .encoder import Encoder
 from .decoder import Decoder
 
 
 class Autoencoder(BaseModel):
+    
     def _build(self):
         encoder_cfg = self._init_kwargs.get("encoder", None)
         decoder_cfg = self._init_kwargs.get("decoder", None)
@@ -30,10 +32,52 @@ class Autoencoder(BaseModel):
             self._write_model_statistics()
 
     def forward(self, x):
-
-        encoder_out = self.encoder(x)  # Dict: {"latent": z} or {"mu": mu, "logvar": logvar}
-        decoder_out = self.decoder(encoder_out)  # Dict: {head_name: output}
-        return {**encoder_out, **decoder_out}  # Merge all keys
+        """
+        Forward pass through encoder and decoder.
+        
+        Args:
+            x: Input tensor [B, C, H, W] or DataFlow containing input
+        
+        Returns:
+            DataFlow with encoder and decoder outputs merged
+        """
+        # Handle DataFlow input
+        if isinstance(x, dict) and not isinstance(x, torch.Tensor):
+            # Extract input from DataFlow/dict
+            if "rgb" in x:
+                x = x["rgb"]
+            elif "input" in x:
+                x = x["input"]
+            elif "x" in x:
+                x = x["x"]
+            elif len(x) == 1:
+                x = next(iter(x.values()))
+            else:
+                for key in ["rgb", "input", "x", "data"]:
+                    if key in x:
+                        x = x[key]
+                        break
+                else:
+                    x = next(v for v in x.values() if isinstance(v, torch.Tensor))
+        
+        encoder_out = self.encoder(x)  # DataFlow: {"latent": z} or {"mu": mu, "logvar": logvar}
+        decoder_out = self.decoder(encoder_out)  # DataFlow: {head_name: output}
+        
+        # Merge DataFlows
+        if isinstance(encoder_out, DataFlow):
+            # Use DataFlow.copy() method
+            merged = encoder_out.copy()
+            merged.update(decoder_out)
+            merged.source_component = self.__class__.__name__
+            return merged
+        else:
+            # Fallback: create new DataFlow from merged dicts
+            merged_data = dict(encoder_out) if isinstance(encoder_out, dict) else {"latent": encoder_out}
+            if isinstance(decoder_out, dict):
+                merged_data.update(decoder_out)
+            elif isinstance(decoder_out, DataFlow):
+                merged_data.update(decoder_out)
+            return DataFlow(merged_data, source_component=self.__class__.__name__)
     
     def decode(self, z_or_dict):
 

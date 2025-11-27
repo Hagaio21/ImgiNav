@@ -161,24 +161,44 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
             pov_emb = None
     
     # Forward pass and loss computation (Trainer handles scaling for gradient accumulation)
+    from models.components.dataflow import DataFlow
+    
     if trainer.use_amp:
         with torch.amp.autocast('cuda'):
             outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
-            preds = {
-                "pred_noise": outputs["pred_noise"],
-                "scheduler": model.scheduler,
-                "timesteps": t,
-            }
-            targets = {"noise": noise}
+            # outputs is now a DataFlow, extract values
+            if isinstance(outputs, DataFlow):
+                preds = DataFlow({
+                    "pred_noise": outputs["pred_noise"],
+                    "scheduler": model.scheduler,
+                    "timesteps": t,
+                }, source_component="DiffusionModel")
+            else:
+                preds = DataFlow({
+                    "pred_noise": outputs["pred_noise"],
+                    "scheduler": model.scheduler,
+                    "timesteps": t,
+                }, source_component="DiffusionModel")
+            targets = DataFlow({"noise": noise}, source_component="Dataset")
+            # Loss functions work with DataFlow since it's dict-like
             loss, logs = loss_fn(preds, targets)
     else:
         outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
-        preds = {
-            "pred_noise": outputs["pred_noise"],
-            "scheduler": model.scheduler,
-            "timesteps": t,
-        }
-        targets = {"noise": noise}
+        # outputs is now a DataFlow, extract values
+        if isinstance(outputs, DataFlow):
+            preds = DataFlow({
+                "pred_noise": outputs["pred_noise"],
+                "scheduler": model.scheduler,
+                "timesteps": t,
+            }, source_component="DiffusionModel")
+        else:
+            preds = DataFlow({
+                "pred_noise": outputs["pred_noise"],
+                "scheduler": model.scheduler,
+                "timesteps": t,
+            }, source_component="DiffusionModel")
+        targets = DataFlow({"noise": noise}, source_component="Dataset")
+        # Loss functions work with DataFlow since it's dict-like
         loss, logs = loss_fn(preds, targets)
     
     # Return outputs for potential collection (though diffusion doesn't collect latents)
@@ -188,6 +208,7 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
 # Eval step function for Trainer
 def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for diffusion evaluation - computes loss only."""
+    from models.components.dataflow import DataFlow
     device_obj = trainer.device
     
     # Get latents - must be provided in batch (pre-encoded)
@@ -253,21 +274,39 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     if trainer.use_amp:
         with torch.amp.autocast('cuda'):
             outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
-            preds = {
-                "pred_noise": outputs["pred_noise"],
-                "scheduler": model.scheduler,
-                "timesteps": t,
-            }
-            targets = {"noise": noise}
+            # outputs is now a DataFlow, extract values
+            if isinstance(outputs, DataFlow):
+                preds = DataFlow({
+                    "pred_noise": outputs["pred_noise"],
+                    "scheduler": model.scheduler,
+                    "timesteps": t,
+                }, source_component="DiffusionModel")
+            else:
+                preds = DataFlow({
+                    "pred_noise": outputs["pred_noise"],
+                    "scheduler": model.scheduler,
+                    "timesteps": t,
+                }, source_component="DiffusionModel")
+            targets = DataFlow({"noise": noise}, source_component="Dataset")
+            # Loss functions work with DataFlow since it's dict-like
             loss, logs = loss_fn(preds, targets)
     else:
         outputs = model(latents, t, noise=noise, text_emb=text_emb, pov_emb=pov_emb)
-        preds = {
-            "pred_noise": outputs["pred_noise"],
-            "scheduler": model.scheduler,
-            "timesteps": t,
-        }
-        targets = {"noise": noise}
+        # outputs is now a DataFlow, extract values
+        if isinstance(outputs, DataFlow):
+            preds = DataFlow({
+                "pred_noise": outputs["pred_noise"],
+                "scheduler": model.scheduler,
+                "timesteps": t,
+            }, source_component="DiffusionModel")
+        else:
+            preds = DataFlow({
+                "pred_noise": outputs["pred_noise"],
+                "scheduler": model.scheduler,
+                "timesteps": t,
+            }, source_component="DiffusionModel")
+        targets = DataFlow({"noise": noise}, source_component="Dataset")
+        # Loss functions work with DataFlow since it's dict-like
         loss, logs = loss_fn(preds, targets)
     
     # Return outputs for potential collection
