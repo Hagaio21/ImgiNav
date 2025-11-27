@@ -1,7 +1,7 @@
 #!/bin/bash
-#BSUB -J stage3_layouts[1-10]                    # 10 parallel workers
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage3_layouts.%I.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage3_layouts.%I.%J.err
+#BSUB -J stage5_graphs[1-10]                    # 10 parallel workers
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage5_graphs.%I.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage5_graphs.%I.%J.err
 #BSUB -n 8
 #BSUB -R "rusage[mem=8000]"
 #BSUB -W 10:00
@@ -13,15 +13,12 @@ export MKL_INTERFACE_LAYER=LP64
 # =============================================================================
 # CONFIGURATION - UPDATE THESE PATHS
 # =============================================================================
-GEOMETRY_DIR="/work3/s233249/ImgiNav/dataset_v2/geometry"
 METADATA_DIR="/work3/s233249/ImgiNav/dataset_v2/metadata"
-TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/taxonomy.json"
 VALID_SCENES_FILE="/work3/s233249/ImgiNav/ImgiNav/valid_scenes.txt"
-OUTPUT_LAYOUTS_DIR="/work3/s233249/ImgiNav/dataset_v2/layouts"
-RESOLUTION=512
+OUTPUT_GRAPHS_DIR="/work3/s233249/ImgiNav/dataset_v2/graphs"
 
 N_SHARDS=10                                          # Must match [1-10] above
-STAGE3_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/stage3_render_layouts.py"
+STAGE5_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/stage5_build_graphs.py"
 # =============================================================================
 
 IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
@@ -34,11 +31,10 @@ SHARD_TXT=""                                        # will set below
 TMP_METADATA_DIR="${TMPDIR_LOCAL}/metadata_shard_${JOB_UNIQUE_ID}"
 
 echo "=============================================================================="
-echo "Starting Stage 3 Layout Rendering - Task ${IDX}/${N_SHARDS}"
+echo "Starting Stage 5 Graph Building - Task ${IDX}/${N_SHARDS}"
 echo "=============================================================================="
-echo "Geometry dir: ${GEOMETRY_DIR}"
 echo "Metadata dir: ${METADATA_DIR}"
-echo "Output layouts dir: ${OUTPUT_LAYOUTS_DIR}"
+echo "Output graphs dir: ${OUTPUT_GRAPHS_DIR}"
 echo "Valid scenes file: ${VALID_SCENES_FILE}"
 echo ""
 
@@ -131,7 +127,7 @@ if [ ${LINKED_SCENES} -eq 0 ]; then
 fi
 
 # 5) Create output directory if it doesn't exist
-mkdir -p "${OUTPUT_LAYOUTS_DIR}"
+mkdir -p "${OUTPUT_GRAPHS_DIR}"
 
 # 6) Robust conda activation (non-interactive safe)
 echo "Activating conda environment..."
@@ -156,16 +152,9 @@ elif [ -x "$HOME/miniconda3/bin/conda" ]; then
   }
 fi
 
-# 7) Check if required files exist before processing
-if [ ! -f "${TAXONOMY_FILE}" ]; then
-  echo "ERROR: taxonomy.json not found at: ${TAXONOMY_FILE}" >&2
-  rm -rf "${TMP_METADATA_DIR}"
-  rm -f "${SHARD_PREFIX}"*
-  exit 1
-fi
-
-if [ ! -d "${GEOMETRY_DIR}" ]; then
-  echo "ERROR: Geometry directory not found: ${GEOMETRY_DIR}" >&2
+# 7) Check if required directories exist
+if [ ! -d "${METADATA_DIR}" ]; then
+  echo "ERROR: Metadata directory not found: ${METADATA_DIR}" >&2
   rm -rf "${TMP_METADATA_DIR}"
   rm -f "${SHARD_PREFIX}"*
   exit 1
@@ -173,34 +162,30 @@ fi
 
 # 8) Check required dependencies
 echo "Checking Python dependencies..."
-python -c "import trimesh, numpy, PIL, json" || {
+python -c "import json" || {
   echo "ERROR: Required Python packages not available" >&2
   rm -rf "${TMP_METADATA_DIR}"
   rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
-# 9) Run Stage 3 processing
+# 9) Run Stage 5 processing
 echo ""
 echo "=============================================================================="
-echo "Running Stage 3: Render Layouts"
+echo "Running Stage 5: Build Graphs"
 echo "=============================================================================="
 echo "Starting at $(date)"
 
-python "${STAGE3_SCRIPT}" \
-  --geometry-dir "${GEOMETRY_DIR}" \
+python "${STAGE5_SCRIPT}" \
   --metadata-dir "${TMP_METADATA_DIR}" \
-  --taxonomy "${TAXONOMY_FILE}" \
-  --output-dir "${OUTPUT_LAYOUTS_DIR}" \
-  --resolution "${RESOLUTION}" \
-  --hpc || {
-  echo "ERROR: Stage 3 failed for task ${IDX}" >&2
+  --output-dir "${OUTPUT_GRAPHS_DIR}" || {
+  echo "ERROR: Stage 5 failed for task ${IDX}" >&2
   rm -rf "${TMP_METADATA_DIR}"
   rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
-echo "Stage 3 completed at $(date)"
+echo "Stage 5 completed at $(date)"
 echo ""
 
 # 10) Cleanup temporary files
