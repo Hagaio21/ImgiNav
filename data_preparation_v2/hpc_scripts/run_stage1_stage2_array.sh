@@ -83,12 +83,14 @@ while IFS= read -r scene_id; do
     continue
   fi
   
-  scene_file="${SCENES_ROOT}/${scene_id}.json"
-  if [ -f "${scene_file}" ]; then
+  # Search for scene file recursively in SCENES_ROOT
+  scene_file=$(find "${SCENES_ROOT}" -type f -name "${scene_id}.json" 2>/dev/null | head -1)
+  
+  if [ -n "${scene_file}" ] && [ -f "${scene_file}" ]; then
     cp "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json"
     COPIED=$((COPIED + 1))
   else
-    echo "WARNING: Scene file not found: ${scene_file}" >&2
+    echo "WARNING: Scene file not found: ${scene_id}.json (searched in ${SCENES_ROOT})" >&2
     MISSING=$((MISSING + 1))
   fi
 done < "${SHARD_TXT}"
