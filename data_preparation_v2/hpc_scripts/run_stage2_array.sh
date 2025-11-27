@@ -97,40 +97,57 @@ echo ""
 echo "Creating temporary scenes directory: ${SHARD_SCENES_DIR}"
 mkdir -p "${SHARD_SCENES_DIR}"
 
-# 4) Create symlinks for scene files for this shard (more efficient than copying)
-echo "Creating symlinks for scene files for shard ${IDX}..."
+# 4) Create hardlinks/symlinks for scene files for this shard
+echo "Creating links for scene files for shard ${IDX}..."
+echo "Building scene file lookup map (one-time find operation)..."
+declare -A SCENE_FILE_MAP
+while IFS= read -r -d '' scene_file; do
+  scene_basename=$(basename "${scene_file}")
+  scene_id="${scene_basename%.json}"
+  SCENE_FILE_MAP["${scene_id}"]="${scene_file}"
+done < <(find "${SCENES_ROOT}" -type f -name "*.json" -print0 2>/dev/null)
+
+echo "Found ${#SCENE_FILE_MAP[@]} scene files in ${SCENES_ROOT}"
+
 LINKED=0
 MISSING=0
 while IFS= read -r scene_id; do
-  scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)  # Trim whitespace
+  scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)
   if [ -z "${scene_id}" ]; then
     continue
   fi
   
-  # Search for scene file recursively in SCENES_ROOT
-  scene_file=$(find "${SCENES_ROOT}" -type f -name "${scene_id}.json" 2>/dev/null | head -1)
+  scene_file="${SCENE_FILE_MAP[${scene_id}]:-}"
   
   if [ -n "${scene_file}" ] && [ -f "${scene_file}" ]; then
-    # Use absolute path for symlink to avoid issues
-    scene_file_abs=$(readlink -f "${scene_file}" 2>/dev/null || echo "${scene_file}")
-    ln -sf "${scene_file_abs}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null || {
-      # Fallback to copy if symlink fails (e.g., cross-filesystem)
-      cp "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json"
-    }
-    LINKED=$((LINKED + 1))
+    # Try hardlink first, fallback to symlink if cross-filesystem
+    if ln "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
+      LINKED=$((LINKED + 1))
+    elif ln -s "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
+      LINKED=$((LINKED + 1))
+    else
+      echo "WARNING: Failed to link ${scene_id}.json (hardlink and symlink both failed)" >&2
+      MISSING=$((MISSING + 1))
+    fi
   else
-    echo "WARNING: Scene file not found: ${scene_id}.json (searched in ${SCENES_ROOT})" >&2
     MISSING=$((MISSING + 1))
   fi
 done < "${SHARD_TXT}"
 
-echo "Linked ${LINKED} scene files (${MISSING} missing)"
+echo "Created ${LINKED} links (${MISSING} missing)"
 if [ ${LINKED} -eq 0 ]; then
   echo "ERROR: No scene files were linked for shard ${IDX}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
+  echo "This usually means SCENES_ROOT and TMPDIR are on different filesystems" >&2
   exit 3
 fi
+
+# Verify files actually exist in the directory
+ACTUAL_FILES=$(find "${SHARD_SCENES_DIR}" -type f -name "*.json" 2>/dev/null | wc -l)
+if [ "${ACTUAL_FILES}" -eq 0 ]; then
+  echo "ERROR: No JSON files found in ${SHARD_SCENES_DIR} after linking" >&2
+  exit 3
+fi
+echo "Verified: ${ACTUAL_FILES} scene files in temporary directory"
 
 # 5) Create output directories if they don't exist
 mkdir -p "${OUTPUT_METADATA_DIR}"

@@ -104,18 +104,37 @@ while IFS= read -r scene_id; do
   scene_file="${SCENE_FILE_MAP[${scene_id}]:-}"
   
   if [ -n "${scene_file}" ] && [ -f "${scene_file}" ]; then
-    ln "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null || true
-    LINKED=$((LINKED + 1))
+    # Try hardlink first, fallback to symlink if cross-filesystem
+    if ln "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
+      LINKED=$((LINKED + 1))
+    elif ln -s "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
+      LINKED=$((LINKED + 1))
+    else
+      echo "WARNING: Failed to link ${scene_id}.json (hardlink and symlink both failed)" >&2
+      MISSING=$((MISSING + 1))
+    fi
   else
     MISSING=$((MISSING + 1))
   fi
 done < "${SHARD_TXT}"
 
-echo "Created ${LINKED} hardlinks (${MISSING} missing)"
+echo "Created ${LINKED} links (${MISSING} missing)"
 if [ ${LINKED} -eq 0 ]; then
-  echo "ERROR: No scene files found for shard ${IDX}" >&2
+  echo "ERROR: No scene files were linked for shard ${IDX}" >&2
+  echo "This usually means SCENES_ROOT and TMPDIR are on different filesystems" >&2
+  echo "SCENES_ROOT: ${SCENES_ROOT}" >&2
+  echo "TMPDIR: ${TMPDIR_LOCAL}" >&2
   exit 3
 fi
+
+# Verify files actually exist in the directory
+ACTUAL_FILES=$(find "${SHARD_SCENES_DIR}" -type f -name "*.json" 2>/dev/null | wc -l)
+if [ "${ACTUAL_FILES}" -eq 0 ]; then
+  echo "ERROR: No JSON files found in ${SHARD_SCENES_DIR} after linking" >&2
+  echo "This suggests hardlinks/symlinks failed silently" >&2
+  exit 3
+fi
+echo "Verified: ${ACTUAL_FILES} scene files in temporary directory"
 
 mkdir -p "${OUTPUT_GEOMETRY_DIR}"
 
@@ -141,15 +160,60 @@ if [ ! -f "${MODEL_INFO}" ]; then
   exit 1
 fi
 
+# Verify MODEL_DIR structure - check if it contains model subdirectories
+echo "Verifying MODEL_DIR structure..."
 if [ ! -d "${MODEL_DIR}" ]; then
+  echo "WARNING: MODEL_DIR does not exist: ${MODEL_DIR}" >&2
+  echo "Checking for alternative paths..." >&2
+  # Try without subdirectory (matches old working script)
   ALTERNATIVE_MODEL_DIR="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model"
   if [ -d "${ALTERNATIVE_MODEL_DIR}" ]; then
+    echo "Found alternative MODEL_DIR: ${ALTERNATIVE_MODEL_DIR}" >&2
+    echo "Updating MODEL_DIR to use alternative path..." >&2
     MODEL_DIR="${ALTERNATIVE_MODEL_DIR}"
   else
-    echo "ERROR: MODEL_DIR not found" >&2
-  exit 1
+    echo "ERROR: Neither MODEL_DIR path exists:" >&2
+    echo "  - ${MODEL_DIR}" >&2
+    echo "  - ${ALTERNATIVE_MODEL_DIR}" >&2
+    echo "Please verify the 3D-FUTURE-model directory path" >&2
+    exit 1
   fi
 fi
+
+MODEL_COUNT=$(find "${MODEL_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l || echo "0")
+if [ "${MODEL_COUNT}" -eq 0 ]; then
+  echo "WARNING: MODEL_DIR appears empty or incorrect: ${MODEL_DIR}" >&2
+  echo "Expected structure: ${MODEL_DIR}/{jid}/raw_model.obj" >&2
+  echo "Checking for alternative structure..." >&2
+  # Try parent directory
+  PARENT_MODEL_DIR=$(dirname "${MODEL_DIR}")
+  if [ -d "${PARENT_MODEL_DIR}/3D-FUTURE-model" ]; then
+    echo "Found alternative: ${PARENT_MODEL_DIR}/3D-FUTURE-model" >&2
+  fi
+  # Don't exit - let it try and fail with a clearer error message
+else
+  echo "Found ${MODEL_COUNT} model directories in ${MODEL_DIR}"
+  # Check if at least one has raw_model.obj
+  SAMPLE_MODEL=$(find "${MODEL_DIR}" -mindepth 2 -maxdepth 2 -name "raw_model.obj" 2>/dev/null | head -1 || echo "")
+  if [ -n "${SAMPLE_MODEL}" ]; then
+    echo "Verified: Found sample model at ${SAMPLE_MODEL}"
+  else
+    echo "WARNING: No raw_model.obj files found in model subdirectories" >&2
+    echo "Checking for raw_model.glb instead..." >&2
+    SAMPLE_GLB=$(find "${MODEL_DIR}" -mindepth 2 -maxdepth 2 -name "raw_model.glb" 2>/dev/null | head -1 || echo "")
+    if [ -n "${SAMPLE_GLB}" ]; then
+      echo "Found GLB model at ${SAMPLE_GLB}"
+    else
+      echo "ERROR: No model files (raw_model.obj or raw_model.glb) found in ${MODEL_DIR}" >&2
+      echo "Please verify MODEL_DIR path is correct" >&2
+      echo "Trying to list first few directories in MODEL_DIR:" >&2
+      ls -la "${MODEL_DIR}" | head -10 >&2 || true
+      exit 1
+    fi
+  fi
+fi
+echo "Using MODEL_DIR: ${MODEL_DIR}"
+echo ""
 
 if [ ! -f "${TAXONOMY_FILE}" ]; then
   echo "ERROR: taxonomy.json not found at: ${TAXONOMY_FILE}" >&2
