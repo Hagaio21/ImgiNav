@@ -9,6 +9,17 @@
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
+
+# Cleanup function
+cleanup() {
+  local exit_code=$?
+  echo "Cleaning up temporary files..."
+  rm -f "${SHARD_TXT:-}" 2>/dev/null || true
+  if [ ${exit_code} -ne 0 ]; then
+    exit ${exit_code}
+  fi
+}
+trap cleanup EXIT
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -60,7 +71,6 @@ if [ -z "${SHARD_TXT}" ] || [ ! -f "${SHARD_TXT}" ]; then
   
   if [ ! -s "${SHARD_TXT}" ]; then
     echo "ERROR: Shard ${IDX} is empty" >&2
-    rm -f "${SHARD_TXT}"
     exit 1
   fi
 fi
@@ -82,7 +92,6 @@ fi
 
 conda activate imginav || conda activate scenefactor || {
     echo "ERROR: Failed to activate conda environment" >&2
-    rm -f "${SHARD_TXT}"
     exit 1
 }
 
@@ -90,20 +99,17 @@ conda activate imginav || conda activate scenefactor || {
 echo "Checking dependencies..."
 python -c "import trimesh, numpy, PIL" || {
     echo "ERROR: Missing Python dependencies" >&2
-    rm -f "${SHARD_TXT}"
     exit 1
 }
 
 # Check required files
 if [ ! -f "${TAXONOMY_FILE}" ]; then
     echo "ERROR: Taxonomy file not found: ${TAXONOMY_FILE}" >&2
-    rm -f "${SHARD_TXT}"
     exit 1
 fi
 
 if [ ! -d "${GEOMETRY_DIR}" ]; then
     echo "ERROR: Geometry directory not found: ${GEOMETRY_DIR}" >&2
-    rm -f "${SHARD_TXT}"
     exit 1
 fi
 
@@ -143,8 +149,8 @@ bsub -J "stage4_${IDX}" \
   echo "WARNING: Failed to submit Stage 4 for shard ${IDX}" >&2
 }
 
-# Cleanup after submitting next stage
-rm -f "${SHARD_TXT}"
+# Cleanup after submitting next stage (trap will also run)
+rm -f "${SHARD_TXT}" 2>/dev/null || true
 
 echo ""
 echo "=============================================================================="

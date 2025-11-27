@@ -10,6 +10,18 @@
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
+# Cleanup function
+cleanup() {
+  local exit_code=$?
+  echo "Cleaning up temporary files..."
+  rm -rf "${TMP_METADATA_DIR:-}" 2>/dev/null || true
+  rm -f "${SHARD_PREFIX:-}"* 2>/dev/null || true
+  if [ ${exit_code} -ne 0 ]; then
+    exit ${exit_code}
+  fi
+}
+trap cleanup EXIT
+
 # =============================================================================
 # CONFIGURATION - UPDATE THESE PATHS
 # =============================================================================
@@ -160,8 +172,6 @@ fi
 # 7) Check if required directories exist
 if [ ! -d "${GEOMETRY_DIR}" ]; then
   echo "ERROR: Geometry directory not found: ${GEOMETRY_DIR}" >&2
-  rm -rf "${TMP_METADATA_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 fi
 
@@ -169,8 +179,6 @@ fi
 echo "Checking Python dependencies..."
 python -c "import trimesh, numpy, PIL, json" || {
   echo "ERROR: Required Python packages not available" >&2
-  rm -rf "${TMP_METADATA_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
@@ -189,19 +197,13 @@ python "${STAGE4_SCRIPT}" \
   --height "${HEIGHT}" \
   --hpc || {
   echo "ERROR: Stage 4 failed for task ${IDX}" >&2
-  rm -rf "${TMP_METADATA_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
 echo "Stage 4 completed at $(date)"
 echo ""
 
-# 10) Cleanup temporary files
-rm -rf "${TMP_METADATA_DIR}"
-rm -f "${SHARD_PREFIX}"*
-
-# Submit Stage 5 for this shard
+# Submit Stage 5 for this shard (pass shard file, then cleanup)
 echo "Submitting Stage 5 for shard ${IDX}..."
 bsub -J "stage5_${IDX}" \
   -o "${SCRIPT_DIR}/logs/stage5.${IDX}.%J.out" \
@@ -213,6 +215,10 @@ bsub -J "stage5_${IDX}" \
   bash "${STAGE5_SCRIPT}" "${IDX}" "${SHARD_TXT}" || {
   echo "WARNING: Failed to submit Stage 5 for shard ${IDX}" >&2
 }
+
+# Cleanup after submitting next stage
+rm -rf "${TMP_METADATA_DIR}" 2>/dev/null || true
+rm -f "${SHARD_PREFIX}"* 2>/dev/null || true
 
 echo ""
 echo "=============================================================================="

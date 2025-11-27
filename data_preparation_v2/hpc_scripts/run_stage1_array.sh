@@ -10,6 +10,18 @@
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
+# Cleanup function
+cleanup() {
+  local exit_code=$?
+  echo "Cleaning up temporary files..."
+  rm -rf "${SHARD_SCENES_DIR:-}" 2>/dev/null || true
+  rm -f "${SHARD_PREFIX:-}"* 2>/dev/null || true
+  if [ ${exit_code} -ne 0 ]; then
+    exit ${exit_code}
+  fi
+}
+trap cleanup EXIT
+
 # =============================================================================
 # CONFIGURATION - UPDATE THESE PATHS
 # =============================================================================
@@ -102,8 +114,6 @@ done < "${SHARD_TXT}"
 echo "Created ${LINKED} hardlinks (${MISSING} missing)"
 if [ ${LINKED} -eq 0 ]; then
   echo "ERROR: No scene files found for shard ${IDX}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 3
 fi
 
@@ -128,8 +138,6 @@ fi
 # Verify paths
 if [ ! -f "${MODEL_INFO}" ]; then
   echo "ERROR: model_info.json not found at: ${MODEL_INFO}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 fi
 
@@ -139,23 +147,17 @@ if [ ! -d "${MODEL_DIR}" ]; then
     MODEL_DIR="${ALTERNATIVE_MODEL_DIR}"
   else
     echo "ERROR: MODEL_DIR not found" >&2
-    rm -rf "${SHARD_SCENES_DIR}"
-    rm -f "${SHARD_PREFIX}"*
-    exit 1
+  exit 1
   fi
 fi
 
 if [ ! -f "${TAXONOMY_FILE}" ]; then
   echo "ERROR: taxonomy.json not found at: ${TAXONOMY_FILE}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 fi
 
 python -c "import trimesh, numpy, scipy, json" || {
   echo "ERROR: Required Python packages not available" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
@@ -181,19 +183,13 @@ fi
 
 python "${STAGE1_ARGS[@]}" || {
   echo "ERROR: Stage 1 failed for task ${IDX}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
 echo "Stage 1 completed at $(date)"
 echo ""
 
-# Cleanup
-rm -rf "${SHARD_SCENES_DIR}"
-rm -f "${SHARD_PREFIX}"*
-
-# Submit Stage 2 for this shard
+# Submit Stage 2 for this shard (pass shard file, then cleanup)
 echo "Submitting Stage 2 for shard ${IDX}..."
 bsub -J "stage2_${IDX}" \
   -o "${SCRIPT_DIR}/logs/stage2.${IDX}.%J.out" \
@@ -205,6 +201,10 @@ bsub -J "stage2_${IDX}" \
   bash "${STAGE2_SCRIPT}" "${IDX}" "${SHARD_TXT}" || {
   echo "WARNING: Failed to submit Stage 2 for shard ${IDX}" >&2
 }
+
+# Cleanup after submitting next stage
+rm -rf "${SHARD_SCENES_DIR}" 2>/dev/null || true
+rm -f "${SHARD_PREFIX}"* 2>/dev/null || true
 
 echo ""
 echo "=============================================================================="

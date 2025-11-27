@@ -10,6 +10,18 @@
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
+# Cleanup function
+cleanup() {
+  local exit_code=$?
+  echo "Cleaning up temporary files..."
+  rm -rf "${SHARD_SCENES_DIR:-}" 2>/dev/null || true
+  rm -f "${SHARD_PREFIX:-}"* 2>/dev/null || true
+  if [ ${exit_code} -ne 0 ]; then
+    exit ${exit_code}
+  fi
+}
+trap cleanup EXIT
+
 # =============================================================================
 # CONFIGURATION - UPDATE THESE PATHS
 # =============================================================================
@@ -191,11 +203,7 @@ python "${STAGE2_SCRIPT}" \
 echo "Stage 2 completed at $(date)"
 echo ""
 
-# 10) Cleanup temporary files
-rm -rf "${SHARD_SCENES_DIR}"
-rm -f "${SHARD_PREFIX}"*
-
-# Submit Stage 3 for this shard
+# Submit Stage 3 for this shard (pass shard file, then cleanup)
 echo "Submitting Stage 3 for shard ${IDX}..."
 bsub -J "stage3_${IDX}" \
   -o "${SCRIPT_DIR}/logs/stage3.${IDX}.%J.out" \
@@ -207,6 +215,10 @@ bsub -J "stage3_${IDX}" \
   bash "${STAGE3_SCRIPT}" "${IDX}" "${SHARD_TXT}" || {
   echo "WARNING: Failed to submit Stage 3 for shard ${IDX}" >&2
 }
+
+# Cleanup after submitting next stage
+rm -rf "${SHARD_SCENES_DIR}" 2>/dev/null || true
+rm -f "${SHARD_PREFIX}"* 2>/dev/null || true
 
 echo ""
 echo "=============================================================================="

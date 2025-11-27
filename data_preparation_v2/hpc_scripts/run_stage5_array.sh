@@ -10,6 +10,18 @@
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
+# Cleanup function
+cleanup() {
+  local exit_code=$?
+  echo "Cleaning up temporary files..."
+  rm -rf "${TMP_METADATA_DIR:-}" 2>/dev/null || true
+  rm -f "${SHARD_PREFIX:-}"* 2>/dev/null || true
+  if [ ${exit_code} -ne 0 ]; then
+    exit ${exit_code}
+  fi
+}
+trap cleanup EXIT
+
 # =============================================================================
 # CONFIGURATION - UPDATE THESE PATHS
 # =============================================================================
@@ -153,8 +165,6 @@ fi
 # 7) Check if required directories exist
 if [ ! -d "${METADATA_DIR}" ]; then
   echo "ERROR: Metadata directory not found: ${METADATA_DIR}" >&2
-  rm -rf "${TMP_METADATA_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 fi
 
@@ -162,8 +172,6 @@ fi
 echo "Checking Python dependencies..."
 python -c "import json" || {
   echo "ERROR: Required Python packages not available" >&2
-  rm -rf "${TMP_METADATA_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
@@ -178,18 +186,16 @@ python "${STAGE5_SCRIPT}" \
   --metadata-dir "${TMP_METADATA_DIR}" \
   --output-dir "${OUTPUT_GRAPHS_DIR}" || {
   echo "ERROR: Stage 5 failed for task ${IDX}" >&2
-  rm -rf "${TMP_METADATA_DIR}"
-  rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
 echo "Stage 5 completed at $(date)"
 echo ""
 
-# 10) Cleanup temporary files
+# 10) Cleanup temporary files (explicit cleanup, trap will also run)
 echo "Cleaning up temporary files..."
-rm -rf "${TMP_METADATA_DIR}"
-rm -f "${SHARD_PREFIX}"*
+rm -rf "${TMP_METADATA_DIR}" 2>/dev/null || true
+rm -f "${SHARD_PREFIX}"* 2>/dev/null || true
 
 echo ""
 echo "=============================================================================="
