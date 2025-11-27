@@ -3,7 +3,7 @@
 Stage 1: Scene Geometry Reconstruction - FIXED VERSION v2
 
 Fixes:
-1. Floor = dark gray, Wall = light gray (for visibility in layouts)
+1. Floor = light gray, Wall = dark gray (for visibility in layouts)
 2. Furniture textures/colors are PRESERVED (not overwritten)
 3. Proper vertex color handling for GLB export
 """
@@ -182,13 +182,13 @@ def create_arch_mesh(arch: Dict, arch_type: str) -> trimesh.Trimesh:
     
     # Set different colors for each type
     if arch_type == "floor":
-        color = [60, 60, 60, 255]  # Dark gray for floor
+        color = [180, 180, 180, 255]  # Light gray for floor
     elif arch_type == "door":
         color = [255, 100, 100, 255]  # Red/salmon for doors
     elif arch_type == "window":
         color = [100, 200, 255, 255]  # Light blue for windows
     else:
-        color = [180, 180, 180, 255]  # Light gray for walls
+        color = [60, 60, 60, 255]  # Dark gray for walls
     
     # Apply vertex colors using ColorVisuals
     n_vertices = len(mesh.vertices)

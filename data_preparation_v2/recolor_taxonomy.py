@@ -47,8 +47,8 @@ def assign_colors(
     # Fixed colors for structural elements and openings
     FIXED_COLORS = {
         # Structure (grays)
-        "Floor": [60, 60, 60],        # dark gray
-        "Wall": [180, 180, 180],      # light gray
+        "Floor": [180, 180, 180],     # light gray
+        "Wall": [60, 60, 60],         # dark gray
         "Ceiling": [220, 220, 220],   # near white
         # Openings (distinct colors)
         "Door": [255, 100, 100],      # red/salmon
