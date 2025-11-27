@@ -97,10 +97,14 @@ while IFS= read -r scene_id; do
   scene_meta_dst="${TMP_METADATA_DIR}/scenes/${scene_id}.json"
   
   if [ -f "${scene_meta_src}" ]; then
-    ln -s "${scene_meta_src}" "${scene_meta_dst}" 2>/dev/null || cp "${scene_meta_src}" "${scene_meta_dst}"
+    # Use absolute path for symlink to avoid issues
+    ln -sf "$(readlink -f "${scene_meta_src}" || echo "${scene_meta_src}")" "${scene_meta_dst}" 2>/dev/null || cp "${scene_meta_src}" "${scene_meta_dst}"
     LINKED_SCENES=$((LINKED_SCENES + 1))
   else
-    echo "WARNING: Scene metadata not found: ${scene_meta_src}" >&2
+    # Only warn if we're in verbose mode, otherwise just count
+    if [ "${VERBOSE:-0}" = "1" ]; then
+      echo "WARNING: Scene metadata not found: ${scene_meta_src}" >&2
+    fi
     MISSING_SCENES=$((MISSING_SCENES + 1))
   fi
   
@@ -121,13 +125,21 @@ while IFS= read -r scene_id; do
   fi
 done < "${SHARD_TXT}"
 
-echo "Linked ${LINKED_SCENES} scene metadata files (${MISSING_SCENES} missing)"
+echo "Linked ${LINKED_SCENES} scene metadata files (${MISSING_SCENES} missing - these scenes may not have been processed by Stage 2)"
 echo "Linked ${LINKED_ROOMS} room metadata files (${MISSING_ROOMS} scenes with no rooms)"
+
+# Only fail if we have NO scenes at all - some missing is OK (Stage 2 may have filtered them)
 if [ ${LINKED_SCENES} -eq 0 ]; then
   echo "ERROR: No scene metadata files were linked for shard ${IDX}" >&2
+  echo "This means Stage 2 has not processed any scenes in this shard, or metadata directory is incorrect" >&2
   rm -rf "${TMP_METADATA_DIR}"
   rm -f "${SHARD_PREFIX}"*
   exit 3
+fi
+
+# Warn if many scenes are missing
+if [ ${MISSING_SCENES} -gt $((SHARD_COUNT / 2)) ]; then
+  echo "WARNING: More than half of scenes in this shard are missing metadata. Stage 2 may need to be run first." >&2
 fi
 
 # 5) Create output directory if it doesn't exist
@@ -180,7 +192,28 @@ python -c "import trimesh, numpy, PIL, json" || {
   exit 1
 }
 
-# 9) Run Stage 3 processing
+# 9) Set up Xvfb for headless rendering
+echo "Setting up Xvfb virtual display..."
+if command -v Xvfb >/dev/null 2>&1; then
+  # Find an available display number
+  DISPLAY_NUM=99
+  while [ -f /tmp/.X${DISPLAY_NUM}-lock ]; do
+    DISPLAY_NUM=$((DISPLAY_NUM + 1))
+  done
+  
+  # Start Xvfb in background
+  Xvfb :${DISPLAY_NUM} -screen 0 1280x720x24 >/dev/null 2>&1 &
+  XVFB_PID=$!
+  export DISPLAY=:${DISPLAY_NUM}
+  echo "Xvfb started on display ${DISPLAY} (PID: ${XVFB_PID})"
+  
+  # Give Xvfb a moment to start
+  sleep 2
+else
+  echo "WARNING: Xvfb not found, rendering may fail" >&2
+fi
+
+# 10) Run Stage 3 processing
 echo ""
 echo "=============================================================================="
 echo "Running Stage 3: Render Layouts"
@@ -195,15 +228,25 @@ python "${STAGE3_SCRIPT}" \
   --resolution "${RESOLUTION}" \
   --hpc || {
   echo "ERROR: Stage 3 failed for task ${IDX}" >&2
+  # Clean up Xvfb if it was started
+  if [ -n "${XVFB_PID:-}" ]; then
+    kill "${XVFB_PID}" 2>/dev/null || true
+  fi
   rm -rf "${TMP_METADATA_DIR}"
   rm -f "${SHARD_PREFIX}"*
   exit 1
 }
 
+# Clean up Xvfb
+if [ -n "${XVFB_PID:-}" ]; then
+  kill "${XVFB_PID}" 2>/dev/null || true
+  echo "Xvfb stopped"
+fi
+
 echo "Stage 3 completed at $(date)"
 echo ""
 
-# 10) Cleanup temporary files
+# 11) Cleanup temporary files
 echo "Cleaning up temporary files..."
 rm -rf "${TMP_METADATA_DIR}"
 rm -f "${SHARD_PREFIX}"*
