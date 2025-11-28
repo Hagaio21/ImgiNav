@@ -13,7 +13,10 @@ export MKL_INTERFACE_LAYER=LP64
 # Configuration
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 DATASET_ROOT="/work3/s233249/ImgiNav/datasets"
-SCENES_DIR="${DATASET_ROOT}/filtered_scenes"
+# 3D-FRONT scenes directory - where the original JSON files are located
+# The script will search recursively in this directory for scene files matching shard IDs
+# Can be overridden with FRONT3D_SCENES_DIR environment variable
+SCENES_DIR="${FRONT3D_SCENES_DIR:-/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT}"
 MODEL_INFO="/work3/s233249/ImgiNav/datasets/3D-FUTURE-model/model_info.json"
 SHARDS_DIR="${BASE_DIR}/data_preparation_v2/hpc_scripts/shards"
 LOG_DIR="${BASE_DIR}/data_preparation_v2/hpc_scripts/logs"
@@ -36,6 +39,7 @@ echo "Stage 2: Compile Metadata - Shard ${JOB_ID}"
 echo "Job ID: ${LSB_JOBID:-unknown}"
 echo "Job Index: ${JOB_ID}"
 echo "Shard file: ${SHARD_FILE}"
+echo "Scenes directory (will search recursively): ${SCENES_DIR}"
 echo "=========================================="
 
 # Verify shard file exists
