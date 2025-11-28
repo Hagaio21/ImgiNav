@@ -90,32 +90,6 @@ def find_all_povs(scene_id: str, room_id: str, povs_dir: Path, variant: str) -> 
     return povs
 
 
-def find_pov_embedding(scene_id: str, room_id: str, pov_id: str, pov_dir: Path, variant: str) -> Optional[str]:
-    """
-    Find POV embedding file for a specific POV.
-    
-    Tries multiple naming patterns.
-    """
-    embedding_dir = pov_dir / f"embeddings_{variant}"
-    if not embedding_dir.exists():
-        return None
-    
-    # Try different naming patterns
-    patterns = [
-        f"{scene_id}_{room_id}_{pov_id}_pov.pt",
-        f"{scene_id}_{room_id}_{pov_id}.pt",
-        f"{scene_id}_{room_id}_pov.pt",  # Single embedding per room
-        f"{scene_id}_{room_id}.pt",
-    ]
-    
-    for pattern in patterns:
-        embedding_path = embedding_dir / pattern
-        if embedding_path.exists():
-            return f"pov/embeddings_{variant}/{embedding_path.name}"
-    
-    return None
-
-
 def find_layout(scene_id: str, room_id: str, layouts_dir: Path, variant: str, is_scene: bool = False) -> Optional[str]:
     """Find layout image for a room or scene."""
     variant_dir = layouts_dir / variant
@@ -233,7 +207,6 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
     metadata_dir = dataset_root / "metadata"
     layouts_dir = dataset_root / "layouts"
     povs_dir = dataset_root / "povs"
-    pov_dir = dataset_root / "pov"  # Embeddings
     graphs_dir = dataset_root / "graphs"
     
     # Find all scenes from metadata
@@ -260,7 +233,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
         
         # --- Scene-level entry (no POV) ---
         scene_layout = find_layout(scene_id, "", layouts_dir, variant, is_scene=True)
-        scene_graph_json, scene_graph_text, scene_graph_embedding = find_graph_files(
+        scene_graph_json, scene_graph_text, _ = find_graph_files(
             scene_id, "", graphs_dir, is_scene=True
         )
         
@@ -277,7 +250,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                 "pov_embedding_path": "",
                 "graph_json_path": scene_graph_json or "",
                 "graph_text_path": scene_graph_text or "",
-                "graph_embedding_path": scene_graph_embedding or "",
+                "graph_embedding_path": "",
                 "is_empty": False,  # Scenes are never "empty"
                 "furniture_count": scene_meta.get("furniture_count", 0),
                 "door_count": scene_meta.get("door_count", 0),
@@ -298,7 +271,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                 continue  # Skip rooms without layouts
             
             # Find graph files
-            room_graph_json, room_graph_text, room_graph_embedding = find_graph_files(
+            room_graph_json, room_graph_text, _ = find_graph_files(
                 scene_id, room_id, graphs_dir, is_scene=False
             )
             
@@ -320,7 +293,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                     "pov_embedding_path": "",
                     "graph_json_path": room_graph_json or "",
                     "graph_text_path": room_graph_text or "",
-                    "graph_embedding_path": room_graph_embedding or "",
+                    "graph_embedding_path": "",
                     "is_empty": is_empty,
                     "furniture_count": furniture_count,
                     "door_count": door_count,
@@ -329,8 +302,6 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
             else:
                 # Add one row per POV
                 for pov_id, pov_path in povs:
-                    pov_embedding = find_pov_embedding(scene_id, room_id, pov_id, pov_dir, variant)
-                    
                     rows.append({
                         "scene_id": scene_id,
                         "type": "room",
@@ -340,10 +311,10 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                         "pov_count": pov_count,
                         "layout_path": room_layout,
                         "pov_path": pov_path,
-                        "pov_embedding_path": pov_embedding or "",
+                        "pov_embedding_path": "",
                         "graph_json_path": room_graph_json or "",
                         "graph_text_path": room_graph_text or "",
-                        "graph_embedding_path": room_graph_embedding or "",
+                        "graph_embedding_path": "",
                         "is_empty": is_empty,
                         "furniture_count": furniture_count,
                         "door_count": door_count,
