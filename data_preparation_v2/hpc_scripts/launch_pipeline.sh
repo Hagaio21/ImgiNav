@@ -20,9 +20,9 @@ set -euo pipefail
 # ==============================================================================
 # Parse arguments
 # ==============================================================================
-CONFIG_FILE=""
+CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/paths.yaml"
 START_STAGE=2
-NUM_SHARDS=""
+NUM_SHARDS="10"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
