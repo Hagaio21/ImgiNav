@@ -20,9 +20,9 @@ set -euo pipefail
 #   bsub -env "SKIP_POV=1" < run_embeddings.sh        # Skip POV embeddings
 #   bsub -env "SKIP_GRAPH=1" < run_embeddings.sh      # Skip graph embeddings
 
-BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/data_preparation/embed_for_training.py"
-LOG_DIR="${BASE_DIR}/data_preparation/logs"
+BASE_DIR="/work3/s233249/ImgiNav"
+PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/data_preparation/embed_for_training.py"
+LOG_DIR="${BASE_DIR}/ImgiNav/data_preparation/logs"
 
 # Dataset paths
 DATASET_ROOT="${BASE_DIR}/dataset_v2"

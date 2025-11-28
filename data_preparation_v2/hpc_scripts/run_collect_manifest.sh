@@ -17,9 +17,9 @@ export MKL_INTERFACE_LAYER=LP64
 #   bsub -env "VARIANT=tex" < run_collect_manifest.sh # Only tex
 #   bsub -env "VARIANT=seg" < run_collect_manifest.sh # Only seg
 
-BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/data_preparation_v2/collect_manifest.py"
-LOG_DIR="${BASE_DIR}/data_preparation_v2/hpc_scripts/logs"
+BASE_DIR="/work3/s233249/ImgiNav"
+PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/data_preparation_v2/collect_manifest.py"
+LOG_DIR="${BASE_DIR}/ImgiNav/data_preparation_v2/hpc_scripts/logs"
 
 # Dataset paths
 DATASET_ROOT="${BASE_DIR}/dataset_v2"
@@ -35,7 +35,7 @@ mkdir -p "${LOG_DIR}"
 # =============================================================================
 # No GPU needed for manifest collection (just file scanning)
 # Load Python if needed
-module load python3/3.10
+
 
 # =============================================================================
 # CONDA ENV
