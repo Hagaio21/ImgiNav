@@ -454,23 +454,51 @@ def process_one_scene(
         return False, str(e)
 
 
+def load_scene_list(scene_list_path: Path) -> List[str]:
+    """Load scene IDs from a text file (one per line)."""
+    scenes = []
+    with open(scene_list_path, "r", encoding="utf-8") as f:
+        for line in f:
+            scene_id = line.strip()
+            if scene_id and not scene_id.startswith("#"):
+                scenes.append(scene_id)
+    return scenes
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stage 1: Reconstruct scene geometry (fixed v2)")
-    parser.add_argument("--scenes-dir", required=True)
+    parser.add_argument("--dataset-root", default=None, help="Root directory of dataset (derives paths from this)")
+    parser.add_argument("--scenes-dir", default=None, help="Directory containing scene JSON files (required if --dataset-root not provided)")
     parser.add_argument("--scene-list", default=None, help="File containing scene IDs (one per line)")
-    parser.add_argument("--model-dir", required=True)
-    parser.add_argument("--model-info", required=True)
-    parser.add_argument("--taxonomy", required=True)
-    parser.add_argument("--texture-dir", default=None)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--model-dir", required=True, help="Directory containing 3D-FUTURE models")
+    parser.add_argument("--model-info", required=True, help="Path to model_info.json")
+    parser.add_argument("--taxonomy", default=None, help="Path to taxonomy.json (required if --dataset-root not provided)")
+    parser.add_argument("--texture-dir", default=None, help="Directory containing textures")
+    parser.add_argument("--output-dir", default=None, help="Output directory for geometry (required if --dataset-root not provided)")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
     
-    scenes_dir = Path(args.scenes_dir)
+    # If dataset-root is provided, derive paths from it
+    if args.dataset_root:
+        dataset_root = Path(args.dataset_root)
+        scenes_dir = args.scenes_dir if args.scenes_dir else dataset_root / "filtered_scenes"
+        scenes_dir = Path(scenes_dir)
+        taxonomy_path = Path(args.taxonomy) if args.taxonomy else dataset_root / "taxonomy" / "taxonomy.json"
+        output_dir = Path(args.output_dir) if args.output_dir else dataset_root / "geometry"
+    else:
+        # Backward compatibility: require individual paths
+        if not args.scenes_dir:
+            parser.error("--scenes-dir is required when --dataset-root is not provided")
+        if not args.taxonomy:
+            parser.error("--taxonomy is required when --dataset-root is not provided")
+        if not args.output_dir:
+            parser.error("--output-dir is required when --dataset-root is not provided")
+        scenes_dir = Path(args.scenes_dir)
+        taxonomy_path = Path(args.taxonomy)
+        output_dir = Path(args.output_dir)
+    
     model_dir = Path(args.model_dir)
     model_info_file = Path(args.model_info)
-    taxonomy_path = Path(args.taxonomy)
-    output_dir = Path(args.output_dir)
     texture_dir = Path(args.texture_dir) if args.texture_dir else None
     
     # If scene-list is provided, read scene IDs and find files in scenes_dir
@@ -480,12 +508,8 @@ def main():
             logger.error(f"Scene list file not found: {scene_list_path}")
             return
         
-        scene_ids = []
-        with open(scene_list_path, 'r') as f:
-            for line in f:
-                scene_id = line.strip()
-                if scene_id:
-                    scene_ids.append(scene_id)
+        scene_ids = load_scene_list(scene_list_path)
+        logger.info(f"Loaded {len(scene_ids)} scene IDs from {scene_list_path}")
         
         # Find scene files recursively in scenes_dir
         scene_files = []

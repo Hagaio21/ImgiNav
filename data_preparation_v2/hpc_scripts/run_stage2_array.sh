@@ -1,244 +1,100 @@
 #!/bin/bash
-#BSUB -J stage2[1-10]                    # 10 parallel workers
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage2.%I.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage2.%I.%J.err
-#BSUB -n 8
+#BSUB -J stage2_metadata[1-10]
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage2.%J.%I.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/stage2.%J.%I.err
+#BSUB -n 4
 #BSUB -R "rusage[mem=8000]"
-#BSUB -W 10:00
+#BSUB -W 4:00
 #BSUB -q hpc
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
-# Cleanup function
-cleanup() {
-  local exit_code=$?
-  echo "Cleaning up temporary files..."
-  rm -rf "${SHARD_SCENES_DIR:-}" 2>/dev/null || true
-  rm -f "${SHARD_PREFIX:-}"* 2>/dev/null || true
-  if [ ${exit_code} -ne 0 ]; then
-    exit ${exit_code}
-  fi
-}
-trap cleanup EXIT
+# Configuration
+BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
+DATASET_ROOT="/work3/s233249/ImgiNav/datasets"
+SCENES_DIR="${DATASET_ROOT}/filtered_scenes"
+MODEL_INFO="/work3/s233249/ImgiNav/datasets/3D-FUTURE-model/model_info.json"
+SHARDS_DIR="${BASE_DIR}/data_preparation_v2/hpc_scripts/shards"
+LOG_DIR="${BASE_DIR}/data_preparation_v2/hpc_scripts/logs"
+STAGE3_SCRIPT="${BASE_DIR}/data_preparation_v2/hpc_scripts/run_stage3_array.sh"
 
-# =============================================================================
-# CONFIGURATION - UPDATE THESE PATHS
-# =============================================================================
-SCENES_ROOT="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"  # Original 3D-FRONT scenes directory
-MODEL_INFO="/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTURE-model/model_info.json"
-TAXONOMY_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/taxonomy.json"
-VALID_SCENES_FILE="/work3/s233249/ImgiNav/ImgiNav/valid_scenes.txt"
-OUTPUT_METADATA_DIR="/work3/s233249/ImgiNav/dataset_v2/metadata"
-
-N_SHARDS=10                                          # Must match [1-10] above
-STAGE2_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/stage2_compile_metadata.py"
-# =============================================================================
-
-# Accept shard info from previous stage if provided, otherwise extract
-if [ $# -ge 2 ]; then
-  IDX="$1"
-  SHARD_TXT="$2"
-  echo "Received shard info from previous stage: IDX=${IDX}, SHARD_TXT=${SHARD_TXT}"
-else
-  IDX=${LSB_JOBINDEX}                                 # 1..N_SHARDS
-  SHARD_TXT=""
-fi
-
-TMPDIR_LOCAL="${TMPDIR:-/tmp}"
-mkdir -p "${TMPDIR_LOCAL}"
-JOB_UNIQUE_ID="${IDX}_$$"
-SHARD_PREFIX="${TMPDIR_LOCAL}/scenes_shard_${JOB_UNIQUE_ID}_"
-SHARD_SCENES_DIR="${TMPDIR_LOCAL}/filtered_scenes_shard_${JOB_UNIQUE_ID}"
-
-STAGE3_SCRIPT="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/run_stage3_array.sh"
-SCRIPT_DIR="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts"
-
-echo "=============================================================================="
-echo "Starting Stage 2 processing - Task ${IDX}/${N_SHARDS}"
-echo "=============================================================================="
-echo "Scenes root: ${SCENES_ROOT}"
-echo "Output metadata dir: ${OUTPUT_METADATA_DIR}"
-echo "Valid scenes file: ${VALID_SCENES_FILE}"
-echo ""
-
-# 1) Check if valid_scenes.txt exists
-if [ ! -f "${VALID_SCENES_FILE}" ]; then
-  echo "ERROR: valid_scenes.txt not found at: ${VALID_SCENES_FILE}" >&2
+# Job array indexing
+if [ -z "${LSB_JOBINDEX:-}" ]; then
+  echo "ERROR: LSB_JOBINDEX is not set. This script must be run as a job array."
   exit 1
 fi
 
-# 2) Extract shard if not provided
-if [ -z "${SHARD_TXT}" ] || [ ! -f "${SHARD_TXT}" ]; then
-  TOTAL_LINES=$(wc -l < "${VALID_SCENES_FILE}")
-  LINES_PER_SHARD=$(( (TOTAL_LINES + N_SHARDS - 1) / N_SHARDS ))
-  START_LINE=$(( (IDX - 1) * LINES_PER_SHARD + 1 ))
-  END_LINE=$(( IDX * LINES_PER_SHARD ))
-  
-  echo "Extracting shard ${IDX} (lines ${START_LINE}-${END_LINE} from ${TOTAL_LINES} total lines)..."
-  SHARD_TXT="${SHARD_PREFIX}${IDX}.txt"
-  mkdir -p "$(dirname "${SHARD_TXT}")"
-  sed -n "${START_LINE},${END_LINE}p" "${VALID_SCENES_FILE}" > "${SHARD_TXT}" || {
-    echo "ERROR: Failed to extract shard from ${VALID_SCENES_FILE}" >&2
-    exit 2
-  }
-  
-  if [ ! -s "${SHARD_TXT}" ]; then
-    echo "ERROR: shard ${IDX} is empty (file: ${SHARD_TXT})." >&2
-    exit 2
-  fi
+JOB_ID=${LSB_JOBINDEX}
+SHARD_FILE="${SHARDS_DIR}/shard_${JOB_ID}.txt"
+
+# Ensure directories exist
+mkdir -p "${LOG_DIR}"
+
+echo "=========================================="
+echo "Stage 2: Compile Metadata - Shard ${JOB_ID}"
+echo "Job ID: ${LSB_JOBID:-unknown}"
+echo "Job Index: ${JOB_ID}"
+echo "Shard file: ${SHARD_FILE}"
+echo "=========================================="
+
+# Verify shard file exists
+if [ ! -f "${SHARD_FILE}" ]; then
+  echo "ERROR: Shard file not found: ${SHARD_FILE}"
+  exit 1
 fi
 
-SHARD_COUNT=$(wc -l < "${SHARD_TXT}")
-echo "Task ${IDX}/${N_SHARDS}: processing ${SHARD_COUNT} scenes"
-echo ""
+# Count scenes in shard
+SCENE_COUNT=$(wc -l < "${SHARD_FILE}")
+echo "Processing ${SCENE_COUNT} scenes from shard ${JOB_ID}"
 
-# 3) Create temporary directory for this shard's scene files
-echo "Creating temporary scenes directory: ${SHARD_SCENES_DIR}"
-mkdir -p "${SHARD_SCENES_DIR}"
-
-# 4) Create hardlinks/symlinks for scene files for this shard
-echo "Creating links for scene files for shard ${IDX}..."
-echo "Building scene file lookup map (one-time find operation)..."
-declare -A SCENE_FILE_MAP
-while IFS= read -r -d '' scene_file; do
-  scene_basename=$(basename "${scene_file}")
-  scene_id="${scene_basename%.json}"
-  SCENE_FILE_MAP["${scene_id}"]="${scene_file}"
-done < <(find "${SCENES_ROOT}" -type f -name "*.json" -print0 2>/dev/null)
-
-echo "Found ${#SCENE_FILE_MAP[@]} scene files in ${SCENES_ROOT}"
-
-LINKED=0
-MISSING=0
-while IFS= read -r scene_id; do
-  scene_id=$(echo "${scene_id}" | tr -d '\r\n' | xargs)
-  if [ -z "${scene_id}" ]; then
-    continue
-  fi
-  
-  scene_file="${SCENE_FILE_MAP[${scene_id}]:-}"
-  
-  if [ -n "${scene_file}" ] && [ -f "${scene_file}" ]; then
-    # Try hardlink first, fallback to symlink if cross-filesystem
-    if ln "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
-      LINKED=$((LINKED + 1))
-    elif ln -s "${scene_file}" "${SHARD_SCENES_DIR}/${scene_id}.json" 2>/dev/null; then
-      LINKED=$((LINKED + 1))
-    else
-      echo "WARNING: Failed to link ${scene_id}.json (hardlink and symlink both failed)" >&2
-      MISSING=$((MISSING + 1))
-    fi
-  else
-    MISSING=$((MISSING + 1))
-  fi
-done < "${SHARD_TXT}"
-
-echo "Created ${LINKED} links (${MISSING} missing)"
-if [ ${LINKED} -eq 0 ]; then
-  echo "ERROR: No scene files were linked for shard ${IDX}" >&2
-  echo "This usually means SCENES_ROOT and TMPDIR are on different filesystems" >&2
-  exit 3
+if [ ${SCENE_COUNT} -eq 0 ]; then
+  echo "No scenes in this shard, skipping"
+  exit 0
 fi
 
-# Verify files actually exist in the directory
-ACTUAL_FILES=$(find "${SHARD_SCENES_DIR}" -type f -name "*.json" 2>/dev/null | wc -l)
-if [ "${ACTUAL_FILES}" -eq 0 ]; then
-  echo "ERROR: No JSON files found in ${SHARD_SCENES_DIR} after linking" >&2
-  exit 3
-fi
-echo "Verified: ${ACTUAL_FILES} scene files in temporary directory"
-
-# 5) Create output directories if they don't exist
-mkdir -p "${OUTPUT_METADATA_DIR}"
-
-# 6) Robust conda activation (non-interactive safe)
-echo "Activating conda environment..."
+# Conda activation
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-  # shellcheck disable=SC1091
   source "$HOME/miniconda3/etc/profile.d/conda.sh"
   conda activate imginav || {
-    echo "WARNING: Failed to activate imginav environment, trying scenefactor..." >&2
-    conda activate scenefactor || {
-      echo "ERROR: Failed to activate any conda environment" >&2
-      exit 1
-    }
-  }
-elif [ -x "$HOME/miniconda3/bin/conda" ]; then
-  eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
-  conda activate imginav || {
-    echo "WARNING: Failed to activate imginav environment, trying scenefactor..." >&2
-    conda activate scenefactor || {
-      echo "ERROR: Failed to activate any conda environment" >&2
-      exit 1
-    }
+    echo "Failed to activate conda environment 'imginav'" >&2
+    exit 1
   }
 fi
 
-# 7) Check if required files exist before processing
-if [ ! -f "${MODEL_INFO}" ]; then
-  echo "ERROR: model_info.json not found at: ${MODEL_INFO}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
-  exit 1
+# Change to base directory
+cd "${BASE_DIR}"
+export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
+
+# Run stage 2 with scene list
+echo "Running stage 2..."
+python data_preparation_v2/stage2_compile_metadata.py \
+  --dataset-root "${DATASET_ROOT}" \
+  --scenes-dir "${SCENES_DIR}" \
+  --scene-list "${SHARD_FILE}" \
+  --model-info "${MODEL_INFO}"
+
+STAGE2_EXIT_CODE=$?
+
+if [ ${STAGE2_EXIT_CODE} -ne 0 ]; then
+  echo "ERROR: Stage 2 failed with exit code ${STAGE2_EXIT_CODE}"
+  exit ${STAGE2_EXIT_CODE}
 fi
 
-if [ ! -f "${TAXONOMY_FILE}" ]; then
-  echo "ERROR: taxonomy.json not found at: ${TAXONOMY_FILE}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
-  exit 1
-fi
+echo "Stage 2 completed successfully for shard ${JOB_ID}"
 
-# 8) Check required dependencies
-echo "Checking Python dependencies..."
-python -c "import numpy, scipy, json" || {
-  echo "ERROR: Required Python packages not available" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
-  exit 1
-}
+# Submit stage 3 with the same shard
+echo "Submitting stage 3 for shard ${JOB_ID}..."
+bsub -J "stage3_shard${JOB_ID}" \
+     -o "${LOG_DIR}/stage3_shard${JOB_ID}.%J.out" \
+     -e "${LOG_DIR}/stage3_shard${JOB_ID}.%J.err" \
+     -n 4 \
+     -R "rusage[mem=8000]" \
+     -W 4:00 \
+     -q hpc \
+     -w "ended(${LSB_JOBID})" \
+     bash "${STAGE3_SCRIPT}" "${JOB_ID}"
 
-# 9) Run Stage 2 processing
-echo ""
-echo "=============================================================================="
-echo "Running Stage 2: Compile Metadata"
-echo "=============================================================================="
-echo "Starting at $(date)"
-
-python "${STAGE2_SCRIPT}" \
-  --scenes-dir "${SHARD_SCENES_DIR}" \
-  --model-info "${MODEL_INFO}" \
-  --taxonomy "${TAXONOMY_FILE}" \
-  --output-dir "${OUTPUT_METADATA_DIR}" || {
-  echo "ERROR: Stage 2 failed for task ${IDX}" >&2
-  rm -rf "${SHARD_SCENES_DIR}"
-  rm -f "${SHARD_PREFIX}"*
-  exit 1
-}
-
-echo "Stage 2 completed at $(date)"
-echo ""
-
-# Submit Stage 3 for this shard (pass shard file, then cleanup)
-echo "Submitting Stage 3 for shard ${IDX}..."
-bsub -J "stage3_${IDX}" \
-  -o "${SCRIPT_DIR}/logs/stage3.${IDX}.%J.out" \
-  -e "${SCRIPT_DIR}/logs/stage3.${IDX}.%J.err" \
-  -n 8 \
-  -R "rusage[mem=8000]" \
-  -W 10:00 \
-  -q hpc \
-  bash "${STAGE3_SCRIPT}" "${IDX}" "${SHARD_TXT}" || {
-  echo "WARNING: Failed to submit Stage 3 for shard ${IDX}" >&2
-}
-
-# Cleanup after submitting next stage
-rm -rf "${SHARD_SCENES_DIR}" 2>/dev/null || true
-rm -f "${SHARD_PREFIX}"* 2>/dev/null || true
-
-echo ""
-echo "=============================================================================="
-echo "Task ${IDX}/${N_SHARDS} completed successfully at $(date)"
-echo "=============================================================================="
+echo "Stage 3 job submitted for shard ${JOB_ID}"
+echo "Stage 2 complete for shard ${JOB_ID}"
 

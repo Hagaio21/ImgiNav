@@ -444,19 +444,20 @@ def process_one_scene(
         scene_text = scene_graph_to_text(scene_graph)
         
         # Save scene graph and text
-        scene_output_dir = output_dir / "scenes"
-        scene_output_dir.mkdir(parents=True, exist_ok=True)
+        # Output structure: graphs/jsons/<scene_id>_scene_graph.json
+        jsons_output_dir = output_dir / "jsons"
+        jsons_output_dir.mkdir(parents=True, exist_ok=True)
         
-        with open(scene_output_dir / f"{scene_id}_graph.json", "w") as f:
+        with open(jsons_output_dir / f"{scene_id}_scene_graph.json", "w") as f:
             json.dump(scene_graph, f, indent=2)
         
-        with open(scene_output_dir / f"{scene_id}_description.txt", "w") as f:
+        # Also save text descriptions (optional, for debugging)
+        texts_output_dir = output_dir / "texts"
+        texts_output_dir.mkdir(parents=True, exist_ok=True)
+        with open(texts_output_dir / f"{scene_id}_scene_description.txt", "w") as f:
             f.write(scene_text)
         
         # Build room graphs
-        rooms_output_dir = output_dir / "rooms"
-        rooms_output_dir.mkdir(parents=True, exist_ok=True)
-        
         for room_meta in rooms_metadata:
             room_id = room_meta.get("room_id", room_meta.get("room_type", "Unknown"))
             
@@ -464,12 +465,13 @@ def process_one_scene(
             room_text = room_graph_to_text(room_graph)
             
             # Use scene_id + room_id for unique filename
+            # Output structure: graphs/jsons/<scene_id>_<room_id>_room_graph.json
             filename_base = f"{scene_id}_{room_id}"
             
-            with open(rooms_output_dir / f"{filename_base}_graph.json", "w") as f:
+            with open(jsons_output_dir / f"{filename_base}_room_graph.json", "w") as f:
                 json.dump(room_graph, f, indent=2)
             
-            with open(rooms_output_dir / f"{filename_base}_description.txt", "w") as f:
+            with open(texts_output_dir / f"{filename_base}_room_description.txt", "w") as f:
                 f.write(room_text)
         
         return True, None
@@ -479,20 +481,65 @@ def process_one_scene(
         return False, str(e)
 
 
+def load_scene_list(scene_list_path: Path) -> List[str]:
+    """Load scene IDs from a text file (one per line)."""
+    scenes = []
+    with open(scene_list_path, "r", encoding="utf-8") as f:
+        for line in f:
+            scene_id = line.strip()
+            if scene_id and not scene_id.startswith("#"):
+                scenes.append(scene_id)
+    return scenes
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stage 5: Generate scene and room graphs")
-    parser.add_argument("--metadata-dir", required=True, help="Directory with metadata")
-    parser.add_argument("--output-dir", required=True, help="Output directory for graphs")
+    parser.add_argument("--dataset-root", default=None, help="Root directory of dataset (derives paths from this)")
+    parser.add_argument("--metadata-dir", default=None, help="Directory with metadata (required if --dataset-root not provided)")
+    parser.add_argument("--output-dir", default=None, help="Output directory for graphs (required if --dataset-root not provided)")
+    parser.add_argument("--scene-list", default=None, help="File containing scene IDs (one per line)")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
     
-    metadata_dir = Path(args.metadata_dir)
-    output_dir = Path(args.output_dir)
+    # If dataset-root is provided, derive paths from it
+    if args.dataset_root:
+        dataset_root = Path(args.dataset_root)
+        metadata_dir = Path(args.metadata_dir) if args.metadata_dir else dataset_root / "metadata"
+        output_dir = Path(args.output_dir) if args.output_dir else dataset_root / "graphs"
+    else:
+        # Backward compatibility: require individual paths
+        if not args.metadata_dir:
+            parser.error("--metadata-dir is required when --dataset-root is not provided")
+        if not args.output_dir:
+            parser.error("--output-dir is required when --dataset-root is not provided")
+        metadata_dir = Path(args.metadata_dir)
+        output_dir = Path(args.output_dir)
     
-    scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
-    if not scene_meta_files:
-        logger.error("No scene metadata found")
-        return
+    # Determine which scenes to process
+    if args.scene_list:
+        scene_list_path = Path(args.scene_list)
+        if not scene_list_path.exists():
+            logger.error(f"Scene list file not found: {scene_list_path}")
+            return
+        
+        scene_ids = load_scene_list(scene_list_path)
+        logger.info(f"Loaded {len(scene_ids)} scene IDs from {scene_list_path}")
+        
+        # Filter scene metadata files to only those in the list
+        scene_meta_files = []
+        for scene_id in scene_ids:
+            scene_meta_path = metadata_dir / "scenes" / f"{scene_id}.json"
+            if scene_meta_path.exists():
+                scene_meta_files.append(scene_meta_path)
+            else:
+                logger.warning(f"Scene metadata not found: {scene_meta_path}")
+    else:
+        # Discover scenes from metadata directory
+        scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
+        if not scene_meta_files:
+            logger.error("No scene metadata found")
+            return
+        logger.info(f"Discovered {len(scene_meta_files)} scenes from metadata directory")
     
     if args.limit:
         scene_meta_files = scene_meta_files[:args.limit]

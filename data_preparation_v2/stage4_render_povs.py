@@ -616,9 +616,10 @@ def process_one_scene(
 
 def main():
     parser = argparse.ArgumentParser(description="Stage 4: Render POVs")
-    parser.add_argument("--geometry-dir", required=True, help="Directory containing geometry GLB files")
-    parser.add_argument("--metadata-dir", required=True, help="Directory containing metadata JSON files")
-    parser.add_argument("--output-dir", required=True, help="Output directory for POV images")
+    parser.add_argument("--dataset-root", default=None, help="Root directory of dataset (derives paths from this)")
+    parser.add_argument("--geometry-dir", default=None, help="Directory containing geometry GLB files (required if --dataset-root not provided)")
+    parser.add_argument("--metadata-dir", default=None, help="Directory containing metadata JSON files (required if --dataset-root not provided)")
+    parser.add_argument("--output-dir", default=None, help="Output directory for POV images (required if --dataset-root not provided)")
     parser.add_argument("--scene-list", type=str, default=None, help="Path to text file with scene IDs (one per line)")
     parser.add_argument("--width", type=int, default=1280, help="Output image width")
     parser.add_argument("--height", type=int, default=720, help="Output image height")
@@ -631,9 +632,24 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Limit number of scenes to process")
     args = parser.parse_args()
     
-    geometry_dir = Path(args.geometry_dir)
-    metadata_dir = Path(args.metadata_dir)
-    output_dir = Path(args.output_dir)
+    # If dataset-root is provided, derive paths from it
+    if args.dataset_root:
+        dataset_root = Path(args.dataset_root)
+        geometry_dir = Path(args.geometry_dir) if args.geometry_dir else dataset_root / "geometry"
+        metadata_dir = Path(args.metadata_dir) if args.metadata_dir else dataset_root / "metadata"
+        output_dir = Path(args.output_dir) if args.output_dir else dataset_root / "povs"
+    else:
+        # Backward compatibility: require individual paths
+        if not args.geometry_dir:
+            parser.error("--geometry-dir is required when --dataset-root is not provided")
+        if not args.metadata_dir:
+            parser.error("--metadata-dir is required when --dataset-root is not provided")
+        if not args.output_dir:
+            parser.error("--output-dir is required when --dataset-root is not provided")
+        geometry_dir = Path(args.geometry_dir)
+        metadata_dir = Path(args.metadata_dir)
+        output_dir = Path(args.output_dir)
+    
     use_pyrender = not args.no_pyrender
     
     # Set up HPC rendering only if --hpc flag is set

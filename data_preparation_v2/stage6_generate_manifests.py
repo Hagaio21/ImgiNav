@@ -14,7 +14,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from tqdm import tqdm
 
@@ -41,7 +41,8 @@ def write_json(data: dict, path: Path):
 
 def generate_scenes_manifest(
     dataset_root: Path,
-    output_path: Path
+    output_path: Path,
+    scene_ids_filter: Optional[List[str]] = None
 ) -> Dict:
     """
     Generate scenes manifest.
@@ -49,6 +50,7 @@ def generate_scenes_manifest(
     Args:
         dataset_root: Root directory of dataset
         output_path: Output path for scenes manifest
+        scene_ids_filter: Optional list of scene IDs to include (if None, include all)
     
     Returns:
         Manifest dictionary
@@ -66,7 +68,14 @@ def generate_scenes_manifest(
         return scenes_manifest
     
     scene_meta_files = list(metadata_dir.glob("*.json"))
-    logger.info(f"Found {len(scene_meta_files)} scene metadata files")
+    
+    # Filter by scene list if provided
+    if scene_ids_filter:
+        scene_ids_set = set(scene_ids_filter)
+        scene_meta_files = [f for f in scene_meta_files if f.stem in scene_ids_set]
+        logger.info(f"Filtered to {len(scene_meta_files)} scenes from scene list")
+    else:
+        logger.info(f"Found {len(scene_meta_files)} scene metadata files")
     
     for scene_meta_path in tqdm(scene_meta_files, desc="Processing scenes"):
         scene_id = scene_meta_path.stem
@@ -129,7 +138,8 @@ def generate_scenes_manifest(
 
 def generate_rooms_manifest(
     dataset_root: Path,
-    output_path: Path
+    output_path: Path,
+    scene_ids_filter: Optional[List[str]] = None
 ) -> Dict:
     """
     Generate rooms manifest.
@@ -137,6 +147,7 @@ def generate_rooms_manifest(
     Args:
         dataset_root: Root directory of dataset
         output_path: Output path for rooms manifest
+        scene_ids_filter: Optional list of scene IDs to include (if None, include all)
     
     Returns:
         Manifest dictionary
@@ -154,7 +165,14 @@ def generate_rooms_manifest(
         return rooms_manifest
     
     room_meta_files = list(metadata_dir.glob("*.json"))
-    logger.info(f"Found {len(room_meta_files)} room metadata files")
+    
+    # Filter by scene list if provided
+    if scene_ids_filter:
+        scene_ids_set = set(scene_ids_filter)
+        room_meta_files = [f for f in room_meta_files if f.stem.split("_")[0] in scene_ids_set]
+        logger.info(f"Filtered to {len(room_meta_files)} rooms from scene list")
+    else:
+        logger.info(f"Found {len(room_meta_files)} room metadata files")
     
     for room_meta_path in tqdm(room_meta_files, desc="Processing rooms"):
         # Extract scene_id and room_id from filename
@@ -217,6 +235,17 @@ def generate_rooms_manifest(
     return rooms_manifest
 
 
+def load_scene_list(scene_list_path: Path) -> List[str]:
+    """Load scene IDs from a text file (one per line)."""
+    scenes = []
+    with open(scene_list_path, "r", encoding="utf-8") as f:
+        for line in f:
+            scene_id = line.strip()
+            if scene_id and not scene_id.startswith("#"):
+                scenes.append(scene_id)
+    return scenes
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Stage 6: Generate manifests"
@@ -228,8 +257,13 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        required=True,
-        help="Output directory for manifests (e.g., dataset/manifests)"
+        default=None,
+        help="Output directory for manifests (defaults to dataset-root/manifests)"
+    )
+    parser.add_argument(
+        "--scene-list",
+        default=None,
+        help="File containing scene IDs (one per line) - only process these scenes"
     )
     parser.add_argument(
         "--scenes-only",
@@ -244,25 +278,35 @@ def main():
     args = parser.parse_args()
     
     dataset_root = Path(args.dataset_root)
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir) if args.output_dir else dataset_root / "manifests"
     
     if args.scenes_only and args.rooms_only:
         logger.error("Cannot specify both --scenes-only and --rooms-only")
         return
+    
+    # Load scene list if provided
+    scene_ids_filter = None
+    if args.scene_list:
+        scene_list_path = Path(args.scene_list)
+        if not scene_list_path.exists():
+            logger.error(f"Scene list file not found: {scene_list_path}")
+            return
+        scene_ids_filter = load_scene_list(scene_list_path)
+        logger.info(f"Loaded {len(scene_ids_filter)} scene IDs from scene list")
     
     safe_mkdir(output_dir)
     
     # Generate scenes manifest
     if not args.rooms_only:
         logger.info("Generating scenes manifest...")
-        scenes_manifest = generate_scenes_manifest(dataset_root, output_dir / "scenes.json")
+        scenes_manifest = generate_scenes_manifest(dataset_root, output_dir / "scenes.json", scene_ids_filter)
         write_json(scenes_manifest, output_dir / "scenes.json")
         logger.info(f"Generated scenes manifest with {len(scenes_manifest['scenes'])} scenes")
     
     # Generate rooms manifest
     if not args.scenes_only:
         logger.info("Generating rooms manifest...")
-        rooms_manifest = generate_rooms_manifest(dataset_root, output_dir / "rooms.json")
+        rooms_manifest = generate_rooms_manifest(dataset_root, output_dir / "rooms.json", scene_ids_filter)
         write_json(rooms_manifest, output_dir / "rooms.json")
         logger.info(f"Generated rooms manifest with {len(rooms_manifest['rooms'])} rooms")
 

@@ -563,26 +563,44 @@ def process_one_scene(
 
 def main():
     parser = argparse.ArgumentParser(description="Stage 3: Render layouts")
-    parser.add_argument("--geometry-dir", required=True, help="Directory containing geometry GLB files")
-    parser.add_argument("--metadata-dir", required=True, help="Directory containing metadata JSON files")
-    parser.add_argument("--taxonomy", required=True, help="Path to taxonomy.json")
-    parser.add_argument("--output-dir", required=True, help="Output directory for layout images")
+    parser.add_argument("--dataset-root", default=None, help="Root directory of dataset (derives paths from this)")
+    parser.add_argument("--geometry-dir", default=None, help="Directory containing geometry GLB files (required if --dataset-root not provided)")
+    parser.add_argument("--metadata-dir", default=None, help="Directory containing metadata JSON files (required if --dataset-root not provided)")
+    parser.add_argument("--taxonomy", default=None, help="Path to taxonomy.json (required if --dataset-root not provided)")
+    parser.add_argument("--output-dir", default=None, help="Output directory for layout images (required if --dataset-root not provided)")
     parser.add_argument("--scene-list", type=str, default=None, help="Path to text file with scene IDs (one per line)")
     parser.add_argument("--resolution", type=int, default=512, help="Output image resolution")
     parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of scenes to process")
     args = parser.parse_args()
     
+    # If dataset-root is provided, derive paths from it
+    if args.dataset_root:
+        dataset_root = Path(args.dataset_root)
+        geometry_dir = Path(args.geometry_dir) if args.geometry_dir else dataset_root / "geometry"
+        metadata_dir = Path(args.metadata_dir) if args.metadata_dir else dataset_root / "metadata"
+        taxonomy_path = Path(args.taxonomy) if args.taxonomy else dataset_root / "taxonomy" / "taxonomy.json"
+        output_dir = Path(args.output_dir) if args.output_dir else dataset_root / "layouts"
+    else:
+        # Backward compatibility: require individual paths
+        if not args.geometry_dir:
+            parser.error("--geometry-dir is required when --dataset-root is not provided")
+        if not args.metadata_dir:
+            parser.error("--metadata-dir is required when --dataset-root is not provided")
+        if not args.taxonomy:
+            parser.error("--taxonomy is required when --dataset-root is not provided")
+        if not args.output_dir:
+            parser.error("--output-dir is required when --dataset-root is not provided")
+        geometry_dir = Path(args.geometry_dir)
+        metadata_dir = Path(args.metadata_dir)
+        taxonomy_path = Path(args.taxonomy)
+        output_dir = Path(args.output_dir)
+    
     # Set up HPC rendering only if --hpc flag is set
     if args.hpc:
         if not setup_hpc_rendering():
             logger.error("Failed to set up HPC rendering, exiting")
             return
-    
-    geometry_dir = Path(args.geometry_dir)
-    metadata_dir = Path(args.metadata_dir)
-    taxonomy_path = Path(args.taxonomy)
-    output_dir = Path(args.output_dir)
     
     try:
         # Load taxonomy for colors

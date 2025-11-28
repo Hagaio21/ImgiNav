@@ -1,7 +1,6 @@
 #!/bin/bash
 # This script can be called directly with a shard ID, or as a job array
-# Usage: bash run_stage3_array.sh <shard_id>
-# Or: bsub < run_stage3_array.sh (as job array)
+# Usage: bash run_stage6_array.sh <shard_id>
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
@@ -11,13 +10,11 @@ BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
 DATASET_ROOT="/work3/s233249/ImgiNav/datasets"
 SHARDS_DIR="${BASE_DIR}/data_preparation_v2/hpc_scripts/shards"
 LOG_DIR="${BASE_DIR}/data_preparation_v2/hpc_scripts/logs"
-STAGE4_SCRIPT="${BASE_DIR}/data_preparation_v2/hpc_scripts/run_stage4_array.sh"
 
 # Determine shard ID
 if [ $# -ge 1 ]; then
   # Called directly with shard ID
   JOB_ID=$1
-  PARENT_JOB_ID=""
 else
   # Called as job array
   if [ -z "${LSB_JOBINDEX:-}" ]; then
@@ -25,7 +22,6 @@ else
     exit 1
   fi
   JOB_ID=${LSB_JOBINDEX}
-  PARENT_JOB_ID="${LSB_JOBID:-}"
 fi
 
 SHARD_FILE="${SHARDS_DIR}/shard_${JOB_ID}.txt"
@@ -34,7 +30,7 @@ SHARD_FILE="${SHARDS_DIR}/shard_${JOB_ID}.txt"
 mkdir -p "${LOG_DIR}"
 
 echo "=========================================="
-echo "Stage 3: Render Layouts - Shard ${JOB_ID}"
+echo "Stage 6: Generate Manifests - Shard ${JOB_ID}"
 echo "Job ID: ${LSB_JOBID:-unknown}"
 echo "Shard file: ${SHARD_FILE}"
 echo "=========================================="
@@ -67,47 +63,20 @@ fi
 cd "${BASE_DIR}"
 export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 
-# Run stage 3 with scene list and HPC mode
-echo "Running stage 3..."
-python data_preparation_v2/stage3_render_layouts.py \
+# Run stage 6 with scene list
+# Note: Stage 6 generates manifests for all scenes, but we can filter by scene list
+echo "Running stage 6..."
+python data_preparation_v2/stage6_generate_manifests.py \
   --dataset-root "${DATASET_ROOT}" \
-  --scene-list "${SHARD_FILE}" \
-  --hpc \
-  --resolution 512
+  --scene-list "${SHARD_FILE}"
 
-STAGE3_EXIT_CODE=$?
+STAGE6_EXIT_CODE=$?
 
-if [ ${STAGE3_EXIT_CODE} -ne 0 ]; then
-  echo "ERROR: Stage 3 failed with exit code ${STAGE3_EXIT_CODE}"
-  exit ${STAGE3_EXIT_CODE}
+if [ ${STAGE6_EXIT_CODE} -ne 0 ]; then
+  echo "ERROR: Stage 6 failed with exit code ${STAGE6_EXIT_CODE}"
+  exit ${STAGE6_EXIT_CODE}
 fi
 
-echo "Stage 3 completed successfully for shard ${JOB_ID}"
-
-# Submit stage 4 with the same shard
-echo "Submitting stage 4 for shard ${JOB_ID}..."
-if [ -n "${PARENT_JOB_ID}" ]; then
-  # Wait for parent job if we have one
-  bsub -J "stage4_shard${JOB_ID}" \
-       -o "${LOG_DIR}/stage4_shard${JOB_ID}.%J.out" \
-       -e "${LOG_DIR}/stage4_shard${JOB_ID}.%J.err" \
-       -n 4 \
-       -R "rusage[mem=8000]" \
-       -W 6:00 \
-       -q hpc \
-       -w "ended(${PARENT_JOB_ID})" \
-       bash "${STAGE4_SCRIPT}" "${JOB_ID}"
-else
-  bsub -J "stage4_shard${JOB_ID}" \
-       -o "${LOG_DIR}/stage4_shard${JOB_ID}.%J.out" \
-       -e "${LOG_DIR}/stage4_shard${JOB_ID}.%J.err" \
-       -n 4 \
-       -R "rusage[mem=8000]" \
-       -W 6:00 \
-       -q hpc \
-       bash "${STAGE4_SCRIPT}" "${JOB_ID}"
-fi
-
-echo "Stage 4 job submitted for shard ${JOB_ID}"
-echo "Stage 3 complete for shard ${JOB_ID}"
+echo "Stage 6 completed successfully for shard ${JOB_ID}"
+echo "Pipeline complete for shard ${JOB_ID}!"
 

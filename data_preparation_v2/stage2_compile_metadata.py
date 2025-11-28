@@ -830,24 +830,75 @@ def process_one_scene(
         return False, str(e)
 
 
+def load_scene_list(scene_list_path: Path) -> List[str]:
+    """Load scene IDs from a text file (one per line)."""
+    scenes = []
+    with open(scene_list_path, "r", encoding="utf-8") as f:
+        for line in f:
+            scene_id = line.strip()
+            if scene_id and not scene_id.startswith("#"):
+                scenes.append(scene_id)
+    return scenes
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stage 2: Compile metadata (fixed)")
-    parser.add_argument("--scenes-dir", required=True, help="3D-FRONT scenes directory")
+    parser.add_argument("--dataset-root", default=None, help="Root directory of dataset (derives paths from this)")
+    parser.add_argument("--scenes-dir", default=None, help="3D-FRONT scenes directory (required if --dataset-root not provided)")
+    parser.add_argument("--scene-list", default=None, help="File containing scene IDs (one per line)")
     parser.add_argument("--model-info", required=True, help="model_info.json path")
-    parser.add_argument("--taxonomy", required=True, help="taxonomy.json path")
-    parser.add_argument("--output-dir", required=True, help="Output metadata directory")
+    parser.add_argument("--taxonomy", default=None, help="taxonomy.json path (required if --dataset-root not provided)")
+    parser.add_argument("--output-dir", default=None, help="Output metadata directory (required if --dataset-root not provided)")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
     
-    scenes_dir = Path(args.scenes_dir)
-    model_info_file = Path(args.model_info)
-    taxonomy_path = Path(args.taxonomy)
-    output_dir = Path(args.output_dir)
+    # If dataset-root is provided, derive paths from it
+    if args.dataset_root:
+        dataset_root = Path(args.dataset_root)
+        scenes_dir = Path(args.scenes_dir) if args.scenes_dir else dataset_root / "filtered_scenes"
+        taxonomy_path = Path(args.taxonomy) if args.taxonomy else dataset_root / "taxonomy" / "taxonomy.json"
+        output_dir = Path(args.output_dir) if args.output_dir else dataset_root / "metadata"
+    else:
+        # Backward compatibility: require individual paths
+        if not args.scenes_dir:
+            parser.error("--scenes-dir is required when --dataset-root is not provided")
+        if not args.taxonomy:
+            parser.error("--taxonomy is required when --dataset-root is not provided")
+        if not args.output_dir:
+            parser.error("--output-dir is required when --dataset-root is not provided")
+        scenes_dir = Path(args.scenes_dir)
+        taxonomy_path = Path(args.taxonomy)
+        output_dir = Path(args.output_dir)
     
-    scene_files = list(scenes_dir.glob("*.json"))
-    if not scene_files:
-        logger.error(f"No scene files found in {scenes_dir}")
-        return
+    model_info_file = Path(args.model_info)
+    
+    # If scene-list is provided, read scene IDs and find files in scenes_dir
+    if args.scene_list:
+        scene_list_path = Path(args.scene_list)
+        if not scene_list_path.exists():
+            logger.error(f"Scene list file not found: {scene_list_path}")
+            return
+        
+        scene_ids = load_scene_list(scene_list_path)
+        
+        # Find scene files recursively in scenes_dir
+        scene_files = []
+        for scene_id in scene_ids:
+            found = list(scenes_dir.rglob(f"{scene_id}.json"))
+            if found:
+                scene_files.extend(found)
+            else:
+                logger.warning(f"Scene file not found: {scene_id}.json in {scenes_dir}")
+        
+        if not scene_files:
+            logger.error(f"No scene files found for {len(scene_ids)} scene IDs in {scenes_dir}")
+            return
+    else:
+        # Fallback: glob all JSON files in scenes_dir
+        scene_files = list(scenes_dir.glob("*.json"))
+        if not scene_files:
+            logger.error(f"No scene files found in {scenes_dir}")
+            return
     
     if args.limit:
         scene_files = scene_files[:args.limit]
