@@ -46,8 +46,9 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-from collections import defaultdict
+from collections import defaultdict, Counter
 import csv
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -201,6 +202,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
     
     Returns list of row dictionaries.
     """
+    start_time = time.time()
     rows = []
     
     # Directory paths
@@ -209,27 +211,65 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
     povs_dir = dataset_root / "povs"
     graphs_dir = dataset_root / "graphs"
     
+    logger.info(f"Starting manifest collection for variant: {variant}")
+    logger.info(f"Dataset root: {dataset_root}")
+    logger.info(f"Metadata dir: {metadata_dir}")
+    logger.info(f"Layouts dir: {layouts_dir}")
+    logger.info(f"POVs dir: {povs_dir}")
+    logger.info(f"Graphs dir: {graphs_dir}")
+    
     # Find all scenes from metadata
     scenes_dir = metadata_dir / "scenes"
     if not scenes_dir.exists():
         logger.error(f"Scenes metadata directory not found: {scenes_dir}")
         return rows
     
+    logger.info(f"Scanning for scene metadata files in: {scenes_dir}")
     scene_files = list(scenes_dir.glob("*.json"))
-    logger.info(f"Found {len(scene_files)} scenes")
+    total_scenes = len(scene_files)
+    logger.info(f"Found {total_scenes} scenes")
     
-    for scene_meta_path in scene_files:
+    # Statistics
+    scenes_processed = 0
+    scenes_skipped = 0
+    rooms_processed = 0
+    rooms_skipped = 0
+    total_povs_found = 0
+    last_progress_time = time.time()
+    
+    for idx, scene_meta_path in enumerate(scene_files, 1):
         scene_id = scene_meta_path.stem
+        
+        # Progress update every 100 scenes or every 30 seconds
+        current_time = time.time()
+        if idx % 100 == 0 or (current_time - last_progress_time) >= 30:
+            elapsed = current_time - start_time
+            rate = idx / elapsed if elapsed > 0 else 0
+            remaining = (total_scenes - idx) / rate if rate > 0 else 0
+            logger.info(f"Progress: {idx}/{total_scenes} scenes ({100*idx/total_scenes:.1f}%) | "
+                       f"Rows collected: {len(rows)} | "
+                       f"Elapsed: {elapsed:.1f}s | "
+                       f"Rate: {rate:.1f} scenes/s | "
+                       f"ETA: {remaining:.1f}s")
+            last_progress_time = current_time
         
         try:
             with open(scene_meta_path, "r") as f:
                 scene_meta = json.load(f)
         except Exception as e:
             logger.warning(f"Failed to load scene metadata {scene_meta_path}: {e}")
+            scenes_skipped += 1
             continue
+        
+        scenes_processed += 1
         
         # Load room metadata for this scene
         rooms = load_room_metadata(metadata_dir, scene_id)
+        num_rooms = len(rooms)
+        if num_rooms == 0:
+            logger.debug(f"Scene {scene_id}: No rooms found")
+        else:
+            logger.debug(f"Scene {scene_id}: Found {num_rooms} rooms")
         
         # --- Scene-level entry (no POV) ---
         scene_layout = find_layout(scene_id, "", layouts_dir, variant, is_scene=True)
@@ -256,6 +296,9 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                 "door_count": scene_meta.get("door_count", 0),
                 "window_count": scene_meta.get("window_count", 0),
             })
+            logger.debug(f"Scene {scene_id}: Added scene-level entry")
+        else:
+            logger.debug(f"Scene {scene_id}: No scene layout found, skipping scene-level entry")
         
         # --- Room-level entries (with POVs) ---
         for room_id, room_meta in rooms.items():
@@ -268,6 +311,8 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
             # Find layout
             room_layout = find_layout(scene_id, room_id, layouts_dir, variant, is_scene=False)
             if not room_layout:
+                rooms_skipped += 1
+                logger.debug(f"Scene {scene_id}, Room {room_id}: No layout found, skipping")
                 continue  # Skip rooms without layouts
             
             # Find graph files
@@ -278,6 +323,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
             # Find all POVs for this room
             povs = find_all_povs(scene_id, room_id, povs_dir, variant)
             pov_count = len(povs)
+            total_povs_found += pov_count
             
             if pov_count == 0:
                 # Room has no POVs - add single entry without POV
@@ -299,6 +345,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                     "door_count": door_count,
                     "window_count": window_count,
                 })
+                logger.debug(f"Scene {scene_id}, Room {room_id}: Added entry (no POVs)")
             else:
                 # Add one row per POV
                 for pov_id, pov_path in povs:
@@ -320,6 +367,18 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                         "door_count": door_count,
                         "window_count": window_count,
                     })
+                logger.debug(f"Scene {scene_id}, Room {room_id}: Added {pov_count} POV entries")
+            
+            rooms_processed += 1
+    
+    elapsed_time = time.time() - start_time
+    logger.info(f"\nCollection complete for variant: {variant}")
+    logger.info(f"  Scenes processed: {scenes_processed}/{total_scenes} (skipped: {scenes_skipped})")
+    logger.info(f"  Rooms processed: {rooms_processed} (skipped: {rooms_skipped})")
+    logger.info(f"  Total POVs found: {total_povs_found}")
+    logger.info(f"  Total rows collected: {len(rows)}")
+    logger.info(f"  Time elapsed: {elapsed_time:.2f}s ({elapsed_time/60:.2f} minutes)")
+    logger.info(f"  Average rate: {total_scenes/elapsed_time:.2f} scenes/s")
     
     return rows
 
@@ -335,7 +394,11 @@ def compute_weights(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     4. sample_weight = pov_weight * empty_weight * type_weight
     """
     if not rows:
+        logger.warning("No rows to compute weights for")
         return rows
+    
+    logger.info(f"Computing weights for {len(rows)} rows...")
+    start_time = time.time()
     
     # Compute inverse frequency weights
     types = [r["type"] for r in rows]
@@ -344,10 +407,13 @@ def compute_weights(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     type_weights = compute_inverse_frequency_weights(types)
     empty_weights = compute_inverse_frequency_weights(is_empties)
     
+    logger.info(f"Type distribution: {dict(Counter(types))}")
     logger.info(f"Type weights: {type_weights}")
+    logger.info(f"Empty distribution: {dict(Counter(is_empties))}")
     logger.info(f"Empty weights: {empty_weights}")
     
     # Apply weights to each row
+    logger.info("Applying weights to rows...")
     for row in rows:
         # POV weight: normalize by number of POVs
         pov_count = row["pov_count"]
@@ -368,6 +434,9 @@ def compute_weights(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         row["empty_weight"] = round(empty_weight, 6)
         row["sample_weight"] = round(sample_weight, 6)
     
+    elapsed = time.time() - start_time
+    logger.info(f"Weight computation complete in {elapsed:.2f}s")
+    
     return rows
 
 
@@ -376,6 +445,9 @@ def write_manifest(rows: List[Dict[str, Any]], output_path: Path):
     if not rows:
         logger.warning(f"No rows to write to {output_path}")
         return
+    
+    logger.info(f"Writing manifest to: {output_path}")
+    start_time = time.time()
     
     # Column order
     columns = [
@@ -391,7 +463,9 @@ def write_manifest(rows: List[Dict[str, Any]], output_path: Path):
         writer.writeheader()
         writer.writerows(rows)
     
-    logger.info(f"Wrote {len(rows)} rows to {output_path}")
+    elapsed = time.time() - start_time
+    file_size = output_path.stat().st_size / (1024 * 1024)  # MB
+    logger.info(f"Wrote {len(rows)} rows to {output_path} ({file_size:.2f} MB) in {elapsed:.2f}s")
 
 
 def print_statistics(rows: List[Dict[str, Any]], variant: str):
@@ -410,7 +484,6 @@ def print_statistics(rows: List[Dict[str, Any]], variant: str):
     unique_rooms = len(set((r["scene_id"], r["room_id"]) for r in rows if r["type"] == "room"))
     
     # Room type distribution
-    from collections import Counter
     room_types = Counter(r["room_type"] for r in rows if r["type"] == "room")
     
     logger.info(f"\n{'='*50}")
@@ -457,18 +530,31 @@ def main():
     if not args.tex_only:
         variants.append(("seg", output_seg))
     
+    total_start_time = time.time()
+    
     for variant, output_path in variants:
-        logger.info(f"\nCollecting {variant} manifest data...")
+        variant_start_time = time.time()
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing variant: {variant}")
+        logger.info(f"Output path: {output_path}")
+        logger.info(f"{'='*60}")
+        
         rows = collect_manifest_data(dataset_root, variant)
         
-        logger.info(f"Computing sample weights...")
         rows = compute_weights(rows)
         
         print_statistics(rows, variant)
         
         write_manifest(rows, output_path)
+        
+        variant_elapsed = time.time() - variant_start_time
+        logger.info(f"Variant {variant} completed in {variant_elapsed:.2f}s ({variant_elapsed/60:.2f} minutes)")
     
-    logger.info("Done!")
+    total_elapsed = time.time() - total_start_time
+    logger.info(f"\n{'='*60}")
+    logger.info(f"All manifests completed!")
+    logger.info(f"Total time: {total_elapsed:.2f}s ({total_elapsed/60:.2f} minutes)")
+    logger.info(f"{'='*60}")
 
 
 if __name__ == "__main__":
