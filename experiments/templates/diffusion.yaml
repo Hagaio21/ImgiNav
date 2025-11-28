@@ -14,7 +14,7 @@ experiment:
 # =============================================================================
 # Dataset
 # =============================================================================
-# NOTE: For diffusion training, layouts must be pre-encoded as latents.
+# NOTE: For diffusion training, layouts should be pre-encoded as latents.
 # Run embed_layouts.py after VAE training to create layout_embedding_path column.
 # =============================================================================
 dataset:
