@@ -104,8 +104,8 @@ python "${PYTHON_SCRIPTS_DIR}/stage4_render_povs.py" \
     --dataset-root "${OUTPUT_DATASET_ROOT}" \
     --scene-list "${SHARD_FILE}" \
     --hpc \
-    --width 1280 \
-    --height 720 \
+    --width 512 \
+    --height 512 \
     --fov 60.0 \
     --skip-existing
 

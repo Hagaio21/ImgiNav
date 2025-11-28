@@ -3,6 +3,7 @@
 # Pipeline Launcher
 # 
 # Launches the data preparation pipeline using paths.yaml configuration.
+# Creates shards dynamically from scene_list.
 #
 # Usage:
 #   ./launch_pipeline.sh --config paths.yaml [options]
@@ -10,19 +11,20 @@
 # Options:
 #   --config FILE   Path to paths.yaml (required)
 #   --stage N       Start from stage N (default: 2)
-#   --num-shards N  Number of shards (default: auto-detect)
+#   --num-shards N  Number of shards (default: 100)
 #   --dry-run       Show what would be submitted
 #
 # ==============================================================================
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
 # ==============================================================================
 # Parse arguments
 # ==============================================================================
 CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/paths.yaml"
 START_STAGE=2
-NUM_SHARDS="10"
+NUM_SHARDS=100
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -84,8 +86,8 @@ BASE_DIR="$(get_config base_dir)"
 OUTPUT_DATASET_ROOT="$(get_config output_dataset_root)"
 HPC_SCRIPTS_DIR="$(get_config hpc_scripts_dir)"
 PYTHON_SCRIPTS_DIR="$(get_config python_scripts_dir)"
-SHARDS_DIR="$(get_config shards_dir)"
 LOG_DIR="$(get_config log_dir)"
+SCENE_LIST="$(get_config scene_list)"
 
 # Make paths absolute if relative
 if [[ "${HPC_SCRIPTS_DIR}" != /* ]]; then
@@ -94,11 +96,16 @@ fi
 if [[ "${PYTHON_SCRIPTS_DIR}" != /* ]]; then
     PYTHON_SCRIPTS_DIR="${BASE_DIR}/${PYTHON_SCRIPTS_DIR}"
 fi
-if [[ "${SHARDS_DIR}" != /* ]]; then
-    SHARDS_DIR="${BASE_DIR}/${SHARDS_DIR}"
-fi
 if [[ "${LOG_DIR}" != /* ]]; then
     LOG_DIR="${BASE_DIR}/${LOG_DIR}"
+fi
+if [[ -n "${SCENE_LIST}" && "${SCENE_LIST}" != /* ]]; then
+    SCENE_LIST="${BASE_DIR}/${SCENE_LIST}"
+fi
+
+# Fallback for scene_list
+if [ -z "${SCENE_LIST}" ] || [ ! -f "${SCENE_LIST}" ]; then
+    SCENE_LIST="${BASE_DIR}/valid_scenes.txt"
 fi
 
 echo "=========================================="
@@ -108,40 +115,65 @@ echo "Config file: ${CONFIG_FILE}"
 echo "Output Dataset Root: ${OUTPUT_DATASET_ROOT}"
 echo "HPC Scripts Dir: ${HPC_SCRIPTS_DIR}"
 echo "Python Scripts Dir: ${PYTHON_SCRIPTS_DIR}"
-echo "Shards Dir: ${SHARDS_DIR}"
+echo "Scene List: ${SCENE_LIST}"
 echo "Log Dir: ${LOG_DIR}"
 echo "Start Stage: ${START_STAGE}"
+echo "Num Shards: ${NUM_SHARDS}"
 echo "=========================================="
 
 # ==============================================================================
-# Validate and count shards
+# Validate scene list and create shards
 # ==============================================================================
-if [ ! -d "${SHARDS_DIR}" ]; then
-    echo "ERROR: Shards directory not found: ${SHARDS_DIR}"
-    echo "Create shards first with:"
-    echo "  python create_shards.py --scenes-dir <3D-FRONT-DIR> --output-dir ${SHARDS_DIR} --num-shards 10"
+if [ ! -f "${SCENE_LIST}" ]; then
+    echo "ERROR: Scene list not found: ${SCENE_LIST}"
+    echo "Set 'scene_list' in paths.yaml or create valid_scenes.txt in base_dir"
     exit 1
 fi
 
-SHARD_COUNT=$(ls -1 "${SHARDS_DIR}"/shard_*.txt 2>/dev/null | wc -l)
-if [ ${SHARD_COUNT} -eq 0 ]; then
-    echo "ERROR: No shard files found in ${SHARDS_DIR}"
-    exit 1
-fi
+TOTAL_SCENES=$(wc -l < "${SCENE_LIST}")
+SCENES_PER_SHARD=$(( (TOTAL_SCENES + NUM_SHARDS - 1) / NUM_SHARDS ))
 
-if [ -n "${NUM_SHARDS}" ]; then
-    if [ ${NUM_SHARDS} -gt ${SHARD_COUNT} ]; then
-        echo "WARNING: Requested ${NUM_SHARDS} shards but only ${SHARD_COUNT} found"
-        NUM_SHARDS=${SHARD_COUNT}
-    fi
-else
-    NUM_SHARDS=${SHARD_COUNT}
-fi
-
-echo "Found ${SHARD_COUNT} shards, using ${NUM_SHARDS}"
+echo "Total scenes: ${TOTAL_SCENES}"
+echo "Scenes per shard: ~${SCENES_PER_SHARD}"
+echo ""
 
 # Create log directory
 mkdir -p "${LOG_DIR}"
+
+# ==============================================================================
+# Create shard files
+# ==============================================================================
+SHARDS_DIR="$(get_config shards_dir)"
+if [[ -z "${SHARDS_DIR}" ]]; then
+    SHARDS_DIR="${BASE_DIR}/shards"
+fi
+if [[ "${SHARDS_DIR}" != /* ]]; then
+    SHARDS_DIR="${BASE_DIR}/${SHARDS_DIR}"
+fi
+
+echo "Creating ${NUM_SHARDS} shard files in ${SHARDS_DIR}..."
+mkdir -p "${SHARDS_DIR}"
+
+# Remove old shards
+rm -f "${SHARDS_DIR}"/shard_*.txt
+
+# Create new shards
+for ((i=1; i<=NUM_SHARDS; i++)); do
+    START_LINE=$(( (i - 1) * SCENES_PER_SHARD + 1 ))
+    END_LINE=$(( i * SCENES_PER_SHARD ))
+    SHARD_FILE="${SHARDS_DIR}/shard_${i}.txt"
+    sed -n "${START_LINE},${END_LINE}p" "${SCENE_LIST}" > "${SHARD_FILE}"
+done
+
+# Count non-empty shards
+ACTUAL_SHARDS=$(find "${SHARDS_DIR}" -name "shard_*.txt" -size +0 | wc -l)
+echo "Created ${ACTUAL_SHARDS} non-empty shard files"
+
+if [ ${ACTUAL_SHARDS} -lt ${NUM_SHARDS} ]; then
+    echo "Adjusting NUM_SHARDS from ${NUM_SHARDS} to ${ACTUAL_SHARDS}"
+    NUM_SHARDS=${ACTUAL_SHARDS}
+fi
+echo ""
 
 # ==============================================================================
 # Determine stage script and resources
@@ -150,27 +182,27 @@ case ${START_STAGE} in
     2)
         STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage2_array.sh"
         STAGE_NAME="stage2_metadata"
-        RESOURCES="-n 4 -R 'rusage[mem=8000]' -W 4:00"
+        RESOURCES="-n 1 -R 'rusage[mem=1000]' -W 4:00"
         ;;
     3)
         STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage3_array.sh"
         STAGE_NAME="stage3_layouts"
-        RESOURCES="-n 4 -R 'rusage[mem=8000]' -W 4:00"
+        RESOURCES="-n 1 -R 'rusage[mem=1000]' -W 4:00"
         ;;
     4)
         STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage4_array.sh"
         STAGE_NAME="stage4_povs"
-        RESOURCES="-n 4 -R 'rusage[mem=8000]' -W 6:00"
+        RESOURCES="-n 1 -R 'rusage[mem=1000]' -W 4:00"
         ;;
     5)
         STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage5_array.sh"
         STAGE_NAME="stage5_graphs"
-        RESOURCES="-n 2 -R 'rusage[mem=4000]' -W 2:00"
+        RESOURCES="-n 1 -R 'rusage[mem=1000]' -W 2:00"
         ;;
     6)
         STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage6_array.sh"
         STAGE_NAME="stage6_manifests"
-        RESOURCES="-n 1 -R 'rusage[mem=2000]' -W 1:00"
+        RESOURCES="-n 1 -R 'rusage[mem=1000]' -W 1:00"
         ;;
     *)
         echo "ERROR: Invalid stage: ${START_STAGE} (valid: 2-6)"
@@ -197,7 +229,7 @@ BSUB_CMD="bsub -J '${STAGE_NAME}[1-${NUM_SHARDS}]' \
     -e '${LOG_DIR}/${STAGE_NAME}.%J.%I.err' \
     ${RESOURCES} \
     -q hpc \
-    -env \"CONFIG_FILE=${CONFIG_FILE}\" \
+    -env \"CONFIG_FILE=${CONFIG_FILE},SCENE_LIST=${SCENE_LIST},NUM_SHARDS=${NUM_SHARDS}\" \
     bash '${STAGE_SCRIPT}'"
 
 if [ "${DRY_RUN}" = true ]; then

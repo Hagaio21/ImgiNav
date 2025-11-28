@@ -249,440 +249,324 @@ class ManifestDataset(BaseComponent, Dataset):
                         transform_list.append(transforms.RandomCrop(size))
                     else:
                         raise ValueError(f"Unknown transform type: {t_type}")
-                
-                if transform_list:
-                    return transforms.Compose(transform_list)
-                else:
-                    return None
-            else:
-                # Single transform (not Compose)
-                t_type = transform_cfg.get("type")
-                if t_type == "Resize":
-                    size = transform_cfg.get("size")
-                    interpolation = transform_cfg.get("interpolation", "nearest")
-                    if interpolation == "nearest":
-                        return transforms.Resize(size, interpolation=0)
-                    elif interpolation == "bilinear":
-                        return transforms.Resize(size, interpolation=2)
-                    else:
-                        return transforms.Resize(size)
-                elif t_type == "ToTensor":
-                    return transforms.ToTensor()
-                elif t_type == "Normalize":
-                    return transforms.Normalize(
-                        mean=transform_cfg.get("mean", [0.5, 0.5, 0.5]),
-                        std=transform_cfg.get("std", [0.5, 0.5, 0.5])
-                    )
-                else:
-                    raise ValueError(f"Unknown transform type: {t_type}")
+                return transforms.Compose(transform_list)
         
         return None
-    
-    def _load_value(self, val):
-        """Auto-load image, tensor, or numeric."""
-        # Handle NaN values from pandas
-        if pd.isna(val):
-            raise ValueError(f"NaN value in manifest")
-        
-        # Handle numeric values (like room_id), return as long for consistency
-        if isinstance(val, (int, float)):
-            return torch.tensor(int(val), dtype=torch.long)
-        
-        if isinstance(val, str):
-            # Handle string labels like "room" or "scene" - return as string for classification head
-            val_lower = val.lower().strip()
-            if val_lower in ["room", "scene"]:
-                # Return as string - will be converted by loss function
-                return val
-            
-            # Handle empty strings
-            if not val or val.strip() == "":
-                raise ValueError(f"Empty path in manifest")
-            
-            # Handle special markers for ControlNet (scenes without POVs)
-            if val == "ZERO_EMBEDDING":
-                # Return zero tensor for POV embeddings (512-dim for ResNet18)
-                # This is used for scenes that don't have POV embeddings
-                return torch.zeros(512, dtype=torch.float32)
-            
-            # Check if it's a file path first (before numeric conversion)
-            # This is important for ControlNet where "0" might be a path to zero embedding file
-            p = Path(val)
-            
-            # If it looks like a file path (has extension or is absolute), treat as path
-            if p.suffix or p.is_absolute() or "/" in val or "\\" in val:
-                # Treat as file path - continue to file loading logic below
-                pass
-            else:
-                # Try to convert string to number if it's numeric (for numeric room_ids as strings)
-                # Only do this if it doesn't look like a file path
-                if val.replace('.', '').replace('-', '').isdigit():
-                    # Convert to int (long) for room_id values to maintain dtype consistency
-                    return torch.tensor(int(float(val)), dtype=torch.long)
-            
-            # Treat as file path
-            # All paths in manifest should be absolute
-            # If relative, resolve relative to manifest directory (for backward compatibility)
-            if not p.is_absolute():
-                p = (self.manifest_dir / p).resolve()
-                print(f"[WARNING] Found relative path in manifest: {val}, resolved to: {p}")
-                print(f"[WARNING] Please regenerate manifest with absolute paths")
-            if not p.exists():
-                raise FileNotFoundError(f"File not found: {p}. Ensure manifest uses absolute paths.")
-            ext = p.suffix.lower()
-            if ext in [".png", ".jpg", ".jpeg", ".bmp"]:
-                img = Image.open(p).convert("RGB")
-                if self.transform:
-                    img = self.transform(img)
-                else:
-                    # Default: convert PIL Image to tensor
-                    # Convert to numpy array, then to tensor, and normalize to [-1, 1]
-                    # This matches tanh output activation (range [-1, 1])
-                    # Formula: (pixel / 255.0) * 2.0 - 1.0 = pixel / 127.5 - 1.0
-                    # Use contiguous array for faster conversion
-                    img_array = np.ascontiguousarray(img, dtype=np.float32)
-                    img = torch.from_numpy(img_array)
-                    # Convert from HWC to CHW format and normalize to [-1, 1]
-                    if img.ndim == 3:
-                        img = img.permute(2, 0, 1) / 127.5 - 1.0  # [0, 255] -> [-1, 1]
-                    else:
-                        raise ValueError(f"Unexpected image shape after conversion: {img.shape}")
-                return img
-            if ext == ".pt":
-                return torch.load(p)
-        # Fallback: convert to tensor (will default to appropriate type)
-        return torch.tensor(val)
 
-    def split(self, train_split=0.8, random_seed=42):
+    def _resolve_path(self, path_value):
         """
-        Split dataset into train and validation sets.
+        Resolve a path value relative to the manifest directory.
+        
+        Handles both absolute paths and paths relative to the manifest.
+        """
+        if pd.isna(path_value) or path_value == "":
+            return None
+        
+        path = Path(path_value)
+        
+        # If absolute path exists, use it
+        if path.is_absolute() and path.exists():
+            return path
+        
+        # Try relative to manifest directory
+        resolved = self.manifest_dir / path
+        if resolved.exists():
+            return resolved
+        
+        # Try parent of manifest directory (dataset root)
+        resolved = self.manifest_dir.parent / path
+        if resolved.exists():
+            return resolved
+        
+        # Return original path (may fail later during loading)
+        return path
+
+    def _load_value(self, value):
+        """
+        Load a value based on its type:
+        - If it's a path to an image file, load and transform it
+        - If it's a path to a .pt file, load tensor
+        - If it's a path to a .json file, load JSON
+        - Otherwise, return as-is
+        """
+        if pd.isna(value) or value == "":
+            return None
+        
+        # Try to resolve as path
+        path = self._resolve_path(value)
+        
+        if path is None:
+            return value
+        
+        if not path.exists():
+            # Return the raw value if path doesn't exist
+            return value
+        
+        suffix = path.suffix.lower()
+        
+        # Image files
+        if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}:
+            img = Image.open(path).convert("RGB")
+            if self.transform:
+                img = self.transform(img)
+            return img
+        
+        # Tensor files
+        elif suffix == ".pt":
+            return torch.load(path, map_location="cpu", weights_only=True)
+        
+        # JSON files
+        elif suffix == ".json":
+            import json
+            with open(path, "r") as f:
+                return json.load(f)
+        
+        # Text files
+        elif suffix == ".txt":
+            with open(path, "r") as f:
+                return f.read()
+        
+        # Default: return as string
+        return str(value)
+
+    # ------------------------
+    # Pre-computed weight support
+    # ------------------------
+    def _use_precomputed_weights(self, weight_column: str = "sample_weight", max_weight: float = None) -> torch.Tensor:
+        """
+        Use pre-computed weights from a column in the manifest.
         
         Args:
-            train_split: Fraction of data for training (default: 0.8)
-            random_seed: Random seed for reproducibility (default: 42)
+            weight_column: Name of column containing pre-computed weights
+            max_weight: Optional cap on maximum weight
             
         Returns:
-            (train_dataset, val_dataset) tuple of ManifestDataset instances
+            Tensor of weights for each sample
         """
-        val_split = 1.0 - train_split
-        if train_split <= 0 or train_split >= 1.0:
-            raise ValueError(f"train_split must be between 0 and 1, got {train_split}")
+        if weight_column not in self.df.columns:
+            raise KeyError(f"Weight column '{weight_column}' not found. Available: {list(self.df.columns)}")
         
-        total_size = len(self)
-        train_size = int(train_split * total_size)
-        val_size = total_size - train_size
+        weights = self.df[weight_column].values.astype(np.float32)
         
-        # Set random seed for reproducibility
-        generator = torch.Generator()
-        generator.manual_seed(random_seed)
+        # Handle NaN values
+        nan_mask = np.isnan(weights)
+        if nan_mask.any():
+            print(f"[WARNING] {nan_mask.sum()} NaN values in weight column, replacing with 1.0")
+            weights[nan_mask] = 1.0
         
-        # Shuffle indices
-        indices = torch.randperm(total_size, generator=generator).tolist()
-        train_indices = indices[:train_size]
-        val_indices = indices[train_size:]
+        # Cap weights if requested
+        if max_weight is not None:
+            capped = (weights > max_weight).sum()
+            if capped > 0:
+                print(f"[INFO] Capping {capped} weights at {max_weight}")
+                weights = np.clip(weights, None, max_weight)
         
-        # Create new datasets with filtered DataFrames
-        train_df = self.df.iloc[train_indices].reset_index(drop=True)
-        val_df = self.df.iloc[val_indices].reset_index(drop=True)
+        # Print weight statistics
+        print(f"[INFO] Using pre-computed weights from '{weight_column}':")
+        print(f"  min={weights.min():.4f}, max={weights.max():.4f}, mean={weights.mean():.4f}, std={weights.std():.4f}")
         
-        # Create new dataset instances with filtered data
-        train_dataset = ManifestDataset(
-            manifest=None,  # Not using manifest path
-            outputs=self.outputs,
-            filters=None,  # Already filtered
-            return_path=self.return_path,
-            transform=self.transform,
-            target_key=self.target_key,
-            label_col=self.label_col,
-            path_col=self.path_col,
-            _df=train_df,  # Internal: pass DataFrame directly
-            _manifest_dir=self.manifest_dir
-        )
+        return torch.from_numpy(weights)
+
+    # ------------------------
+    # Weighted sampling statistics
+    # ------------------------
+    def _print_weight_statistics(self, weights: np.ndarray, group_columns: list = None):
+        """Print detailed statistics about sample weights."""
+        print(f"\n{'='*60}")
+        print("Sample Weight Statistics")
+        print(f"{'='*60}")
+        print(f"Total samples: {len(weights)}")
+        print(f"Weight range: [{weights.min():.4f}, {weights.max():.4f}]")
+        print(f"Weight mean: {weights.mean():.4f}, std: {weights.std():.4f}")
         
-        val_dataset = ManifestDataset(
-            manifest=None,
-            outputs=self.outputs,
-            filters=None,
-            return_path=self.return_path,
-            transform=self.transform,
-            target_key=self.target_key,
-            label_col=self.label_col,
-            path_col=self.path_col,
-            _df=val_df,
-            _manifest_dir=self.manifest_dir
-        )
+        if group_columns:
+            for col in group_columns:
+                if col in self.df.columns:
+                    print(f"\nWeights by '{col}':")
+                    for value in self.df[col].unique():
+                        mask = self.df[col] == value
+                        group_weights = weights[mask]
+                        effective_samples = group_weights.sum()
+                        print(f"  {value}: count={mask.sum()}, "
+                              f"mean_weight={group_weights.mean():.4f}, "
+                              f"effective_samples={effective_samples:.1f}")
         
-        return train_dataset, val_dataset
-    
+        print(f"{'='*60}\n")
+
+    # ------------------------
+    # Column-based weighting (existing functionality)
+    # ------------------------
     def _compute_column_weights(self, weight_column=None, weights_stats_path=None, 
                                 use_grouped_weights=False, weighting_method="inverse_frequency",
-                                group_rare_classes=False, class_grouping_path=None, 
-                                max_weight=None, exclude_extremely_rare=False, 
+                                group_rare_classes=False, class_grouping_path=None,
+                                max_weight=None, exclude_extremely_rare=False,
                                 min_samples_threshold=50, preferred_columns=None):
-
-        # Filter out empty rooms using is_empty column BEFORE computing weights
-        # (even though dataset should already be filtered, be safe)
-        if "is_empty" in self.df.columns:
-            original_size = len(self.df)
-            # Handle different representations of False (boolean False, string "false", int 0)
-            # Convert to string and check, or use boolean comparison
-            is_empty_values = self.df["is_empty"]
-            # Check if value is False (boolean), "false" (string), 0 (int), or "False" (string)
-            # Keep rows where is_empty is False
-            mask = (
-                (is_empty_values == False) |  # Boolean False
-                (is_empty_values == 0) |  # Integer 0
-                (is_empty_values.astype(str).str.lower().isin(['false', '0', 'no']))  # String representations
-            )
-            self.df = self.df[mask].reset_index(drop=True)
-            if len(self.df) < original_size:
-                print(f"Filtered out {original_size - len(self.df)} empty rooms from weight computation (using is_empty column)")
+        """
+        Compute sampling weights based on a categorical column.
         
-        # Determine which column to use
+        This implements inverse frequency weighting to balance class distributions.
+        """
+        # Find weight column
         if weight_column is None:
-            # Try preferred columns if provided
+            # Try preferred columns first
             if preferred_columns:
                 for col in preferred_columns:
                     if col in self.df.columns:
                         weight_column = col
                         break
             
-            # If still no column, try to auto-detect any suitable column
+            # Fall back to finding any suitable column
             if weight_column is None:
-                # Exclude path columns and other non-categorical columns
-                exclude_cols = {"path", "layout_path", "image_path", "scene_id", "type", "is_empty"}
+                exclude_cols = {"path", "layout_path", "image_path", "scene_id", "type", "is_empty",
+                               "pov_weight", "type_weight", "empty_weight", "sample_weight"}
                 for col in self.df.columns:
                     if col not in exclude_cols and self.df[col].notna().sum() > 0:
                         weight_column = col
                         break
-            
-            if weight_column is None:
-                return None
-        elif weight_column not in self.df.columns:
+        
+        if weight_column is None or weight_column not in self.df.columns:
             return None
         
-        # Get class IDs from the column (treat all columns the same way)
+        print(f"[INFO] Computing weights based on column: {weight_column}")
+        
+        # Get class IDs
         class_ids = self.df[weight_column].astype(str).values
+        unique_classes, counts = np.unique(class_ids, return_counts=True)
+        num_classes = len(unique_classes)
         
-        # Additional safety: filter out any rows where the weight column value itself is "empty"
-        # (in case "empty" appears as a class name in the weight column, even if is_empty=False)
-        empty_class_mask = np.array([str(cid).lower() != "empty" for cid in class_ids])
-        if not empty_class_mask.all():
-            removed_count = (~empty_class_mask).sum()
-            self.df = self.df[empty_class_mask].reset_index(drop=True)
-            class_ids = class_ids[empty_class_mask]
-            print(f"Filtered out {removed_count} rows where {weight_column}='empty' from weight computation")
+        print(f"[INFO] Found {num_classes} unique classes in '{weight_column}'")
         
-        # Load or compute class grouping
+        # Build class grouping if requested
         class_grouping = None
-        
-        # If group_rare_classes is True, ALWAYS recompute grouping (ignore stats file grouping)
-        # This ensures we use the latest percentile-band grouping strategy
-        if group_rare_classes:
-            # Force recompute grouping with percentile bands
-            unique_classes, counts = np.unique(class_ids, return_counts=True)
-            num_classes = len(unique_classes)
+        if class_grouping_path and Path(class_grouping_path).exists():
+            import json
+            with open(class_grouping_path, 'r') as f:
+                grouping_data = json.load(f)
+                class_grouping = grouping_data.get("class_grouping", {})
+                print(f"[INFO] Loaded class grouping with {len(class_grouping)} mappings")
+        elif group_rare_classes:
+            # Auto-compute grouping based on percentiles
+            count_map = {cid: int(cnt) for cid, cnt in zip(unique_classes, counts)}
+            sorted_counts = sorted(count_map.values())
             
-            # Group classes into percentile bands (e.g., 0-10%, 10-20%, 20-30%, etc.)
-            # This creates multiple groups instead of just one "rare" group
-            percentile_bands = [
-                (0, 10, "rare_0_10"),
-                (10, 20, "rare_10_20"),
-                (20, 30, "rare_20_30"),
-                (30, 40, "rare_30_40"),
-                (40, 50, "rare_40_50"),
-                # Top 50% remain as individual classes
+            # Create percentile bands
+            percentiles = [
+                0,
+                np.percentile(sorted_counts, 10),
+                np.percentile(sorted_counts, 20),
+                np.percentile(sorted_counts, 30),
+                np.percentile(sorted_counts, 40),
+                np.percentile(sorted_counts, 50),
             ]
-            
-            # Compute percentile thresholds
-            percentiles = [np.percentile(counts, p) for p in [0, 10, 20, 30, 40, 50, 100]]
+            band_names = ["rare_0_10", "rare_10_20", "rare_20_30", "rare_30_40", "rare_40_50"]
             
             class_grouping = {}
-            band_counts = {band_name: 0 for _, _, band_name in percentile_bands}
+            band_counts = {name: 0 for name in band_names}
             individual_count = 0
             
-            for class_id in unique_classes:
-                count = counts[unique_classes == class_id][0]
+            for class_id, count in count_map.items():
                 assigned = False
-                
-                # Check each percentile band
-                for i, (p_low, p_high, band_name) in enumerate(percentile_bands):
+                for i, band_name in enumerate(band_names):
                     if percentiles[i] <= count < percentiles[i + 1]:
                         class_grouping[class_id] = band_name
                         band_counts[band_name] += 1
                         assigned = True
                         break
                 
-                # If not in any band (top 50%), keep as individual
                 if not assigned:
                     class_grouping[class_id] = class_id
                     individual_count += 1
             
-            # Print grouping statistics
             band_summary = ", ".join([f"{name}: {cnt}" for name, cnt in band_counts.items() if cnt > 0])
-            print(f"Auto-computed percentile-band grouping: {band_summary}, individual: {individual_count}/{num_classes}")
-        elif weights_stats_path and use_grouped_weights:
-            # Only load from stats file if NOT using group_rare_classes
-            if weights_stats_path and Path(weights_stats_path).exists():
-                import json
-                with open(weights_stats_path, 'r') as f:
-                    grouping_data = json.load(f)
-                    class_grouping = grouping_data.get("class_grouping", {})
-                    if class_grouping:
-                        print(f"Loaded class grouping from {weights_stats_path}")
-            elif class_grouping_path and Path(class_grouping_path).exists():
-                import json
-                with open(class_grouping_path, 'r') as f:
-                    grouping_data = json.load(f)
-                    class_grouping = grouping_data.get("class_grouping", {})
-                    if class_grouping:
-                        print(f"Loaded class grouping from {class_grouping_path}")
-            
-            # Auto-compute grouping if not loaded (fallback)
-            if not class_grouping:
-                unique_classes, counts = np.unique(class_ids, return_counts=True)
-                num_classes = len(unique_classes)
-                
-                # Group classes into percentile bands (e.g., 0-10%, 10-20%, 20-30%, etc.)
-                # This creates multiple groups instead of just one "rare" group
-                percentile_bands = [
-                    (0, 10, "rare_0_10"),
-                    (10, 20, "rare_10_20"),
-                    (20, 30, "rare_20_30"),
-                    (30, 40, "rare_30_40"),
-                    (40, 50, "rare_40_50"),
-                    # Top 50% remain as individual classes
-                ]
-                
-                # Compute percentile thresholds
-                percentiles = [np.percentile(counts, p) for p in [0, 10, 20, 30, 40, 50, 100]]
-                
-                class_grouping = {}
-                band_counts = {band_name: 0 for _, _, band_name in percentile_bands}
-                individual_count = 0
-                
-                for class_id in unique_classes:
-                    count = counts[unique_classes == class_id][0]
-                    assigned = False
-                    
-                    # Check each percentile band
-                    for i, (p_low, p_high, band_name) in enumerate(percentile_bands):
-                        if percentiles[i] <= count < percentiles[i + 1]:
-                            class_grouping[class_id] = band_name
-                            band_counts[band_name] += 1
-                            assigned = True
-                            break
-                    
-                    # If not in any band (top 50%), keep as individual
-                    if not assigned:
-                        class_grouping[class_id] = class_id
-                        individual_count += 1
-                
-                # Print grouping statistics
-                band_summary = ", ".join([f"{name}: {cnt}" for name, cnt in band_counts.items() if cnt > 0])
-                print(f"Auto-computed percentile-band grouping: {band_summary}, individual: {individual_count}/{num_classes}")
+            print(f"[INFO] Auto-computed grouping: {band_summary}, individual: {individual_count}")
         
-        # Apply grouping if enabled
+        # Apply grouping
         if class_grouping:
             grouped_class_ids = np.array([class_grouping.get(cid, cid) for cid in class_ids])
         else:
             grouped_class_ids = class_ids
         
-        # Exclude extremely rare classes if requested
-        if exclude_extremely_rare:
-            extremely_rare_class_ids = set()
-            if weights_stats_path and Path(weights_stats_path).exists():
-                import json
-                with open(weights_stats_path, 'r') as f:
-                    grouping_data = json.load(f)
-                    extremely_rare = grouping_data.get("extremely_rare_classes", [])
-                    extremely_rare_class_ids = {c["class_id"] for c in extremely_rare}
-            elif class_grouping_path and Path(class_grouping_path).exists():
-                import json
-                with open(class_grouping_path, 'r') as f:
-                    grouping_data = json.load(f)
-                    extremely_rare = grouping_data.get("extremely_rare_classes", [])
-                    extremely_rare_class_ids = {c["class_id"] for c in extremely_rare}
-            
-            # Filter out extremely rare classes
-            if extremely_rare_class_ids:
-                mask = np.array([cid not in extremely_rare_class_ids for cid in class_ids])
-                if mask.sum() == 0:
-                    print("Warning: All classes would be excluded! Disabling exclusion.")
-                else:
-                    self.df = self.df[mask].reset_index(drop=True)
-                    class_ids = class_ids[mask]
-                    grouped_class_ids = grouped_class_ids[mask] if class_grouping else class_ids
-                    print(f"Excluded {len(extremely_rare_class_ids)} extremely rare classes from training")
-        
         # Compute weights
         unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
         counts_dict = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
         
-        # If grouping is enabled, ALWAYS recompute weights on grouped classes (never load from file)
-        # (even if stats file exists, because individual weights don't match grouped structure)
-        if class_grouping and group_rare_classes:
-            # Grouping is active - recompute weights on grouped counts (never load from file)
-            weight_map = compute_weights_from_counts(
-                counts_dict,
-                method=weighting_method,
-                max_weight=max_weight,
-                min_weight=1.0
-            )
-        elif weights_stats_path and Path(weights_stats_path).exists():
-            # No grouping or grouping from stats - try to load from stats file
-            try:
-                weight_map = load_weights_from_stats(weights_stats_path, use_grouped=use_grouped_weights)
-                # Remove "empty" if it exists in loaded weights
-                if "empty" in weight_map:
-                    del weight_map["empty"]
-                print(f"Loaded {len(weight_map)} weights from {weights_stats_path}")
-                # Ensure all groups have weights (fill missing with default)
-                for gid in unique_groups:
-                    if gid not in weight_map:
-                        weight_map[gid] = 1.0
-            except Exception as e:
-                print(f"Warning: Failed to load weights from stats file: {e}")
-                print("Computing weights on-the-fly...")
-                weight_map = compute_weights_from_counts(
-                    counts_dict,
-                    method=weighting_method,
-                    max_weight=max_weight,
-                    min_weight=1.0
-                )
-        else:
-            # Compute weights on-the-fly
-            weight_map = compute_weights_from_counts(
-                counts_dict,
-                method=weighting_method,
-                max_weight=max_weight,
-                min_weight=1.0
-            )
+        weight_map = compute_weights_from_counts(
+            counts_dict,
+            method=weighting_method,
+            max_weight=max_weight,
+            min_weight=1.0
+        )
         
-        # Cap weights if requested (additional capping beyond what's in stats)
+        # Cap weights
         if max_weight is not None:
             weight_map = {gid: min(w, max_weight) for gid, w in weight_map.items()}
-            if any(w == max_weight for w in weight_map.values()):
-                print(f"Capped weights at {max_weight} to prevent over-sampling")
-        
-        # Remove "empty" from weight_map if it somehow got in there
-        if "empty" in weight_map:
-            del weight_map["empty"]
-            print("Removed 'empty' from weight_map")
         
         # Create weight tensor
         weights = np.array([weight_map.get(gid, 1.0) for gid in grouped_class_ids], dtype=np.float32)
         
         return torch.from_numpy(weights), class_grouping, weight_map
     
+    # ------------------------
+    # DataLoader creation
+    # ------------------------
     def make_dataloader(self, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, 
                        use_weighted_sampling=False, weight_column=None, weights_stats_path=None,
                        use_grouped_weights=False, weighting_method="inverse_frequency",
                        group_rare_classes=False, class_grouping_path=None,
                        max_weight=None, exclude_extremely_rare=False, min_samples_threshold=50,
-                       preferred_weight_columns=None):
-
-        if use_weighted_sampling:
+                       preferred_weight_columns=None,
+                       # New options for pre-computed weights
+                       use_precomputed_weights=False, precomputed_weight_column="sample_weight",
+                       print_weight_stats=True, weight_stats_columns=None):
+        """
+        Create a DataLoader with optional weighted sampling.
+        
+        Args:
+            batch_size: Batch size
+            shuffle: Whether to shuffle (ignored if using weighted sampling)
+            num_workers: Number of data loading workers
+            pin_memory: Whether to pin memory
+            persistent_workers: Whether to keep workers alive between epochs
+            
+            # Weighted sampling options (existing)
+            use_weighted_sampling: Enable weighted sampling based on class frequencies
+            weight_column: Column to use for class-based weighting
+            weights_stats_path: Path to pre-computed weight statistics
+            use_grouped_weights: Use grouped class weights
+            weighting_method: Method for computing weights ("inverse_frequency", etc.)
+            group_rare_classes: Auto-group rare classes
+            class_grouping_path: Path to class grouping JSON
+            max_weight: Maximum weight cap
+            exclude_extremely_rare: Exclude very rare classes
+            min_samples_threshold: Minimum samples threshold
+            preferred_weight_columns: Preferred columns for weight computation
+            
+            # Pre-computed weight options (new)
+            use_precomputed_weights: Use pre-computed weights from manifest column
+            precomputed_weight_column: Column name for pre-computed weights (default: "sample_weight")
+            print_weight_stats: Print weight statistics
+            weight_stats_columns: Columns to group by when printing statistics
+            
+        Returns:
+            DataLoader instance
+        """
+        weights = None
+        
+        # Option 1: Use pre-computed weights from manifest
+        if use_precomputed_weights:
+            weights = self._use_precomputed_weights(
+                weight_column=precomputed_weight_column,
+                max_weight=max_weight
+            )
+            
+            if print_weight_stats:
+                self._print_weight_statistics(
+                    weights.numpy(),
+                    group_columns=weight_stats_columns or ["type", "is_empty"]
+                )
+        
+        # Option 2: Compute weights based on class column (existing functionality)
+        elif use_weighted_sampling:
             result = self._compute_column_weights(
                 weight_column=weight_column,
                 weights_stats_path=weights_stats_path,
@@ -695,86 +579,148 @@ class ManifestDataset(BaseComponent, Dataset):
                 min_samples_threshold=min_samples_threshold,
                 preferred_columns=preferred_weight_columns
             )
+            
             if result is None:
-                print(f"Warning: Weight column not found, falling back to regular sampling")
-                use_weighted_sampling = False
+                print(f"[WARNING] Weight column not found, falling back to regular sampling")
             else:
                 weights, class_grouping, weight_map = result
                 
-                # Print weight information using the capped weight_map
-                # Get the actual column used for weighting (recompute to get the actual selected column)
-                actual_column = weight_column
-                if actual_column is None:
-                    # Recompute which column was actually selected (same logic as _compute_column_weights)
-                    if preferred_weight_columns:
-                        for col in preferred_weight_columns:
-                            if col in self.df.columns:
-                                actual_column = col
-                                break
-                    if actual_column is None:
-                        # Find any suitable column
-                        exclude_cols = {"path", "layout_path", "image_path", "scene_id", "type", "is_empty"}
-                        for col in self.df.columns:
-                            if col not in exclude_cols and self.df[col].notna().sum() > 0:
-                                actual_column = col
-                                break
-                
-                if actual_column:
-                    # Get current class IDs (after grouping if applied)
-                    if class_grouping:
-                        # Show grouped class weights (percentile bands)
-                        class_ids = self.df[actual_column].astype(str).values
-                        grouped_class_ids = [class_grouping.get(cid, cid) for cid in class_ids]
-                        
-                        unique_groups, group_counts = np.unique(grouped_class_ids, return_counts=True)
-                        count_map = {gid: int(count) for gid, count in zip(unique_groups, group_counts)}
-                        
-                        # Count classes in each band
-                        band_info = {}
-                        for band_name in ["rare_0_10", "rare_10_20", "rare_20_30", "rare_30_40", "rare_40_50"]:
-                            classes_in_band = [k for k, v in class_grouping.items() if v == band_name]
-                            if classes_in_band:
-                                band_info[band_name] = len(classes_in_band)
-                        
-                        print(f"Class sampling weights (column: {actual_column}, with percentile-band grouping):")
-                        # Sort: bands first, then individual classes
-                        sorted_keys = sorted(weight_map.keys(), key=lambda x: (
-                            0 if x.startswith("rare_") else 1,  # Bands first
-                            x
-                        ))
-                        for gid in sorted_keys:
-                            weight = weight_map[gid]
-                            count = count_map.get(gid, 0)
-                            
-                            if gid.startswith("rare_"):
-                                num_classes = band_info.get(gid, 0)
-                                print(f"  {gid:30s}: weight={weight:.2f}, count={count:6d} (includes {num_classes} classes)")
-                            else:
-                                print(f"  {gid:30s}: weight={weight:.2f}, count={count:6d}")
-                    else:
-                        # Show individual class weights
-                        class_ids = self.df[actual_column].astype(str).values
-                        unique_classes, counts = np.unique(class_ids, return_counts=True)
-                        count_map = {cid: int(count) for cid, count in zip(unique_classes, counts)}
-                        
-                        print(f"Class sampling weights (column: {actual_column}):")
-                        for cid in sorted(weight_map.keys()):
-                            weight = weight_map[cid]
-                            count = count_map.get(cid, 0)
-                            print(f"  {cid:30s}: weight={weight:.2f}, count={count:6d}")
+                if print_weight_stats:
+                    # Print class-based weight info
+                    actual_column = weight_column or "auto-detected"
+                    print(f"\nClass sampling weights (column: {actual_column}):")
+                    for cid in sorted(weight_map.keys()):
+                        print(f"  {cid:30s}: weight={weight_map[cid]:.2f}")
         
-        if use_weighted_sampling:
-            sampler = WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
+        # Create DataLoader
+        if weights is not None:
+            sampler = WeightedRandomSampler(
+                weights=weights, 
+                num_samples=len(weights), 
+                replacement=True
+            )
             return DataLoader(
-                self, batch_size=batch_size, sampler=sampler, num_workers=num_workers,
+                self, 
+                batch_size=batch_size, 
+                sampler=sampler, 
+                num_workers=num_workers,
                 pin_memory=pin_memory if torch.cuda.is_available() else False,
                 persistent_workers=persistent_workers if num_workers > 0 else False,
-                prefetch_factor=2 if num_workers > 0 else None, drop_last=False
+                prefetch_factor=2 if num_workers > 0 else None, 
+                drop_last=False
             )
         else:
             return DataLoader(
-                self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers,
+                self, 
+                batch_size=batch_size, 
+                shuffle=shuffle, 
+                num_workers=num_workers,
                 pin_memory=pin_memory if torch.cuda.is_available() else False,
                 persistent_workers=persistent_workers if num_workers > 0 else False,
-                prefetch_factor=2 if num_workers > 0 else None, drop_last=False
+                prefetch_factor=2 if num_workers > 0 else None, 
+                drop_last=False
             )
+
+    # ------------------------
+    # Dataset splitting
+    # ------------------------
+    def split(self, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, seed=42, stratify_column=None):
+        """
+        Split dataset into train/val/test sets.
+        
+        Args:
+            train_ratio: Fraction for training
+            val_ratio: Fraction for validation
+            test_ratio: Fraction for testing
+            seed: Random seed
+            stratify_column: Column to stratify by (optional)
+            
+        Returns:
+            Tuple of (train_dataset, val_dataset, test_dataset)
+        """
+        assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, "Ratios must sum to 1"
+        
+        np.random.seed(seed)
+        n = len(self.df)
+        indices = np.random.permutation(n)
+        
+        if stratify_column and stratify_column in self.df.columns:
+            # Stratified split
+            from sklearn.model_selection import train_test_split
+            
+            # First split: train vs (val + test)
+            train_idx, temp_idx = train_test_split(
+                indices, 
+                train_size=train_ratio,
+                stratify=self.df.iloc[indices][stratify_column],
+                random_state=seed
+            )
+            
+            # Second split: val vs test
+            val_size = val_ratio / (val_ratio + test_ratio)
+            val_idx, test_idx = train_test_split(
+                temp_idx,
+                train_size=val_size,
+                stratify=self.df.iloc[temp_idx][stratify_column],
+                random_state=seed
+            )
+        else:
+            # Random split
+            train_end = int(n * train_ratio)
+            val_end = train_end + int(n * val_ratio)
+            
+            train_idx = indices[:train_end]
+            val_idx = indices[train_end:val_end]
+            test_idx = indices[val_end:]
+        
+        # Create new dataset instances with split DataFrames
+        def make_split_dataset(idx):
+            split_df = self.df.iloc[idx].reset_index(drop=True)
+            # Create new instance with the split DataFrame
+            new_kwargs = self._init_kwargs.copy()
+            new_kwargs["_df"] = split_df
+            new_kwargs["_manifest_dir"] = self.manifest_dir
+            return ManifestDataset(**new_kwargs)
+        
+        return (
+            make_split_dataset(train_idx),
+            make_split_dataset(val_idx),
+            make_split_dataset(test_idx)
+        )
+
+    # ------------------------
+    # Utility methods
+    # ------------------------
+    def get_column_values(self, column: str) -> list:
+        """Get unique values in a column."""
+        if column not in self.df.columns:
+            raise KeyError(f"Column '{column}' not found")
+        return self.df[column].unique().tolist()
+    
+    def filter_by(self, **kwargs) -> "ManifestDataset":
+        """
+        Create a filtered copy of the dataset.
+        
+        Example:
+            rooms_only = dataset.filter_by(type="room")
+            empty_rooms = dataset.filter_by(type="room", is_empty=True)
+        """
+        filtered_df = self.df.copy()
+        for col, value in kwargs.items():
+            if col not in filtered_df.columns:
+                print(f"[WARNING] Column '{col}' not found, skipping filter")
+                continue
+            if isinstance(value, (list, tuple)):
+                filtered_df = filtered_df[filtered_df[col].isin(value)]
+            else:
+                filtered_df = filtered_df[filtered_df[col] == value]
+        
+        filtered_df = filtered_df.reset_index(drop=True)
+        
+        new_kwargs = self._init_kwargs.copy()
+        new_kwargs["_df"] = filtered_df
+        new_kwargs["_manifest_dir"] = self.manifest_dir
+        return ManifestDataset(**new_kwargs)
+    
+    def __repr__(self):
+        return f"ManifestDataset(samples={len(self)}, columns={list(self.df.columns)})"

@@ -24,6 +24,7 @@ test_dataset/
 old/
 logs/
 outputs/
+shards/
 /work3/s233249/ImgiNav/ImgiNav/baseline/outputs
 /work3/s233249/ImgiNav/ImgiNav/notebooks/ae_test_outputs/checkpoints
 /work3/s233249/ImgiNav/ImgiNav/outputs/baseline_sd_finetuned
