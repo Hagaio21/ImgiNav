@@ -23,7 +23,7 @@ export MKL_INTERFACE_LAYER=LP64
 # Parse arguments
 # ==============================================================================
 CONFIG_FILE="/work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/paths.yaml"
-START_STAGE=2
+START_STAGE=3
 NUM_SHARDS=100
 DRY_RUN=false
 

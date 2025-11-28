@@ -551,20 +551,32 @@ def main():
     if args.limit:
         scene_meta_files = scene_meta_files[:args.limit]
     
+    # Fast batch pre-filter if --skip-existing
+    if args.skip_existing:
+        logger.info(f"Checking {len(scene_meta_files)} scenes for existing outputs...")
+        files_to_process = []
+        skip_count = 0
+        
+        jsons_dir = output_dir / "jsons"
+        for scene_meta_path in scene_meta_files:
+            scene_id = scene_meta_path.stem
+            scene_graph = jsons_dir / f"{scene_id}_scene_graph.json"
+            
+            if scene_graph.exists():
+                skip_count += 1
+            else:
+                files_to_process.append(scene_meta_path)
+        
+        logger.info(f"Skipping {skip_count} scenes with existing outputs, processing {len(files_to_process)}")
+        scene_meta_files = files_to_process
+    
     logger.info(f"Processing {len(scene_meta_files)} scenes...")
     
     success_count = 0
-    skip_count = 0
+    error_count = 0
     
     for i, scene_meta_path in enumerate(scene_meta_files, 1):
         scene_id = scene_meta_path.stem
-        
-        # Skip if outputs exist and --skip-existing is set
-        if args.skip_existing:
-            if check_scene_graphs_exist(scene_id, output_dir):
-                logger.info(f"[{i}/{len(scene_meta_files)}] ⏭ {scene_id} (exists)")
-                skip_count += 1
-                continue
         
         with open(scene_meta_path, "r") as f:
             scene_meta = json.load(f)
@@ -579,6 +591,7 @@ def main():
         
         if not rooms_metadata:
             logger.warning(f"No room metadata for {scene_id}")
+            error_count += 1
             continue
         
         success, _ = process_one_scene(scene_id, scene_meta, rooms_metadata, output_dir)
@@ -587,9 +600,10 @@ def main():
             success_count += 1
             logger.info(f"[{i}/{len(scene_meta_files)}] ✓ {scene_id}")
         else:
+            error_count += 1
             logger.warning(f"[{i}/{len(scene_meta_files)}] ✗ {scene_id}")
     
-    logger.info(f"\nDone: {success_count}/{len(scene_meta_files)}, {skip_count} skipped")
+    logger.info(f"\nDone: {success_count} succeeded, {error_count} errors")
 
 
 if __name__ == "__main__":

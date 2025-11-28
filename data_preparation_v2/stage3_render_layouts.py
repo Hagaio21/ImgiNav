@@ -652,17 +652,36 @@ def main():
         if args.limit:
             scene_ids = scene_ids[:args.limit]
         
+        # Fast batch pre-filter if --skip-existing
+        if args.skip_existing:
+            logger.info(f"Checking {len(scene_ids)} scenes for existing outputs...")
+            scenes_to_process = []
+            skip_count = 0
+            
+            for scene_id in scene_ids:
+                # Quick check: just look for scene-level layout files
+                tex_layout = output_dir / "tex" / f"{scene_id}_tex_layout.png"
+                seg_layout = output_dir / "seg" / f"{scene_id}_seg_layout.png"
+                
+                if tex_layout.exists() and seg_layout.exists():
+                    skip_count += 1
+                else:
+                    scenes_to_process.append(scene_id)
+            
+            logger.info(f"Skipping {skip_count} scenes with existing outputs, processing {len(scenes_to_process)}")
+            scene_ids = scenes_to_process
+        
         logger.info(f"Processing {len(scene_ids)} scenes...")
         
         success_count = 0
-        skip_count = 0
+        error_count = 0
         
         for i, scene_id in enumerate(scene_ids, 1):
             # Load scene metadata
             scene_meta_path = metadata_dir / "scenes" / f"{scene_id}.json"
             if not scene_meta_path.exists():
                 logger.warning(f"Scene metadata not found: {scene_meta_path}")
-                skip_count += 1
+                error_count += 1
                 continue
             
             with open(scene_meta_path, "r") as f:
@@ -674,7 +693,7 @@ def main():
             
             if not tex_glb.exists() or not seg_glb.exists():
                 logger.warning(f"GLB not found for {scene_id}")
-                skip_count += 1
+                error_count += 1
                 continue
             
             # Load room metadata
@@ -687,13 +706,6 @@ def main():
                         if room_data.get("scene_id") == scene_id:
                             rooms_metadata.append(room_data)
             
-            # Skip if outputs exist and --skip-existing is set
-            if args.skip_existing:
-                if check_scene_layouts_exist(scene_id, output_dir, rooms_metadata):
-                    logger.info(f"[{i}/{len(scene_ids)}] ⏭ {scene_id} (exists)")
-                    skip_count += 1
-                    continue
-            
             success, error = process_one_scene(
                 scene_id, tex_glb, seg_glb, scene_metadata, rooms_metadata,
                 output_dir, args.resolution, door_color=door_color, window_color=window_color
@@ -703,9 +715,10 @@ def main():
                 success_count += 1
                 logger.info(f"[{i}/{len(scene_ids)}] ✓ {scene_id}")
             else:
+                error_count += 1
                 logger.warning(f"[{i}/{len(scene_ids)}] ✗ {scene_id}: {error}")
         
-        logger.info(f"\nDone: {success_count}/{len(scene_ids)} succeeded, {skip_count} skipped")
+        logger.info(f"\nDone: {success_count} succeeded, {error_count} errors")
     
     finally:
         # Clean up HPC rendering only if it was set up
