@@ -1,21 +1,59 @@
 #!/usr/bin/env python3
 """
-Stage 4: POV Rendering
+Stage 4: POV Rendering (HPC-Fixed Version)
 
-Features:
-- Scene list support (--scene-list with scene IDs)
-- Camera at doorway, OUTSIDE the room, looking IN
-- Uses pyrender if available, fast fallback otherwise
-- HPC mode with Xvfb for headless rendering (only when --hpc flag is set)
+Key fixes for HPC headless rendering:
+1. Set PYOPENGL_PLATFORM and DISPLAY environment variables BEFORE any OpenGL imports
+2. Suppress XDG_RUNTIME_DIR warnings
+3. Better error handling for rendering backends
 """
 
 import argparse
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# ============================================================================
+# CRITICAL: Set environment variables BEFORE any OpenGL-related imports
+# This must happen at module load time, before numpy/trimesh/pyrender
+# ============================================================================
+
+def setup_environment_early(hpc_mode: bool = False, backend: str = "auto"):
+    """
+    Set up environment variables before importing OpenGL-dependent libraries.
+    Must be called BEFORE importing trimesh, pyrender, etc.
+    """
+    if not hpc_mode:
+        return
+    
+    # Suppress the XDG_RUNTIME_DIR warning by setting a valid directory
+    if "XDG_RUNTIME_DIR" not in os.environ or not os.environ["XDG_RUNTIME_DIR"]:
+        runtime_dir = os.path.expanduser("~/.cache/xdg-runtime")
+        os.makedirs(runtime_dir, exist_ok=True)
+        os.environ["XDG_RUNTIME_DIR"] = runtime_dir
+    
+    # Set Mesa to use software rendering as fallback
+    os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+    
+    # Disable GPU for EGL (use software)
+    os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = ""
+
+
+# Parse args early to check for --hpc flag
+_early_args = sys.argv[1:]
+_hpc_mode = "--hpc" in _early_args
+_backend = "auto"
+for i, arg in enumerate(_early_args):
+    if arg == "--backend" and i + 1 < len(_early_args):
+        _backend = _early_args[i + 1]
+
+setup_environment_early(_hpc_mode, _backend)
+
+# Now safe to import the rest
 import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
@@ -28,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 # Global Xvfb display reference
 _xvfb_display = None
+_renderer_initialized = False
 
 
 def setup_hpc_rendering(backend: str = "auto") -> bool:
@@ -39,21 +78,58 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
     
     Returns True if successful, False otherwise.
     """
-    global _xvfb_display
+    global _xvfb_display, _renderer_initialized
+    
+    if _renderer_initialized:
+        return True
     
     if backend == "auto":
-        # Try backends in order: xvfb first (most reliable on CPU nodes), then others
-        for try_backend in ["xvfb", "osmesa", "egl"]:
+        # Try backends in order: osmesa (most reliable CPU), then xvfb, then egl
+        for try_backend in ["osmesa", "xvfb", "egl"]:
             if setup_hpc_rendering(try_backend):
                 return True
         return False
     
+    elif backend == "osmesa":
+        try:
+            # OSMesa is the most reliable for CPU-only rendering
+            os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+            
+            # Force reimport of pyrender with new settings
+            for mod in list(sys.modules.keys()):
+                if "pyrender" in mod or "OpenGL" in mod:
+                    del sys.modules[mod]
+            
+            import pyrender
+            renderer = pyrender.OffscreenRenderer(64, 64)
+            renderer.delete()
+            logger.info("Using OSMesa backend (CPU software rendering)")
+            _renderer_initialized = True
+            return True
+        except Exception as e:
+            logger.debug(f"OSMesa backend failed: {e}")
+            if "PYOPENGL_PLATFORM" in os.environ:
+                del os.environ["PYOPENGL_PLATFORM"]
+            return False
+    
     elif backend == "xvfb":
         try:
             from xvfbwrapper import Xvfb
-            _xvfb_display = Xvfb(width=1280, height=720)
+            _xvfb_display = Xvfb(width=1920, height=1080, colordepth=24)
             _xvfb_display.start()
+            
+            # Set DISPLAY environment variable
+            os.environ["DISPLAY"] = f":{_xvfb_display.new_display}"
             logger.info(f"Xvfb started on display :{_xvfb_display.new_display}")
+            
+            # Don't set PYOPENGL_PLATFORM for Xvfb - let it use GLX
+            if "PYOPENGL_PLATFORM" in os.environ:
+                del os.environ["PYOPENGL_PLATFORM"]
+            
+            # Force reimport
+            for mod in list(sys.modules.keys()):
+                if "pyrender" in mod or "OpenGL" in mod:
+                    del sys.modules[mod]
             
             # Test if pyrender works
             try:
@@ -61,6 +137,7 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
                 renderer = pyrender.OffscreenRenderer(64, 64)
                 renderer.delete()
                 logger.info("Xvfb backend working with pyrender")
+                _renderer_initialized = True
                 return True
             except Exception as e:
                 logger.warning(f"Xvfb started but pyrender failed: {e}")
@@ -78,27 +155,20 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
     elif backend == "egl":
         try:
             os.environ["PYOPENGL_PLATFORM"] = "egl"
+            
+            # Force reimport
+            for mod in list(sys.modules.keys()):
+                if "pyrender" in mod or "OpenGL" in mod:
+                    del sys.modules[mod]
+            
             import pyrender
             renderer = pyrender.OffscreenRenderer(64, 64)
             renderer.delete()
             logger.info("Using EGL backend (GPU headless)")
+            _renderer_initialized = True
             return True
         except Exception as e:
             logger.debug(f"EGL backend failed: {e}")
-            if "PYOPENGL_PLATFORM" in os.environ:
-                del os.environ["PYOPENGL_PLATFORM"]
-            return False
-    
-    elif backend == "osmesa":
-        try:
-            os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-            import pyrender
-            renderer = pyrender.OffscreenRenderer(64, 64)
-            renderer.delete()
-            logger.info("Using OSMesa backend (CPU software)")
-            return True
-        except Exception as e:
-            logger.debug(f"OSMesa backend failed: {e}")
             if "PYOPENGL_PLATFORM" in os.environ:
                 del os.environ["PYOPENGL_PLATFORM"]
             return False
@@ -108,7 +178,7 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
 
 def cleanup_hpc_rendering():
     """Clean up any resources used by the rendering backend."""
-    global _xvfb_display
+    global _xvfb_display, _renderer_initialized
     if _xvfb_display is not None:
         try:
             _xvfb_display.stop()
@@ -116,6 +186,7 @@ def cleanup_hpc_rendering():
         except Exception:
             pass
         _xvfb_display = None
+    _renderer_initialized = False
 
 
 def load_scene_list(scene_list_path: Path) -> List[str]:
@@ -226,15 +297,11 @@ def find_room_door(room_meta: Dict, scene_doors: List[Dict]) -> Optional[Dict]:
         if door_center is None:
             continue
         
-        # Check if door is near room boundary (not just anywhere near the room)
-        # Door should be ON the edge, not inside or far outside
-        
-        # Check X boundaries
+        # Check if door is near room boundary
         on_x_min = abs(door_center[0] - bbox_min[0]) < 0.5
         on_x_max = abs(door_center[0] - bbox_max[0]) < 0.5
         in_z_range = bbox_min[2] - 0.5 <= door_center[2] <= bbox_max[2] + 0.5
         
-        # Check Z boundaries
         on_z_min = abs(door_center[2] - bbox_min[2]) < 0.5
         on_z_max = abs(door_center[2] - bbox_max[2]) < 0.5
         in_x_range = bbox_min[0] - 0.5 <= door_center[0] <= bbox_max[0] + 0.5
@@ -243,7 +310,6 @@ def find_room_door(room_meta: Dict, scene_doors: List[Dict]) -> Optional[Dict]:
                          ((on_z_min or on_z_max) and in_x_range)
         
         if is_on_boundary:
-            # Score by distance to room center (prefer doors closer to center)
             dist = np.linalg.norm(door_center[[0,2]] - room_center[[0,2]])
             if dist < best_score:
                 best_score = dist
@@ -260,7 +326,6 @@ def compute_pov_camera(
 ) -> Optional[Dict]:
     """
     POV camera at door, looking at room center.
-    Simple: eye at door, look_at at room center (at 1m height).
     """
     bbox = room_meta.get("bbox", {})
     if not bbox or "min" not in bbox:
@@ -277,7 +342,7 @@ def compute_pov_camera(
             eye[1] = camera_height
             
             look_at = room_center.copy()
-            look_at[1] = 1.0  # Look at furniture height
+            look_at[1] = 1.0
             
             return {
                 "eye": eye.tolist(),
@@ -390,107 +455,129 @@ def try_render_pyrender(
         
         scene.add(cam, pose=cam_pose)
         
-        # Add directional light only (no point light flashlight)
         light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
         scene.add(light, pose=cam_pose)
         
-        # Try to create renderer
         renderer = OffscreenRenderer(width, height)
         color, _ = renderer.render(scene)
         renderer.delete()
         
         return Image.fromarray(color)
-    
+        
     except Exception as e:
-        logger.warning(f"pyrender render failed: {e}")
+        logger.warning(f"pyrender failed: {e}")
         return None
 
 
-def render_pov_fast(
+def render_fast_fallback(
     meshes: List[trimesh.Trimesh],
     camera: Dict,
-    width: int = 1280,
-    height: int = 720,
-    bg_color: Tuple[int, int, int] = (135, 206, 235)
+    width: int,
+    height: int
 ) -> Image.Image:
-    """
-    Software renderer - renders ALL meshes, no culling optimization.
-    """
+    """Fast software fallback renderer using trimesh's built-in rendering."""
+    
     eye = np.array(camera["eye"])
     center = np.array(camera["center"])
     up = np.array(camera["up"])
     fov = camera.get("fov", 60.0)
     
+    # Build view matrix
     forward = center - eye
     forward = forward / (np.linalg.norm(forward) + 1e-9)
     right = np.cross(forward, up)
     right = right / (np.linalg.norm(right) + 1e-9)
     cam_up = np.cross(right, forward)
     
-    cam_matrix = np.vstack([right, cam_up, forward])
+    view_matrix = np.eye(4)
+    view_matrix[:3, 0] = right
+    view_matrix[:3, 1] = cam_up
+    view_matrix[:3, 2] = -forward
+    view_matrix[:3, 3] = eye
+    view_matrix = np.linalg.inv(view_matrix)
     
+    # Build projection matrix
     aspect = width / height
     fov_rad = np.radians(fov)
-    tan_half_fov = np.tan(fov_rad / 2)
+    f = 1.0 / np.tan(fov_rad / 2.0)
+    near, far = 0.1, 100.0
     
-    img = Image.new("RGB", (width, height), bg_color)
+    proj_matrix = np.zeros((4, 4))
+    proj_matrix[0, 0] = f / aspect
+    proj_matrix[1, 1] = f
+    proj_matrix[2, 2] = (far + near) / (near - far)
+    proj_matrix[2, 3] = (2 * far * near) / (near - far)
+    proj_matrix[3, 2] = -1.0
+    
+    # Create output image
+    img = Image.new("RGB", (width, height), (135, 206, 235))  # Sky blue background
     draw = ImageDraw.Draw(img)
-    
-    triangles = []
+    z_buffer = np.full((height, width), float('inf'))
     
     for mesh in meshes:
         if len(mesh.vertices) == 0:
             continue
         
-        # Transform vertices to camera space
-        verts_rel = mesh.vertices - eye
-        verts_cam = verts_rel @ cam_matrix.T
-        
+        vertices = mesh.vertices
         colors = get_mesh_color(mesh)
         
+        # Transform vertices
+        ones = np.ones((len(vertices), 1))
+        verts_h = np.hstack([vertices, ones])
+        
+        # View transform
+        verts_view = (view_matrix @ verts_h.T).T
+        
+        # Projection
+        verts_proj = (proj_matrix @ verts_view.T).T
+        
+        # Perspective divide
+        w = verts_proj[:, 3:4]
+        w[w == 0] = 1e-9
+        verts_ndc = verts_proj[:, :3] / w
+        
+        # To screen coordinates
+        screen_x = ((verts_ndc[:, 0] + 1) * 0.5 * width).astype(int)
+        screen_y = ((1 - verts_ndc[:, 1]) * 0.5 * height).astype(int)
+        depth = verts_ndc[:, 2]
+        
+        # Draw triangles
         for face in mesh.faces:
-            p0 = verts_cam[face[0]]
-            p1 = verts_cam[face[1]]
-            p2 = verts_cam[face[2]]
+            i0, i1, i2 = face
             
-            # Only skip if ALL vertices are behind camera
-            if p0[2] <= 0.01 and p1[2] <= 0.01 and p2[2] <= 0.01:
+            # Skip if behind camera
+            if depth[i0] < -1 or depth[i1] < -1 or depth[i2] < -1:
+                continue
+            if depth[i0] > 1 or depth[i1] > 1 or depth[i2] > 1:
                 continue
             
-            # Skip if any vertex is behind (simple clipping)
-            if p0[2] <= 0.01 or p1[2] <= 0.01 or p2[2] <= 0.01:
+            x0, y0 = screen_x[i0], screen_y[i0]
+            x1, y1 = screen_x[i1], screen_y[i1]
+            x2, y2 = screen_x[i2], screen_y[i2]
+            
+            # Skip degenerate or off-screen
+            if (x0 == x1 == x2) or (y0 == y1 == y2):
+                continue
+            if max(x0, x1, x2) < 0 or min(x0, x1, x2) >= width:
+                continue
+            if max(y0, y1, y2) < 0 or min(y0, y1, y2) >= height:
                 continue
             
-            # Project to screen
-            def project(p):
-                x_ndc = p[0] / (p[2] * tan_half_fov * aspect)
-                y_ndc = p[1] / (p[2] * tan_half_fov)
-                return ((x_ndc + 1) * 0.5 * width, (1 - y_ndc) * 0.5 * height)
+            # Average color
+            color = tuple(int(c) for c in colors[i0])
             
-            s0, s1, s2 = project(p0), project(p1), project(p2)
+            # Simple depth test
+            avg_depth = (depth[i0] + depth[i1] + depth[i2]) / 3
+            cx = (x0 + x1 + x2) // 3
+            cy = (y0 + y1 + y2) // 3
             
-            avg_depth = (p0[2] + p1[2] + p2[2]) / 3
-            
-            c0, c1, c2 = colors[face]
-            avg_color = (
-                (int(c0[0]) + int(c1[0]) + int(c2[0])) // 3,
-                (int(c0[1]) + int(c1[1]) + int(c2[1])) // 3,
-                (int(c0[2]) + int(c1[2]) + int(c2[2])) // 3
-            )
-            
-            triangles.append((avg_depth, [s0, s1, s2], avg_color))
-    
-    logger.info(f"      Rendering {len(triangles)} triangles")
-    
-    # Sort by depth (far to near)
-    triangles.sort(key=lambda x: -x[0])
-    
-    # Draw
-    for _, points, color in triangles:
-        try:
-            draw.polygon([p for pt in points for p in pt], fill=color)
-        except Exception:
-            pass
+            if 0 <= cx < width and 0 <= cy < height:
+                if avg_depth < z_buffer[cy, cx]:
+                    z_buffer[cy, cx] = avg_depth
+                    try:
+                        draw.polygon([(x0, y0), (x1, y1), (x2, y2)], fill=color)
+                    except Exception:
+                        pass
     
     return img
 
@@ -498,23 +585,18 @@ def render_pov_fast(
 def render_pov(
     meshes: List[trimesh.Trimesh],
     camera: Dict,
-    width: int = 1280,
-    height: int = 720,
+    width: int,
+    height: int,
     use_pyrender: bool = True
 ) -> Image.Image:
-    """Render POV image."""
+    """Render POV using available renderer."""
     if use_pyrender:
         result = try_render_pyrender(meshes, camera, width, height)
         if result is not None:
             return result
-        logger.info("      pyrender failed, using software renderer")
     
-    return render_pov_fast(meshes, camera, width, height)
+    return render_fast_fallback(meshes, camera, width, height)
 
-
-# ============================================================================
-# Main Processing
-# ============================================================================
 
 def process_one_scene(
     scene_id: str,
@@ -523,63 +605,43 @@ def process_one_scene(
     scene_meta: Dict,
     rooms_metadata: List[Dict],
     output_dir: Path,
-    width: int = 1280,
-    height: int = 720,
-    fov: float = 60.0,
-    use_pyrender: bool = True
+    width: int,
+    height: int,
+    fov: float,
+    use_pyrender: bool
 ) -> Tuple[bool, Optional[str]]:
-    """
-    Process one scene: generate POV renders for each door and window.
-    """
+    """Process one scene and generate POV renders."""
+    
     try:
-        logger.info(f"Generating POVs for scene {scene_id}...")
-        
-        # Load scene geometry ONCE
+        # Load meshes
         tex_meshes = load_glb_with_transforms(tex_glb_path)
         seg_meshes = load_glb_with_transforms(seg_glb_path)
         
-        logger.info(f"  Loaded {len(tex_meshes)} tex meshes, {len(seg_meshes)} seg meshes")
+        if not tex_meshes:
+            return False, "No textured meshes loaded"
         
         scene_doors = scene_meta.get("doors", [])
         scene_windows = scene_meta.get("windows", [])
-        logger.info(f"  Found {len(scene_doors)} doors, {len(scene_windows)} windows")
         
-        # Process all doors
-        for door_idx, door in enumerate(scene_doors):
-            door_center = compute_door_center(door)
-            if door_center is None:
+        # Process each room's door
+        for room_meta in rooms_metadata:
+            room_id = room_meta.get("room_id", room_meta.get("room_type", "Unknown"))
+            
+            door = find_room_door(room_meta, scene_doors)
+            if door is None:
                 continue
             
-            # Find closest room
-            best_room = None
-            best_dist = float('inf')
-            for room_meta in rooms_metadata:
-                bbox = room_meta.get("bbox", {})
-                if not bbox or "min" not in bbox:
-                    continue
-                bbox_min = np.array(bbox["min"])
-                bbox_max = np.array(bbox["max"])
-                room_center = (bbox_min + bbox_max) / 2.0
-                dist = np.linalg.norm(door_center[[0,2]] - room_center[[0,2]])
-                if dist < best_dist:
-                    best_dist = dist
-                    best_room = room_meta
+            logger.info(f"  {room_id} - rendering door POV")
             
-            if best_room is None:
-                continue
-            
-            room_id = best_room.get("room_id", best_room.get("room_type", "Unknown"))
-            logger.info(f"  Door {door_idx} -> {room_id}")
-            
-            camera = compute_pov_camera(best_room, door, fov=fov)
+            camera = compute_pov_camera(room_meta, door, fov=fov)
             if camera is None:
                 continue
             
             tex_pov = render_pov(tex_meshes, camera, width, height, use_pyrender)
             seg_pov = render_pov(seg_meshes, camera, width, height, use_pyrender)
             
-            tex_output = output_dir / "tex" / f"{scene_id}_{room_id}_door{door_idx}_tex_pov.png"
-            seg_output = output_dir / "seg" / f"{scene_id}_{room_id}_door{door_idx}_seg_pov.png"
+            tex_output = output_dir / "tex" / f"{scene_id}_{room_id}_door0_tex_pov.png"
+            seg_output = output_dir / "seg" / f"{scene_id}_{room_id}_door0_seg_pov.png"
             tex_output.parent.mkdir(parents=True, exist_ok=True)
             seg_output.parent.mkdir(parents=True, exist_ok=True)
             tex_pov.save(tex_output)
@@ -587,7 +649,7 @@ def process_one_scene(
         
         # Process all windows
         for win_idx, window in enumerate(scene_windows):
-            window_center = compute_door_center(window)  # Same bbox structure
+            window_center = compute_door_center(window)
             if window_center is None:
                 continue
             
@@ -635,31 +697,30 @@ def process_one_scene(
 
 def main():
     parser = argparse.ArgumentParser(description="Stage 4: Render POVs")
-    parser.add_argument("--dataset-root", default=None, help="Root directory of dataset (derives paths from this)")
-    parser.add_argument("--geometry-dir", default=None, help="Directory containing geometry GLB files (required if --dataset-root not provided)")
-    parser.add_argument("--metadata-dir", default=None, help="Directory containing metadata JSON files (required if --dataset-root not provided)")
-    parser.add_argument("--output-dir", default=None, help="Output directory for POV images (required if --dataset-root not provided)")
-    parser.add_argument("--scene-list", type=str, default=None, help="Path to text file with scene IDs (one per line)")
+    parser.add_argument("--dataset-root", default=None, help="Root directory of dataset")
+    parser.add_argument("--geometry-dir", default=None, help="Directory containing geometry GLB files")
+    parser.add_argument("--metadata-dir", default=None, help="Directory containing metadata JSON files")
+    parser.add_argument("--output-dir", default=None, help="Output directory for POV images")
+    parser.add_argument("--scene-list", type=str, default=None, help="Path to text file with scene IDs")
     parser.add_argument("--width", type=int, default=1280, help="Output image width")
     parser.add_argument("--height", type=int, default=720, help="Output image height")
     parser.add_argument("--fov", type=float, default=60.0, help="Camera field of view in degrees")
     parser.add_argument("--no-pyrender", action="store_true", help="Disable pyrender, use software fallback")
-    parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
+    parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with headless rendering")
     parser.add_argument("--skip-existing", action="store_true", help="Skip scenes that already have output files")
     parser.add_argument("--backend", type=str, default="auto", 
                         choices=["auto", "egl", "osmesa", "xvfb"],
-                        help="Rendering backend (used with --hpc): auto, egl, osmesa, or xvfb")
+                        help="Rendering backend: auto, egl, osmesa, or xvfb")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of scenes to process")
     args = parser.parse_args()
     
-    # If dataset-root is provided, derive paths from it
+    # Derive paths
     if args.dataset_root:
         dataset_root = Path(args.dataset_root)
         geometry_dir = Path(args.geometry_dir) if args.geometry_dir else dataset_root / "geometry"
         metadata_dir = Path(args.metadata_dir) if args.metadata_dir else dataset_root / "metadata"
         output_dir = Path(args.output_dir) if args.output_dir else dataset_root / "povs"
     else:
-        # Backward compatibility: require individual paths
         if not args.geometry_dir:
             parser.error("--geometry-dir is required when --dataset-root is not provided")
         if not args.metadata_dir:
@@ -672,7 +733,7 @@ def main():
     
     use_pyrender = not args.no_pyrender
     
-    # Set up HPC rendering only if --hpc flag is set
+    # Set up HPC rendering if requested
     if args.hpc and use_pyrender:
         if not setup_hpc_rendering(args.backend):
             logger.warning("No HPC rendering backend available, falling back to software renderer")
@@ -681,7 +742,6 @@ def main():
     try:
         # Determine which scenes to process
         if args.scene_list:
-            # Load scene IDs from file
             scene_list_path = Path(args.scene_list)
             if not scene_list_path.exists():
                 logger.error(f"Scene list not found: {scene_list_path}")
@@ -690,7 +750,6 @@ def main():
             scene_ids = load_scene_list(scene_list_path)
             logger.info(f"Loaded {len(scene_ids)} scene IDs from {scene_list_path}")
         else:
-            # Discover scenes from metadata directory
             scene_meta_files = list((metadata_dir / "scenes").glob("*.json"))
             if not scene_meta_files:
                 logger.error(f"No scene metadata found in {metadata_dir / 'scenes'}")
@@ -710,7 +769,6 @@ def main():
         skip_count = 0
         
         for i, scene_id in enumerate(scene_ids, 1):
-            # Load scene metadata
             scene_meta_path = metadata_dir / "scenes" / f"{scene_id}.json"
             if not scene_meta_path.exists():
                 logger.warning(f"Scene metadata not found: {scene_meta_path}")
@@ -720,7 +778,6 @@ def main():
             with open(scene_meta_path, "r") as f:
                 scene_meta = json.load(f)
             
-            # Check for GLB files
             tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
             seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
             
@@ -744,7 +801,7 @@ def main():
                 skip_count += 1
                 continue
             
-            # Skip if outputs exist and --skip-existing is set
+            # Skip if outputs exist
             if args.skip_existing:
                 if check_scene_povs_exist(scene_id, output_dir, rooms_metadata):
                     logger.info(f"[{i}/{len(scene_ids)}] ⏭ {scene_id} (exists)")
@@ -759,7 +816,6 @@ def main():
             if success:
                 success_count += 1
             
-            # Progress and ETA
             elapsed = time.time() - start_time
             avg_time = elapsed / i
             remaining = (total_scenes - i) * avg_time
@@ -772,7 +828,6 @@ def main():
         logger.info(f"\nDone: {success_count}/{total_scenes} succeeded, {skip_count} skipped in {total_time/3600:.1f} hours")
     
     finally:
-        # Clean up HPC rendering only if it was set up
         if args.hpc:
             cleanup_hpc_rendering()
 
