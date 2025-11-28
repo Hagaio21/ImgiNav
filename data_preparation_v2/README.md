@@ -1,163 +1,215 @@
-# 3D-FRONT / 3D-FUTURE Data Preparation Pipeline v2
+# Data Preparation Pipeline
 
-This pipeline prepares 3D-FRONT and 3D-FUTURE data into a clean, flat dataset structure.
+This pipeline processes 3D-FRONT scenes for the ImgiNav project. It supports sharding for parallel HPC processing and automatic stage chaining.
 
-## Overview
+## Configuration: paths.yaml
 
-The v2 pipeline processes 3D scene data through 7 stages:
+All paths are configured in a single `paths.yaml` file:
 
-1. **Stage 0**: Taxonomy Generation - Creates deterministic category/supercategory ↔ color mappings
-2. **Stage 1**: Geometry Reconstruction - Generates textured and segmented GLB files
-3. **Stage 2**: Metadata Compilation - Extracts scene and room metadata
-4. **Stage 3**: Layout Rendering - Generates top-down orthographic layout images
-5. **Stage 4**: POV Rendering - Generates perspective point-of-view images
-6. **Stage 5**: Graph Generation - Builds room and scene graphs
-7. **Stage 6**: Manifest Generation - Creates global index files
+```yaml
+# OUTPUT - Where processed data goes
+output_dataset_root: "/work3/s233249/ImgiNav/dataset_v2"
 
-## Output Structure
+# 3D-FRONT/3D-FUTURE SOURCES (only needed for Stage 1 & 2)
+front3d_scenes_dir: "/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
+front3d_model_info: "/work3/s233249/ImgiNav/datasets/3D-FUTURE-model/model_info.json"
+front3d_model_dir: "/work3/s233249/ImgiNav/datasets/3D-FUTURE-model"
+
+# PIPELINE PATHS
+base_dir: "/work3/s233249/ImgiNav/ImgiNav"
+shards_dir: "data_preparation_v2/hpc_scripts/shards"  # relative to base_dir
+log_dir: "data_preparation_v2/hpc_scripts/logs"       # relative to base_dir
+```
+
+**Key design:**
+- `output_dataset_root` - Where ALL processed data goes (your new dataset)
+- `front3d_*` paths - Only used by Stage 1 & 2 to read source data
+- Stages 3-6 only need `output_dataset_root`
+
+## Pipeline Overview
 
 ```
-dataset/
-├── geometry/
-│   ├── tex/
-│   │   └── <scene_id>_tex.glb
-│   └── seg/
-│       └── <scene_id>_seg.glb
-├── layouts/
-│   ├── tex/
-│   │   ├── <scene_id>_tex_layout.png
-│   │   └── <scene_id>_<room>_tex_layout.png
-│   └── seg/
-│       ├── <scene_id>_seg_layout.png
-│       └── <scene_id>_<room>_seg_layout.png
-├── povs/
-│   ├── tex/
-│   │   └── <scene_id>_<room>_tex_pov.png
-│   └── seg/
-│       └── <scene_id>_<room>_seg_pov.png
-├── graphs/
-│   └── jsons/
-│       ├── <scene_id>_scene_graph.json
-│       └── <scene_id>_<room>_room_graph.json
-├── metadata/
-│   ├── scenes/
-│   │   └── <scene_id>.json
-│   └── rooms/
-│       └── <scene_id>_<room>.json
+Stage 1: Reconstruct Geometry (needs 3D-FRONT sources)
+   ↓
+Stage 2: Compile Metadata (needs 3D-FRONT sources)
+   ↓
+Stage 3: Render Layouts (only needs OUTPUT_DATASET_ROOT)
+   ↓
+Stage 4: Render POVs (only needs OUTPUT_DATASET_ROOT)
+   ↓
+Stage 5: Build Graphs (only needs OUTPUT_DATASET_ROOT)
+   ↓
+Stage 6: Generate Manifests (only needs OUTPUT_DATASET_ROOT)
+```
+
+## Output Dataset Structure
+
+```
+$OUTPUT_DATASET_ROOT/
 ├── taxonomy/
-│   └── taxonomy.json
+│   └── taxonomy.json       # Category colors (create this first!)
+├── geometry/
+│   ├── tex/                # Textured GLB files
+│   └── seg/                # Segmented GLB files
+├── metadata/
+│   ├── scenes/             # Scene-level JSON metadata
+│   └── rooms/              # Room-level JSON metadata
+├── layouts/
+│   ├── tex/                # Textured layout images
+│   └── seg/                # Segmented layout images
+├── povs/
+│   ├── tex/                # Textured POV images
+│   └── seg/                # Segmented POV images
+├── graphs/
+│   ├── jsons/              # Scene and room graphs
+│   └── texts/              # Text descriptions
 └── manifests/
-    ├── scenes.json
-    └── rooms.json
+    ├── scenes.json         # Scene index
+    └── rooms.json          # Room index
 ```
 
-## Usage
+## Quick Start
 
-### Stage 0: Taxonomy Generation
+### 1. Edit paths.yaml
+
+Copy and edit `paths.yaml` for your environment:
+
+```yaml
+output_dataset_root: "/work3/s233249/ImgiNav/dataset_v2"
+front3d_scenes_dir: "/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
+front3d_model_info: "/work3/s233249/ImgiNav/datasets/3D-FUTURE-model/model_info.json"
+front3d_model_dir: "/work3/s233249/ImgiNav/datasets/3D-FUTURE-model"
+base_dir: "/work3/s233249/ImgiNav/ImgiNav"
+shards_dir: "data_preparation_v2/hpc_scripts/shards"
+log_dir: "data_preparation_v2/hpc_scripts/logs"
+```
+
+### 2. Create Taxonomy File
+
+Create `$OUTPUT_DATASET_ROOT/taxonomy/taxonomy.json`:
+
+```json
+{
+  "category_to_color": {
+    "floor": [200, 200, 200],
+    "wall": [50, 50, 50],
+    "Door": [255, 100, 100],
+    "Window": [100, 200, 255],
+    "Bed": [255, 150, 150],
+    "Chair": [150, 255, 150],
+    "Table": [150, 150, 255]
+  }
+}
+```
+
+### 3. Create Shards
+
+Split scenes into shards for parallel processing:
 
 ```bash
-python data_preparation_v2/stage0_build_taxonomy.py \
-    --model-info <path_to_model_info.json> \
-    --scenes-dir <path_to_3d_front_scenes> \
-    --out dataset/taxonomy/taxonomy.json
+# Discover scenes from 3D-FRONT directory
+python create_shards.py \
+    --scenes-dir /dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT \
+    --output-dir shards/ \
+    --num-shards 10
+
+# Or from a scene list file
+python create_shards.py \
+    --scene-list all_scenes.txt \
+    --output-dir shards/ \
+    --num-shards 10
 ```
 
-### Stage 1: Geometry Reconstruction
+### 4. Launch Pipeline
 
 ```bash
-python data_preparation_v2/stage1_reconstruct_geometry.py \
-    --scenes-dir <path_to_3d_front_scenes> \
-    --model-dir <path_to_3d_future_models> \
-    --model-info <path_to_model_info.json> \
-    --taxonomy dataset/taxonomy/taxonomy.json \
-    --output-dir dataset/geometry \
-    [--texture-dir <path_to_3d_front_texture>]
+# Launch from stage 2
+./launch_pipeline.sh --config paths.yaml --stage 2
+
+# Dry run to see what would be submitted
+./launch_pipeline.sh --config paths.yaml --stage 2 --dry-run
+
+# Resume from a later stage (only needs output data, not 3D-FRONT sources)
+./launch_pipeline.sh --config paths.yaml --stage 4
 ```
 
-### Stage 2: Metadata Compilation
+### 5. Monitor Jobs
 
 ```bash
-python data_preparation_v2/stage2_compile_metadata.py \
-    --scenes-dir <path_to_3d_front_scenes> \
-    --model-info <path_to_model_info.json> \
-    --taxonomy dataset/taxonomy/taxonomy.json \
-    --output-dir dataset/metadata
+bjobs -w
+tail -f logs/stage2_metadata.*.out
 ```
 
-### Stage 3: Layout Rendering
+## Running Individual Stages
+
+### Stage 2: Compile Metadata
 
 ```bash
-python data_preparation_v2/stage3_render_layouts.py \
-    --geometry-dir dataset/geometry \
-    --metadata-dir dataset/metadata \
-    --output-dir dataset/layouts \
-    [--resolution 512]
+python stage2_compile_metadata.py \
+    --config paths.yaml \
+    --scene-list shard_1.txt
 ```
 
-### Stage 4: POV Rendering
+### Stage 3-6: Only need OUTPUT_DATASET_ROOT
 
 ```bash
-python data_preparation_v2/stage4_render_povs.py \
-    --geometry-dir dataset/geometry \
-    --metadata-dir dataset/metadata \
-    --output-dir dataset/povs \
-    [--width 1280 --height 800 --fov-deg 70.0]
+# These stages use --dataset-root which is OUTPUT_DATASET_ROOT
+python stage3_render_layouts.py \
+    --dataset-root /work3/s233249/ImgiNav/dataset_v2 \
+    --scene-list shard_1.txt \
+    --hpc
+
+python stage4_render_povs.py \
+    --dataset-root /work3/s233249/ImgiNav/dataset_v2 \
+    --scene-list shard_1.txt \
+    --hpc
+
+python stage5_build_graphs.py \
+    --dataset-root /work3/s233249/ImgiNav/dataset_v2 \
+    --scene-list shard_1.txt
+
+python stage6_generate_manifests.py \
+    --dataset-root /work3/s233249/ImgiNav/dataset_v2 \
+    --scene-list shard_1.txt
 ```
 
-### Stage 5: Graph Generation
+## Troubleshooting
+
+### Scene files not found (Stage 2)
+
+The script searches recursively in `front3d_scenes_dir` for `<scene_id>.json`. Check:
+- Is `front3d_scenes_dir` correct in paths.yaml?
+- Do the scene IDs in your shard file match actual filenames?
+
+### Config validation
 
 ```bash
-python data_preparation_v2/stage5_build_graphs.py \
-    --layouts-dir dataset/layouts \
-    --metadata-dir dataset/metadata \
-    --taxonomy dataset/taxonomy/taxonomy.json \
-    --output-dir dataset/graphs
+python config_loader.py paths.yaml --validate --stage 2
 ```
 
-### Stage 6: Manifest Generation
+### HPC rendering issues
 
-```bash
-python data_preparation_v2/stage6_generate_manifests.py \
-    --dataset-root dataset \
-    --output-dir dataset/manifests
+- Ensure xvfbwrapper is installed: `pip install xvfbwrapper`
+- The `--hpc` flag enables headless rendering
+- Check logs for OpenGL errors
+
+## Stage Chaining
+
+Each stage automatically submits the next stage for the same shard:
+
+```
+Stage 2 → Stage 3 → Stage 4 → Stage 5 → Stage 6
 ```
 
-## Performance Optimizations
+The `CONFIG_FILE` environment variable is passed to each stage.
 
-The pipeline is optimized for laptop use:
+## Files
 
-- **Stage 3 (Layouts)**: Loads each GLB file once and generates all layouts (scene + rooms) from it
-- **Stage 4 (POVs)**: Loads each GLB file once and generates all POVs from it
-- Memory is freed after processing each scene
-
-## Testing
-
-Run tests with a small subset of data:
-
-```bash
-# Run all stage tests
-python data_preparation_v2/tests/test_runner.py
-
-# Run individual stage tests
-python -m pytest data_preparation_v2/tests/test_stage0.py
-```
-
-Test outputs are saved to `test_dataset/` directory.
-
-## Dependencies
-
-- trimesh
-- open3d
-- numpy
-- pandas
-- PIL/Pillow
-- scipy
-- tqdm
-- cv2 (opencv-python)
-
-## Notes
-
-- All outputs use a flat structure with naming convention `<scene_id>_<room>_<type>.<ext>`
-- Colors are deterministic (hash-based) for consistent segmentation
-- The pipeline processes one scene at a time to manage memory usage
-
+| File | Description |
+|------|-------------|
+| `paths.yaml` | **Edit this!** All configuration in one place |
+| `config_loader.py` | Python utility to load/validate config |
+| `create_shards.py` | Create shard files from scene list |
+| `launch_pipeline.sh` | Master launcher for HPC |
+| `run_stage{2-6}_array.sh` | Individual stage scripts |
+| `stage2_compile_metadata.py` | Stage 2 Python script (uses paths.yaml) |

@@ -1,0 +1,64 @@
+# ==============================================================================
+# Pipeline Configuration - paths.yaml
+# ==============================================================================
+# Edit this file to configure paths for your environment.
+# All scripts read from this file.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# OUTPUT DATASET ROOT
+# ------------------------------------------------------------------------------
+# This is where all processed data will be saved.
+# Structure:
+#   $OUTPUT_DATASET_ROOT/
+#   ├── taxonomy/taxonomy.json
+#   ├── geometry/{tex,seg}/
+#   ├── metadata/{scenes,rooms}/
+#   ├── layouts/{tex,seg}/
+#   ├── povs/{tex,seg}/
+#   ├── graphs/{jsons,texts}/
+#   └── manifests/
+
+output_dataset_root: "/work3/s233249/ImgiNav/dataset_v2"
+
+# ------------------------------------------------------------------------------
+# 3D-FRONT / 3D-FUTURE SOURCE PATHS
+# ------------------------------------------------------------------------------
+# These are only needed for Stage 1 (geometry) and Stage 2 (metadata).
+# Stages 3-6 only need output_dataset_root.
+
+# Directory containing original 3D-FRONT scene JSON files
+# The pipeline will search recursively for <scene_id>.json files
+front3d_scenes_dir: "/dtu/datasets2/ScanNet/FutureFront3D/3D-FUTUR_FRONT"
+
+# Path to 3D-FUTURE model_info.json
+front3d_model_info: "/work3/s233249/ImgiNav/datasets/3D-FUTURE-model/model_info.json"
+
+# Directory containing 3D-FUTURE furniture models (for Stage 1 geometry)
+# Each model is in a subdirectory: <model_dir>/<jid>/raw_model.obj
+front3d_model_dir: "/work3/s233249/ImgiNav/datasets/3D-FUTURE-model"
+
+# Optional: Directory containing texture files (for Stage 1)
+front3d_texture_dir: null
+
+# ------------------------------------------------------------------------------
+# PIPELINE PATHS
+# ------------------------------------------------------------------------------
+# These control where pipeline scripts and data are located.
+
+# Base directory of your project (where data_preparation_v2/ lives)
+base_dir: "/work3/s233249/ImgiNav/ImgiNav"
+
+# Directory containing shard files (shard_1.txt, shard_2.txt, etc.)
+# Relative to base_dir if not absolute
+shards_dir: "data_preparation_v2/hpc_scripts/shards"
+
+# Directory for job logs
+# Relative to base_dir if not absolute
+log_dir: "data_preparation_v2/hpc_scripts/logs"
+
+# ------------------------------------------------------------------------------
+# OPTIONAL: Taxonomy path
+# ------------------------------------------------------------------------------
+# If not specified, defaults to: $OUTPUT_DATASET_ROOT/taxonomy/taxonomy.json
+taxonomy_path: null
