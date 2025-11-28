@@ -492,12 +492,19 @@ def load_scene_list(scene_list_path: Path) -> List[str]:
     return scenes
 
 
+def check_scene_graphs_exist(scene_id: str, output_dir: Path) -> bool:
+    """Check if graph outputs already exist for a scene."""
+    scene_graph = output_dir / "jsons" / f"{scene_id}_scene_graph.json"
+    return scene_graph.exists()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stage 5: Generate scene and room graphs")
     parser.add_argument("--dataset-root", default=None, help="Root directory of dataset (derives paths from this)")
     parser.add_argument("--metadata-dir", default=None, help="Directory with metadata (required if --dataset-root not provided)")
     parser.add_argument("--output-dir", default=None, help="Output directory for graphs (required if --dataset-root not provided)")
     parser.add_argument("--scene-list", default=None, help="File containing scene IDs (one per line)")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip scenes that already have output files")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
     
@@ -547,9 +554,17 @@ def main():
     logger.info(f"Processing {len(scene_meta_files)} scenes...")
     
     success_count = 0
+    skip_count = 0
     
     for i, scene_meta_path in enumerate(scene_meta_files, 1):
         scene_id = scene_meta_path.stem
+        
+        # Skip if outputs exist and --skip-existing is set
+        if args.skip_existing:
+            if check_scene_graphs_exist(scene_id, output_dir):
+                logger.info(f"[{i}/{len(scene_meta_files)}] ⏭ {scene_id} (exists)")
+                skip_count += 1
+                continue
         
         with open(scene_meta_path, "r") as f:
             scene_meta = json.load(f)
@@ -574,7 +589,7 @@ def main():
         else:
             logger.warning(f"[{i}/{len(scene_meta_files)}] ✗ {scene_id}")
     
-    logger.info(f"\nDone: {success_count}/{len(scene_meta_files)}")
+    logger.info(f"\nDone: {success_count}/{len(scene_meta_files)}, {skip_count} skipped")
 
 
 if __name__ == "__main__":

@@ -33,18 +33,20 @@ def load_config(config_path: Path) -> Dict:
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     
-    # Resolve relative paths
+    # base_dir is used for relative pipeline paths only
     base_dir = Path(config.get("base_dir", ".")).expanduser()
     
-    shards_dir = config.get("shards_dir", "shards")
-    if not Path(shards_dir).is_absolute():
-        config["shards_dir"] = str(base_dir / shards_dir)
+    # These pipeline paths can be relative to base_dir
+    for key in ["shards_dir", "log_dir", "python_scripts_dir", "hpc_scripts_dir"]:
+        val = config.get(key, "")
+        if val and not Path(val).is_absolute():
+            config[key] = str(base_dir / val)
     
-    log_dir = config.get("log_dir", "logs")
-    if not Path(log_dir).is_absolute():
-        config["log_dir"] = str(base_dir / log_dir)
+    # 3D-FRONT source paths are ALWAYS absolute - don't modify them
+    # output_dataset_root is ALWAYS absolute - don't modify it
+    # front3d_scenes_dir, front3d_model_info, front3d_model_dir are ALWAYS absolute
     
-    # Set default taxonomy path
+    # Set default taxonomy path if not specified
     if not config.get("taxonomy_path"):
         config["taxonomy_path"] = str(Path(config["output_dataset_root"]) / "taxonomy" / "taxonomy.json")
     

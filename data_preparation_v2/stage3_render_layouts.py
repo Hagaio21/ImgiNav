@@ -82,6 +82,27 @@ def load_scene_list(scene_list_path: Path) -> List[str]:
     return scenes
 
 
+def check_scene_layouts_exist(scene_id: str, output_dir: Path, rooms_metadata: list) -> bool:
+    """Check if all layout outputs already exist for a scene."""
+    # Check scene-level layouts
+    tex_layout = output_dir / "tex" / f"{scene_id}_tex_layout.png"
+    seg_layout = output_dir / "seg" / f"{scene_id}_seg_layout.png"
+    
+    if not tex_layout.exists() or not seg_layout.exists():
+        return False
+    
+    # Check room-level layouts
+    for room_meta in rooms_metadata:
+        room_id = room_meta.get("room_id", room_meta.get("room_type", "Unknown"))
+        room_tex = output_dir / "tex" / f"{scene_id}_{room_id}_tex_layout.png"
+        room_seg = output_dir / "seg" / f"{scene_id}_{room_id}_seg_layout.png"
+        
+        if not room_tex.exists() or not room_seg.exists():
+            return False
+    
+    return True
+
+
 def load_glb_with_transforms(glb_path: Path) -> List[trimesh.Trimesh]:
     """
     Load a GLB file and return list of meshes with transforms applied.
@@ -571,6 +592,7 @@ def main():
     parser.add_argument("--scene-list", type=str, default=None, help="Path to text file with scene IDs (one per line)")
     parser.add_argument("--resolution", type=int, default=512, help="Output image resolution")
     parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip scenes that already have output files")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of scenes to process")
     args = parser.parse_args()
     
@@ -664,6 +686,13 @@ def main():
                         room_data = json.load(f)
                         if room_data.get("scene_id") == scene_id:
                             rooms_metadata.append(room_data)
+            
+            # Skip if outputs exist and --skip-existing is set
+            if args.skip_existing:
+                if check_scene_layouts_exist(scene_id, output_dir, rooms_metadata):
+                    logger.info(f"[{i}/{len(scene_ids)}] ⏭ {scene_id} (exists)")
+                    skip_count += 1
+                    continue
             
             success, error = process_one_scene(
                 scene_id, tex_glb, seg_glb, scene_metadata, rooms_metadata,

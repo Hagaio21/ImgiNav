@@ -82,10 +82,18 @@ print(config.get('$1', '') or '')
 
 BASE_DIR="$(get_config base_dir)"
 OUTPUT_DATASET_ROOT="$(get_config output_dataset_root)"
+HPC_SCRIPTS_DIR="$(get_config hpc_scripts_dir)"
+PYTHON_SCRIPTS_DIR="$(get_config python_scripts_dir)"
 SHARDS_DIR="$(get_config shards_dir)"
 LOG_DIR="$(get_config log_dir)"
 
 # Make paths absolute if relative
+if [[ "${HPC_SCRIPTS_DIR}" != /* ]]; then
+    HPC_SCRIPTS_DIR="${BASE_DIR}/${HPC_SCRIPTS_DIR}"
+fi
+if [[ "${PYTHON_SCRIPTS_DIR}" != /* ]]; then
+    PYTHON_SCRIPTS_DIR="${BASE_DIR}/${PYTHON_SCRIPTS_DIR}"
+fi
 if [[ "${SHARDS_DIR}" != /* ]]; then
     SHARDS_DIR="${BASE_DIR}/${SHARDS_DIR}"
 fi
@@ -93,13 +101,13 @@ if [[ "${LOG_DIR}" != /* ]]; then
     LOG_DIR="${BASE_DIR}/${LOG_DIR}"
 fi
 
-SCRIPTS_DIR="$(dirname "${CONFIG_FILE}")"
-
 echo "=========================================="
 echo "Pipeline Launcher"
 echo "=========================================="
 echo "Config file: ${CONFIG_FILE}"
 echo "Output Dataset Root: ${OUTPUT_DATASET_ROOT}"
+echo "HPC Scripts Dir: ${HPC_SCRIPTS_DIR}"
+echo "Python Scripts Dir: ${PYTHON_SCRIPTS_DIR}"
 echo "Shards Dir: ${SHARDS_DIR}"
 echo "Log Dir: ${LOG_DIR}"
 echo "Start Stage: ${START_STAGE}"
@@ -140,27 +148,27 @@ mkdir -p "${LOG_DIR}"
 # ==============================================================================
 case ${START_STAGE} in
     2)
-        STAGE_SCRIPT="${SCRIPTS_DIR}/run_stage2_array.sh"
+        STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage2_array.sh"
         STAGE_NAME="stage2_metadata"
         RESOURCES="-n 4 -R 'rusage[mem=8000]' -W 4:00"
         ;;
     3)
-        STAGE_SCRIPT="${SCRIPTS_DIR}/run_stage3_array.sh"
+        STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage3_array.sh"
         STAGE_NAME="stage3_layouts"
         RESOURCES="-n 4 -R 'rusage[mem=8000]' -W 4:00"
         ;;
     4)
-        STAGE_SCRIPT="${SCRIPTS_DIR}/run_stage4_array.sh"
+        STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage4_array.sh"
         STAGE_NAME="stage4_povs"
         RESOURCES="-n 4 -R 'rusage[mem=8000]' -W 6:00"
         ;;
     5)
-        STAGE_SCRIPT="${SCRIPTS_DIR}/run_stage5_array.sh"
+        STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage5_array.sh"
         STAGE_NAME="stage5_graphs"
         RESOURCES="-n 2 -R 'rusage[mem=4000]' -W 2:00"
         ;;
     6)
-        STAGE_SCRIPT="${SCRIPTS_DIR}/run_stage6_array.sh"
+        STAGE_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage6_array.sh"
         STAGE_NAME="stage6_manifests"
         RESOURCES="-n 1 -R 'rusage[mem=2000]' -W 1:00"
         ;;

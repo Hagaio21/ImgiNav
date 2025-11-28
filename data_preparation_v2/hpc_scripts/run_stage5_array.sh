@@ -42,9 +42,17 @@ print(config.get('$1', '') or '')
 
 BASE_DIR="$(get_config base_dir)"
 OUTPUT_DATASET_ROOT="$(get_config output_dataset_root)"
+HPC_SCRIPTS_DIR="$(get_config hpc_scripts_dir)"
+PYTHON_SCRIPTS_DIR="$(get_config python_scripts_dir)"
 SHARDS_DIR="$(get_config shards_dir)"
 LOG_DIR="$(get_config log_dir)"
 
+if [[ "${HPC_SCRIPTS_DIR}" != /* ]]; then
+    HPC_SCRIPTS_DIR="${BASE_DIR}/${HPC_SCRIPTS_DIR}"
+fi
+if [[ "${PYTHON_SCRIPTS_DIR}" != /* ]]; then
+    PYTHON_SCRIPTS_DIR="${BASE_DIR}/${PYTHON_SCRIPTS_DIR}"
+fi
 if [[ "${SHARDS_DIR}" != /* ]]; then
     SHARDS_DIR="${BASE_DIR}/${SHARDS_DIR}"
 fi
@@ -92,9 +100,10 @@ cd "${BASE_DIR}"
 export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 
 echo "Running stage 5..."
-python data_preparation_v2/stage5_build_graphs.py \
+python "${PYTHON_SCRIPTS_DIR}/stage5_build_graphs.py" \
     --dataset-root "${OUTPUT_DATASET_ROOT}" \
-    --scene-list "${SHARD_FILE}"
+    --scene-list "${SHARD_FILE}" \
+    --skip-existing
 
 STAGE5_EXIT_CODE=$?
 
@@ -108,7 +117,7 @@ echo "Stage 5 completed successfully for shard ${JOB_ID}"
 # ==============================================================================
 # CHAIN TO STAGE 6
 # ==============================================================================
-STAGE6_SCRIPT="${SCRIPT_DIR}/run_stage6_array.sh"
+STAGE6_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage6_array.sh"
 
 if [ -f "${STAGE6_SCRIPT}" ]; then
     echo "Submitting stage 6 for shard ${JOB_ID}..."

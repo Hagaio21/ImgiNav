@@ -129,6 +129,25 @@ def load_scene_list(scene_list_path: Path) -> List[str]:
     return scenes
 
 
+def check_scene_povs_exist(scene_id: str, output_dir: Path, rooms_metadata: list) -> bool:
+    """Check if POV outputs already exist for a scene."""
+    if not rooms_metadata:
+        return False
+    
+    for room_meta in rooms_metadata:
+        room_id = room_meta.get("room_id", room_meta.get("room_type", "Unknown"))
+        
+        # Check for at least one POV per room (door0 or window0)
+        tex_pov = output_dir / "tex" / f"{scene_id}_{room_id}_door0_tex_pov.png"
+        if not tex_pov.exists():
+            tex_pov = output_dir / "tex" / f"{scene_id}_{room_id}_window0_tex_pov.png"
+        
+        if not tex_pov.exists():
+            return False
+    
+    return True
+
+
 # ============================================================================
 # GLB Loading
 # ============================================================================
@@ -626,6 +645,7 @@ def main():
     parser.add_argument("--fov", type=float, default=60.0, help="Camera field of view in degrees")
     parser.add_argument("--no-pyrender", action="store_true", help="Disable pyrender, use software fallback")
     parser.add_argument("--hpc", action="store_true", help="Enable HPC mode with Xvfb virtual display")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip scenes that already have output files")
     parser.add_argument("--backend", type=str, default="auto", 
                         choices=["auto", "egl", "osmesa", "xvfb"],
                         help="Rendering backend (used with --hpc): auto, egl, osmesa, or xvfb")
@@ -723,6 +743,13 @@ def main():
                 logger.warning(f"No room metadata for {scene_id}")
                 skip_count += 1
                 continue
+            
+            # Skip if outputs exist and --skip-existing is set
+            if args.skip_existing:
+                if check_scene_povs_exist(scene_id, output_dir, rooms_metadata):
+                    logger.info(f"[{i}/{len(scene_ids)}] ⏭ {scene_id} (exists)")
+                    skip_count += 1
+                    continue
             
             success, error = process_one_scene(
                 scene_id, tex_glb, seg_glb, scene_meta, rooms_metadata,

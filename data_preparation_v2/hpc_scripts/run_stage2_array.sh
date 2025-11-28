@@ -49,10 +49,18 @@ print(config.get('$1', '') or '')
 
 BASE_DIR="$(get_config base_dir)"
 OUTPUT_DATASET_ROOT="$(get_config output_dataset_root)"
+HPC_SCRIPTS_DIR="$(get_config hpc_scripts_dir)"
+PYTHON_SCRIPTS_DIR="$(get_config python_scripts_dir)"
 SHARDS_DIR="$(get_config shards_dir)"
 LOG_DIR="$(get_config log_dir)"
 
-# Make shards_dir and log_dir absolute if relative
+# Make paths absolute if relative
+if [[ "${HPC_SCRIPTS_DIR}" != /* ]]; then
+    HPC_SCRIPTS_DIR="${BASE_DIR}/${HPC_SCRIPTS_DIR}"
+fi
+if [[ "${PYTHON_SCRIPTS_DIR}" != /* ]]; then
+    PYTHON_SCRIPTS_DIR="${BASE_DIR}/${PYTHON_SCRIPTS_DIR}"
+fi
 if [[ "${SHARDS_DIR}" != /* ]]; then
     SHARDS_DIR="${BASE_DIR}/${SHARDS_DIR}"
 fi
@@ -105,7 +113,7 @@ cd "${BASE_DIR}"
 export PYTHONPATH="${BASE_DIR}:${PYTHONPATH:-}"
 
 echo "Running stage 2..."
-python data_preparation_v2/stage2_compile_metadata.py \
+python "${PYTHON_SCRIPTS_DIR}/stage2_compile_metadata.py" \
     --config "${CONFIG_FILE}" \
     --scene-list "${SHARD_FILE}"
 
@@ -121,7 +129,7 @@ echo "Stage 2 completed successfully for shard ${JOB_ID}"
 # ==============================================================================
 # CHAIN TO STAGE 3
 # ==============================================================================
-STAGE3_SCRIPT="${SCRIPT_DIR}/run_stage3_array.sh"
+STAGE3_SCRIPT="${HPC_SCRIPTS_DIR}/run_stage3_array.sh"
 
 if [ -f "${STAGE3_SCRIPT}" ]; then
     echo "Submitting stage 3 for shard ${JOB_ID}..."
