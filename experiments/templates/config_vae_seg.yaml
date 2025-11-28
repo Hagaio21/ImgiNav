@@ -1,0 +1,132 @@
+# =============================================================================
+# VAE Training Config - Segmented Layouts
+# =============================================================================
+# Uses new manifest structure from collect_manifest.py
+# Precomputed sample weights for balanced sampling
+# =============================================================================
+
+experiment:
+  name: "vae_seg_clip"
+  phase: "clip_vae_training"
+  save_path: "outputs/autoencoders/v2/vae_seg_clip"
+
+# =============================================================================
+# Dataset
+# =============================================================================
+dataset:
+  manifest: "dataset_v2/manifests/manifest_seg.csv"
+  
+  # Column → batch key mapping
+  outputs:
+    rgb: "layout_path"                # Layout image → reconstruction target
+    text_emb: "graph_embedding_path"  # Graph text embedding → CLIP loss
+    pov_emb: "pov_embedding_path"     # POV embedding → CLIP loss
+  
+  # Image transform
+  transform:
+    type: Compose
+    transforms:
+      - type: Resize
+        size: [512, 512]
+        interpolation: nearest  # nearest for segmentation (preserve colors)
+      - type: ToTensor
+      - type: Normalize
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]
+
+# =============================================================================
+# Autoencoder
+# =============================================================================
+autoencoder:
+  encoder:
+    in_channels: 3
+    latent_channels: 4
+    base_channels: 48
+    downsampling_steps: 4  # 512 → 32
+    activation: SiLU
+    norm_groups: 8
+    variational: true
+  
+  decoder:
+    latent_channels: 4
+    base_channels: 48
+    upsampling_steps: 4
+    activation: SiLU
+    norm_groups: 8
+    heads:
+      - type: RGBHead
+        name: rgb
+        out_channels: 3
+        final_activation: tanh
+  
+  clip_projection:
+    projection_dim: 256
+    text_dim: 384      # all-MiniLM-L6-v2
+    pov_dim: 512       # ResNet18
+    latent_dim: 384    # 48 * 2^3
+
+# =============================================================================
+# Training
+# =============================================================================
+training:
+  seed: 42
+  epochs: 150
+  batch_size: 32
+  num_workers: 8
+  
+  # Precomputed weights from manifest
+  use_precomputed_weights: true
+  precomputed_weight_column: "sample_weight"
+  max_weight: 10.0
+  
+  # Split
+  train_split: 0.8
+  split_seed: 42
+  
+  # Optimizer
+  optimizer: AdamW
+  learning_rate: 0.0001
+  weight_decay: 0.02
+  
+  # Checkpointing
+  save_interval: 5
+  sample_interval: 5
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.00005
+  early_stopping_restore_best: true
+  
+  use_amp: true
+  
+  # Loss
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: ColorWeightedMSELoss
+        key: rgb
+        target: rgb
+        weight: 1.0
+        target_colors:
+          - color: [50, 50, 50]
+            weight: 3.0
+            tolerance: 0.15
+        color_space: rgb
+        fallback_weight: 1.0
+      - type: KLDLoss
+        weight: 0.0001
+      - type: LatentStandardizationLoss
+        key: mu
+        weight: 0.1
+        mean_penalty_type: l2
+        std_penalty_type: l2
+        per_channel: true
+      - type: CLIPLoss
+        key: latent_features
+        text_key: text_emb
+        pov_key: pov_emb
+        temperature: 0.07
+        weight: 0.2
+        projection_dim: 256
+        text_dim: 384
+        pov_dim: 512
+        combine_method: average
+        use_model_projections: true

@@ -916,11 +916,16 @@ def main():
     batch_size = config["training"].get("batch_size", 32)
     num_workers = config["training"].get("num_workers", 8)
     shuffle = config["training"].get("shuffle", True)
-    use_weighted_sampling = config["training"].get("use_weighted_sampling", False)
     
-    # Auto-generate weight stats if needed
+    # Weighted sampling options
+    use_weighted_sampling = config["training"].get("use_weighted_sampling", False)
+    use_precomputed_weights = config["training"].get("use_precomputed_weights", False)
+    precomputed_weight_column = config["training"].get("precomputed_weight_column", "sample_weight")
+    max_weight = config["training"].get("max_weight", None)
+    
+    # Auto-generate weight stats if using column-based weighting (legacy approach)
     weights_stats_path = None
-    if use_weighted_sampling:
+    if use_weighted_sampling and not use_precomputed_weights:
         # Support both "weight_column" (new) and "column" (old) for backward compatibility
         weight_column = config["training"].get("weight_column", None) or config["training"].get("column", None)
         if weight_column:
@@ -940,7 +945,7 @@ def main():
                 rare_threshold_percentile=config["training"].get("rare_threshold_percentile", 10.0),
                 min_samples_threshold=config["training"].get("min_samples_threshold", 50),
                 weighting_method=config["training"].get("weighting_method", "inverse_frequency"),
-                max_weight=config["training"].get("max_weight", None),
+                max_weight=max_weight,
                 min_weight=config["training"].get("min_weight", 1.0),
                 filters=dataset_filters  # Apply same filters as dataset
             )
@@ -948,17 +953,21 @@ def main():
     # Use dataset's make_dataloader to support weighted sampling
     train_loader = train_dataset.make_dataloader(
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if not (use_weighted_sampling or use_precomputed_weights) else False,
         num_workers=num_workers,
         pin_memory=device_obj.type == "cuda",
         persistent_workers=num_workers > 0,
-        use_weighted_sampling=use_weighted_sampling,
+        # Precomputed weights (new approach)
+        use_precomputed_weights=use_precomputed_weights,
+        precomputed_weight_column=precomputed_weight_column,
+        # Column-based weights (legacy approach)
+        use_weighted_sampling=use_weighted_sampling and not use_precomputed_weights,
         weight_column=config["training"].get("weight_column", None) or config["training"].get("column", None),
         weights_stats_path=weights_stats_path,
         use_grouped_weights=config["training"].get("use_grouped_weights", False),
         group_rare_classes=config["training"].get("group_rare_classes", False),
         class_grouping_path=config["training"].get("class_grouping_path", None),
-        max_weight=config["training"].get("max_weight", None),
+        max_weight=max_weight,
         exclude_extremely_rare=config["training"].get("exclude_extremely_rare", False),
         min_samples_threshold=config["training"].get("min_samples_threshold", 50)
     )

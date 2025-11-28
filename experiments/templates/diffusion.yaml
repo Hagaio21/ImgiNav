@@ -1,0 +1,116 @@
+# =============================================================================
+# Diffusion Training Config - Layout Generation
+# =============================================================================
+# Uses new manifest structure from collect_manifest.py
+# Requires pre-encoded layout latents (run embed_layouts.py first)
+# Conditioned on text (graph) and POV embeddings
+# =============================================================================
+
+experiment:
+  name: "diffusion_layout"
+  phase: "diffusion_training"
+  save_path: "outputs/diffusion/v2/diffusion_layout"
+
+# =============================================================================
+# Dataset
+# =============================================================================
+# NOTE: For diffusion training, layouts must be pre-encoded as latents.
+# Run embed_layouts.py after VAE training to create layout_embedding_path column.
+# =============================================================================
+dataset:
+  manifest: "dataset_v2/manifests/manifest_tex.csv"
+  
+  # Column → batch key mapping
+  outputs:
+    latent: "layout_embedding_path"   # Pre-encoded layout latent
+    text_emb: "graph_embedding_path"  # Graph text embedding → conditioning
+    pov_emb: "pov_embedding_path"     # POV embedding → conditioning
+  
+  # No image transform needed - latents are already tensors
+
+# =============================================================================
+# Diffusion Model
+# =============================================================================
+diffusion:
+  # UNet architecture
+  unet:
+    in_channels: 4           # Latent channels from VAE
+    out_channels: 4
+    base_channels: 128
+    channel_mults: [1, 2, 4, 4]
+    num_res_blocks: 2
+    attention_resolutions: [8, 16]
+    dropout: 0.0
+    use_scale_shift_norm: true
+    
+    # Conditioning
+    context_dim: 256         # Projection dim from VAE CLIP projections
+    use_cross_attention: true
+  
+  # Noise scheduler
+  scheduler:
+    type: "ddpm"
+    num_steps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: "linear"
+  
+  # VAE for decoding (frozen)
+  vae_checkpoint: "outputs/autoencoders/v2/vae_tex_clip/checkpoints/vae_tex_clip_checkpoint_best.pt"
+  
+  # Embedding projection (combines text + POV embeddings)
+  embedding_proj:
+    text_dim: 384            # all-MiniLM-L6-v2
+    pov_dim: 512             # ResNet18
+    output_dim: 256          # Context dim for UNet
+
+# =============================================================================
+# Training
+# =============================================================================
+training:
+  seed: 42
+  epochs: 200
+  batch_size: 64
+  num_workers: 8
+  
+  # Precomputed weights from manifest
+  use_precomputed_weights: true
+  precomputed_weight_column: "sample_weight"
+  max_weight: 10.0
+  
+  # Split
+  train_split: 0.9
+  split_seed: 42
+  
+  # Optimizer
+  optimizer: AdamW
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  
+  # Scheduler
+  scheduler:
+    type: cosine
+  
+  # CFG (Classifier-Free Guidance)
+  cfg_dropout_rate: 0.1      # Drop conditioning 10% of time
+  guidance_scale: 3.0        # CFG scale at inference
+  
+  # Checkpointing
+  save_interval: 10
+  sample_interval: 10
+  eval_interval: 5
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.0001
+  
+  use_amp: true
+  max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+  
+  # Loss
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: MSELoss
+        pred_key: "pred_noise"
+        target_key: "noise"
+        weight: 1.0

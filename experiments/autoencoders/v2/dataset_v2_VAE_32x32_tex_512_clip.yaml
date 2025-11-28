@@ -1,0 +1,118 @@
+# Dataset V2: Variational Autoencoder (VAE) with CLIP Loss for Textured Layouts
+# Optimized for dataset_v2: 512×512 input → 32×32×4 latents
+# Includes CLIP loss to align VAE features with text/POV embeddings
+# Architecture: 32×32×4 = 4,096 dims
+# Encoder: VAE with strong KL divergence regularization
+# Loss: ColorWeightedMSE=1.0 (walls=3.0x), KLD=0.0001, LatentStd=0.1, CLIP=0.2 (joint embedding space)
+# Layout type: Textured (tex)
+
+experiment:
+  name: "dataset_v2_vae_tex_clip"
+  phase: "clip_vae_training"
+  save_path: "outputs/autoencoders/v2/vae_tex_clip"
+
+dataset:
+  # CSV manifest converted from manifests/rooms.json
+  # Expected CSV columns: layout_path, graph_embedding_path, pov_embedding_path, scene_id, room_id
+  # layout_path should point to layouts/tex/<scene_id>_<room_id>_tex_layout.png
+  manifest: "dataset_v2/manifests/rooms_tex.csv"  # Update this path to your actual CSV manifest
+  outputs:
+    rgb: "layout_path"  # Textured layout images for VAE training
+    text_emb: "graph_embedding_path"  # Graph embeddings for CLIP loss
+    pov_emb: "pov_embedding_path"  # POV embeddings for CLIP loss
+  filters:
+    is_empty: [false]
+  return_path: false
+  # Transform for 512×512 input
+  transform:
+    type: Compose
+    transforms:
+      - type: Resize
+        size: [512, 512]
+        interpolation: bilinear  # Use bilinear for textured images (preserves smooth textures)
+      - type: ToTensor
+      - type: Normalize
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]  # Normalizes to [-1, 1] range
+
+autoencoder:
+  encoder:
+    in_channels: 3
+    latent_channels: 4  # 32×32×4 latent space
+    base_channels: 48  # Capacity 48 (smallest model)
+    downsampling_steps: 4  # 512 -> 256 -> 128 -> 64 -> 32 (32×32 spatial resolution)
+    activation: SiLU
+    norm_groups: 8
+    variational: true  # VAE mode: outputs mu and logvar
+  
+  decoder:
+    latent_channels: 4  # 32×32×4 latent space
+    base_channels: 48  # Capacity 48 (smallest model)
+    upsampling_steps: 4  # 32 -> 64 -> 128 -> 256 -> 512 (32×32 spatial resolution)
+    activation: SiLU
+    norm_groups: 8
+    heads:
+      - type: RGBHead
+        name: rgb
+        out_channels: 3
+        final_activation: tanh
+  
+  # CLIP projection layers (attached to model for training)
+  clip_projection:
+    projection_dim: 256  # Joint embedding space dimension
+    text_dim: 384  # Graph embedding dimension (all-MiniLM-L6-v2)
+    pov_dim: 512  # POV embedding dimension (ResNet18)
+    latent_dim: 384  # Encoder feature dimension: base_channels * 2^(downsampling_steps-1) = 48 * 2^3 = 384
+
+training:
+  seed: 42
+  train_split: 0.8
+  split_seed: 42
+  batch_size: 32
+  num_workers: 8
+  shuffle: true
+  epochs: 150
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.02
+  save_interval: 5
+  sample_interval: 5
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.00005
+  early_stopping_restore_best: true
+  use_amp: true
+  
+  loss:
+    type: CompositeLoss
+    losses:
+      - type: ColorWeightedMSELoss
+        key: rgb
+        target: rgb
+        weight: 1.0
+        target_colors:
+          # Dark gray for walls - higher sensitivity
+          - color: [50, 50, 50]  # RGB in 0-255 range (dark gray walls)
+            weight: 3.0  # 3x higher weight for wall colors
+            tolerance: 0.15  # Distance threshold in RGB space
+        color_space: rgb
+        fallback_weight: 1.0  # Weight for pixels not matching target colors
+      - type: KLDLoss
+        weight: 0.0001  # Strong KL divergence loss (encourages N(0,1) latent space)
+      - type: LatentStandardizationLoss
+        key: mu
+        weight: 0.1
+        mean_penalty_type: l2
+        std_penalty_type: l2
+        per_channel: true
+      - type: CLIPLoss
+        key: latent_features  # VAE encoder features (before mu/logvar heads)
+        text_key: text_emb
+        pov_key: pov_emb
+        temperature: 0.07
+        weight: 0.2  # Start with small weight, can increase if needed
+        projection_dim: 256
+        text_dim: 384
+        pov_dim: 512
+        combine_method: average
+        use_model_projections: true  # Use projections attached to Autoencoder model
+

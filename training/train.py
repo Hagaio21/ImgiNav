@@ -286,6 +286,12 @@ def main():
     
     dataset = build_dataset(config)
     
+    # Get weighted sampling config
+    training_cfg = config.get("training", {})
+    use_precomputed_weights = training_cfg.get("use_precomputed_weights", False)
+    precomputed_weight_column = training_cfg.get("precomputed_weight_column", "sample_weight")
+    max_weight = training_cfg.get("max_weight", None)
+    
     # Build validation dataset
     val_dataset = None
     val_loader = None
@@ -316,10 +322,14 @@ def main():
         else:
             train_dataset = dataset
     
+    # Create train dataloader with optional precomputed weights
     train_loader = train_dataset.make_dataloader(
         batch_size=config["training"]["batch_size"],
-        shuffle=config["training"].get("shuffle", True),
-        num_workers=config["training"].get("num_workers", 4)
+        shuffle=config["training"].get("shuffle", True) if not use_precomputed_weights else False,
+        num_workers=config["training"].get("num_workers", 4),
+        use_precomputed_weights=use_precomputed_weights,
+        precomputed_weight_column=precomputed_weight_column,
+        max_weight=max_weight,
     )
     
     loss_fn = build_loss(config)
@@ -587,4 +597,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
