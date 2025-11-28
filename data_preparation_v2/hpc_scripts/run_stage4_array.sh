@@ -6,6 +6,20 @@ set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
 
 # ==============================================================================
+# HEADLESS RENDERING SETUP (must be before Python imports OpenGL)
+# ==============================================================================
+# Fix XDG_RUNTIME_DIR error
+export XDG_RUNTIME_DIR="${HOME}/.cache/xdg-runtime-$$"
+mkdir -p "${XDG_RUNTIME_DIR}"
+
+# Use OSMesa (software rendering) - most reliable on CPU nodes
+export PYOPENGL_PLATFORM=osmesa
+
+# Mesa software rendering settings
+export LIBGL_ALWAYS_SOFTWARE=1
+export MESA_GL_VERSION_OVERRIDE=3.3
+
+# ==============================================================================
 # CONFIGURATION
 # ==============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,6 +82,8 @@ echo "Stage 4: Render POVs - Shard ${JOB_ID}"
 echo "=========================================="
 echo "Output Dataset Root: ${OUTPUT_DATASET_ROOT}"
 echo "Shard file: ${SHARD_FILE}"
+echo "PYOPENGL_PLATFORM: ${PYOPENGL_PLATFORM}"
+echo "XDG_RUNTIME_DIR: ${XDG_RUNTIME_DIR}"
 echo "=========================================="
 
 if [ ! -f "${SHARD_FILE}" ]; then
@@ -104,12 +120,16 @@ python "${PYTHON_SCRIPTS_DIR}/stage4_render_povs.py" \
     --dataset-root "${OUTPUT_DATASET_ROOT}" \
     --scene-list "${SHARD_FILE}" \
     --hpc \
+    --backend osmesa \
     --width 512 \
     --height 512 \
     --fov 60.0 \
     --skip-existing
 
 STAGE4_EXIT_CODE=$?
+
+# Cleanup runtime dir
+rm -rf "${XDG_RUNTIME_DIR}" 2>/dev/null || true
 
 if [ ${STAGE4_EXIT_CODE} -ne 0 ]; then
     echo "ERROR: Stage 4 failed with exit code ${STAGE4_EXIT_CODE}"
