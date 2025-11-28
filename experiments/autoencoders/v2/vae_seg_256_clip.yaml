@@ -1,14 +1,15 @@
 # =============================================================================
-# VAE Training Config - Segmented Layouts
+# VAE Training Config - Segmented Layouts (256x256)
 # =============================================================================
 # Uses new manifest structure from collect_manifest.py
 # Precomputed sample weights for balanced sampling
+# Input size: 256x256 → Latent: 16x16x4
 # =============================================================================
 
 experiment:
-  name: "vae_seg_clip"
+  name: "vae_seg_256_clip"
   phase: "clip_vae_training"
-  save_path: "outputs/autoencoders/v2/vae_seg_clip"
+  save_path: "outputs/autoencoders/v2/vae_seg_256_clip"
 
 # =============================================================================
 # Dataset
@@ -130,3 +131,4 @@ training:
         pov_dim: 512
         combine_method: average
         use_model_projections: true
+

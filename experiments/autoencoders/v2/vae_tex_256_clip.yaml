@@ -1,20 +1,21 @@
 # =============================================================================
-# VAE Training Config - Segmented Layouts
+# VAE Training Config - Textured Layouts (256x256)
 # =============================================================================
 # Uses new manifest structure from collect_manifest.py
 # Precomputed sample weights for balanced sampling
+# Input size: 256x256 → Latent: 16x16x4
 # =============================================================================
 
 experiment:
-  name: "vae_seg_clip"
+  name: "vae_tex_256_clip"
   phase: "clip_vae_training"
-  save_path: "outputs/autoencoders/v2/vae_seg_clip"
+  save_path: "outputs/autoencoders/v2/vae_tex_256_clip"
 
 # =============================================================================
 # Dataset
 # =============================================================================
 dataset:
-  manifest: "dataset_v2/manifests/manifest_seg.csv"
+  manifest: "dataset_v2/manifests/manifest_tex.csv"
   
   # Column → batch key mapping
   outputs:
@@ -28,7 +29,7 @@ dataset:
     transforms:
       - type: Resize
         size: [256, 256]
-        interpolation: nearest  # nearest for segmentation (preserve colors)
+        interpolation: bilinear  # bilinear for textured
       - type: ToTensor
       - type: Normalize
         mean: [0.5, 0.5, 0.5]
@@ -130,3 +131,4 @@ training:
         pov_dim: 512
         combine_method: average
         use_model_projections: true
+

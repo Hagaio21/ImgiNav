@@ -27,7 +27,7 @@ dataset:
     type: Compose
     transforms:
       - type: Resize
-        size: [512, 512]
+        size: [256, 256]
         interpolation: bilinear  # bilinear for textured
       - type: ToTensor
       - type: Normalize
@@ -42,7 +42,7 @@ autoencoder:
     in_channels: 3
     latent_channels: 4
     base_channels: 48
-    downsampling_steps: 4  # 512 → 32
+    downsampling_steps: 4  # 256 → 16
     activation: SiLU
     norm_groups: 8
     variational: true
