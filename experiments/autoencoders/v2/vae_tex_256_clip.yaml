@@ -72,7 +72,7 @@ autoencoder:
 training:
   seed: 42
   epochs: 150
-  batch_size: 32
+  batch_size: 64  # Increased from 32 (memory usage is low: 3.1GB/16GB)
   num_workers: 8
   
   # Precomputed weights from manifest
