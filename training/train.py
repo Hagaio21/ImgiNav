@@ -106,8 +106,8 @@ def ae_step_fn(model, batch, batch_idx, loss_fn, trainer):
     batch_dataflow = DataFlow(batch, source_component="Dataset")
     
     # Forward pass with AMP if enabled
-    if trainer.use_amp:
-        with torch.amp.autocast('cuda'):
+    if trainer.use_amp and trainer.device.type == "cuda":
+        with torch.amp.autocast(device_type='cuda'):
             outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
             # Loss functions work with DataFlow since it's dict-like
             loss, logs = loss_fn(outputs, batch_dataflow)
@@ -132,8 +132,8 @@ def ae_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     batch_dataflow = DataFlow(batch, source_component="Dataset")
     
     # Forward pass with AMP if enabled
-    if trainer.use_amp:
-        with torch.amp.autocast('cuda'):
+    if trainer.use_amp and trainer.device.type == "cuda":
+        with torch.amp.autocast(device_type='cuda'):
             outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
             # Loss functions work with DataFlow since it's dict-like
             loss, logs = loss_fn(outputs, batch_dataflow)
@@ -164,6 +164,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     batch = move_batch_to_device(batch, device_obj)
     
     # Limit batch size for visualization and compute grid size
+    grid_n = 1  # Default grid size
     if isinstance(batch.get("rgb"), torch.Tensor):
         batch_size = min(batch["rgb"].shape[0], sample_batch_size)
         batch = {k: v[:batch_size] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
@@ -174,6 +175,10 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     with torch.no_grad():
         outputs = model(batch["rgb"])
+    
+    # Handle DataFlow output
+    if hasattr(outputs, 'to_dict'):
+        outputs = outputs.to_dict()
     
     # Save RGB input and reconstruction as two side-by-side grids
     if "rgb" in batch and "rgb" in outputs:
@@ -301,9 +306,9 @@ def main():
         val_cfg = config["validation"]["dataset"]
         val_dataset = ManifestDataset(**val_cfg)
         val_loader = val_dataset.make_dataloader(
-            batch_size=config["validation"].get("batch_size", config["training"]["batch_size"]),
-            shuffle=False,
-            num_workers=config["training"].get("num_workers", 4)
+        batch_size=config["validation"].get("batch_size", config.get("training", {}).get("batch_size", 32)),
+        shuffle=False,
+        num_workers=config.get("training", {}).get("num_workers", 4)
         )
         # Use full dataset for training if validation is explicitly provided
         train_dataset = dataset
@@ -317,18 +322,18 @@ def main():
             val_ratio = 1.0 - train_split
             train_dataset, val_dataset, _ = dataset.split(train_ratio=train_split, val_ratio=val_ratio, test_ratio=0.0, seed=split_seed)
             val_loader = val_dataset.make_dataloader(
-                batch_size=config["validation"].get("batch_size", config["training"]["batch_size"]) if "validation" in config else config["training"]["batch_size"],
+                batch_size=config.get("validation", {}).get("batch_size", config.get("training", {}).get("batch_size", 32)) if "validation" in config else config.get("training", {}).get("batch_size", 32),
                 shuffle=False,
-                num_workers=config["training"].get("num_workers", 4)
+                num_workers=config.get("training", {}).get("num_workers", 4)
             )
         else:
             train_dataset = dataset
     
     # Create train dataloader with optional precomputed weights
     train_loader = train_dataset.make_dataloader(
-        batch_size=config["training"]["batch_size"],
-        shuffle=config["training"].get("shuffle", True) if not use_precomputed_weights else False,
-        num_workers=config["training"].get("num_workers", 4),
+        batch_size=config.get("training", {}).get("batch_size", 32),
+        shuffle=config.get("training", {}).get("shuffle", True) if not use_precomputed_weights else False,
+        num_workers=config.get("training", {}).get("num_workers", 4),
         use_precomputed_weights=use_precomputed_weights,
         precomputed_weight_column=precomputed_weight_column,
         max_weight=max_weight,
@@ -368,7 +373,7 @@ def main():
             optimizer.load_state_dict(optimizer_state)
     
     # Build scheduler if configured
-    scheduler = build_scheduler(optimizer, config.get("training", {}).get("scheduler", None))
+    scheduler = build_scheduler(optimizer, config)
     if should_resume and scheduler:
         scheduler_state = extra_state.get("scheduler_state")
         if scheduler_state:
@@ -389,7 +394,7 @@ def main():
     )
     
     # Training configuration (all from config)
-    epochs_to_train = config["training"]["epochs"]  # Additional epochs to train
+    epochs_to_train = config.get("training", {}).get("epochs", 150)  # Additional epochs to train
     
     # Calculate end epoch: start_epoch + additional epochs to train
     end_epoch = start_epoch + epochs_to_train
@@ -413,7 +418,7 @@ def main():
     from training.plotting_utils import plot_loss_curves
     
     # Check if model is VAE (variational encoder) to enable latent statistics collection
-    is_vae = hasattr(model.encoder, 'variational') and model.encoder.variational
+    is_vae = hasattr(model, 'encoder') and hasattr(model.encoder, 'variational') and model.encoder.variational
     
     # Create latent collection function if needed
     all_latents_train = [] if is_vae else None
@@ -519,6 +524,8 @@ def main():
                     if best_path.exists():
                         model = Autoencoder.load_checkpoint(best_path, map_location=device_obj)
                         model = model.to(device_obj)
+                        # Update trainer's model reference
+                        trainer.model = model
                 
                 # Break out of training loop
                 break
