@@ -312,14 +312,29 @@ def main():
     
     should_resume = checkpoint_to_resume is not None
     if should_resume:
-        # Load checkpoint with extra state (uses saved config from checkpoint)
+        # Load checkpoint with extra state
+        # Use current config to ensure clip_projection and other components are properly initialized
+        # The state_dict from checkpoint will still be loaded, but model structure comes from current config
         model, extra_state = Autoencoder.load_checkpoint(
             checkpoint_to_resume,
             map_location=device_obj,
             return_extra=True,
-            config=None  # Use saved config from checkpoint
+            config=config.get("autoencoder")  # Use current config to ensure all components are initialized
         )
         model = model.to(device_obj)
+        
+        # Also try to load clip_projection checkpoint if it exists separately
+        checkpoint_dir = output_dir / "checkpoints"
+        clip_proj_latest = checkpoint_dir / f"{exp_name}_clip_projection_latest.pt"
+        if clip_proj_latest.exists() and hasattr(model, 'clip_projection') and model.clip_projection is not None:
+            try:
+                clip_proj_payload = torch.load(clip_proj_latest, map_location=device_obj)
+                clip_proj_state = clip_proj_payload.get("state_dict", clip_proj_payload)
+                model.clip_projection.load_state_dict(clip_proj_state, strict=False)
+                print(f"✓ Loaded CLIP projection state from {clip_proj_latest}")
+            except Exception as e:
+                print(f"⚠ Warning: Could not load CLIP projection checkpoint: {e}")
+                print("  Continuing with clip_projection from main checkpoint...")
         
         # Restore training state
         start_epoch = extra_state.get("epoch", 1) - 1  # epoch in checkpoint is 1-indexed
