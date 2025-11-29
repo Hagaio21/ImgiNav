@@ -74,6 +74,10 @@ training:
   use_precomputed_weights: true
   precomputed_weight_column: "sample_weight"
   max_weight: 10.0
+  # Multiply weights for non-empty rooms to give them more emphasis
+  non_empty_multiplier: 2.0
+  # Print weight statistics grouped by is_empty and type
+  weight_stats_columns: ["is_empty", "type"]
   
   train_split: 0.8
   split_seed: 42

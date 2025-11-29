@@ -346,6 +346,7 @@ def main():
     use_precomputed_weights = training_cfg.get("use_precomputed_weights", False)
     precomputed_weight_column = training_cfg.get("precomputed_weight_column", "sample_weight")
     max_weight = training_cfg.get("max_weight", None)
+    non_empty_multiplier = training_cfg.get("non_empty_multiplier", None)
     
     # Build validation dataset
     val_dataset = None
@@ -387,6 +388,8 @@ def main():
         use_precomputed_weights=use_precomputed_weights,
         precomputed_weight_column=precomputed_weight_column,
         max_weight=max_weight,
+        weight_stats_columns=training_cfg.get("weight_stats_columns", None),
+        non_empty_multiplier=non_empty_multiplier,
     )
     
     loss_fn = build_loss(config)

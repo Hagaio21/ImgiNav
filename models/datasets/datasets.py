@@ -332,13 +332,15 @@ class ManifestDataset(BaseComponent, Dataset):
     # ------------------------
     # Pre-computed weight support
     # ------------------------
-    def _use_precomputed_weights(self, weight_column: str = "sample_weight", max_weight: float = None) -> torch.Tensor:
+    def _use_precomputed_weights(self, weight_column: str = "sample_weight", max_weight: float = None, 
+                                 non_empty_multiplier: float = None) -> torch.Tensor:
         """
         Use pre-computed weights from a column in the manifest.
         
         Args:
             weight_column: Name of column containing pre-computed weights
             max_weight: Optional cap on maximum weight
+            non_empty_multiplier: Optional multiplier to apply to non-empty rooms (e.g., 2.0 doubles their weight)
             
         Returns:
             Tensor of weights for each sample
@@ -353,6 +355,17 @@ class ManifestDataset(BaseComponent, Dataset):
         if nan_mask.any():
             print(f"[WARNING] {nan_mask.sum()} NaN values in weight column, replacing with 1.0")
             weights[nan_mask] = 1.0
+        
+        # Apply multiplier for non-empty rooms if requested
+        if non_empty_multiplier is not None and non_empty_multiplier != 1.0:
+            if "is_empty" in self.df.columns:
+                non_empty_mask = ~self.df["is_empty"].fillna(True).astype(bool)
+                non_empty_count = non_empty_mask.sum()
+                if non_empty_count > 0:
+                    weights[non_empty_mask] *= non_empty_multiplier
+                    print(f"[INFO] Applied {non_empty_multiplier}x multiplier to {non_empty_count} non-empty room samples")
+            else:
+                print(f"[WARNING] 'is_empty' column not found, cannot apply non_empty_multiplier")
         
         # Cap weights if requested
         if max_weight is not None:
@@ -517,7 +530,8 @@ class ManifestDataset(BaseComponent, Dataset):
                        preferred_weight_columns=None,
                        # New options for pre-computed weights
                        use_precomputed_weights=False, precomputed_weight_column="sample_weight",
-                       print_weight_stats=True, weight_stats_columns=None):
+                       print_weight_stats=True, weight_stats_columns=None,
+                       non_empty_multiplier=None):
         """
         Create a DataLoader with optional weighted sampling.
         
@@ -546,6 +560,7 @@ class ManifestDataset(BaseComponent, Dataset):
             precomputed_weight_column: Column name for pre-computed weights (default: "sample_weight")
             print_weight_stats: Print weight statistics
             weight_stats_columns: Columns to group by when printing statistics
+            non_empty_multiplier: Optional multiplier for non-empty rooms (e.g., 2.0 doubles their weight)
             
         Returns:
             DataLoader instance
@@ -556,7 +571,8 @@ class ManifestDataset(BaseComponent, Dataset):
         if use_precomputed_weights:
             weights = self._use_precomputed_weights(
                 weight_column=precomputed_weight_column,
-                max_weight=max_weight
+                max_weight=max_weight,
+                non_empty_multiplier=non_empty_multiplier
             )
             
             if print_weight_stats:
