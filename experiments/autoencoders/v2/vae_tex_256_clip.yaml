@@ -3,7 +3,7 @@
 # =============================================================================
 # Uses new manifest structure from collect_manifest.py
 # Precomputed sample weights for balanced sampling
-# Input size: 256x256 → Latent: 16x16x4
+# Input size: 256x256 → Latent: 32x32x4
 # =============================================================================
 
 experiment:
@@ -15,7 +15,7 @@ experiment:
 # Dataset
 # =============================================================================
 dataset:
-  manifest: "dataset_v2/manifests/manifest_tex.csv"
+  manifest: "/work3/s233249/ImgiNav/dataset_v2/manifests/manifest_tex.csv"
   
   # Column → batch key mapping
   outputs:
@@ -43,7 +43,7 @@ autoencoder:
     in_channels: 3
     latent_channels: 4
     base_channels: 48
-    downsampling_steps: 4  # 256 → 16
+    downsampling_steps: 3  # 256 → 32
     activation: SiLU
     norm_groups: 8
     variational: true
@@ -51,7 +51,7 @@ autoencoder:
   decoder:
     latent_channels: 4
     base_channels: 48
-    upsampling_steps: 4
+    upsampling_steps: 3
     activation: SiLU
     norm_groups: 8
     heads:
@@ -102,16 +102,10 @@ training:
   loss:
     type: CompositeLoss
     losses:
-      - type: ColorWeightedMSELoss
+      - type: MSELoss
         key: rgb
-        target: rgb
+        target_key: rgb
         weight: 1.0
-        target_colors:
-          - color: [50, 50, 50]
-            weight: 3.0
-            tolerance: 0.15
-        color_space: rgb
-        fallback_weight: 1.0
       - type: KLDLoss
         weight: 0.0001
       - type: LatentStandardizationLoss
