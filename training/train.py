@@ -345,8 +345,23 @@ def main():
     CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
     CLIPLossClass = LOSS_REGISTRY.get("CLIPLoss")
     
+    # Debug: Check what attributes the model has
+    model_attrs = [attr for attr in dir(model) if not attr.startswith('_')]
+    print(f"Model attributes: {model_attrs[:20]}...")  # Print first 20
+    print(f"Model has clip_projection: {hasattr(model, 'clip_projection')}")
+    if hasattr(model, 'clip_projection'):
+        print(f"clip_projection value: {model.clip_projection}")
+    print(f"Config has clip_projection: {'clip_projection' in config.get('autoencoder', {})}")
+    if 'autoencoder' in config:
+        print(f"Autoencoder config keys: {list(config['autoencoder'].keys())}")
+    
     if not hasattr(model, 'clip_projection') or model.clip_projection is None:
-        raise RuntimeError("Model does not have clip_projection! Check autoencoder config has clip_projection section.")
+        raise RuntimeError(
+            f"Model does not have clip_projection! "
+            f"Check autoencoder config has clip_projection section. "
+            f"Model type: {type(model)}, "
+            f"Config autoencoder keys: {list(config.get('autoencoder', {}).keys())}"
+        )
     
     if not isinstance(loss_fn, CompositeLossClass):
         raise RuntimeError("Loss function is not CompositeLoss! Cannot connect CLIP projections.")
