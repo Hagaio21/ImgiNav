@@ -9,7 +9,7 @@
 experiment:
   name: "dataset_v2_vae_tex_clip"
   phase: "clip_vae_training"
-  save_path: "outputs/autoencoders/v2/vae_tex_clip"
+  save_path: "/work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_tex_clip"
 
 dataset:
   # CSV manifest converted from manifests/rooms.json
