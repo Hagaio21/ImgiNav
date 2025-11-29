@@ -28,7 +28,7 @@ Usage:
 
 Output Structure:
     dataset_v2/
-    ├── pov/
+    ├── povs/
     │   └── embeddings_{variant}/
     │       └── {scene_id}_{room_id}_pov.pt
     └── graphs/
@@ -141,7 +141,7 @@ def embed_povs(
         # Return map for existing files
         embedding_map = {}
         for _, row in df[has_pov][["scene_id", "room_id"]].drop_duplicates().iterrows():
-            rel_path = f"pov/embeddings_{output_dir.name.split('_')[-1]}/{row['scene_id']}_{row['room_id']}_pov.pt"
+            rel_path = f"povs/embeddings_{output_dir.name.split('_')[-1]}/{row['scene_id']}_{row['room_id']}_pov.pt"
             embedding_map[(row["scene_id"], row["room_id"])] = rel_path
         return embedding_map
     
@@ -327,7 +327,7 @@ def main():
     
     # POV embeddings
     if not args.skip_pov:
-        pov_output_dir = args.dataset_root / "pov" / f"embeddings_{variant}"
+        pov_output_dir = args.dataset_root / "povs" / f"embeddings_{variant}"
         pov_map = embed_povs(
             df=df,
             dataset_root=args.dataset_root,

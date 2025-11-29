@@ -1,54 +1,24 @@
 #!/usr/bin/env python3
 """
-Collect Manifest - Generate CSV manifest for VAE training
+Collect Manifest - FAST VERSION
 
-Scans the dataset directory and creates comprehensive CSV manifests (tex and seg variants)
-with all paths and pre-computed sample weights for balanced training.
+Optimizations:
+1. Scan each directory ONCE and build indexes (instead of glob per room)
+2. Use sets for O(1) lookups instead of repeated exists() calls
+3. Process both variants in parallel if needed
 
-Usage:
-    python collect_manifest.py --dataset-root /path/to/dataset_v2
-    
-    # Custom output names
-    python collect_manifest.py --dataset-root /path/to/dataset_v2 \
-        --output-tex manifest_tex.csv --output-seg manifest_seg.csv
-
-Weighting Strategy:
-    1. pov_weight = 1/pov_count (normalizes rooms with many POVs)
-    2. empty_weight = inverse_frequency(is_empty)
-    3. type_weight = inverse_frequency(type)
-    4. sample_weight = pov_weight * empty_weight * type_weight
-
-Output CSV columns:
-    - scene_id: Scene identifier
-    - type: "room" or "scene"
-    - room_type: Room type (e.g., "Bedroom") or "scene" for scene-level
-    - room_id: Full room identifier (e.g., "Bedroom_1") or scene_id for scene-level
-    - pov_id: POV identifier (e.g., "door0", "window1") or empty for scenes
-    - pov_count: Number of POVs for this room (0 for scenes)
-    - layout_path: Relative path to layout image
-    - pov_path: Relative path to POV image (empty for scenes)
-    - pov_embedding_path: Relative path to POV embedding (empty for scenes)
-    - graph_json_path: Relative path to graph JSON
-    - graph_text_path: Relative path to graph text description
-    - graph_embedding_path: Relative path to text embedding
-    - is_empty: Whether the room is empty (no furniture)
-    - furniture_count: Number of furniture items
-    - door_count: Number of doors
-    - window_count: Number of windows
-    - pov_weight: 1/pov_count (1.0 for scenes)
-    - empty_weight: Inverse frequency weight for is_empty
-    - type_weight: Inverse frequency weight for type
-    - sample_weight: Combined weight (pov_weight * empty_weight * type_weight)
+This should reduce runtime from hours to minutes.
 """
 
 import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 from collections import defaultdict, Counter
 import csv
 import time
+import re
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,153 +27,271 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def find_all_povs(scene_id: str, room_id: str, povs_dir: Path, variant: str) -> List[Tuple[str, str]]:
+# ============================================================================
+# Directory Indexing - Scan once, lookup many
+# ============================================================================
+
+def build_file_index(directory: Path, pattern: str = "*") -> Dict[str, Path]:
     """
-    Find all POV images for a room.
+    Build an index of all files in a directory.
+    Returns dict mapping filename (stem or full name) to full path.
+    """
+    index = {}
+    if not directory.exists():
+        return index
     
-    Returns list of (pov_id, relative_path) tuples.
+    for path in directory.glob(pattern):
+        if path.is_file():
+            index[path.name] = path
+            index[path.stem] = path  # Also index without extension
+    
+    return index
+
+
+def build_pov_index(povs_dir: Path, variant: str) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Build index of all POV files.
+    Returns dict mapping (scene_id, room_id) -> list of (pov_id, relative_path)
+    
+    Filename pattern: {scene_id}_{room_id}_{pov_id}_{variant}_pov.png
     """
     variant_dir = povs_dir / variant
     if not variant_dir.exists():
-        return []
+        return {}
     
-    povs = []
+    index = defaultdict(list)
+    suffix = f"_{variant}_pov.png"
     
-    # Find all matching POV files
-    pattern = f"{scene_id}_{room_id}_*_{variant}_pov.png"
-    for pov_path in variant_dir.glob(pattern):
-        # Extract pov_id from filename: {scene_id}_{room_id}_{pov_id}_{variant}_pov.png
-        name = pov_path.stem  # Remove .png
-        # Remove suffix _{variant}_pov
+    logger.info(f"  Indexing POV files in {variant_dir}...")
+    start = time.time()
+    
+    # Single directory scan
+    files = list(variant_dir.glob(f"*{suffix}"))
+    logger.info(f"    Found {len(files)} POV files")
+    
+    # Parse filenames to extract scene_id, room_id, pov_id
+    # Pattern: {scene_id}_{room_id}_{pov_id}_{variant}_pov.png
+    # Example: abc123_Bedroom_door0_tex_pov.png
+    #          abc123_Bedroom_1_window0_tex_pov.png
+    
+    for path in files:
+        name = path.stem  # Remove .png
+        # Remove _{variant}_pov suffix
         prefix = name.replace(f"_{variant}_pov", "")
-        # Remove scene_id and room_id prefix
-        pov_id = prefix.replace(f"{scene_id}_{room_id}_", "")
         
-        relative_path = f"povs/{variant}/{pov_path.name}"
-        povs.append((pov_id, relative_path))
+        # Split into parts - tricky because room_id can contain underscores
+        # We know pov_id is at the end and is like "door0", "window1"
+        parts = prefix.rsplit("_", 1)
+        if len(parts) != 2:
+            continue
+        
+        scene_room = parts[0]
+        pov_id = parts[1]
+        
+        # Now split scene_room into scene_id and room_id
+        # Scene ID is typically a UUID-like string, room_id is like "Bedroom" or "Bedroom_1"
+        # Try to find the split point
+        
+        # Strategy: room types are known, find the longest matching suffix
+        room_types = ["Bedroom", "LivingRoom", "DiningRoom", "Kitchen", "Bathroom", 
+                      "Balcony", "Storage", "Corridor", "OtherRoom", "Library",
+                      "MasterBedroom", "SecondBedroom", "KidsRoom", "Study", "Entrance"]
+        
+        scene_id = None
+        room_id = None
+        
+        for rt in room_types:
+            # Check for room_type with index (e.g., "Bedroom_1")
+            for pattern in [f"_{rt}_", f"_{rt}"]:
+                idx = scene_room.find(pattern)
+                if idx != -1:
+                    scene_id = scene_room[:idx]
+                    room_id = scene_room[idx+1:]
+                    break
+            if scene_id:
+                break
+        
+        if not scene_id:
+            # Fallback: assume first part before any room-like word is scene_id
+            # Just split on first underscore that follows a long hex-like sequence
+            match = re.match(r'^([a-f0-9-]{8,})_(.+)$', scene_room, re.IGNORECASE)
+            if match:
+                scene_id = match.group(1)
+                room_id = match.group(2)
+            else:
+                # Last resort: find first underscore
+                parts2 = scene_room.split("_", 1)
+                if len(parts2) == 2:
+                    scene_id, room_id = parts2
+                else:
+                    continue
+        
+        if scene_id and room_id:
+            relative_path = f"povs/{variant}/{path.name}"
+            index[(scene_id, room_id)].append((pov_id, relative_path))
     
-    # Sort by pov_id for consistency (door0, door1, window0, etc.)
-    povs.sort(key=lambda x: (
-        0 if x[0].startswith("door") else 1,  # Doors first
-        int(''.join(filter(str.isdigit, x[0])) or 0)  # Then by number
-    ))
+    # Sort POVs for each room
+    for key in index:
+        index[key].sort(key=lambda x: (
+            0 if x[0].startswith("door") else 1,
+            int(''.join(filter(str.isdigit, x[0])) or 0)
+        ))
     
-    return povs
+    elapsed = time.time() - start
+    logger.info(f"    Indexed {len(index)} room POV sets in {elapsed:.2f}s")
+    
+    return dict(index)
 
 
-def find_layout(scene_id: str, room_id: str, layouts_dir: Path, variant: str, is_scene: bool = False) -> Optional[str]:
-    """Find layout image for a room or scene."""
+def build_layout_index(layouts_dir: Path, variant: str) -> Tuple[Set[str], Set[str]]:
+    """
+    Build index of layout files.
+    Returns (scene_layouts, room_layouts) as sets of identifiers.
+    
+    Scene layout: {scene_id}_{variant}_layout.png
+    Room layout: {scene_id}_{room_id}_{variant}_layout.png
+    """
     variant_dir = layouts_dir / variant
     if not variant_dir.exists():
-        return None
+        return set(), set()
     
-    if is_scene:
-        # Scene layout: {scene_id}_{variant}_layout.png
-        layout_path = variant_dir / f"{scene_id}_{variant}_layout.png"
-    else:
-        # Room layout: {scene_id}_{room_id}_{variant}_layout.png
-        layout_path = variant_dir / f"{scene_id}_{room_id}_{variant}_layout.png"
+    logger.info(f"  Indexing layout files in {variant_dir}...")
+    start = time.time()
     
-    if layout_path.exists():
-        return f"layouts/{variant}/{layout_path.name}"
+    suffix = f"_{variant}_layout.png"
+    files = list(variant_dir.glob(f"*{suffix}"))
+    logger.info(f"    Found {len(files)} layout files")
     
-    return None
+    scene_layouts = set()
+    room_layouts = set()
+    
+    for path in files:
+        name = path.stem.replace(f"_{variant}_layout", "")
+        
+        # Check if it's a scene layout (no room type) or room layout
+        # Scene layouts: just scene_id
+        # Room layouts: scene_id_room_id
+        
+        # Simple heuristic: if the name contains a known room type, it's a room layout
+        room_types = ["Bedroom", "LivingRoom", "DiningRoom", "Kitchen", "Bathroom",
+                      "Balcony", "Storage", "Corridor", "OtherRoom", "Library",
+                      "MasterBedroom", "SecondBedroom", "KidsRoom", "Study", "Entrance"]
+        
+        is_room = any(rt in name for rt in room_types)
+        
+        if is_room:
+            room_layouts.add(name)
+        else:
+            scene_layouts.add(name)
+    
+    elapsed = time.time() - start
+    logger.info(f"    Indexed {len(scene_layouts)} scene + {len(room_layouts)} room layouts in {elapsed:.2f}s")
+    
+    return scene_layouts, room_layouts
 
 
-def find_graph_files(scene_id: str, room_id: str, graphs_dir: Path, is_scene: bool = False) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def build_graph_index(graphs_dir: Path) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
     """
-    Find graph JSON, text description, and text embedding for a room or scene.
-    
-    Returns (json_path, text_path, embedding_path)
+    Build index of graph files (jsons, texts, embeddings).
+    Returns (json_index, text_index, embedding_index) mapping identifier -> relative path.
     """
-    json_path = None
-    text_path = None
-    embedding_path = None
+    json_index = {}
+    text_index = {}
+    embedding_index = {}
     
-    if is_scene:
-        identifier = scene_id
-    else:
-        identifier = f"{scene_id}_{room_id}"
-    
-    # Graph JSON
+    # JSON files
     jsons_dir = graphs_dir / "jsons"
     if jsons_dir.exists():
-        # Try different patterns
-        for pattern in [f"{identifier}_scene_graph.json", f"{identifier}_room_graph.json", f"{identifier}_graph.json", f"{identifier}.json"]:
-            path = jsons_dir / pattern
-            if path.exists():
-                json_path = f"graphs/jsons/{path.name}"
-                break
+        logger.info(f"  Indexing graph JSON files...")
+        for path in jsons_dir.glob("*.json"):
+            # Remove suffixes like _scene_graph, _room_graph
+            name = path.stem
+            for suffix in ["_scene_graph", "_room_graph", "_graph"]:
+                name = name.replace(suffix, "")
+            json_index[name] = f"graphs/jsons/{path.name}"
     
-    # Text description
+    # Text files
     texts_dir = graphs_dir / "texts"
     if texts_dir.exists():
-        for pattern in [f"{identifier}_description.txt", f"{identifier}_text.txt", f"{identifier}.txt"]:
-            path = texts_dir / pattern
-            if path.exists():
-                text_path = f"graphs/texts/{path.name}"
-                break
+        logger.info(f"  Indexing graph text files...")
+        for path in texts_dir.glob("*.txt"):
+            name = path.stem
+            for suffix in ["_scene_description", "_room_description", "_description", "_text"]:
+                name = name.replace(suffix, "")
+            text_index[name] = f"graphs/texts/{path.name}"
     
-    # Text embedding
+    # Embedding files
     embeddings_dir = graphs_dir / "embeddings"
     if embeddings_dir.exists():
-        for pattern in [f"{identifier}_text.pt", f"{identifier}_description.pt", f"{identifier}.pt"]:
-            path = embeddings_dir / pattern
-            if path.exists():
-                embedding_path = f"graphs/embeddings/{path.name}"
-                break
+        logger.info(f"  Indexing graph embedding files...")
+        for path in embeddings_dir.glob("*.pt"):
+            name = path.stem
+            for suffix in ["_text", "_description"]:
+                name = name.replace(suffix, "")
+            embedding_index[name] = f"graphs/embeddings/{path.name}"
     
-    return json_path, text_path, embedding_path
+    logger.info(f"    Indexed {len(json_index)} JSONs, {len(text_index)} texts, {len(embedding_index)} embeddings")
+    
+    return json_index, text_index, embedding_index
 
 
-def load_room_metadata(metadata_dir: Path, scene_id: str) -> Dict[str, Dict[str, Any]]:
-    """Load all room metadata for a scene."""
-    rooms = {}
+# ============================================================================
+# Metadata Loading
+# ============================================================================
+
+def load_all_scene_metadata(metadata_dir: Path) -> Dict[str, Path]:
+    """Load index of all scene metadata files."""
+    scenes_dir = metadata_dir / "scenes"
+    if not scenes_dir.exists():
+        return {}
+    
+    return {path.stem: path for path in scenes_dir.glob("*.json")}
+
+
+def load_all_room_metadata(metadata_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """
+    Load ALL room metadata into memory at once.
+    Returns dict mapping (scene_id, room_id) -> room_data
+    """
     rooms_dir = metadata_dir / "rooms"
-    
     if not rooms_dir.exists():
-        return rooms
+        return {}
     
-    for room_meta_path in rooms_dir.glob(f"{scene_id}_*.json"):
+    logger.info("Loading all room metadata into memory...")
+    start = time.time()
+    
+    rooms = {}
+    room_files = list(rooms_dir.glob("*.json"))
+    
+    for room_path in room_files:
         try:
-            with open(room_meta_path, "r") as f:
+            with open(room_path, "r") as f:
                 room_data = json.load(f)
             
-            room_id = room_data.get("room_id", room_meta_path.stem.replace(f"{scene_id}_", ""))
-            rooms[room_id] = room_data
+            scene_id = room_data.get("scene_id")
+            room_id = room_data.get("room_id")
+            
+            if scene_id and room_id:
+                rooms[(scene_id, room_id)] = room_data
         except Exception as e:
-            logger.warning(f"Failed to load room metadata {room_meta_path}: {e}")
+            logger.warning(f"Failed to load {room_path}: {e}")
+    
+    elapsed = time.time() - start
+    logger.info(f"  Loaded {len(rooms)} room metadata files in {elapsed:.2f}s")
     
     return rooms
 
 
-def compute_inverse_frequency_weights(values: List[Any]) -> Dict[Any, float]:
-    """
-    Compute inverse frequency weights for a list of values.
-    
-    Weight = total_count / (num_classes * class_count)
-    This makes each class contribute equally in expectation.
-    """
-    from collections import Counter
-    counts = Counter(values)
-    total = len(values)
-    num_classes = len(counts)
-    
-    weights = {}
-    for value, count in counts.items():
-        weights[value] = total / (num_classes * count)
-    
-    return weights
+# ============================================================================
+# Main Collection (Fast Version)
+# ============================================================================
 
-
-def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, Any]]:
+def collect_manifest_data_fast(dataset_root: Path, variant: str) -> List[Dict[str, Any]]:
     """
-    Collect all manifest data for a variant (tex or seg).
-    
-    Returns list of row dictionaries.
+    Collect manifest data using pre-built indexes.
+    Much faster than scanning directories per-room.
     """
     start_time = time.time()
-    rows = []
     
     # Directory paths
     metadata_dir = dataset_root / "metadata"
@@ -211,73 +299,49 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
     povs_dir = dataset_root / "povs"
     graphs_dir = dataset_root / "graphs"
     
-    logger.info(f"Starting manifest collection for variant: {variant}")
-    logger.info(f"Dataset root: {dataset_root}")
-    logger.info(f"Metadata dir: {metadata_dir}")
-    logger.info(f"Layouts dir: {layouts_dir}")
-    logger.info(f"POVs dir: {povs_dir}")
-    logger.info(f"Graphs dir: {graphs_dir}")
+    # Build indexes ONCE
+    logger.info(f"\nBuilding file indexes for variant: {variant}")
+    index_start = time.time()
     
-    # Find all scenes from metadata
-    scenes_dir = metadata_dir / "scenes"
-    if not scenes_dir.exists():
-        logger.error(f"Scenes metadata directory not found: {scenes_dir}")
-        return rows
+    pov_index = build_pov_index(povs_dir, variant)
+    scene_layout_set, room_layout_set = build_layout_index(layouts_dir, variant)
+    json_index, text_index, embedding_index = build_graph_index(graphs_dir)
     
-    logger.info(f"Scanning for scene metadata files in: {scenes_dir}")
-    scene_files = list(scenes_dir.glob("*.json"))
-    total_scenes = len(scene_files)
-    logger.info(f"Found {total_scenes} scenes")
+    index_elapsed = time.time() - index_start
+    logger.info(f"Index building complete in {index_elapsed:.2f}s")
     
-    # Statistics
+    # Load all metadata
+    logger.info("\nLoading metadata...")
+    scene_meta_index = load_all_scene_metadata(metadata_dir)
+    room_meta_all = load_all_room_metadata(metadata_dir)
+    
+    # Group rooms by scene
+    rooms_by_scene = defaultdict(list)
+    for (scene_id, room_id), room_data in room_meta_all.items():
+        rooms_by_scene[scene_id].append((room_id, room_data))
+    
+    # Now collect rows using indexes (fast lookups)
+    logger.info(f"\nCollecting manifest rows...")
+    rows = []
+    
+    total_scenes = len(scene_meta_index)
     scenes_processed = 0
-    scenes_skipped = 0
     rooms_processed = 0
-    rooms_skipped = 0
-    total_povs_found = 0
-    last_progress_time = time.time()
+    total_povs = 0
     
-    for idx, scene_meta_path in enumerate(scene_files, 1):
-        scene_id = scene_meta_path.stem
+    for scene_id, scene_meta_path in scene_meta_index.items():
+        # Scene-level entry
+        scene_layout = None
+        if scene_id in scene_layout_set:
+            scene_layout = f"layouts/{variant}/{scene_id}_{variant}_layout.png"
         
-        # Progress update every 100 scenes or every 30 seconds
-        current_time = time.time()
-        if idx % 100 == 0 or (current_time - last_progress_time) >= 30:
-            elapsed = current_time - start_time
-            rate = idx / elapsed if elapsed > 0 else 0
-            remaining = (total_scenes - idx) / rate if rate > 0 else 0
-            logger.info(f"Progress: {idx}/{total_scenes} scenes ({100*idx/total_scenes:.1f}%) | "
-                       f"Rows collected: {len(rows)} | "
-                       f"Elapsed: {elapsed:.1f}s | "
-                       f"Rate: {rate:.1f} scenes/s | "
-                       f"ETA: {remaining:.1f}s")
-            last_progress_time = current_time
+        scene_graph_json = json_index.get(scene_id)
+        scene_graph_text = text_index.get(scene_id)
         
-        try:
-            with open(scene_meta_path, "r") as f:
-                scene_meta = json.load(f)
-        except Exception as e:
-            logger.warning(f"Failed to load scene metadata {scene_meta_path}: {e}")
-            scenes_skipped += 1
-            continue
+        # Get room count for this scene
+        scene_rooms = rooms_by_scene.get(scene_id, [])
         
-        scenes_processed += 1
-        
-        # Load room metadata for this scene
-        rooms = load_room_metadata(metadata_dir, scene_id)
-        num_rooms = len(rooms)
-        if num_rooms == 0:
-            logger.debug(f"Scene {scene_id}: No rooms found")
-        else:
-            logger.debug(f"Scene {scene_id}: Found {num_rooms} rooms")
-        
-        # --- Scene-level entry (no POV) ---
-        scene_layout = find_layout(scene_id, "", layouts_dir, variant, is_scene=True)
-        scene_graph_json, scene_graph_text, _ = find_graph_files(
-            scene_id, "", graphs_dir, is_scene=True
-        )
-        
-        if scene_layout:  # Only add if layout exists
+        if scene_layout:
             rows.append({
                 "scene_id": scene_id,
                 "type": "scene",
@@ -291,63 +355,58 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                 "graph_json_path": scene_graph_json or "",
                 "graph_text_path": scene_graph_text or "",
                 "graph_embedding_path": "",
-                "is_empty": False,  # Scenes are never "empty"
-                "furniture_count": scene_meta.get("furniture_count", 0),
-                "door_count": scene_meta.get("door_count", 0),
-                "window_count": scene_meta.get("window_count", 0),
+                "is_empty": False,
+                "furniture_count": 0,
+                "door_count": 0,
+                "window_count": 0,
             })
-            logger.debug(f"Scene {scene_id}: Added scene-level entry")
-        else:
-            logger.debug(f"Scene {scene_id}: No scene layout found, skipping scene-level entry")
         
-        # --- Room-level entries (with POVs) ---
-        for room_id, room_meta in rooms.items():
-            room_type = room_meta.get("room_type", "Unknown")
-            furniture_count = room_meta.get("furniture_count", len(room_meta.get("furniture", [])))
-            is_empty = furniture_count == 0
-            door_count = room_meta.get("door_count", len(room_meta.get("doors", [])))
-            window_count = room_meta.get("window_count", len(room_meta.get("windows", [])))
+        # Room-level entries
+        for room_id, room_data in scene_rooms:
+            room_type = room_data.get("room_type", "Unknown")
+            is_empty = room_data.get("is_empty", False)
+            furniture_count = room_data.get("furniture_count", 0)
+            door_count = len(room_data.get("doors", []))
+            window_count = len(room_data.get("windows", []))
             
-            # Find layout
-            room_layout = find_layout(scene_id, room_id, layouts_dir, variant, is_scene=False)
-            if not room_layout:
-                rooms_skipped += 1
-                logger.debug(f"Scene {scene_id}, Room {room_id}: No layout found, skipping")
-                continue  # Skip rooms without layouts
+            # Layout lookup
+            room_key = f"{scene_id}_{room_id}"
+            room_layout = None
+            if room_key in room_layout_set:
+                room_layout = f"layouts/{variant}/{room_key}_{variant}_layout.png"
             
-            # Find graph files
-            room_graph_json, room_graph_text, _ = find_graph_files(
-                scene_id, room_id, graphs_dir, is_scene=False
-            )
+            # Graph files lookup
+            room_graph_json = json_index.get(room_key)
+            room_graph_text = text_index.get(room_key)
             
-            # Find all POVs for this room
-            povs = find_all_povs(scene_id, room_id, povs_dir, variant)
+            # POV lookup
+            povs = pov_index.get((scene_id, room_id), [])
             pov_count = len(povs)
-            total_povs_found += pov_count
+            total_povs += pov_count
             
             if pov_count == 0:
-                # Room has no POVs - add single entry without POV
-                rows.append({
-                    "scene_id": scene_id,
-                    "type": "room",
-                    "room_type": room_type,
-                    "room_id": room_id,
-                    "pov_id": "",
-                    "pov_count": 0,
-                    "layout_path": room_layout,
-                    "pov_path": "",
-                    "pov_embedding_path": "",
-                    "graph_json_path": room_graph_json or "",
-                    "graph_text_path": room_graph_text or "",
-                    "graph_embedding_path": "",
-                    "is_empty": is_empty,
-                    "furniture_count": furniture_count,
-                    "door_count": door_count,
-                    "window_count": window_count,
-                })
-                logger.debug(f"Scene {scene_id}, Room {room_id}: Added entry (no POVs)")
+                # Still add room entry without POV
+                if room_layout:
+                    rows.append({
+                        "scene_id": scene_id,
+                        "type": "room",
+                        "room_type": room_type,
+                        "room_id": room_id,
+                        "pov_id": "",
+                        "pov_count": 0,
+                        "layout_path": room_layout,
+                        "pov_path": "",
+                        "pov_embedding_path": "",
+                        "graph_json_path": room_graph_json or "",
+                        "graph_text_path": room_graph_text or "",
+                        "graph_embedding_path": "",
+                        "is_empty": is_empty,
+                        "furniture_count": furniture_count,
+                        "door_count": door_count,
+                        "window_count": window_count,
+                    })
             else:
-                # Add one row per POV
+                # Add entry for each POV
                 for pov_id, pov_path in povs:
                     rows.append({
                         "scene_id": scene_id,
@@ -356,7 +415,7 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                         "room_id": room_id,
                         "pov_id": pov_id,
                         "pov_count": pov_count,
-                        "layout_path": room_layout,
+                        "layout_path": room_layout or "",
                         "pov_path": pov_path,
                         "pov_embedding_path": "",
                         "graph_json_path": room_graph_json or "",
@@ -367,66 +426,58 @@ def collect_manifest_data(dataset_root: Path, variant: str) -> List[Dict[str, An
                         "door_count": door_count,
                         "window_count": window_count,
                     })
-                logger.debug(f"Scene {scene_id}, Room {room_id}: Added {pov_count} POV entries")
             
             rooms_processed += 1
+        
+        scenes_processed += 1
+        
+        # Progress update every 1000 scenes
+        if scenes_processed % 1000 == 0:
+            elapsed = time.time() - start_time
+            rate = scenes_processed / elapsed
+            eta = (total_scenes - scenes_processed) / rate
+            logger.info(f"  Progress: {scenes_processed}/{total_scenes} scenes "
+                       f"({100*scenes_processed/total_scenes:.1f}%) - "
+                       f"ETA: {eta:.0f}s")
     
     elapsed_time = time.time() - start_time
     logger.info(f"\nCollection complete for variant: {variant}")
-    logger.info(f"  Scenes processed: {scenes_processed}/{total_scenes} (skipped: {scenes_skipped})")
-    logger.info(f"  Rooms processed: {rooms_processed} (skipped: {rooms_skipped})")
-    logger.info(f"  Total POVs found: {total_povs_found}")
-    logger.info(f"  Total rows collected: {len(rows)}")
-    logger.info(f"  Time elapsed: {elapsed_time:.2f}s ({elapsed_time/60:.2f} minutes)")
-    logger.info(f"  Average rate: {total_scenes/elapsed_time:.2f} scenes/s")
+    logger.info(f"  Scenes processed: {scenes_processed}")
+    logger.info(f"  Rooms processed: {rooms_processed}")
+    logger.info(f"  Total POVs: {total_povs}")
+    logger.info(f"  Total rows: {len(rows)}")
+    logger.info(f"  Time: {elapsed_time:.2f}s ({elapsed_time/60:.2f} min)")
     
     return rows
 
 
 def compute_weights(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Compute sample weights for all rows.
-    
-    Weighting strategy:
-    1. pov_weight = 1/pov_count (1.0 for scenes or rooms without POVs)
-    2. empty_weight = inverse_frequency(is_empty)
-    3. type_weight = inverse_frequency(type)
-    4. sample_weight = pov_weight * empty_weight * type_weight
-    """
+    """Compute sample weights for all rows."""
     if not rows:
-        logger.warning("No rows to compute weights for")
         return rows
     
     logger.info(f"Computing weights for {len(rows)} rows...")
-    start_time = time.time()
     
     # Compute inverse frequency weights
     types = [r["type"] for r in rows]
     is_empties = [r["is_empty"] for r in rows]
     
-    type_weights = compute_inverse_frequency_weights(types)
-    empty_weights = compute_inverse_frequency_weights(is_empties)
+    type_counts = Counter(types)
+    empty_counts = Counter(is_empties)
     
-    logger.info(f"Type distribution: {dict(Counter(types))}")
-    logger.info(f"Type weights: {type_weights}")
-    logger.info(f"Empty distribution: {dict(Counter(is_empties))}")
-    logger.info(f"Empty weights: {empty_weights}")
+    total = len(rows)
+    type_weights = {t: total / (len(type_counts) * c) for t, c in type_counts.items()}
+    empty_weights = {e: total / (len(empty_counts) * c) for e, c in empty_counts.items()}
     
-    # Apply weights to each row
-    logger.info("Applying weights to rows...")
+    logger.info(f"  Type distribution: {dict(type_counts)}")
+    logger.info(f"  Empty distribution: {dict(empty_counts)}")
+    
+    # Apply weights
     for row in rows:
-        # POV weight: normalize by number of POVs
         pov_count = row["pov_count"]
-        if pov_count > 0:
-            pov_weight = 1.0 / pov_count
-        else:
-            pov_weight = 1.0  # Scenes or rooms without POVs
-        
-        # Type and empty weights
+        pov_weight = 1.0 / pov_count if pov_count > 0 else 1.0
         type_weight = type_weights[row["type"]]
         empty_weight = empty_weights[row["is_empty"]]
-        
-        # Combined weight
         sample_weight = pov_weight * type_weight * empty_weight
         
         row["pov_weight"] = round(pov_weight, 6)
@@ -434,22 +485,17 @@ def compute_weights(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         row["empty_weight"] = round(empty_weight, 6)
         row["sample_weight"] = round(sample_weight, 6)
     
-    elapsed = time.time() - start_time
-    logger.info(f"Weight computation complete in {elapsed:.2f}s")
-    
     return rows
 
 
 def write_manifest(rows: List[Dict[str, Any]], output_path: Path):
     """Write manifest to CSV file."""
     if not rows:
-        logger.warning(f"No rows to write to {output_path}")
+        logger.warning(f"No rows to write")
         return
     
-    logger.info(f"Writing manifest to: {output_path}")
-    start_time = time.time()
+    logger.info(f"Writing {len(rows)} rows to {output_path}")
     
-    # Column order
     columns = [
         "scene_id", "type", "room_type", "room_id", "pov_id", "pov_count",
         "layout_path", "pov_path", "pov_embedding_path",
@@ -458,14 +504,15 @@ def write_manifest(rows: List[Dict[str, Any]], output_path: Path):
         "pov_weight", "type_weight", "empty_weight", "sample_weight"
     ]
     
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
     
-    elapsed = time.time() - start_time
-    file_size = output_path.stat().st_size / (1024 * 1024)  # MB
-    logger.info(f"Wrote {len(rows)} rows to {output_path} ({file_size:.2f} MB) in {elapsed:.2f}s")
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    logger.info(f"  Written: {size_mb:.2f} MB")
 
 
 def print_statistics(rows: List[Dict[str, Any]], variant: str):
@@ -479,36 +526,34 @@ def print_statistics(rows: List[Dict[str, Any]], variant: str):
     empty = sum(1 for r in rows if r["is_empty"])
     with_pov = sum(1 for r in rows if r["pov_path"])
     
-    # Unique counts
     unique_scenes = len(set(r["scene_id"] for r in rows))
     unique_rooms = len(set((r["scene_id"], r["room_id"]) for r in rows if r["type"] == "room"))
     
-    # Room type distribution
     room_types = Counter(r["room_type"] for r in rows if r["type"] == "room")
     
     logger.info(f"\n{'='*50}")
     logger.info(f"Manifest Statistics ({variant})")
     logger.info(f"{'='*50}")
     logger.info(f"Total rows: {total}")
-    logger.info(f"  - Scene rows: {scenes}")
-    logger.info(f"  - Room rows: {rooms}")
+    logger.info(f"  Scene rows: {scenes}")
+    logger.info(f"  Room rows: {rooms}")
     logger.info(f"Unique scenes: {unique_scenes}")
     logger.info(f"Unique rooms: {unique_rooms}")
     logger.info(f"Empty rooms: {empty} ({100*empty/total:.1f}%)")
-    logger.info(f"Rows with POV: {with_pov} ({100*with_pov/total:.1f}%)")
-    logger.info(f"\nRoom type distribution:")
-    for room_type, count in room_types.most_common(10):
-        logger.info(f"  {room_type}: {count}")
+    logger.info(f"With POV: {with_pov} ({100*with_pov/total:.1f}%)")
+    logger.info(f"\nRoom types:")
+    for rt, count in room_types.most_common(10):
+        logger.info(f"  {rt}: {count}")
     logger.info(f"{'='*50}\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate manifest CSV for VAE training")
+    parser = argparse.ArgumentParser(description="Generate manifest CSV (FAST version)")
     parser.add_argument("--dataset-root", required=True, help="Root directory of dataset")
-    parser.add_argument("--output-tex", default=None, help="Output path for tex manifest (default: dataset_root/manifests/manifest_tex.csv)")
-    parser.add_argument("--output-seg", default=None, help="Output path for seg manifest (default: dataset_root/manifests/manifest_seg.csv)")
-    parser.add_argument("--tex-only", action="store_true", help="Only generate tex manifest")
-    parser.add_argument("--seg-only", action="store_true", help="Only generate seg manifest")
+    parser.add_argument("--output-tex", default=None)
+    parser.add_argument("--output-seg", default=None)
+    parser.add_argument("--tex-only", action="store_true")
+    parser.add_argument("--seg-only", action="store_true")
     args = parser.parse_args()
     
     dataset_root = Path(args.dataset_root)
@@ -516,44 +561,31 @@ def main():
         logger.error(f"Dataset root not found: {dataset_root}")
         return
     
-    # Default output paths
     manifests_dir = dataset_root / "manifests"
-    manifests_dir.mkdir(parents=True, exist_ok=True)
-    
     output_tex = Path(args.output_tex) if args.output_tex else manifests_dir / "manifest_tex.csv"
     output_seg = Path(args.output_seg) if args.output_seg else manifests_dir / "manifest_seg.csv"
     
-    # Generate manifests
     variants = []
     if not args.seg_only:
         variants.append(("tex", output_tex))
     if not args.tex_only:
         variants.append(("seg", output_seg))
     
-    total_start_time = time.time()
+    total_start = time.time()
     
     for variant, output_path in variants:
-        variant_start_time = time.time()
         logger.info(f"\n{'='*60}")
         logger.info(f"Processing variant: {variant}")
-        logger.info(f"Output path: {output_path}")
         logger.info(f"{'='*60}")
         
-        rows = collect_manifest_data(dataset_root, variant)
-        
+        rows = collect_manifest_data_fast(dataset_root, variant)
         rows = compute_weights(rows)
-        
         print_statistics(rows, variant)
-        
         write_manifest(rows, output_path)
-        
-        variant_elapsed = time.time() - variant_start_time
-        logger.info(f"Variant {variant} completed in {variant_elapsed:.2f}s ({variant_elapsed/60:.2f} minutes)")
     
-    total_elapsed = time.time() - total_start_time
+    total_elapsed = time.time() - total_start
     logger.info(f"\n{'='*60}")
-    logger.info(f"All manifests completed!")
-    logger.info(f"Total time: {total_elapsed:.2f}s ({total_elapsed/60:.2f} minutes)")
+    logger.info(f"DONE! Total time: {total_elapsed:.2f}s ({total_elapsed/60:.2f} min)")
     logger.info(f"{'='*60}")
 
 

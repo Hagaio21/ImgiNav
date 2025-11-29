@@ -1,7 +1,7 @@
 #!/bin/bash
 #BSUB -J embed_training
-#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation/logs/embed_training.%J.out
-#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation/logs/embed_training.%J.err
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/logs/embed_training.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/logs/embed_training.%J.err
 #BSUB -n 4
 #BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
@@ -21,8 +21,8 @@ set -euo pipefail
 #   bsub -env "SKIP_GRAPH=1" < run_embeddings.sh      # Skip graph embeddings
 
 BASE_DIR="/work3/s233249/ImgiNav"
-PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/data_preparation/embed_for_training.py"
-LOG_DIR="${BASE_DIR}/ImgiNav/data_preparation/logs"
+PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/data_preparation_v2/embed_for_training.py"
+LOG_DIR="${BASE_DIR}/ImgiNav/data_preparation_v2/logs"
 
 # Dataset paths
 DATASET_ROOT="${BASE_DIR}/dataset_v2"

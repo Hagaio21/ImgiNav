@@ -4,7 +4,7 @@
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/collect_manifest.%J.err
 #BSUB -n 4
 #BSUB -R "rusage[mem=8000]"
-#BSUB -W 01:00
+#BSUB -W 05:00
 #BSUB -q hpc
 
 set -euo pipefail
