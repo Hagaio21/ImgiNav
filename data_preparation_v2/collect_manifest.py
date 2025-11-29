@@ -472,6 +472,20 @@ def compute_weights(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     logger.info(f"  Type distribution: {dict(type_counts)}")
     logger.info(f"  Empty distribution: {dict(empty_counts)}")
     
+    # Always down-weight empty rooms to reduce their influence on training
+    # This helps the model focus on non-empty rooms (which are more informative)
+    # We invert the weights: empty rooms get lower weight, non-empty get higher weight
+    if len(empty_weights) == 2:
+        empty_true_count = empty_counts.get(True, 0)
+        empty_false_count = empty_counts.get(False, 0)
+        
+        # Swap weights so empty rooms (True) always get lower weight
+        logger.info(f"  Down-weighting empty rooms: swapping weights (empty: {empty_true_count}, non-empty: {empty_false_count})")
+        temp = empty_weights[True]
+        empty_weights[True] = empty_weights[False]
+        empty_weights[False] = temp
+        logger.info(f"  After swap: empty_weight[True]={empty_weights[True]:.6f}, empty_weight[False]={empty_weights[False]:.6f}")
+    
     # Apply weights
     for row in rows:
         pov_count = row["pov_count"]
