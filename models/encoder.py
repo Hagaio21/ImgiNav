@@ -2,59 +2,87 @@ import torch
 import torch.nn as nn
 
 from .components.base_component import BaseComponent
+from .components.blocks import DownBlock, MidBlock
+from .utils import compute_num_groups
+
 
 class Encoder(BaseComponent):
-    """Deterministic encoder - outputs latent directly."""
+    """
+    Deterministic encoder with residual blocks.
+    
+    Uses shared block classes with time_dim=None (no time conditioning).
+    
+    Required config:
+        in_channels: Input channels
+        latent_channels: Latent space channels
+        base_channels: Base channel count
+        channel_multipliers: Channel multipliers per level
+        num_res_blocks: Residual blocks per level
+        norm_groups: GroupNorm groups
+    
+    Optional config:
+        dropout: Dropout rate (default: 0.0)
+    """
     
     def _build(self):
-        act = getattr(nn, self._init_kwargs.get("activation", "SiLU"))()
-        norm_groups = self._init_kwargs.get("norm_groups", 8)
-        in_ch = self._init_kwargs.get("in_channels", 3)
-        out_ch = self._init_kwargs.get("base_channels", 64)
-        down_steps = self._init_kwargs.get("downsampling_steps", 4)
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-
-        # Build feature extractor
-        layers = []
-        for _ in range(down_steps):
-            layers += [
-                nn.Conv2d(in_ch, out_ch, 3, padding=1),
-                nn.GroupNorm(norm_groups, out_ch),
-                act,
-                nn.Conv2d(out_ch, out_ch, 4, stride=2, padding=1),
-                nn.GroupNorm(norm_groups, out_ch),
-                act,
-            ]
-            in_ch = out_ch
-            out_ch *= 2
+        in_ch = self._init_kwargs["in_channels"]
+        latent_ch = self._init_kwargs["latent_channels"]
+        base_ch = self._init_kwargs["base_channels"]
+        ch_mults = self._init_kwargs["channel_multipliers"]
+        num_res = self._init_kwargs["num_res_blocks"]
+        norm_groups = self._init_kwargs["norm_groups"]
+        dropout = self._init_kwargs.get("dropout", 0.0)
         
-        # Final feature extraction layer (before latent projection)
-        layers += [
-            nn.Conv2d(in_ch, in_ch, 3, padding=1),
-            nn.GroupNorm(norm_groups, in_ch),
-            act,
-        ]
-        self.feature_extractor = nn.Sequential(*layers)
-        # Store feature extractor output channels for subclasses
-        self._feature_channels = in_ch
+        # Initial convolution
+        self.conv_in = nn.Conv2d(in_ch, base_ch, 3, padding=1)
         
-        # Regular deterministic encoder: project features to latent
-        self.latent_proj = nn.Conv2d(in_ch, latent_ch, 1)
+        # Downsampling blocks (time_dim=None for VAE)
+        self.down_blocks = nn.ModuleList()
+        channels = [base_ch] + [base_ch * m for m in ch_mults]
+        
+        for i in range(len(ch_mults)):
+            self.down_blocks.append(
+                DownBlock(
+                    in_ch=channels[i],
+                    out_ch=channels[i + 1],
+                    time_dim=None,  # No time conditioning for VAE
+                    num_res_blocks=num_res,
+                    norm_groups=norm_groups,
+                    dropout=dropout
+                )
+            )
+        
+        # Middle block
+        mid_ch = channels[-1]
+        self.mid_block = MidBlock(
+            channels=mid_ch,
+            time_dim=None,  # No time conditioning for VAE
+            norm_groups=norm_groups,
+            dropout=dropout
+        )
+        
+        # Output
+        self.norm_out = nn.GroupNorm(compute_num_groups(mid_ch, norm_groups), mid_ch)
+        self.act_out = nn.SiLU()
+        
+        # Store feature channels
+        self._feature_channels = mid_ch
+        
+        # Latent projection
+        self.latent_proj = nn.Conv2d(mid_ch, latent_ch, 1)
 
     def forward(self, x):
         """
-        Forward pass. Returns deterministic latent.
+        Forward pass.
         
         Args:
-            x: Input tensor [B, C, H, W] or DataFlow containing input
+            x: Input tensor [B, C, H, W] or DataFlow
         
         Returns:
             DataFlow: {"latent": z, "latent_features": features}
         """
         # Handle DataFlow input
         if isinstance(x, dict) and not isinstance(x, torch.Tensor):
-            # If it's a dict-like (DataFlow or dict), extract input
-            # Try common input keys
             if "rgb" in x:
                 x = x["rgb"]
             elif "input" in x:
@@ -62,76 +90,74 @@ class Encoder(BaseComponent):
             elif "x" in x:
                 x = x["x"]
             elif len(x) == 1:
-                # Single key dict, use the value
                 x = next(iter(x.values()))
             else:
-                # Multiple keys, try to infer or use first tensor
                 for key in ["rgb", "input", "x", "data"]:
                     if key in x:
                         x = x[key]
                         break
                 else:
-                    # Use first tensor value
                     x = next(v for v in x.values() if isinstance(v, torch.Tensor))
         
-        # Extract features
-        features = self.feature_extractor(x)
-        # Project features to latent
+        # Initial conv
+        x = self.conv_in(x)
+        
+        # Downsampling (no skip connections needed for VAE encoder)
+        for block in self.down_blocks:
+            x = block(x, t_emb=None, return_skip=False)
+        
+        # Middle
+        x = self.mid_block(x)
+        
+        # Output
+        features = self.act_out(self.norm_out(x))
         z = self.latent_proj(features)
+        
         return self._to_dataflow({"latent": z, "latent_features": features})
     
     def get_input_shape(self, batch_size=1):
-        """Get expected input shape."""
-        in_ch = self._init_kwargs.get("in_channels", 3)
-        # Assume input is RGB image (512x512 by default, but shape is flexible)
-        return (batch_size, in_ch, None, None)  # H, W are flexible
+        in_ch = self._init_kwargs["in_channels"]
+        return (batch_size, in_ch, None, None)
     
     def get_output_shape(self, batch_size=1):
-        """Get expected output shape."""
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        down_steps = self._init_kwargs.get("downsampling_steps", 4)
-        # Latent is downsampled by 2^down_steps
-        # If input is 512x512, output is 512/(2^down_steps) = 32x32
-        spatial_res = None  # Depends on input, but typically 32x32 for 512x512 input
+        latent_ch = self._init_kwargs["latent_channels"]
         return {
-            "latent": (batch_size, latent_ch, spatial_res, spatial_res),
-            "latent_features": (batch_size, self._feature_channels, spatial_res, spatial_res)
+            "latent": (batch_size, latent_ch, None, None),
+            "latent_features": (batch_size, self._feature_channels, None, None)
         }
 
 
 class VAEEncoder(Encoder):
-    """Variational encoder - outputs mu and logvar for VAE."""
+    """
+    Variational encoder - outputs mu and logvar.
+    
+    Same required config as Encoder.
+    """
     
     def _build(self):
-        # Call parent to build feature extractor
         super()._build()
         
-        # Remove the deterministic latent projection
+        # Remove deterministic projection
         if hasattr(self, 'latent_proj'):
             delattr(self, 'latent_proj')
         
-        # Get latent_channels from config
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        # Use feature channels from parent
-        in_ch = self._feature_channels
-        
-        # VAE mode: output mu and logvar from features
-        self.mu_head = nn.Conv2d(in_ch, latent_ch, 1)
-        self.logvar_head = nn.Conv2d(in_ch, latent_ch, 1)
+        # VAE heads
+        latent_ch = self._init_kwargs["latent_channels"]
+        self.mu_head = nn.Conv2d(self._feature_channels, latent_ch, 1)
+        self.logvar_head = nn.Conv2d(self._feature_channels, latent_ch, 1)
     
     def forward(self, x):
         """
-        Forward pass. Returns mu and logvar for VAE.
+        Forward pass.
         
         Args:
-            x: Input tensor [B, C, H, W] or DataFlow containing input
+            x: Input tensor [B, C, H, W] or DataFlow
         
         Returns:
             DataFlow: {"mu": mu, "logvar": logvar, "latent_features": features}
         """
-        # Handle DataFlow input (same as parent Encoder)
+        # Handle DataFlow input
         if isinstance(x, dict) and not isinstance(x, torch.Tensor):
-            # If it's a dict-like (DataFlow or dict), extract input
             if "rgb" in x:
                 x = x["rgb"]
             elif "input" in x:
@@ -148,21 +174,31 @@ class VAEEncoder(Encoder):
                 else:
                     x = next(v for v in x.values() if isinstance(v, torch.Tensor))
         
-        # Extract features (from parent)
-        features = self.feature_extractor(x)
+        # Initial conv
+        x = self.conv_in(x)
         
-        # VAE mode: project features to mu and logvar
+        # Downsampling
+        for block in self.down_blocks:
+            x = block(x, t_emb=None, return_skip=False)
+        
+        # Middle
+        x = self.mid_block(x)
+        
+        # Output
+        features = self.act_out(self.norm_out(x))
         mu = self.mu_head(features)
         logvar = self.logvar_head(features)
-        return self._to_dataflow({"mu": mu, "logvar": logvar, "latent_features": features})
+        
+        return self._to_dataflow({
+            "mu": mu,
+            "logvar": logvar,
+            "latent_features": features
+        })
     
     def get_output_shape(self, batch_size=1):
-        """Get expected output shape."""
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        down_steps = self._init_kwargs.get("downsampling_steps", 4)
-        spatial_res = None  # Depends on input, but typically 32x32 for 512x512 input
+        latent_ch = self._init_kwargs["latent_channels"]
         return {
-            "mu": (batch_size, latent_ch, spatial_res, spatial_res),
-            "logvar": (batch_size, latent_ch, spatial_res, spatial_res),
-            "latent_features": (batch_size, self._feature_channels, spatial_res, spatial_res)
+            "mu": (batch_size, latent_ch, None, None),
+            "logvar": (batch_size, latent_ch, None, None),
+            "latent_features": (batch_size, self._feature_channels, None, None)
         }

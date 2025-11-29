@@ -1,101 +1,127 @@
 import torch
 import torch.nn as nn
 from .components.base_component import BaseComponent
+from .components.blocks import UpBlock, MidBlock
 from .utils import compute_num_groups, reparameterize
 
 
 class Decoder(BaseComponent):
-    """Deterministic decoder - expects latent tensor."""
+    """
+    Deterministic decoder with residual blocks.
+    
+    Uses shared block classes with time_dim=None (no time conditioning).
+    
+    Required config:
+        latent_channels: Latent space channels
+        base_channels: Base channel count
+        channel_multipliers: Channel multipliers per level (reversed from encoder)
+        num_res_blocks: Residual blocks per level
+        norm_groups: GroupNorm groups
+        heads: List of head configurations
+    
+    Optional config:
+        dropout: Dropout rate (default: 0.0)
+    """
+    
     def _build(self):
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        base_ch = self._init_kwargs.get("base_channels", 64)
-        up_steps = self._init_kwargs.get("upsampling_steps", 4)
-        activation = getattr(nn, self._init_kwargs.get("activation", "SiLU"))()
-        norm_groups = self._init_kwargs.get("norm_groups", 8)
+        latent_ch = self._init_kwargs["latent_channels"]
+        base_ch = self._init_kwargs["base_channels"]
+        ch_mults = self._init_kwargs["channel_multipliers"]
+        num_res = self._init_kwargs["num_res_blocks"]
+        norm_groups = self._init_kwargs["norm_groups"]
+        dropout = self._init_kwargs.get("dropout", 0.0)
         head_cfgs = self._init_kwargs.get("heads", [])
-
-        layers = []
-        in_ch = latent_ch
-        out_ch = base_ch * (2 ** (up_steps - 1))
-
-        # Compute valid num_groups for initial layer
-        valid_groups = compute_num_groups(out_ch, norm_groups)
-        layers += [
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.GroupNorm(valid_groups, out_ch),
-            activation,
-        ]
-
-        for _ in range(up_steps):
-            out_ch_next = out_ch // 2
-            # Compute valid num_groups for this layer
-            valid_groups = compute_num_groups(out_ch_next, norm_groups)
-            layers += [
-                nn.ConvTranspose2d(out_ch, out_ch_next, 4, stride=2, padding=1),
-                nn.GroupNorm(valid_groups, out_ch_next),
-                activation,
-            ]
-            out_ch = out_ch_next
-
-        self.shared_decoder = nn.Sequential(*layers)
+        
+        # Channel progression
+        channels = [base_ch * m for m in ch_mults] + [base_ch]
+        
+        # Input projection
+        self.conv_in = nn.Conv2d(latent_ch, channels[0], 3, padding=1)
+        
+        # Middle block
+        self.mid_block = MidBlock(
+            channels=channels[0],
+            time_dim=None,  # No time conditioning for VAE
+            norm_groups=norm_groups,
+            dropout=dropout
+        )
+        
+        # Upsampling blocks (time_dim=None, no skip connections for VAE)
+        self.up_blocks = nn.ModuleList()
+        for i in range(len(ch_mults)):
+            self.up_blocks.append(
+                UpBlock(
+                    in_ch=channels[i],
+                    out_ch=channels[i + 1],
+                    time_dim=None,  # No time conditioning for VAE
+                    num_res_blocks=num_res,
+                    norm_groups=norm_groups,
+                    dropout=dropout,
+                    use_skip_connection=False  # No skip connections for VAE decoder
+                )
+            )
+        
+        # Output
+        out_ch = channels[-1]
+        self.norm_out = nn.GroupNorm(compute_num_groups(out_ch, norm_groups), out_ch)
+        self.act_out = nn.SiLU()
         self.shared_out_channels = out_ch
-
+        
+        # Build heads
         self.heads = nn.ModuleDict()
         for cfg in head_cfgs:
             head_type = cfg.get("type", "DecoderHead")
             head_name = cfg.get("name", head_type.lower())
             cfg["in_channels"] = cfg.get("in_channels", out_ch)
-            # Use unified component registry
             self.heads[head_name] = self.create_component_from_config(cfg, default_type=head_type)
 
     def forward(self, z_or_dict):
         """
-        Forward pass. Accepts dict/DataFlow with latent tensor.
+        Forward pass.
         
         Args:
-            z_or_dict: DataFlow or dict containing "latent": tensor z
+            z_or_dict: DataFlow or dict with "latent" key
         
         Returns:
-            DataFlow with outputs from all heads
+            DataFlow with head outputs
         """
-        # Handle DataFlow or dict input
         if isinstance(z_or_dict, dict):
             if "latent" not in z_or_dict:
-                raise ValueError(f"Decoder expects dict/DataFlow with 'latent' key. Got keys: {list(z_or_dict.keys())}")
+                raise ValueError(f"Decoder expects 'latent' key. Got: {list(z_or_dict.keys())}")
             z = z_or_dict["latent"]
         else:
-            raise TypeError(f"Decoder forward expects dict/DataFlow, got {type(z_or_dict)}")
+            raise TypeError(f"Decoder expects dict, got {type(z_or_dict)}")
         
-        feats = self.shared_decoder(z)
-        outputs = {name: head(feats) for name, head in self.heads.items()}
+        # Input projection
+        x = self.conv_in(z)
         
-        # Keep RGB in [-1, 1] range (tanh output) for training compatibility
-        # Conversion to [0, 255] should be done when saving images, not here
+        # Middle
+        x = self.mid_block(x)
+        
+        # Upsampling (no skip connections for VAE)
+        for block in self.up_blocks:
+            x = block(x, skip=None, t_emb=None)
+        
+        # Output
+        x = self.act_out(self.norm_out(x))
+        
+        # Heads
+        outputs = {name: head(x) for name, head in self.heads.items()}
+        
         return self._to_dataflow(outputs)
     
     def get_input_shape(self, batch_size=1):
-        """Get expected input shape."""
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        up_steps = self._init_kwargs.get("upsampling_steps", 4)
-        # Latent is typically 32x32 for 512x512 output (downsampled by 2^4)
-        spatial_res = None  # Depends on encoder, but typically 32x32
-        return {"latent": (batch_size, latent_ch, spatial_res, spatial_res)}
+        latent_ch = self._init_kwargs["latent_channels"]
+        return {"latent": (batch_size, latent_ch, None, None)}
     
     def get_output_shape(self, batch_size=1):
-        """Get expected output shape."""
-        up_steps = self._init_kwargs.get("upsampling_steps", 4)
-        # Output is upsampled by 2^up_steps
-        # If latent is 32x32, output is 32*(2^4) = 512x512
-        spatial_res = None  # Depends on input, but typically 512x512
         outputs = {}
         for name, head in self.heads.items():
-            # Each head outputs its own shape
             if hasattr(head, 'get_output_shape'):
                 outputs[name] = head.get_output_shape(batch_size)
             else:
-                # Default: assume head outputs same spatial resolution
                 out_ch = getattr(head, 'out_channels', 3)
-                outputs[name] = (batch_size, out_ch, spatial_res, spatial_res)
+                outputs[name] = (batch_size, out_ch, None, None)
         return outputs
 
     def to_config(self):
@@ -105,40 +131,46 @@ class Decoder(BaseComponent):
 
 
 class VAEDecoder(Decoder):
-    """Variational decoder - handles mu/logvar and performs reparameterization."""
+    """
+    Variational decoder - handles mu/logvar with reparameterization.
+    
+    Same required config as Decoder.
+    """
     
     def forward(self, z_or_dict):
         """
-        Forward pass. Accepts dict with mu/logvar or latent.
+        Forward pass with reparameterization support.
         
         Args:
-            z_or_dict: Dictionary containing:
-                - "latent": tensor z (already sampled)
-                - "mu" and "logvar": tensors (will reparameterize)
+            z_or_dict: Dict with "latent" OR "mu"/"logvar" keys
         
         Returns:
-            Dictionary with outputs from all heads
+            DataFlow with head outputs
         """
         if isinstance(z_or_dict, dict):
             if "latent" in z_or_dict:
-                # Already sampled: use provided latent
                 z = z_or_dict["latent"]
             elif "mu" in z_or_dict and "logvar" in z_or_dict:
-                # VAE mode: reparameterization trick
-                mu = z_or_dict["mu"]
-                logvar = z_or_dict["logvar"]
-                z = reparameterize(mu, logvar)
+                z = reparameterize(z_or_dict["mu"], z_or_dict["logvar"])
             else:
-                raise ValueError(
-                    f"VAEDecoder expects dict with 'latent' or 'mu'/'logvar' keys. "
-                    f"Got keys: {list(z_or_dict.keys())}"
-                )
+                raise ValueError(f"VAEDecoder expects 'latent' or 'mu'/'logvar'. Got: {list(z_or_dict.keys())}")
         else:
-            raise TypeError(f"VAEDecoder forward expects dict, got {type(z_or_dict)}")
+            raise TypeError(f"VAEDecoder expects dict, got {type(z_or_dict)}")
         
-        feats = self.shared_decoder(z)
-        outputs = {name: head(feats) for name, head in self.heads.items()}
+        # Input projection
+        x = self.conv_in(z)
         
-        # Keep RGB in [-1, 1] range (tanh output) for training compatibility
-        # Conversion to [0, 255] should be done when saving images, not here
+        # Middle
+        x = self.mid_block(x)
+        
+        # Upsampling
+        for block in self.up_blocks:
+            x = block(x, skip=None, t_emb=None)
+        
+        # Output
+        x = self.act_out(self.norm_out(x))
+        
+        # Heads
+        outputs = {name: head(x) for name, head in self.heads.items()}
+        
         return self._to_dataflow(outputs)

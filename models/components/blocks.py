@@ -16,8 +16,6 @@ class TimeEmbedding(nn.Module):
         return self.fc2(t)
 
 
-
-
 from ..utils import compute_num_groups
 
 
@@ -43,7 +41,17 @@ def _compute_num_heads(channels, target_heads_per_32=1):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0):
+    """
+    Residual block with optional time embedding.
+    
+    Args:
+        in_ch: Input channels
+        out_ch: Output channels
+        time_dim: Time embedding dimension (None to disable time conditioning)
+        norm_groups: Number of groups for GroupNorm
+        dropout: Dropout rate
+    """
+    def __init__(self, in_ch, out_ch, time_dim=None, norm_groups=8, dropout=0.0):
         super().__init__()
         norm_groups_in = compute_num_groups(in_ch, norm_groups)
         norm_groups_out = compute_num_groups(out_ch, norm_groups)
@@ -54,7 +62,10 @@ class ResidualBlock(nn.Module):
         # Dropout after first conv
         self.dropout1 = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
 
-        self.time_emb = nn.Linear(time_dim, out_ch)
+        # Time embedding (optional)
+        self.use_time_emb = time_dim is not None
+        if self.use_time_emb:
+            self.time_emb = nn.Linear(time_dim, out_ch)
 
         self.norm2 = nn.GroupNorm(norm_groups_out, out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
@@ -64,29 +75,54 @@ class ResidualBlock(nn.Module):
 
         self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
-    def _compute_features(self, x, t_emb):
+    def _compute_features(self, x, t_emb=None):
         """Compute features up to conv2 output (before skip connection)."""
         h = self.act(self.norm1(x))
         h = self.conv1(h)
         h = self.dropout1(h)
 
-        t = self.time_emb(t_emb).unsqueeze(-1).unsqueeze(-1)
-        h = h + t  # Add time embedding
+        # Add time embedding if enabled and provided
+        if self.use_time_emb and t_emb is not None:
+            t = self.time_emb(t_emb).unsqueeze(-1).unsqueeze(-1)
+            h = h + t
 
         h = self.act(self.norm2(h))
         h = self.conv2(h)
         h = self.dropout2(h)
         return h
 
-    def forward(self, x, t_emb, **kwargs):
-        # kwargs accepted for API consistency (e.g., conditioning_signal) but ignored
+    def forward(self, x, t_emb=None, **kwargs):
+        """
+        Forward pass.
+        
+        Args:
+            x: Input tensor [B, C, H, W]
+            t_emb: Optional time embedding [B, time_dim]
+            **kwargs: Additional kwargs (ignored, for API consistency)
+        
+        Returns:
+            Output tensor [B, out_ch, H, W]
+        """
         h = self._compute_features(x, t_emb)
         return h + self.skip(x)
 
 
 class DownBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0):
+    """
+    Downsampling block with optional time embedding.
+    
+    Args:
+        in_ch: Input channels
+        out_ch: Output channels
+        time_dim: Time embedding dimension (None to disable time conditioning)
+        num_res_blocks: Number of residual blocks
+        norm_groups: Number of groups for GroupNorm
+        dropout: Dropout rate
+    """
+    def __init__(self, in_ch, out_ch, time_dim=None, num_res_blocks=1, norm_groups=8, dropout=0.0):
         super().__init__()
+        self.use_time_emb = time_dim is not None
+        
         self.res_blocks = nn.ModuleList([
             self._create_res_block(
                 in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout
@@ -99,23 +135,56 @@ class DownBlock(nn.Module):
         """Factory method to create residual blocks. Override in subclasses to use different block types."""
         return ResidualBlock(in_ch, out_ch, time_dim, norm_groups, dropout)
 
-    def forward(self, x, t_emb, **kwargs):
-        # kwargs passed through for API consistency (ResidualBlock will ignore unused ones)
+    def forward(self, x, t_emb=None, return_skip=True, **kwargs):
+        """
+        Forward pass.
+        
+        Args:
+            x: Input tensor [B, C, H, W]
+            t_emb: Optional time embedding [B, time_dim]
+            return_skip: If True, return (output, skip). If False, return output only.
+            **kwargs: Additional kwargs passed to res blocks
+        
+        Returns:
+            If return_skip: (downsampled output, skip connection)
+            Else: downsampled output only
+        """
         for res in self.res_blocks:
             x = res(x, t_emb, **kwargs)
         skip = x
         x = self.downsample(x)
-        return x, skip
+        
+        if return_skip:
+            return x, skip
+        return x
+
 
 class UpBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0):
+    """
+    Upsampling block with optional time embedding and skip connections.
+    
+    Args:
+        in_ch: Input channels
+        out_ch: Output channels
+        time_dim: Time embedding dimension (None to disable time conditioning)
+        num_res_blocks: Number of residual blocks
+        norm_groups: Number of groups for GroupNorm
+        dropout: Dropout rate
+        use_skip_connection: If True, expects skip connection input (for UNet). If False, no skip (for VAE decoder).
+    """
+    def __init__(self, in_ch, out_ch, time_dim=None, num_res_blocks=1, norm_groups=8, dropout=0.0, use_skip_connection=True):
         super().__init__()
+        self.use_time_emb = time_dim is not None
+        self.use_skip_connection = use_skip_connection
 
         self.upsample = nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1)
 
+        # First res block input channels depends on skip connection
+        first_in_ch = out_ch + out_ch if use_skip_connection else out_ch
+        
         self.res_blocks = nn.ModuleList([
             self._create_res_block(
-                out_ch + out_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout
+                first_in_ch if i == 0 else out_ch, out_ch, time_dim, norm_groups, dropout
             )
             for i in range(num_res_blocks)
         ])
@@ -124,12 +193,63 @@ class UpBlock(nn.Module):
         """Factory method to create residual blocks. Override in subclasses to use different block types."""
         return ResidualBlock(in_ch, out_ch, time_dim, norm_groups, dropout)
 
-    def forward(self, x, skip, t_emb, **kwargs):
-        # kwargs passed through for API consistency (ResidualBlock will ignore unused ones)
+    def forward(self, x, skip=None, t_emb=None, **kwargs):
+        """
+        Forward pass.
+        
+        Args:
+            x: Input tensor [B, C, H, W]
+            skip: Optional skip connection tensor [B, C, H*2, W*2]
+            t_emb: Optional time embedding [B, time_dim]
+            **kwargs: Additional kwargs passed to res blocks
+        
+        Returns:
+            Output tensor [B, out_ch, H*2, W*2]
+        """
         x = self.upsample(x)
-        x = torch.cat([x, skip], dim=1)
+        
+        if self.use_skip_connection:
+            if skip is None:
+                raise ValueError("UpBlock with use_skip_connection=True requires skip tensor")
+            x = torch.cat([x, skip], dim=1)
+        
         for res in self.res_blocks:
             x = res(x, t_emb, **kwargs)
+        return x
+
+
+class MidBlock(nn.Module):
+    """
+    Middle block for processing at lowest resolution.
+    
+    Args:
+        channels: Number of channels
+        time_dim: Time embedding dimension (None to disable time conditioning)
+        norm_groups: Number of groups for GroupNorm
+        dropout: Dropout rate
+        num_blocks: Number of residual blocks (default: 2)
+    """
+    def __init__(self, channels, time_dim=None, norm_groups=8, dropout=0.0, num_blocks=2):
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            ResidualBlock(channels, channels, time_dim, norm_groups, dropout)
+            for _ in range(num_blocks)
+        ])
+    
+    def forward(self, x, t_emb=None, **kwargs):
+        """
+        Forward pass.
+        
+        Args:
+            x: Input tensor [B, C, H, W]
+            t_emb: Optional time embedding [B, time_dim]
+            **kwargs: Additional kwargs passed to res blocks
+        
+        Returns:
+            Output tensor [B, C, H, W]
+        """
+        for block in self.blocks:
+            x = block(x, t_emb, **kwargs)
         return x
 
 
@@ -262,12 +382,13 @@ class SelfAttentionBlock(nn.Module):
         out = self.proj(out)
         return x + out
 
+
 class ResidualBlockWithAttention(ResidualBlock):
     """
     Residual block with optional self-attention.
     Extends ResidualBlock by adding attention after the second conv.
     """
-    def __init__(self, in_ch, out_ch, time_dim, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
+    def __init__(self, in_ch, out_ch, time_dim=None, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
         super().__init__(in_ch, out_ch, time_dim, norm_groups, dropout)
         
         self.use_attention = use_attention
@@ -280,7 +401,7 @@ class ResidualBlockWithAttention(ResidualBlock):
         else:
             self.attention = None
 
-    def forward(self, x, t_emb, **kwargs):
+    def forward(self, x, t_emb=None, **kwargs):
         h = self._compute_features(x, t_emb)
         
         if self.use_attention:
@@ -288,9 +409,10 @@ class ResidualBlockWithAttention(ResidualBlock):
 
         return h + self.skip(x)
 
+
 class DownBlockWithAttention(DownBlock):
     """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0, 
+    def __init__(self, in_ch, out_ch, time_dim=None, num_res_blocks=1, norm_groups=8, dropout=0.0, 
                  use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
         # Store attention params for _create_res_block
         self.use_attention = use_attention
@@ -308,16 +430,18 @@ class DownBlockWithAttention(DownBlock):
             conditioning_channels=self.conditioning_channels
         )
 
+
 class UpBlockWithAttention(UpBlock):
     """UpBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
-    def __init__(self, in_ch, out_ch, time_dim, num_res_blocks=1, norm_groups=8, dropout=0.0,
-                 use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
+    def __init__(self, in_ch, out_ch, time_dim=None, num_res_blocks=1, norm_groups=8, dropout=0.0,
+                 use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None,
+                 use_skip_connection=True):
         # Store attention params for _create_res_block
         self.use_attention = use_attention
         self.attention_heads = attention_heads
         self.enable_cross_attention = enable_cross_attention
         self.conditioning_channels = conditioning_channels
-        super().__init__(in_ch, out_ch, time_dim, num_res_blocks, norm_groups, dropout)
+        super().__init__(in_ch, out_ch, time_dim, num_res_blocks, norm_groups, dropout, use_skip_connection)
 
     def _create_res_block(self, in_ch, out_ch, time_dim, norm_groups, dropout):
         """Override to use ResidualBlockWithAttention instead of ResidualBlock."""
