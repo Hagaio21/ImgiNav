@@ -12,6 +12,15 @@ class Encoder(BaseComponent):
     Architecture per downsampling level:
         Conv 3x3 → Norm → Act → Conv 4x4 stride 2 → Norm → Act
     
+    Channel progression (base_ch, down_steps from config):
+        Level i: channels = base_ch * (2 ** i)
+        Example with base_ch=64, down_steps=3:
+            Level 0: 3 → 64 → 64      (256→128)
+            Level 1: 64 → 128 → 128   (128→64)
+            Level 2: 128 → 256 → 256  (64→32)
+            Refinement: 256 → 256
+            Latent proj: 256 → latent_ch
+    
     Config:
         in_channels: Input channels (default: 3)
         base_channels: Base channel count (default: 64)
@@ -19,9 +28,6 @@ class Encoder(BaseComponent):
         latent_channels: Output latent channels (default: 4)
         norm_groups: Groups for GroupNorm (default: 8)
         activation: Activation function (default: SiLU)
-    
-    For 256x256 input with downsampling_steps=3:
-        256 → 128 → 64 → 32 (output: 32x32 latent)
     """
     
     def _build(self):
@@ -33,24 +39,29 @@ class Encoder(BaseComponent):
         act = getattr(nn, self._init_kwargs.get("activation", "SiLU"))()
 
         layers = []
-        out_ch = base_ch
         
         for i in range(down_steps):
+            # Channel count for this level: doubles each level
+            out_ch = base_ch * (2 ** i)
             valid_groups = compute_num_groups(out_ch, norm_groups)
+            
             layers += [
+                # First conv: change channels (in_ch → out_ch)
                 nn.Conv2d(in_ch, out_ch, 3, padding=1),
                 nn.GroupNorm(valid_groups, out_ch),
                 act,
+                # Second conv: downsample, keep channels (out_ch → out_ch)
                 nn.Conv2d(out_ch, out_ch, 4, stride=2, padding=1),
                 nn.GroupNorm(valid_groups, out_ch),
                 act,
             ]
             in_ch = out_ch
-            out_ch *= 2
         
-        # Final feature layer
-        final_ch = in_ch  # After loop, in_ch holds the last output channels
+        # Final feature channels from last level
+        final_ch = base_ch * (2 ** (down_steps - 1))
         valid_groups = compute_num_groups(final_ch, norm_groups)
+        
+        # Refinement layer at highest channel count
         layers += [
             nn.Conv2d(final_ch, final_ch, 3, padding=1),
             nn.GroupNorm(valid_groups, final_ch),
