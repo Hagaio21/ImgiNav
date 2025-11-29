@@ -1,172 +1,175 @@
 import torch
 import torch.nn as nn
-
 from .components.base_component import BaseComponent
-from .utils import compute_num_groups
+from .utils import compute_num_groups, reparameterize
 
 
-class Encoder(BaseComponent):
+class Decoder(BaseComponent):
     """
-    Deterministic encoder - outputs latent directly.
+    Deterministic decoder - symmetric with Encoder.
     
-    Architecture per downsampling level:
-        Conv 3x3 → Norm → Act → Conv 4x4 stride 2 → Norm → Act
+    Architecture mirrors encoder in reverse. Each level:
+        ConvT 4x4 stride 2 → Norm → Act → Conv 3x3 → Norm → Act
     
-    Channel progression (base_ch, down_steps from config):
-        Level i: channels = base_ch * (2 ** i)
-        Example with base_ch=64, down_steps=3:
-            Level 0: 3 → 64 → 64      (256→128)
-            Level 1: 64 → 128 → 128   (128→64)
-            Level 2: 128 → 256 → 256  (64→32)
-            Refinement: 256 → 256
-            Latent proj: 256 → latent_ch
+    This mirrors encoder's per-level structure (in reverse):
+        Encoder: Conv 3x3 (change channels) → Conv 4x4 stride 2 (downsample, keep channels)
+        Decoder: ConvT 4x4 stride 2 (upsample, keep channels) → Conv 3x3 (change channels)
+    
+    Channel progression (base_ch, up_steps from config) - exact mirror of encoder:
+        Level i (decoder) mirrors Level (up_steps - 1 - i) (encoder)
+        
+        Example with base_ch=64, up_steps=3:
+            Initial proj: latent_ch → base_ch * 2^(up_steps-1)  [4 → 256]
+            Refinement: same channels                          [256 → 256]
+            Level 0: 256 → 256 (upsample), 256 → 128 (change)  [mirrors encoder level 2]
+            Level 1: 128 → 128 (upsample), 128 → 64 (change)   [mirrors encoder level 1]
+            Level 2: 64 → 64 (upsample), 64 → 64 (change)      [mirrors encoder level 0]
+            Head: 64 → out_channels
     
     Config:
-        in_channels: Input channels (default: 3)
+        latent_channels: Input latent channels (default: 4)
         base_channels: Base channel count (default: 64)
-        downsampling_steps: Number of downsample levels (default: 3)
-        latent_channels: Output latent channels (default: 4)
+        upsampling_steps: Number of upsample levels (default: 3)
         norm_groups: Groups for GroupNorm (default: 8)
         activation: Activation function (default: SiLU)
+        heads: List of head configurations
     """
     
     def _build(self):
-        in_ch = self._init_kwargs.get("in_channels", 3)
-        base_ch = self._init_kwargs.get("base_channels", 64)
-        down_steps = self._init_kwargs.get("downsampling_steps", 3)
         latent_ch = self._init_kwargs.get("latent_channels", 4)
+        base_ch = self._init_kwargs.get("base_channels", 64)
+        up_steps = self._init_kwargs.get("upsampling_steps", 3)
         norm_groups = self._init_kwargs.get("norm_groups", 8)
         act = getattr(nn, self._init_kwargs.get("activation", "SiLU"))()
+        head_cfgs = self._init_kwargs.get("heads", [])
 
         layers = []
         
-        for i in range(down_steps):
-            # Channel count for this level: doubles each level
-            out_ch = base_ch * (2 ** i)
-            valid_groups = compute_num_groups(out_ch, norm_groups)
-            
-            layers += [
-                # First conv: change channels (in_ch → out_ch)
-                nn.Conv2d(in_ch, out_ch, 3, padding=1),
-                nn.GroupNorm(valid_groups, out_ch),
-                act,
-                # Second conv: downsample, keep channels (out_ch → out_ch)
-                nn.Conv2d(out_ch, out_ch, 4, stride=2, padding=1),
-                nn.GroupNorm(valid_groups, out_ch),
-                act,
-            ]
-            in_ch = out_ch
+        # Start with highest channel count (matching encoder's final channels before latent proj)
+        # This is base_ch * 2^(up_steps-1)
+        highest_ch = base_ch * (2 ** (up_steps - 1))
+        valid_groups = compute_num_groups(highest_ch, norm_groups)
         
-        # Final feature channels from last level
-        final_ch = base_ch * (2 ** (down_steps - 1))
-        valid_groups = compute_num_groups(final_ch, norm_groups)
-        
-        # Refinement layer at highest channel count
+        # Initial projection from latent to highest channel count
         layers += [
-            nn.Conv2d(final_ch, final_ch, 3, padding=1),
-            nn.GroupNorm(valid_groups, final_ch),
+            nn.Conv2d(latent_ch, highest_ch, 3, padding=1),
+            nn.GroupNorm(valid_groups, highest_ch),
             act,
         ]
         
-        self.feature_extractor = nn.Sequential(*layers)
-        self._feature_channels = final_ch
-        
-        # Latent projection
-        self.latent_proj = nn.Conv2d(final_ch, latent_ch, 1)
+        # Refinement layer (mirrors encoder's final refinement layer)
+        layers += [
+            nn.Conv2d(highest_ch, highest_ch, 3, padding=1),
+            nn.GroupNorm(valid_groups, highest_ch),
+            act,
+        ]
 
-    def forward(self, x):
+        # Upsampling levels - mirror encoder levels in reverse order
+        in_ch = highest_ch
+        for i in range(up_steps):
+            # Mirror encoder level (up_steps - 1 - i)
+            # Encoder level j has channels = base_ch * 2^j after the first conv
+            # We're transitioning from encoder level (up_steps-1-i) to level (up_steps-2-i)
+            # Encoder level (up_steps-1-i) has channels = base_ch * 2^(up_steps-1-i)
+            # Encoder level (up_steps-2-i) has channels = base_ch * 2^(up_steps-2-i)
+            # So we go from base_ch * 2^(up_steps-1-i) to base_ch * 2^(up_steps-2-i)
+            
+            encoder_mirror_level = up_steps - 2 - i  # The encoder level we're transitioning TO
+            if encoder_mirror_level >= 0:
+                out_ch = base_ch * (2 ** encoder_mirror_level)
+            else:
+                out_ch = base_ch
+            
+            valid_groups_in = compute_num_groups(in_ch, norm_groups)
+            valid_groups_out = compute_num_groups(out_ch, norm_groups)
+            
+            layers += [
+                # First: upsample and keep channels (mirrors encoder's second conv in reverse)
+                nn.ConvTranspose2d(in_ch, in_ch, 4, stride=2, padding=1),
+                nn.GroupNorm(valid_groups_in, in_ch),
+                act,
+                # Second: change channels (mirrors encoder's first conv in reverse)
+                nn.Conv2d(in_ch, out_ch, 3, padding=1),
+                nn.GroupNorm(valid_groups_out, out_ch),
+                act,
+            ]
+            in_ch = out_ch
+
+        self.shared_decoder = nn.Sequential(*layers)
+        self.shared_out_channels = in_ch  # Should be base_ch
+
+        # Build heads
+        self.heads = nn.ModuleDict()
+        for cfg in head_cfgs:
+            head_type = cfg.get("type", "DecoderHead")
+            head_name = cfg.get("name", head_type.lower())
+            cfg["in_channels"] = cfg.get("in_channels", in_ch)
+            self.heads[head_name] = self.create_component_from_config(cfg, default_type=head_type)
+
+    def forward(self, z_or_dict):
         """
         Forward pass.
         
         Args:
-            x: Input tensor [B, C, H, W] or DataFlow
+            z_or_dict: DataFlow or dict containing "latent": tensor z
         
         Returns:
-            DataFlow: {"latent": z, "latent_features": features}
+            DataFlow with outputs from all heads
         """
-        if isinstance(x, dict) and not isinstance(x, torch.Tensor):
-            if "rgb" in x:
-                x = x["rgb"]
-            elif "input" in x:
-                x = x["input"]
-            elif "x" in x:
-                x = x["x"]
-            elif len(x) == 1:
-                x = next(iter(x.values()))
-            else:
-                for key in ["rgb", "input", "x", "data"]:
-                    if key in x:
-                        x = x[key]
-                        break
-                else:
-                    x = next(v for v in x.values() if isinstance(v, torch.Tensor))
+        if isinstance(z_or_dict, dict):
+            if "latent" not in z_or_dict:
+                raise ValueError(f"Decoder expects dict with 'latent' key. Got: {list(z_or_dict.keys())}")
+            z = z_or_dict["latent"]
+        else:
+            raise TypeError(f"Decoder expects dict, got {type(z_or_dict)}")
         
-        features = self.feature_extractor(x)
-        z = self.latent_proj(features)
-        return self._to_dataflow({"latent": z, "latent_features": features})
+        feats = self.shared_decoder(z)
+        outputs = {name: head(feats) for name, head in self.heads.items()}
+        return self._to_dataflow(outputs)
     
     def get_input_shape(self, batch_size=1):
-        in_ch = self._init_kwargs.get("in_channels", 3)
-        return (batch_size, in_ch, None, None)
+        latent_ch = self._init_kwargs.get("latent_channels", 4)
+        return {"latent": (batch_size, latent_ch, None, None)}
     
     def get_output_shape(self, batch_size=1):
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        return {
-            "latent": (batch_size, latent_ch, None, None),
-            "latent_features": (batch_size, self._feature_channels, None, None)
-        }
+        outputs = {}
+        for name, head in self.heads.items():
+            if hasattr(head, 'get_output_shape'):
+                outputs[name] = head.get_output_shape(batch_size)
+            else:
+                out_ch = getattr(head, 'out_channels', 3)
+                outputs[name] = (batch_size, out_ch, None, None)
+        return outputs
+
+    def to_config(self):
+        cfg = super().to_config()
+        cfg["heads"] = [head.to_config() for head in self.heads.values()]
+        return cfg
 
 
-class VAEEncoder(Encoder):
-    """Variational encoder - outputs mu and logvar."""
+class VAEDecoder(Decoder):
+    """Variational decoder - handles mu/logvar with reparameterization."""
     
-    def _build(self):
-        super()._build()
-        
-        # Remove deterministic projection
-        if hasattr(self, 'latent_proj'):
-            delattr(self, 'latent_proj')
-        
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        self.mu_head = nn.Conv2d(self._feature_channels, latent_ch, 1)
-        self.logvar_head = nn.Conv2d(self._feature_channels, latent_ch, 1)
-    
-    def forward(self, x):
+    def forward(self, z_or_dict):
         """
         Forward pass.
         
         Args:
-            x: Input tensor [B, C, H, W] or DataFlow
+            z_or_dict: Dict containing "latent" or "mu"/"logvar"
         
         Returns:
-            DataFlow: {"mu": mu, "logvar": logvar, "latent_features": features}
+            DataFlow with outputs from all heads
         """
-        if isinstance(x, dict) and not isinstance(x, torch.Tensor):
-            if "rgb" in x:
-                x = x["rgb"]
-            elif "input" in x:
-                x = x["input"]
-            elif "x" in x:
-                x = x["x"]
-            elif len(x) == 1:
-                x = next(iter(x.values()))
+        if isinstance(z_or_dict, dict):
+            if "latent" in z_or_dict:
+                z = z_or_dict["latent"]
+            elif "mu" in z_or_dict and "logvar" in z_or_dict:
+                z = reparameterize(z_or_dict["mu"], z_or_dict["logvar"])
             else:
-                for key in ["rgb", "input", "x", "data"]:
-                    if key in x:
-                        x = x[key]
-                        break
-                else:
-                    x = next(v for v in x.values() if isinstance(v, torch.Tensor))
+                raise ValueError(f"VAEDecoder expects 'latent' or 'mu'/'logvar'. Got: {list(z_or_dict.keys())}")
+        else:
+            raise TypeError(f"VAEDecoder expects dict, got {type(z_or_dict)}")
         
-        features = self.feature_extractor(x)
-        mu = self.mu_head(features)
-        logvar = self.logvar_head(features)
-        return self._to_dataflow({"mu": mu, "logvar": logvar, "latent_features": features})
-    
-    def get_output_shape(self, batch_size=1):
-        latent_ch = self._init_kwargs.get("latent_channels", 4)
-        return {
-            "mu": (batch_size, latent_ch, None, None),
-            "logvar": (batch_size, latent_ch, None, None),
-            "latent_features": (batch_size, self._feature_channels, None, None)
-        }
+        feats = self.shared_decoder(z)
+        outputs = {name: head(feats) for name, head in self.heads.items()}
+        return self._to_dataflow(outputs)

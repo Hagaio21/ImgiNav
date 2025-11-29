@@ -97,6 +97,56 @@ def compute_latent_statistics(all_latents):
     return stats
 
 
+def save_clip_projection_checkpoint(model, checkpoint_dir, exp_name, epoch, is_best=False, val_loss=None):
+    """
+    Save CLIP projection checkpoint if model has clip_projection.
+    
+    Args:
+        model: The autoencoder model
+        checkpoint_dir: Directory to save checkpoints
+        exp_name: Experiment name for filename
+        epoch: Current epoch number
+        is_best: If True, save as best checkpoint
+        val_loss: Validation loss (optional, for metadata)
+    """
+    if not hasattr(model, 'clip_projection') or model.clip_projection is None:
+        return
+    
+    checkpoint_data = {
+        'state_dict': model.clip_projection.state_dict(),
+        'epoch': epoch,
+    }
+    if val_loss is not None:
+        checkpoint_data['val_loss'] = val_loss
+    
+    if is_best:
+        clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_best.pt"
+    else:
+        clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_epoch_{epoch:03d}.pt"
+    
+    torch.save(checkpoint_data, clip_proj_path)
+
+
+def save_clip_projection_latest(model, checkpoint_dir, exp_name, epoch):
+    """
+    Save latest CLIP projection checkpoint for resume.
+    
+    Args:
+        model: The autoencoder model
+        checkpoint_dir: Directory to save checkpoints
+        exp_name: Experiment name for filename
+        epoch: Current epoch number
+    """
+    if not hasattr(model, 'clip_projection') or model.clip_projection is None:
+        return
+    
+    clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_latest.pt"
+    torch.save({
+        'state_dict': model.clip_projection.state_dict(),
+        'epoch': epoch,
+    }, clip_proj_path)
+
+
 # Step functions for Trainer
 def ae_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for autoencoder training - computes loss only (Trainer handles backward/step)."""
@@ -428,6 +478,7 @@ def main():
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     checkpoint_files = []
+    clip_projection_files = []  # Track clip projection checkpoints separately
     epochs_without_improvement = 0
     
     from training.plotting_utils import plot_loss_curves
@@ -506,7 +557,7 @@ def main():
                 epochs_without_improvement = 0  # Reset counter on improvement
                 is_best_this_epoch = True
                 
-                # Save best checkpoint immediately using Trainer (always updated when best is found)
+                # Save best model checkpoint
                 trainer.save_training_checkpoint(
                     output_dir=output_dir,
                     exp_name=exp_name,
@@ -516,14 +567,11 @@ def main():
                     is_best=True
                 )
                 
-                # Save clip_projection checkpoint separately if model has it
-                if hasattr(model, 'clip_projection') and model.clip_projection is not None:
-                    clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_best.pt"
-                    torch.save({
-                        'state_dict': model.clip_projection.state_dict(),
-                        'epoch': epoch + 1,
-                        'val_loss': val_loss,
-                    }, clip_proj_path)
+                # Save best clip_projection checkpoint
+                save_clip_projection_checkpoint(
+                    model, checkpoint_dir, exp_name, epoch + 1,
+                    is_best=True, val_loss=val_loss
+                )
                 
                 # Save VAE metadata with latent statistics if available
                 if is_vae and val_logs:
@@ -570,54 +618,50 @@ def main():
         # Plot loss curves (simple train/val loss only)
         plot_loss_curves(df, output_dir, exp_name=exp_name)
         
-        # Determine if this is the best checkpoint (for latest checkpoint saving)
-        # Best checkpoint is saved immediately when found, so latest checkpoint is_best=False
-        # unless this epoch just became the best (which was already saved above)
-        # Note: is_best_this_epoch is set in the validation block above
-        
-        # Save checkpoint at specified interval (periodic checkpoints)
-        should_save = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
-        if should_save:
+        # Save periodic checkpoint at specified interval
+        should_save_periodic = (epoch + 1) % save_interval == 0 or (epoch + 1) == end_epoch
+        if should_save_periodic:
+            # Save model checkpoint
             checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
-            # Save checkpoint with config inside (via save_checkpoint method)
             model.save_checkpoint(checkpoint_path, include_config=True)
             checkpoint_files.append(checkpoint_path)
             
-            # Save clip_projection at same interval if model has it
-            if hasattr(model, 'clip_projection') and model.clip_projection is not None:
-                clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_epoch_{epoch + 1:03d}.pt"
-                torch.save({
-                    'state_dict': model.clip_projection.state_dict(),
-                    'epoch': epoch + 1,
-                }, clip_proj_path)
+            # Save clip_projection checkpoint (follows same schedule as model)
+            save_clip_projection_checkpoint(
+                model, checkpoint_dir, exp_name, epoch + 1,
+                is_best=False, val_loss=val_loss if val_loader else None
+            )
+            clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_epoch_{epoch + 1:03d}.pt"
+            if clip_proj_path.exists():
+                clip_projection_files.append(clip_proj_path)
         
-        # Always save latest checkpoint (for resume - includes optimizer state)
-        # Note: best checkpoint is already saved above when found, so is_best=False here
-        # (is_best_this_epoch is only True if validation ran and this epoch is best)
+        # Always save latest checkpoint for resume (but not clip_projection - that follows save_interval)
         trainer.save_training_checkpoint(
             output_dir=output_dir,
             exp_name=exp_name,
             epoch=epoch + 1,
             best_val_loss=best_val_loss,
             training_history=training_history,
-            is_best=is_best_this_epoch if val_loader else False
+            is_best=False  # Best is saved separately above
         )
         
-        # Save latest clip_projection checkpoint (for resume)
-        if hasattr(model, 'clip_projection') and model.clip_projection is not None:
-            clip_proj_latest_path = checkpoint_dir / f"{exp_name}_clip_projection_latest.pt"
-            torch.save({
-                'state_dict': model.clip_projection.state_dict(),
-                'epoch': epoch + 1,
-            }, clip_proj_latest_path)
+        # Save latest clip_projection for resume (only once per epoch, follows save_interval or is latest)
+        # This ensures we can resume with the latest projection state
+        save_clip_projection_latest(model, checkpoint_dir, exp_name, epoch + 1)
         
         # Clean up old checkpoints if keeping only N
         if keep_checkpoints and len(checkpoint_files) > keep_checkpoints:
-            # Remove oldest checkpoint files
+            # Remove oldest model checkpoint files
             for old_checkpoint in checkpoint_files[:-keep_checkpoints]:
                 if old_checkpoint.exists():
                     old_checkpoint.unlink()
             checkpoint_files = checkpoint_files[-keep_checkpoints:]
+            
+            # Remove oldest clip projection checkpoint files
+            for old_checkpoint in clip_projection_files[:-keep_checkpoints]:
+                if old_checkpoint.exists():
+                    old_checkpoint.unlink()
+            clip_projection_files = clip_projection_files[-keep_checkpoints:]
     
     print(f"Training complete. Best validation loss: {best_val_loss:.6f}")
     
