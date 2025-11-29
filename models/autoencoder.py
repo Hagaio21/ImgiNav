@@ -24,8 +24,14 @@ class Autoencoder(BaseModel):
         # Optional CLIP projection layers - only if explicitly provided in config
         # This allows training projections jointly with the VAE, but must be explicit
         clip_projection_cfg = self._init_kwargs.get("clip_projection", None)
+        # Check that it's not None and not an empty dict (empty dict means no config provided)
         if clip_projection_cfg is not None:
-            self._setup_projection("clip_projection", default_type="CLIPProjections")
+            if isinstance(clip_projection_cfg, dict) and len(clip_projection_cfg) == 0:
+                # Empty dict means no config - skip
+                pass
+            else:
+                # Valid config (dict with content, or non-dict value)
+                self._setup_projection("clip_projection", default_type="CLIPProjections")
         
         # Write model statistics if save_path is available
         if hasattr(self, 'save_path') and self.save_path:

@@ -157,6 +157,14 @@ def build_model(config):
     if isinstance(ae_cfg, dict) and exp_cfg.get("save_path"):
         ae_cfg["save_path"] = exp_cfg["save_path"]
     
+    # Debug: Print config keys to help diagnose issues
+    if isinstance(ae_cfg, dict):
+        print(f"Autoencoder config keys: {list(ae_cfg.keys())}")
+        if "clip_projection" in ae_cfg:
+            print(f"clip_projection config: {ae_cfg['clip_projection']}")
+        else:
+            print("WARNING: clip_projection not found in autoencoder config!")
+    
     # Use registry to build (automatically handles Autoencoder vs VAE)
     if isinstance(ae_cfg, dict):
         if "type" not in ae_cfg:
