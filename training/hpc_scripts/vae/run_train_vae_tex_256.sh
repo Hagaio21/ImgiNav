@@ -3,11 +3,10 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_vae_tex_256.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/training/hpc_scripts/logs/train_vae_tex_256.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=16GB]"
-#BSUB -R "span[hosts=1]"
-#BSUB -gpu "num=1:mode=exclusive_process"
-#BSUB -W 24:00
-#BSUB -q gpuv100
+#BSUB -R "rusage[mem=4000]"
+#BSUB -gpu "num=1"
+#BSUB -W 6:00
+#BSUB -q gpul40s
 
 set -euo pipefail
 
