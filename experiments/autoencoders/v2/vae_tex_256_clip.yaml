@@ -65,7 +65,6 @@ autoencoder:
     projection_dim: 256
     text_dim: 384      # all-MiniLM-L6-v2
     pov_dim: 512       # ResNet18
-    latent_dim: 384    # 48 * 2^3
 
 # =============================================================================
 # Training

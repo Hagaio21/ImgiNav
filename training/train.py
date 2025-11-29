@@ -516,6 +516,15 @@ def main():
                     is_best=True
                 )
                 
+                # Save clip_projection checkpoint separately if model has it
+                if hasattr(model, 'clip_projection') and model.clip_projection is not None:
+                    clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_best.pt"
+                    torch.save({
+                        'state_dict': model.clip_projection.state_dict(),
+                        'epoch': epoch + 1,
+                        'val_loss': val_loss,
+                    }, clip_proj_path)
+                
                 # Save VAE metadata with latent statistics if available
                 if is_vae and val_logs:
                     # Extract latent statistics from validation logs
@@ -573,6 +582,14 @@ def main():
             # Save checkpoint with config inside (via save_checkpoint method)
             model.save_checkpoint(checkpoint_path, include_config=True)
             checkpoint_files.append(checkpoint_path)
+            
+            # Save clip_projection at same interval if model has it
+            if hasattr(model, 'clip_projection') and model.clip_projection is not None:
+                clip_proj_path = checkpoint_dir / f"{exp_name}_clip_projection_epoch_{epoch + 1:03d}.pt"
+                torch.save({
+                    'state_dict': model.clip_projection.state_dict(),
+                    'epoch': epoch + 1,
+                }, clip_proj_path)
         
         # Always save latest checkpoint (for resume - includes optimizer state)
         # Note: best checkpoint is already saved above when found, so is_best=False here
@@ -585,6 +602,14 @@ def main():
             training_history=training_history,
             is_best=is_best_this_epoch if val_loader else False
         )
+        
+        # Save latest clip_projection checkpoint (for resume)
+        if hasattr(model, 'clip_projection') and model.clip_projection is not None:
+            clip_proj_latest_path = checkpoint_dir / f"{exp_name}_clip_projection_latest.pt"
+            torch.save({
+                'state_dict': model.clip_projection.state_dict(),
+                'epoch': epoch + 1,
+            }, clip_proj_latest_path)
         
         # Clean up old checkpoints if keeping only N
         if keep_checkpoints and len(checkpoint_files) > keep_checkpoints:

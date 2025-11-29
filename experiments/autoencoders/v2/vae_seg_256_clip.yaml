@@ -65,13 +65,12 @@ autoencoder:
     projection_dim: 256
     text_dim: 384      # all-MiniLM-L6-v2
     pov_dim: 512       # ResNet18
-    latent_dim: 384    # 48 * 2^3
 
 # =============================================================================
 # Training
 # =============================================================================
 training:
-  seed: 42
+  seed: 1234
   epochs: 150
   batch_size: 64  # Increased from 32 (memory usage is low: 3.1GB/16GB)
   num_workers: 8
@@ -83,7 +82,7 @@ training:
   
   # Split
   train_split: 0.8
-  split_seed: 42
+  split_seed: 1234  
   
   # Optimizer
   optimizer: AdamW
