@@ -5,6 +5,11 @@ Clean Dataset - Remove bad POV and layout images.
 Checks for quality issues in both POV (first-person) and layout (top-down) images.
 Syncs deletions between tex/seg variants and cleans up embeddings.
 
+Supports sharding for parallel processing:
+- Use --shard-file to process only specific scenes
+- Create shards using create_shards.py
+- Run multiple instances in parallel with different shard files
+
 POV Quality Checks:
 - Monocolor: Single color (bad render)
 - Mostly black: >threshold pixels very dark (failed lighting)
@@ -23,6 +28,11 @@ Usage:
     python clean_dataset.py \\
         --dataset-root dataset_v2 \\
         --dry-run
+
+    # Process specific shard (for parallel processing)
+    python clean_dataset.py \\
+        --dataset-root dataset_v2 \\
+        --shard-file shards/shard_1.txt
 
     # Clean POVs only
     python clean_dataset.py \\
@@ -345,13 +355,43 @@ def check_layout_quality(
 # File Management
 # =============================================================================
 
+def extract_scene_id(filename: str) -> Optional[str]:
+    """
+    Extract scene ID from filename.
+    
+    Expected format: {scene_id}_{room_id}_*.png
+    Scene IDs are UUIDs (36 chars with dashes) or similar long identifiers.
+    """
+    # Remove extension
+    stem = Path(filename).stem
+    
+    # Split by underscore and take first part as scene_id
+    # Scene IDs are typically long (UUID format: 8-4-4-4-12)
+    parts = stem.split("_")
+    if len(parts) >= 2:
+        # First part should be the scene ID
+        scene_id = parts[0]
+        # Validate: scene IDs are typically long (at least 8 chars)
+        if len(scene_id) >= 8:
+            return scene_id
+    
+    return None
+
+
 def find_paired_files(
     dataset_root: Path,
     subdir: str,
     variants: List[str] = ["tex", "seg"],
+    scene_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Dict[str, Path]]:
     """
     Find all files and their paired variants.
+    
+    Args:
+        dataset_root: Root directory of dataset
+        subdir: Subdirectory (e.g., "povs", "layouts")
+        variants: List of variants to find (e.g., ["tex", "seg"])
+        scene_ids: Optional set of scene IDs to filter by. If None, processes all files.
     
     Returns:
         Dict of base_name -> {variant: path}
@@ -364,6 +404,12 @@ def find_paired_files(
             continue
         
         for img_path in variant_dir.glob("*.png"):
+            # Filter by scene ID if provided
+            if scene_ids is not None:
+                scene_id = extract_scene_id(img_path.name)
+                if scene_id is None or scene_id not in scene_ids:
+                    continue
+            
             base_name = img_path.stem
             if base_name not in paired:
                 paired[base_name] = {}
@@ -443,16 +489,22 @@ def clean_povs(
     move_to_rejected: bool,
     dry_run: bool,
     stats: CleanupStats,
+    scene_ids: Optional[Set[str]] = None,
     **quality_params,
 ) -> Set[str]:
     """
     Clean POV images.
+    
+    Args:
+        scene_ids: Optional set of scene IDs to filter by. If None, processes all files.
     
     Returns:
         Set of removed base names (for syncing with other data)
     """
     logger.info("\n" + "=" * 60)
     logger.info("CLEANING POV IMAGES")
+    if scene_ids is not None:
+        logger.info(f"Filtering by {len(scene_ids)} scene IDs")
     logger.info("=" * 60)
     
     pov_dir = dataset_root / "povs"
@@ -461,7 +513,7 @@ def clean_povs(
         return set()
     
     # Find paired files
-    paired = find_paired_files(dataset_root, "povs", ["tex", "seg"])
+    paired = find_paired_files(dataset_root, "povs", ["tex", "seg"], scene_ids=scene_ids)
     logger.info(f"Found {len(paired)} POV image sets")
     
     removed_bases = set()
@@ -519,16 +571,22 @@ def clean_layouts(
     move_to_rejected: bool,
     dry_run: bool,
     stats: CleanupStats,
+    scene_ids: Optional[Set[str]] = None,
     **quality_params,
 ) -> Set[str]:
     """
     Clean layout images.
+    
+    Args:
+        scene_ids: Optional set of scene IDs to filter by. If None, processes all files.
     
     Returns:
         Set of removed base names (for syncing with other data)
     """
     logger.info("\n" + "=" * 60)
     logger.info("CLEANING LAYOUT IMAGES")
+    if scene_ids is not None:
+        logger.info(f"Filtering by {len(scene_ids)} scene IDs")
     logger.info("=" * 60)
     
     layouts_dir = dataset_root / "layouts"
@@ -537,7 +595,7 @@ def clean_layouts(
         return set()
     
     # Find paired files
-    paired = find_paired_files(dataset_root, "layouts", ["tex", "seg"])
+    paired = find_paired_files(dataset_root, "layouts", ["tex", "seg"], scene_ids=scene_ids)
     logger.info(f"Found {len(paired)} layout image sets")
     
     removed_bases = set()
@@ -585,6 +643,22 @@ def clean_layouts(
 # Main
 # =============================================================================
 
+def load_scene_list(shard_file: Path) -> Set[str]:
+    """Load scene IDs from a shard file (one per line)."""
+    scene_ids = set()
+    if not shard_file.exists():
+        logger.warning(f"Shard file not found: {shard_file}")
+        return scene_ids
+    
+    with open(shard_file, "r", encoding="utf-8") as f:
+        for line in f:
+            scene_id = line.strip()
+            if scene_id and not scene_id.startswith("#"):
+                scene_ids.add(scene_id)
+    
+    return scene_ids
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Clean dataset by removing bad POV and layout images",
@@ -595,6 +669,12 @@ def main():
     # Required
     parser.add_argument("--dataset-root", required=True, type=Path,
                         help="Dataset root directory")
+    
+    # Sharding
+    parser.add_argument("--shard-file", type=Path,
+                        help="Path to shard file with scene IDs (one per line). "
+                             "If provided, only processes files from these scenes. "
+                             "If not provided, processes all files.")
     
     # Mode
     parser.add_argument("--dry-run", action="store_true",
@@ -650,6 +730,16 @@ def main():
     if args.dry_run:
         logger.info("DRY RUN - no files will be modified")
     
+    # Load scene IDs from shard file if provided
+    scene_ids = None
+    if args.shard_file:
+        logger.info(f"Loading scene IDs from shard file: {args.shard_file}")
+        scene_ids = load_scene_list(args.shard_file)
+        logger.info(f"Loaded {len(scene_ids)} scene IDs from shard file")
+        if len(scene_ids) == 0:
+            logger.warning("No scene IDs found in shard file, nothing to process")
+            return 0
+    
     stats = CleanupStats()
     
     # Clean POVs
@@ -660,7 +750,8 @@ def main():
             "white_threshold": args.pov_white_threshold,
             "entropy_threshold": args.pov_entropy_threshold,
         }
-        clean_povs(dataset_root, move_to_rejected, args.dry_run, stats, **pov_params)
+        clean_povs(dataset_root, move_to_rejected, args.dry_run, stats, 
+                  scene_ids=scene_ids, **pov_params)
     
     # Clean layouts
     if not args.skip_layouts:
@@ -670,7 +761,8 @@ def main():
             "min_unique_colors": args.min_unique_colors,
             "min_room_area_fraction": args.min_room_area,
         }
-        clean_layouts(dataset_root, move_to_rejected, args.dry_run, stats, **layout_params)
+        clean_layouts(dataset_root, move_to_rejected, args.dry_run, stats,
+                     scene_ids=scene_ids, **layout_params)
     
     # Print summary
     stats.print_summary()
