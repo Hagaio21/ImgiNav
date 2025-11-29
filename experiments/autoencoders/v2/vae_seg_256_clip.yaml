@@ -61,6 +61,7 @@ autoencoder:
         final_activation: tanh
   
   clip_projection:
+    type: CLIPProjections
     projection_dim: 256
     text_dim: 384      # all-MiniLM-L6-v2
     pov_dim: 512       # ResNet18
