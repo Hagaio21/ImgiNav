@@ -306,9 +306,9 @@ def main():
         val_cfg = config["validation"]["dataset"]
         val_dataset = ManifestDataset(**val_cfg)
         val_loader = val_dataset.make_dataloader(
-        batch_size=config["validation"].get("batch_size", config.get("training", {}).get("batch_size", 32)),
-        shuffle=False,
-        num_workers=config.get("training", {}).get("num_workers", 4)
+            batch_size=config["validation"].get("batch_size", config.get("training", {}).get("batch_size", 32)),
+            shuffle=False,
+            num_workers=config.get("training", {}).get("num_workers", 4)
         )
         # Use full dataset for training if validation is explicitly provided
         train_dataset = dataset
