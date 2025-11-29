@@ -340,8 +340,8 @@ def main():
     CompositeLossClass = LOSS_REGISTRY.get("CompositeLoss")
     CLIPLossClass = LOSS_REGISTRY.get("CLIPLoss")
     
-    if not hasattr(model, 'clip_projections') or model.clip_projections is None:
-        raise RuntimeError("Model does not have clip_projections! Check autoencoder config has clip_projection section.")
+    if not hasattr(model, 'clip_projection') or model.clip_projection is None:
+        raise RuntimeError("Model does not have clip_projection! Check autoencoder config has clip_projection section.")
     
     if not isinstance(loss_fn, CompositeLossClass):
         raise RuntimeError("Loss function is not CompositeLoss! Cannot connect CLIP projections.")
@@ -350,12 +350,12 @@ def main():
     for sub_loss in loss_fn.losses:
         if isinstance(sub_loss, CLIPLossClass):
             clip_loss_found = True
-            sub_loss.set_projections(model.clip_projections)
+            sub_loss.set_projections(model.clip_projection)
             if sub_loss.projections is None:
                 raise RuntimeError("CLIP loss projections are None after set_projections!")
-            if sub_loss.projections is not model.clip_projections:
-                raise RuntimeError("CLIP loss projections are not the same instance as model.clip_projections!")
-            proj_params = list(model.clip_projections.parameters())
+            if sub_loss.projections is not model.clip_projection:
+                raise RuntimeError("CLIP loss projections are not the same instance as model.clip_projection!")
+            proj_params = list(model.clip_projection.parameters())
             trainable_proj_params = [p for p in proj_params if p.requires_grad]
     
     if not clip_loss_found:
