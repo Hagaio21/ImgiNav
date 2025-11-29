@@ -72,7 +72,7 @@ autoencoder:
 training:
   seed: 42
   epochs: 150
-  batch_size: 64  # Increased from 32 (memory usage is low: 3.1GB/16GB)
+  batch_size: 64
   num_workers: 8
   
   # Precomputed weights from manifest
@@ -102,18 +102,32 @@ training:
   loss:
     type: CompositeLoss
     losses:
-      - type: MSELoss
+      # L1 loss - less blurry than MSE
+      - type: L1Loss
         key: rgb
         target_key: rgb
         weight: 1.0
+      
+      # Perceptual loss - preserves textures and edges
+      - type: PerceptualLoss
+        key: rgb
+        target_key: rgb
+        weight: 0.1
+        layers: ["conv1_2", "conv2_2", "conv3_3"]
+      
+      # KL divergence for VAE
       - type: KLDLoss
         weight: 0.0001
+      
+      # Latent standardization
       - type: LatentStandardizationLoss
         key: mu
         weight: 0.1
         mean_penalty_type: l2
         std_penalty_type: l2
         per_channel: true
+      
+      # CLIP alignment
       - type: CLIPLoss
         key: latent_features
         text_key: text_emb
@@ -125,4 +139,3 @@ training:
         pov_dim: 512
         combine_method: average
         use_model_projections: true
-

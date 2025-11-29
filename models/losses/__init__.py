@@ -9,6 +9,8 @@ from .base_loss import (
     CompositeLoss,
 )
 from .clip_loss import CLIPLoss
+# Import reconstruction losses to register them
+from . import reconstruction_loss
 
 __all__ = [
     "LOSS_REGISTRY",
@@ -20,5 +22,9 @@ __all__ = [
     "LatentStructuralLossAE",
     "CompositeLoss",
     "CLIPLoss",
+    "L1Loss",
+    "PerceptualLoss",
+    "SSIMLoss",
+    "CombinedReconstructionLoss",
 ]
 

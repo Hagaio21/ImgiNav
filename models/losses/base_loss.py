@@ -16,7 +16,8 @@ def register_loss(cls):
 class LossComponent(BaseComponent):
     def _build(self):
         self.key = self._init_kwargs.get("key", None)
-        self.target_key = self._init_kwargs.get("target", self.key)
+        # Support both "target" and "target_key" for backward compatibility
+        self.target_key = self._init_kwargs.get("target_key") or self._init_kwargs.get("target", self.key)
         self.weight = self._init_kwargs.get("weight", 1.0)
 
     def forward(self, preds, targets):
@@ -495,3 +496,11 @@ class CompositeLoss(LossComponent):
             device = next(iter(preds.values())).device if preds else torch.device("cpu")
             total = torch.tensor(0.0, device=device, requires_grad=True)
         return total, logs
+
+
+# Import reconstruction losses to ensure they are registered
+# This must be at the end to avoid circular imports
+try:
+    from . import reconstruction_loss
+except ImportError:
+    pass  # reconstruction_loss may not exist in all installations
