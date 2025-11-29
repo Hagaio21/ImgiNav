@@ -1,8 +1,8 @@
 # =============================================================================
 # VAE Training Config - Segmented Layouts (256x256)
 # =============================================================================
-# Symmetric encoder/decoder with residual blocks
-# All parameters explicitly defined (no defaults)
+# Lightweight symmetric encoder/decoder 
+# ~2.1M parameters total
 # =============================================================================
 
 experiment:
@@ -26,7 +26,7 @@ dataset:
     transforms:
       - type: Resize
         size: [256, 256]
-        interpolation: nearest
+        interpolation: nearest    # Preserve sharp edges for segmentation
       - type: ToTensor
       - type: Normalize
         mean: [0.5, 0.5, 0.5]
@@ -38,20 +38,18 @@ dataset:
 autoencoder:
   encoder:
     in_channels: 3
-    latent_channels: 4
     base_channels: 64
-    channel_multipliers: [1, 2, 4]
-    num_res_blocks: 2
+    downsampling_steps: 3         # 256 → 128 → 64 → 32
+    latent_channels: 4
     norm_groups: 8
-    dropout: 0.0
+    activation: SiLU
   
   decoder:
     latent_channels: 4
     base_channels: 64
-    channel_multipliers: [4, 2, 1]
-    num_res_blocks: 2
+    upsampling_steps: 3           # 32 → 64 → 128 → 256
     norm_groups: 8
-    dropout: 0.0
+    activation: SiLU
     heads:
       - type: RGBHead
         name: rgb
@@ -70,7 +68,7 @@ autoencoder:
 training:
   seed: 42
   epochs: 150
-  batch_size: 96
+  batch_size: 128                 # Can afford larger batch with lightweight model
   num_workers: 8
   
   use_precomputed_weights: true
@@ -86,7 +84,7 @@ training:
   
   save_interval: 5
   sample_interval: 5
-  early_stopping_patience: 10
+  early_stopping_patience: 15
   early_stopping_min_delta: 0.00005
   early_stopping_restore_best: true
   

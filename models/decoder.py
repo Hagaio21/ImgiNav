@@ -1,72 +1,69 @@
 import torch
 import torch.nn as nn
 from .components.base_component import BaseComponent
-from .components.blocks import UpBlock, MidBlock
 from .utils import compute_num_groups, reparameterize
 
 
 class Decoder(BaseComponent):
     """
-    Deterministic decoder with residual blocks.
+    Deterministic decoder - symmetric with Encoder.
     
-    Uses shared block classes with time_dim=None (no time conditioning).
+    Architecture per upsampling level:
+        ConvT 4x4 stride 2 → Norm → Act → Conv 3x3 → Norm → Act
     
-    Required config:
-        latent_channels: Latent space channels
-        base_channels: Base channel count
-        channel_multipliers: Channel multipliers per level (reversed from encoder)
-        num_res_blocks: Residual blocks per level
-        norm_groups: GroupNorm groups
+    This matches encoder's 2 convs per level, making it symmetric.
+    
+    Config:
+        latent_channels: Input latent channels (default: 4)
+        base_channels: Base channel count (default: 64)
+        upsampling_steps: Number of upsample levels (default: 3)
+        norm_groups: Groups for GroupNorm (default: 8)
+        activation: Activation function (default: SiLU)
         heads: List of head configurations
     
-    Optional config:
-        dropout: Dropout rate (default: 0.0)
+    For 32x32 latent with upsampling_steps=3:
+        32 → 64 → 128 → 256 (output: 256x256)
     """
     
     def _build(self):
-        latent_ch = self._init_kwargs["latent_channels"]
-        base_ch = self._init_kwargs["base_channels"]
-        ch_mults = self._init_kwargs["channel_multipliers"]
-        num_res = self._init_kwargs["num_res_blocks"]
-        norm_groups = self._init_kwargs["norm_groups"]
-        dropout = self._init_kwargs.get("dropout", 0.0)
+        latent_ch = self._init_kwargs.get("latent_channels", 4)
+        base_ch = self._init_kwargs.get("base_channels", 64)
+        up_steps = self._init_kwargs.get("upsampling_steps", 3)
+        norm_groups = self._init_kwargs.get("norm_groups", 8)
+        act = getattr(nn, self._init_kwargs.get("activation", "SiLU"))()
         head_cfgs = self._init_kwargs.get("heads", [])
+
+        layers = []
         
-        # Channel progression
-        channels = [base_ch * m for m in ch_mults] + [base_ch]
-        
-        # Input projection
-        self.conv_in = nn.Conv2d(latent_ch, channels[0], 3, padding=1)
-        
-        # Middle block
-        self.mid_block = MidBlock(
-            channels=channels[0],
-            time_dim=None,  # No time conditioning for VAE
-            norm_groups=norm_groups,
-            dropout=dropout
-        )
-        
-        # Upsampling blocks (time_dim=None, no skip connections for VAE)
-        self.up_blocks = nn.ModuleList()
-        for i in range(len(ch_mults)):
-            self.up_blocks.append(
-                UpBlock(
-                    in_ch=channels[i],
-                    out_ch=channels[i + 1],
-                    time_dim=None,  # No time conditioning for VAE
-                    num_res_blocks=num_res,
-                    norm_groups=norm_groups,
-                    dropout=dropout,
-                    use_skip_connection=False  # No skip connections for VAE decoder
-                )
-            )
-        
-        # Output
-        out_ch = channels[-1]
-        self.norm_out = nn.GroupNorm(compute_num_groups(out_ch, norm_groups), out_ch)
-        self.act_out = nn.SiLU()
+        # Initial projection from latent
+        # Start with highest channel count (matching encoder's final channels)
+        out_ch = base_ch * (2 ** (up_steps - 1))
+        valid_groups = compute_num_groups(out_ch, norm_groups)
+        layers += [
+            nn.Conv2d(latent_ch, out_ch, 3, padding=1),
+            nn.GroupNorm(valid_groups, out_ch),
+            act,
+        ]
+
+        # Upsampling levels - symmetric with encoder
+        for i in range(up_steps):
+            out_ch_next = out_ch // 2 if i < up_steps - 1 else base_ch
+            valid_groups = compute_num_groups(out_ch_next, norm_groups)
+            layers += [
+                # Upsample
+                nn.ConvTranspose2d(out_ch, out_ch_next, 4, stride=2, padding=1),
+                nn.GroupNorm(valid_groups, out_ch_next),
+                act,
+                # Refine (added for symmetry with encoder)
+                nn.Conv2d(out_ch_next, out_ch_next, 3, padding=1),
+                nn.GroupNorm(valid_groups, out_ch_next),
+                act,
+            ]
+            out_ch = out_ch_next
+
+        self.shared_decoder = nn.Sequential(*layers)
         self.shared_out_channels = out_ch
-        
+
         # Build heads
         self.heads = nn.ModuleDict()
         for cfg in head_cfgs:
@@ -80,38 +77,24 @@ class Decoder(BaseComponent):
         Forward pass.
         
         Args:
-            z_or_dict: DataFlow or dict with "latent" key
+            z_or_dict: DataFlow or dict containing "latent": tensor z
         
         Returns:
-            DataFlow with head outputs
+            DataFlow with outputs from all heads
         """
         if isinstance(z_or_dict, dict):
             if "latent" not in z_or_dict:
-                raise ValueError(f"Decoder expects 'latent' key. Got: {list(z_or_dict.keys())}")
+                raise ValueError(f"Decoder expects dict with 'latent' key. Got: {list(z_or_dict.keys())}")
             z = z_or_dict["latent"]
         else:
             raise TypeError(f"Decoder expects dict, got {type(z_or_dict)}")
         
-        # Input projection
-        x = self.conv_in(z)
-        
-        # Middle
-        x = self.mid_block(x)
-        
-        # Upsampling (no skip connections for VAE)
-        for block in self.up_blocks:
-            x = block(x, skip=None, t_emb=None)
-        
-        # Output
-        x = self.act_out(self.norm_out(x))
-        
-        # Heads
-        outputs = {name: head(x) for name, head in self.heads.items()}
-        
+        feats = self.shared_decoder(z)
+        outputs = {name: head(feats) for name, head in self.heads.items()}
         return self._to_dataflow(outputs)
     
     def get_input_shape(self, batch_size=1):
-        latent_ch = self._init_kwargs["latent_channels"]
+        latent_ch = self._init_kwargs.get("latent_channels", 4)
         return {"latent": (batch_size, latent_ch, None, None)}
     
     def get_output_shape(self, batch_size=1):
@@ -131,21 +114,17 @@ class Decoder(BaseComponent):
 
 
 class VAEDecoder(Decoder):
-    """
-    Variational decoder - handles mu/logvar with reparameterization.
-    
-    Same required config as Decoder.
-    """
+    """Variational decoder - handles mu/logvar with reparameterization."""
     
     def forward(self, z_or_dict):
         """
-        Forward pass with reparameterization support.
+        Forward pass.
         
         Args:
-            z_or_dict: Dict with "latent" OR "mu"/"logvar" keys
+            z_or_dict: Dict containing "latent" or "mu"/"logvar"
         
         Returns:
-            DataFlow with head outputs
+            DataFlow with outputs from all heads
         """
         if isinstance(z_or_dict, dict):
             if "latent" in z_or_dict:
@@ -157,20 +136,6 @@ class VAEDecoder(Decoder):
         else:
             raise TypeError(f"VAEDecoder expects dict, got {type(z_or_dict)}")
         
-        # Input projection
-        x = self.conv_in(z)
-        
-        # Middle
-        x = self.mid_block(x)
-        
-        # Upsampling
-        for block in self.up_blocks:
-            x = block(x, skip=None, t_emb=None)
-        
-        # Output
-        x = self.act_out(self.norm_out(x))
-        
-        # Heads
-        outputs = {name: head(x) for name, head in self.heads.items()}
-        
+        feats = self.shared_decoder(z)
+        outputs = {name: head(feats) for name, head in self.heads.items()}
         return self._to_dataflow(outputs)

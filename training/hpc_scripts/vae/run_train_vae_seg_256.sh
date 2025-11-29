@@ -7,7 +7,7 @@
 #BSUB -R "span[hosts=1]"
 #BSUB -gpu "num=1:mode=exclusive_process"
 #BSUB -W 24:00
-#BSUB -q gpul40s
+#BSUB -q gpuv100
 
 set -euo pipefail
 
