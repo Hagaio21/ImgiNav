@@ -303,7 +303,9 @@ def split_dataset(dataset, config):
     split_seed = config.get("split_seed", 42)
     
     if train_split < 1.0:
-        train_dataset, val_dataset = dataset.split(train_split=train_split, random_seed=split_seed)
+        # Calculate val_ratio from train_split (remaining goes to validation)
+        val_ratio = 1.0 - train_split
+        train_dataset, val_dataset, _ = dataset.split(train_ratio=train_split, val_ratio=val_ratio, test_ratio=0.0, seed=split_seed)
     else:
         train_dataset = dataset
         val_dataset = None
