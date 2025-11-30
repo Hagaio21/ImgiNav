@@ -318,11 +318,11 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     
     Creates per-sample structure:
     samples/conditioned/sample_X/
-        ├── conditions/  (text_emb, pov_emb, graph_text, pov image)
+        ├── conditions/  (text_emb, pov_emb, graph_text [if text_emb used], pov image [if pov_emb used])
         └── target/      (target image)
     
     Note: 
-    - graph_text and POV image are always saved if available, regardless of embedding configuration.
+    - Original conditions (graph_text, pov image) are saved only for conditions actually used in the experiment.
     - Embeddings (text_emb, pov_emb) are only saved if they exist in the batch.
     
     Args:
@@ -479,29 +479,49 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
         if pov_emb is not None and pov_emb.shape[1] == 512:
             torch.save(pov_emb[i:i+1].cpu(), conditions_dir / "pov_embedding.pt")
         
-        # Save graph text and POV image (always save if available, regardless of embedding config)
+        # Save original conditions (only for conditions actually used in the experiment)
         idx = selected_indices[i] if i < len(selected_indices) else i
         row = dataset.df.iloc[idx]
         
-        # Always save graph_text if available
-        graph_text_path = row.get("graph_text_path", "")
-        if graph_text_path and Path(graph_text_path).exists():
-            try:
-                with open(graph_text_path, 'r') as f:
-                    graph_text = f.read()
-                with open(conditions_dir / "graph_text.txt", 'w') as f:
-                    f.write(graph_text)
-            except Exception:
-                pass
+        # Save graph_text if text_emb is used in the experiment
+        if use_text_emb:
+            graph_text_path = row.get("graph_text_path", "")
+            if graph_text_path:
+                # Resolve path relative to manifest directory (same logic as dataset)
+                if hasattr(dataset, 'manifest_dir'):
+                    resolved_path = dataset.manifest_dir / graph_text_path
+                    if not resolved_path.exists():
+                        resolved_path = dataset.manifest_dir.parent / graph_text_path
+                else:
+                    resolved_path = Path(graph_text_path)
+                
+                if resolved_path.exists():
+                    try:
+                        with open(resolved_path, 'r') as f:
+                            graph_text = f.read()
+                        with open(conditions_dir / "graph_text.txt", 'w') as f:
+                            f.write(graph_text)
+                    except Exception:
+                        pass
         
-        # Always save POV image if available
-        pov_path = row.get("pov_path", "")
-        if pov_path and Path(pov_path).exists():
-            try:
-                pov_img = Image.open(pov_path)
-                pov_img.save(conditions_dir / "pov.png")
-            except Exception:
-                pass
+        # Save POV image if pov_emb is used in the experiment
+        if use_pov_emb:
+            pov_path = row.get("pov_path", "")
+            if pov_path:
+                # Resolve path relative to manifest directory (same logic as dataset)
+                if hasattr(dataset, 'manifest_dir'):
+                    resolved_path = dataset.manifest_dir / pov_path
+                    if not resolved_path.exists():
+                        resolved_path = dataset.manifest_dir.parent / pov_path
+                else:
+                    resolved_path = Path(pov_path)
+                
+                if resolved_path.exists():
+                    try:
+                        pov_img = Image.open(resolved_path)
+                        pov_img.save(conditions_dir / "pov.png")
+                    except Exception:
+                        pass
     
     # Save global metadata
     metadata = {
