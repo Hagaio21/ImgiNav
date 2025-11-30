@@ -6,13 +6,14 @@ experiment:
 dataset:
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv
   outputs:
-    latent: latent_path_vae_clip_spatial
+    latent: layout_latent_path
     pov_emb: pov_embedding_path
   filters:
     type:
     - room
     is_empty:
     - false
+    rejected: false
   return_path: false
 autoencoder:
   checkpoint: C:\Users\Hagai.LAPTOP-QAG9263N\Desktop\Thesis\repositories\ImgiNav\checkpoints\vae_checkpoint_best.pt

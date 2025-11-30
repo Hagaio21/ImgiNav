@@ -296,11 +296,8 @@ def encode_layouts(
     
     # Determine latent column name
     if latent_column_name is None:
-        # Use default based on VAE type
-        if "clip" in vae_name.lower():
-            latent_column_name = "latent_path_vae_clip"
-        else:
-            latent_column_name = "layout_latent_path"
+        # Use generic default column name (manifest decides which VAE it's for)
+        latent_column_name = "layout_latent_path"
     
     # Add latent column
     def get_latent_path(row):
