@@ -15,7 +15,7 @@
 #   ./launch_clean_dataset.sh --no-merge         # Don't submit merge job
 
 set -euo pipefail
-
+export MKL_INTERFACE_LAYER=LP64
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
