@@ -355,10 +355,13 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     # Get dataset to find rooms and scenes
     dataset = val_loader.dataset
     
-    # Select 8 samples from the filtered dataset
+    # Get number of samples per type from config (default: 4)
+    num_samples_per_type = config.get("training", {}).get("num_conditioned_samples_per_type", 4)
+    
+    # Select samples from the filtered dataset
     # The dataset is already filtered by config (type, rejected, etc.)
-    # For "both" experiments (type filter is empty), ensure 4 rooms and 4 scenes
-    # For single-type experiments, just take first 8
+    # For "both" experiments (type filter is empty), take num_samples_per_type of each type
+    # For single-type experiments, just take num_samples_per_type
     selected_indices = []
     
     if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
@@ -374,17 +377,17 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
             elif sample_type == 'scene':
                 scene_indices.append(idx)
         
-        # If both types exist in filtered dataset, take 4 of each
+        # If both types exist in filtered dataset, take num_samples_per_type of each
         if len(room_indices) > 0 and len(scene_indices) > 0:
-            selected_indices = room_indices[:4] + scene_indices[:4]
+            selected_indices = room_indices[:num_samples_per_type] + scene_indices[:num_samples_per_type]
         elif len(room_indices) > 0:
-            selected_indices = room_indices[:8]
+            selected_indices = room_indices[:num_samples_per_type]
         elif len(scene_indices) > 0:
-            selected_indices = scene_indices[:8]
+            selected_indices = scene_indices[:num_samples_per_type]
         else:
-            selected_indices = list(range(min(8, len(dataset))))
+            selected_indices = list(range(min(num_samples_per_type, len(dataset))))
     else:
-        selected_indices = list(range(min(8, len(dataset))))
+        selected_indices = list(range(min(num_samples_per_type, len(dataset))))
     
     batch_size = len(selected_indices)
     

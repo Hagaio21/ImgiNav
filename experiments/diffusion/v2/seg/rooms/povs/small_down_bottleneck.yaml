@@ -69,6 +69,7 @@ training:
   guidance_scale: 5.0
   use_precomputed_weights: true
   precomputed_weight_column: sample_weight
+  num_conditioned_samples_per_type: 8
   loss:
     type: MSELoss
     key: pred_noise
