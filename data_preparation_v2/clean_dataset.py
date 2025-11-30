@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-Clean Dataset - Remove bad POV and layout images.
+Clean Dataset - Quality Assessment Mode
 
-Checks for quality issues in both POV (first-person) and layout (top-down) images.
-Syncs deletions between tex/seg variants and cleans up embeddings.
+Instead of deleting files, this script:
+1. Checks quality of POV and layout images
+2. Outputs a rejections CSV with quality decisions
+3. Supports sharding for parallel processing (each shard writes its own output)
 
-Supports sharding for parallel processing:
-- Use --shard-file to process only specific scenes
-- Create shards using create_shards.py
-- Run multiple instances in parallel with different shard files
+The rejections CSV can then be joined with the manifest to add a 'rejected' column,
+allowing filtering during training without actually deleting files.
+
+Sharding Strategy:
+- Each shard processes a subset of scenes
+- Each shard writes to its own output file (e.g., rejections_shard_001.csv)
+- After all shards complete, merge with: merge_rejections.py
+- Finally, update manifest with: update_manifest_rejections.py
 
 POV Quality Checks:
 - Monocolor: Single color (bad render)
@@ -24,41 +30,34 @@ Layout Quality Checks:
 - High fragmentation: Many disconnected small regions (artifacts)
 
 Usage:
-    # Dry run (report only)
+    # Full dataset (single process)
     python clean_dataset.py \\
         --dataset-root dataset_v2 \\
-        --dry-run
+        --output rejections.csv
 
     # Process specific shard (for parallel processing)
     python clean_dataset.py \\
         --dataset-root dataset_v2 \\
-        --shard-file shards/shard_1.txt
+        --shard-file shards/shard_001.txt \\
+        --output rejections_shard_001.csv
 
-    # Clean POVs only
+    # Skip certain checks
     python clean_dataset.py \\
         --dataset-root dataset_v2 \\
-        --skip-layouts
-
-    # Clean layouts only
-    python clean_dataset.py \\
-        --dataset-root dataset_v2 \\
-        --skip-povs
-
-    # Move to rejected folder instead of deleting
-    python clean_dataset.py \\
-        --dataset-root dataset_v2 \\
-        --move-to-rejected
+        --skip-layouts \\
+        --output rejections.csv
 
     # Custom thresholds
     python clean_dataset.py \\
         --dataset-root dataset_v2 \\
         --background-threshold 0.85 \\
-        --dominant-color-threshold 0.90
+        --dominant-color-threshold 0.90 \\
+        --output rejections.csv
 """
 
 import argparse
+import csv
 import logging
-import shutil
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Set
@@ -115,23 +114,33 @@ class QualityReport:
         return f"✗ {self.path.name}: {issues_str} ({details_str})"
 
 
+@dataclass
+class RejectionRecord:
+    """A single rejection decision."""
+    image_type: str  # 'pov' or 'layout'
+    variant: str  # 'tex' or 'seg'
+    base_name: str  # e.g., "scene123_Bedroom_door0"
+    path: str  # relative path from dataset root
+    rejected: bool
+    rejection_reasons: List[str]
+    details: Dict[str, float]
+
+
 @dataclass 
 class CleanupStats:
     """Statistics from cleanup operation."""
     checked_povs: int = 0
     checked_layouts: int = 0
-    removed_povs: int = 0
-    removed_layouts: int = 0
-    removed_embeddings: int = 0
+    rejected_povs: int = 0
+    rejected_layouts: int = 0
     issues_by_type: Dict[QualityIssue, int] = field(default_factory=lambda: {i: 0 for i in QualityIssue})
     
     def print_summary(self):
         logger.info("\n" + "=" * 60)
-        logger.info("CLEANUP SUMMARY")
+        logger.info("QUALITY CHECK SUMMARY")
         logger.info("=" * 60)
-        logger.info(f"POVs:    checked={self.checked_povs}, removed={self.removed_povs}")
-        logger.info(f"Layouts: checked={self.checked_layouts}, removed={self.removed_layouts}")
-        logger.info(f"Embeddings removed: {self.removed_embeddings}")
+        logger.info(f"POVs:    checked={self.checked_povs}, rejected={self.rejected_povs}")
+        logger.info(f"Layouts: checked={self.checked_layouts}, rejected={self.rejected_layouts}")
         logger.info("\nIssues by type:")
         for issue, count in sorted(self.issues_by_type.items(), key=lambda x: -x[1]):
             if count > 0:
@@ -308,7 +317,6 @@ def check_layout_quality(
         dominant_color_fraction = 1.0
     
     # Fragmentation check (ratio of small connected components)
-    # Simple version: count isolated pixels vs total room pixels
     fragmentation = 0.0
     if room_area_fraction > 0.01:
         try:
@@ -362,19 +370,12 @@ def extract_scene_id(filename: str) -> Optional[str]:
     Expected format: {scene_id}_{room_id}_*.png
     Scene IDs are UUIDs (36 chars with dashes) or similar long identifiers.
     """
-    # Remove extension
     stem = Path(filename).stem
-    
-    # Split by underscore and take first part as scene_id
-    # Scene IDs are typically long (UUID format: 8-4-4-4-12)
     parts = stem.split("_")
     if len(parts) >= 2:
-        # First part should be the scene ID
         scene_id = parts[0]
-        # Validate: scene IDs are typically long (at least 8 chars)
         if len(scene_id) >= 8:
             return scene_id
-    
     return None
 
 
@@ -391,7 +392,7 @@ def find_paired_files(
         dataset_root: Root directory of dataset
         subdir: Subdirectory (e.g., "povs", "layouts")
         variants: List of variants to find (e.g., ["tex", "seg"])
-        scene_ids: Optional set of scene IDs to filter by. If None, processes all files.
+        scene_ids: Optional set of scene IDs to filter by
     
     Returns:
         Dict of base_name -> {variant: path}
@@ -418,91 +419,24 @@ def find_paired_files(
     return paired
 
 
-def find_embedding_for_image(
-    image_path: Path,
-    dataset_root: Path,
-    image_type: str,  # "pov" or "layout"
-) -> Optional[Path]:
-    """Find the embedding file corresponding to an image."""
-    # Extract scene_id and room_id from filename
-    # Expected format: {scene_id}_{room_id}_*.png or similar
-    stem = image_path.stem
-    parts = stem.rsplit("_", 1)
-    
-    if len(parts) < 2:
-        return None
-    
-    # Try to find embedding
-    if image_type == "pov":
-        # POV embeddings: povs/embeddings_{variant}/{scene_id}_{room_id}_pov.pt
-        variant = image_path.parent.name
-        emb_dir = dataset_root / "povs" / f"embeddings_{variant}"
-        # The stem might be scene_room or scene_room_angle
-        # We need scene_room for the embedding
-        scene_room = "_".join(stem.split("_")[:2])
-        emb_path = emb_dir / f"{scene_room}_pov.pt"
-        if emb_path.exists():
-            return emb_path
-    
-    return None
-
-
-def remove_or_move(
-    path: Path,
-    move_to_rejected: bool,
-    dry_run: bool,
-) -> bool:
-    """
-    Remove file or move to parallel rejected directory.
-    
-    e.g., layouts/tex/image.png -> layouts/tex_rejected/image.png
-          povs/seg/image.png -> povs/seg_rejected/image.png
-          povs/embeddings_tex/emb.pt -> povs/embeddings_tex_rejected/emb.pt
-    """
-    if dry_run:
-        return True
-    
-    try:
-        if move_to_rejected:
-            # Create parallel rejected folder: parent/variant -> parent/variant_rejected
-            parent = path.parent.parent  # e.g., layouts/ or povs/
-            variant = path.parent.name   # e.g., tex, seg, embeddings_tex
-            rejected_variant = f"{variant}_rejected"
-            dest_dir = parent / rejected_variant
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / path.name
-            shutil.move(str(path), str(dest))
-        else:
-            path.unlink()
-        return True
-    except Exception as e:
-        logger.warning(f"Failed to remove {path}: {e}")
-        return False
-
-
 # =============================================================================
-# Main Cleanup Functions
+# Main Quality Check Functions
 # =============================================================================
 
-def clean_povs(
+def check_povs(
     dataset_root: Path,
-    move_to_rejected: bool,
-    dry_run: bool,
     stats: CleanupStats,
     scene_ids: Optional[Set[str]] = None,
     **quality_params,
-) -> Set[str]:
+) -> List[RejectionRecord]:
     """
-    Clean POV images.
-    
-    Args:
-        scene_ids: Optional set of scene IDs to filter by. If None, processes all files.
+    Check POV image quality.
     
     Returns:
-        Set of removed base names (for syncing with other data)
+        List of RejectionRecord for each image set
     """
     logger.info("\n" + "=" * 60)
-    logger.info("CLEANING POV IMAGES")
+    logger.info("CHECKING POV IMAGES")
     if scene_ids is not None:
         logger.info(f"Filtering by {len(scene_ids)} scene IDs")
     logger.info("=" * 60)
@@ -510,81 +444,75 @@ def clean_povs(
     pov_dir = dataset_root / "povs"
     if not pov_dir.exists():
         logger.warning(f"POV directory not found: {pov_dir}")
-        return set()
+        return []
     
     # Find paired files
     paired = find_paired_files(dataset_root, "povs", ["tex", "seg"], scene_ids=scene_ids)
     logger.info(f"Found {len(paired)} POV image sets")
     
-    removed_bases = set()
+    records = []
     
     for base_name, variants in tqdm(paired.items(), desc="Checking POVs"):
         stats.checked_povs += 1
         
-        should_remove = False
+        should_reject = False
         issues_found = []
+        all_details = {}
         
         # Check each variant
         for variant, path in variants.items():
             report = check_pov_quality(path, **quality_params)
             
             if not report.is_valid:
-                should_remove = True
+                should_reject = True
                 issues_found.extend(report.issues)
-                if not dry_run:
-                    logger.debug(str(report))
+            
+            # Prefix details with variant
+            for k, v in report.details.items():
+                all_details[f"{variant}_{k}"] = v
         
         # Check for missing pairs
         if len(variants) == 1:
-            should_remove = True
+            should_reject = True
             issues_found.append(QualityIssue.MISSING_PAIR)
         
-        # Remove all variants if any has issues
-        if should_remove:
-            removed_bases.add(base_name)
-            
+        # Record decision
+        if should_reject:
+            stats.rejected_povs += 1
             for issue in issues_found:
                 stats.issues_by_type[issue] += 1
-            
-            for variant, path in variants.items():
-                if dry_run:
-                    logger.info(f"Would remove: {path.relative_to(dataset_root)}")
-                else:
-                    if remove_or_move(path, move_to_rejected, dry_run):
-                        stats.removed_povs += 1
-                
-                # Also remove embedding
-                emb_path = find_embedding_for_image(path, dataset_root, "pov")
-                if emb_path and emb_path.exists():
-                    if dry_run:
-                        logger.info(f"Would remove embedding: {emb_path.relative_to(dataset_root)}")
-                    else:
-                        if remove_or_move(emb_path, move_to_rejected, dry_run):
-                            stats.removed_embeddings += 1
+        
+        # Create record for each variant
+        for variant, path in variants.items():
+            rel_path = path.relative_to(dataset_root)
+            records.append(RejectionRecord(
+                image_type="pov",
+                variant=variant,
+                base_name=base_name,
+                path=str(rel_path),
+                rejected=should_reject,
+                rejection_reasons=[i.name for i in issues_found],
+                details=all_details,
+            ))
     
-    logger.info(f"POVs: {stats.removed_povs} removed out of {stats.checked_povs} checked")
-    return removed_bases
+    logger.info(f"POVs: {stats.rejected_povs} rejected out of {stats.checked_povs} checked")
+    return records
 
 
-def clean_layouts(
+def check_layouts(
     dataset_root: Path,
-    move_to_rejected: bool,
-    dry_run: bool,
     stats: CleanupStats,
     scene_ids: Optional[Set[str]] = None,
     **quality_params,
-) -> Set[str]:
+) -> List[RejectionRecord]:
     """
-    Clean layout images.
-    
-    Args:
-        scene_ids: Optional set of scene IDs to filter by. If None, processes all files.
+    Check layout image quality.
     
     Returns:
-        Set of removed base names (for syncing with other data)
+        List of RejectionRecord for each image set
     """
     logger.info("\n" + "=" * 60)
-    logger.info("CLEANING LAYOUT IMAGES")
+    logger.info("CHECKING LAYOUT IMAGES")
     if scene_ids is not None:
         logger.info(f"Filtering by {len(scene_ids)} scene IDs")
     logger.info("=" * 60)
@@ -592,51 +520,106 @@ def clean_layouts(
     layouts_dir = dataset_root / "layouts"
     if not layouts_dir.exists():
         logger.warning(f"Layouts directory not found: {layouts_dir}")
-        return set()
+        return []
     
     # Find paired files
     paired = find_paired_files(dataset_root, "layouts", ["tex", "seg"], scene_ids=scene_ids)
     logger.info(f"Found {len(paired)} layout image sets")
     
-    removed_bases = set()
+    records = []
     
     for base_name, variants in tqdm(paired.items(), desc="Checking layouts"):
         stats.checked_layouts += 1
         
-        should_remove = False
+        should_reject = False
         issues_found = []
+        all_details = {}
         
         # Check each variant
         for variant, path in variants.items():
             report = check_layout_quality(path, **quality_params)
             
             if not report.is_valid:
-                should_remove = True
+                should_reject = True
                 issues_found.extend(report.issues)
-                if not dry_run:
-                    logger.debug(str(report))
+            
+            # Prefix details with variant
+            for k, v in report.details.items():
+                all_details[f"{variant}_{k}"] = v
         
         # Check for missing pairs
         if len(variants) == 1:
-            should_remove = True
+            should_reject = True
             issues_found.append(QualityIssue.MISSING_PAIR)
         
-        # Remove all variants if any has issues
-        if should_remove:
-            removed_bases.add(base_name)
-            
+        # Record decision
+        if should_reject:
+            stats.rejected_layouts += 1
             for issue in issues_found:
                 stats.issues_by_type[issue] += 1
-            
-            for variant, path in variants.items():
-                if dry_run:
-                    logger.info(f"Would remove: {path.relative_to(dataset_root)}")
-                else:
-                    if remove_or_move(path, move_to_rejected, dry_run):
-                        stats.removed_layouts += 1
+        
+        # Create record for each variant
+        for variant, path in variants.items():
+            rel_path = path.relative_to(dataset_root)
+            records.append(RejectionRecord(
+                image_type="layout",
+                variant=variant,
+                base_name=base_name,
+                path=str(rel_path),
+                rejected=should_reject,
+                rejection_reasons=[i.name for i in issues_found],
+                details=all_details,
+            ))
     
-    logger.info(f"Layouts: {stats.removed_layouts} removed out of {stats.checked_layouts} checked")
-    return removed_bases
+    logger.info(f"Layouts: {stats.rejected_layouts} rejected out of {stats.checked_layouts} checked")
+    return records
+
+
+# =============================================================================
+# Output
+# =============================================================================
+
+def write_rejections(records: List[RejectionRecord], output_path: Path):
+    """Write rejection records to CSV."""
+    if not records:
+        logger.warning("No records to write")
+        return
+    
+    logger.info(f"Writing {len(records)} rejection records to {output_path}")
+    
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Collect all detail keys across all records
+    all_detail_keys = set()
+    for record in records:
+        all_detail_keys.update(record.details.keys())
+    detail_keys = sorted(all_detail_keys)
+    
+    columns = [
+        "image_type", "variant", "base_name", "path", "rejected", "rejection_reasons"
+    ] + detail_keys
+    
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        
+        for record in records:
+            row = {
+                "image_type": record.image_type,
+                "variant": record.variant,
+                "base_name": record.base_name,
+                "path": record.path,
+                "rejected": record.rejected,
+                "rejection_reasons": "|".join(record.rejection_reasons),
+            }
+            # Add details
+            for key in detail_keys:
+                row[key] = record.details.get(key, "")
+            
+            writer.writerow(row)
+    
+    size_kb = output_path.stat().st_size / 1024
+    logger.info(f"  Written: {size_kb:.2f} KB")
 
 
 # =============================================================================
@@ -661,7 +644,7 @@ def load_scene_list(shard_file: Path) -> Set[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Clean dataset by removing bad POV and layout images",
+        description="Check dataset quality and output rejection decisions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -669,22 +652,18 @@ def main():
     # Required
     parser.add_argument("--dataset-root", required=True, type=Path,
                         help="Dataset root directory")
+    parser.add_argument("--output", required=True, type=Path,
+                        help="Output CSV file for rejection decisions")
     
     # Sharding
     parser.add_argument("--shard-file", type=Path,
-                        help="Path to shard file with scene IDs (one per line). "
-                             "If provided, only processes files from these scenes. "
-                             "If not provided, processes all files.")
+                        help="Path to shard file with scene IDs (one per line)")
     
-    # Mode
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Only report, don't delete")
-    parser.add_argument("--move-to-rejected", action="store_true",
-                        help="Move to rejected/ folder instead of deleting")
+    # Skip options
     parser.add_argument("--skip-povs", action="store_true",
-                        help="Skip POV cleaning")
+                        help="Skip POV checking")
     parser.add_argument("--skip-layouts", action="store_true",
-                        help="Skip layout cleaning")
+                        help="Skip layout checking")
     
     # POV thresholds
     pov_group = parser.add_argument_group("POV quality thresholds")
@@ -710,7 +689,7 @@ def main():
     
     # Verbosity
     parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Show details for each removed file")
+                        help="Show details for each checked file")
     
     args = parser.parse_args()
     
@@ -721,14 +700,6 @@ def main():
     if not dataset_root.exists():
         logger.error(f"Dataset root not found: {dataset_root}")
         return 1
-    
-    # Setup rejected mode
-    move_to_rejected = args.move_to_rejected
-    if move_to_rejected:
-        logger.info("Moving rejected files to parallel *_rejected folders")
-    
-    if args.dry_run:
-        logger.info("DRY RUN - no files will be modified")
     
     # Load scene IDs from shard file if provided
     scene_ids = None
@@ -741,8 +712,9 @@ def main():
             return 0
     
     stats = CleanupStats()
+    all_records = []
     
-    # Clean POVs
+    # Check POVs
     if not args.skip_povs:
         pov_params = {
             "monocolor_threshold": args.pov_monocolor_threshold,
@@ -750,10 +722,10 @@ def main():
             "white_threshold": args.pov_white_threshold,
             "entropy_threshold": args.pov_entropy_threshold,
         }
-        clean_povs(dataset_root, move_to_rejected, args.dry_run, stats, 
-                  scene_ids=scene_ids, **pov_params)
+        pov_records = check_povs(dataset_root, stats, scene_ids=scene_ids, **pov_params)
+        all_records.extend(pov_records)
     
-    # Clean layouts
+    # Check layouts
     if not args.skip_layouts:
         layout_params = {
             "background_threshold": args.background_threshold,
@@ -761,14 +733,14 @@ def main():
             "min_unique_colors": args.min_unique_colors,
             "min_room_area_fraction": args.min_room_area,
         }
-        clean_layouts(dataset_root, move_to_rejected, args.dry_run, stats,
-                     scene_ids=scene_ids, **layout_params)
+        layout_records = check_layouts(dataset_root, stats, scene_ids=scene_ids, **layout_params)
+        all_records.extend(layout_records)
+    
+    # Write output
+    write_rejections(all_records, args.output)
     
     # Print summary
     stats.print_summary()
-    
-    if args.dry_run:
-        logger.info("\nThis was a dry run. Use without --dry-run to actually remove files.")
     
     return 0
 

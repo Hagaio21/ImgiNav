@@ -5,7 +5,7 @@
 #BSUB -n 4
 #BSUB -R "rusage[mem=4000]"
 #BSUB -gpu "num=1"
-#BSUB -W 6:00
+#BSUB -W 10:00
 #BSUB -q gpul40s
 
 set -euo pipefail
