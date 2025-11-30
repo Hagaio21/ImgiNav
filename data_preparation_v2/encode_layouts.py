@@ -31,6 +31,7 @@ import argparse
 import logging
 import torch
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -68,6 +69,177 @@ def extract_vae_name(checkpoint_path: Path) -> str:
             name = name.split(suffix)[0]
             break
     return name
+
+
+def compute_latent_statistics(all_latents):
+    """
+    Compute statistics over all collected latents.
+    
+    Args:
+        all_latents: List of latent tensors [1, C, H, W] or [1, C]
+    
+    Returns:
+        Dictionary with statistics
+    """
+    if not all_latents or len(all_latents) == 0:
+        return {}
+    
+    # Concatenate all latents
+    all_latents_tensor = torch.cat(all_latents, dim=0)
+    
+    # Flatten for global statistics
+    latent_flat = all_latents_tensor.reshape(all_latents_tensor.shape[0], -1)
+    
+    # Compute global statistics
+    latent_mean = latent_flat.mean().item()
+    latent_std = latent_flat.std().item()
+    latent_min = latent_flat.min().item()
+    latent_max = latent_flat.max().item()
+    
+    # Compute percentiles
+    latent_flat_np = latent_flat.cpu().numpy()
+    percentiles = {
+        "p0.1": float(np.percentile(latent_flat_np, 0.1)),
+        "p1": float(np.percentile(latent_flat_np, 1)),
+        "p5": float(np.percentile(latent_flat_np, 5)),
+        "p10": float(np.percentile(latent_flat_np, 10)),
+        "p25": float(np.percentile(latent_flat_np, 25)),
+        "p50": float(np.percentile(latent_flat_np, 50)),
+        "p75": float(np.percentile(latent_flat_np, 75)),
+        "p90": float(np.percentile(latent_flat_np, 90)),
+        "p95": float(np.percentile(latent_flat_np, 95)),
+        "p99": float(np.percentile(latent_flat_np, 99)),
+        "p99.9": float(np.percentile(latent_flat_np, 99.9)),
+    }
+    
+    stats = {
+        "mean": latent_mean,
+        "std": latent_std,
+        "min": latent_min,
+        "max": latent_max,
+        "percentiles": percentiles,
+    }
+    
+    # Compute per-channel statistics if spatial dimensions exist
+    if all_latents_tensor.ndim == 4:  # [B, C, H, W]
+        B, C, H, W = all_latents_tensor.shape
+        # Per-channel mean and std
+        per_channel_mean = all_latents_tensor.mean(dim=(0, 2, 3)).cpu().numpy()  # [C]
+        per_channel_std = all_latents_tensor.std(dim=(0, 2, 3)).cpu().numpy()  # [C]
+        # Per-channel min/max
+        latents_reshaped = all_latents_tensor.permute(1, 0, 2, 3).reshape(C, -1)  # [C, B*H*W]
+        per_channel_min = latents_reshaped.min(dim=1)[0].cpu().numpy()  # [C]
+        per_channel_max = latents_reshaped.max(dim=1)[0].cpu().numpy()  # [C]
+        
+        stats["per_channel"] = {
+            "mean": per_channel_mean.tolist(),
+            "std": per_channel_std.tolist(),
+            "min": per_channel_min.tolist(),
+            "max": per_channel_max.tolist(),
+        }
+        stats["num_channels"] = C
+        stats["spatial_shape"] = [H, W]
+    
+    return stats
+
+
+def save_latent_statistics(stats: dict, output_file: Path, vae_name: str):
+    """
+    Save latent statistics to a text file with recommendations for diffusion training.
+    
+    Args:
+        stats: Statistics dictionary from compute_latent_statistics
+        output_file: Path to output text file
+        vae_name: Name of the VAE model
+    """
+    with open(output_file, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write(f"Latent Statistics for {vae_name}\n")
+        f.write("=" * 80 + "\n\n")
+        
+        # Global statistics
+        f.write("GLOBAL STATISTICS\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Mean:     {stats['mean']:.6f}\n")
+        f.write(f"Std:      {stats['std']:.6f}\n")
+        f.write(f"Min:      {stats['min']:.6f}\n")
+        f.write(f"Max:      {stats['max']:.6f}\n")
+        f.write(f"Range:    {stats['max'] - stats['min']:.6f}\n\n")
+        
+        # Percentiles
+        f.write("PERCENTILES\n")
+        f.write("-" * 80 + "\n")
+        for p_name, p_value in stats['percentiles'].items():
+            f.write(f"{p_name:>6}: {p_value:>12.6f}\n")
+        f.write("\n")
+        
+        # Per-channel statistics
+        if "per_channel" in stats:
+            f.write("PER-CHANNEL STATISTICS\n")
+            f.write("-" * 80 + "\n")
+            f.write(f"Number of channels: {stats['num_channels']}\n")
+            f.write(f"Spatial shape: {stats['spatial_shape']}\n\n")
+            
+            per_ch = stats['per_channel']
+            f.write(f"{'Channel':<10} {'Mean':<12} {'Std':<12} {'Min':<12} {'Max':<12}\n")
+            f.write("-" * 80 + "\n")
+            for ch in range(stats['num_channels']):
+                f.write(f"{ch:<10} {per_ch['mean'][ch]:<12.6f} {per_ch['std'][ch]:<12.6f} "
+                       f"{per_ch['min'][ch]:<12.6f} {per_ch['max'][ch]:<12.6f}\n")
+            f.write("\n")
+        
+        # Recommendations
+        f.write("RECOMMENDATIONS FOR DIFFUSION TRAINING\n")
+        f.write("=" * 80 + "\n\n")
+        
+        # Scale factor (1.0 / std to normalize to unit variance)
+        scale_factor = 1.0 / stats['std'] if stats['std'] > 0 else 1.0
+        f.write(f"scale_factor: {scale_factor:.6f}\n")
+        f.write("  Description: Multiplicative factor to normalize latents to unit variance\n")
+        f.write("  Formula: 1.0 / std\n")
+        f.write("  Usage: Apply to latents before diffusion training\n\n")
+        
+        # Clamp values
+        # Option 1: Based on actual min/max with margin
+        clamp_min_actual = stats['min'] - 0.5
+        clamp_max_actual = stats['max'] + 0.5
+        
+        # Option 2: Based on std (±6σ covers 99.7% of data)
+        clamp_min_std = -6.0 * stats['std']
+        clamp_max_std = 6.0 * stats['std']
+        
+        # Option 3: Based on percentiles (use 0.1% and 99.9% percentiles)
+        clamp_min_percentile = stats['percentiles']['p0.1']
+        clamp_max_percentile = stats['percentiles']['p99.9']
+        
+        f.write("latent_clamp_min / latent_clamp_max:\n")
+        f.write("  Option 1 (Actual min/max with margin):\n")
+        f.write(f"    latent_clamp_min: {clamp_min_actual:.6f}\n")
+        f.write(f"    latent_clamp_max: {clamp_max_actual:.6f}\n\n")
+        
+        f.write("  Option 2 (Standard deviation based, ±6σ):\n")
+        f.write(f"    latent_clamp_min: {clamp_min_std:.6f}\n")
+        f.write(f"    latent_clamp_max: {clamp_max_std:.6f}\n")
+        f.write("    Note: Covers 99.7% of data under normal distribution\n\n")
+        
+        f.write("  Option 3 (Percentile based, 0.1% - 99.9%):\n")
+        f.write(f"    latent_clamp_min: {clamp_min_percentile:.6f}\n")
+        f.write(f"    latent_clamp_max: {clamp_max_percentile:.6f}\n")
+        f.write("    Note: Covers 99.8% of actual data\n\n")
+        
+        f.write("  RECOMMENDED (Conservative, based on percentiles with margin):\n")
+        recommended_min = clamp_min_percentile - 0.5
+        recommended_max = clamp_max_percentile + 0.5
+        f.write(f"    latent_clamp_min: {recommended_min:.6f}\n")
+        f.write(f"    latent_clamp_max: {recommended_max:.6f}\n\n")
+        
+        f.write("=" * 80 + "\n")
+        f.write("Note: Add these values to your diffusion experiment config YAML:\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"latent_clamp_min: {recommended_min:.6f}\n")
+        f.write(f"latent_clamp_max: {recommended_max:.6f}\n")
+        f.write(f"scale_factor: {scale_factor:.6f}\n")
+        f.write("=" * 80 + "\n")
 
 
 def encode_layouts(
@@ -213,6 +385,8 @@ def encode_layouts(
     logger.info(f"Encoding {len(dataset)} layouts...")
     # Track latent paths by (scene_id, room_id)
     latent_path_map = {}
+    # Collect all latents for statistics computation
+    all_latents = []
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding layouts")):
@@ -257,6 +431,9 @@ def encode_layouts(
                 # Get latent for this sample
                 sample_latent = latent[i].cpu()
                 
+                # Collect for statistics (keep on CPU to save memory)
+                all_latents.append(sample_latent.unsqueeze(0))  # Add batch dimension
+                
                 # Save latent
                 latent_path = output_subdir / f"{scene_id}_{room_id}_layout.pt"
                 torch.save(sample_latent, latent_path)
@@ -269,6 +446,16 @@ def encode_layouts(
     
     logger.info(f"Encoded {len(latent_path_map)} layouts")
     logger.info(f"Latents saved to: {output_subdir}")
+    
+    # Compute and save latent statistics
+    if all_latents:
+        logger.info("Computing latent statistics...")
+        stats = compute_latent_statistics(all_latents)
+        # Save statistics file in manifest directory (same location as output manifest)
+        manifest_dir = manifest.parent
+        stats_file = manifest_dir / f"{vae_name}_latent_statistics.txt"
+        save_latent_statistics(stats, stats_file, vae_name)
+        logger.info(f"Latent statistics saved to: {stats_file}")
     
     # Also check for existing latents if skip_existing was True
     # Use the original df loaded at the start (before filtering)

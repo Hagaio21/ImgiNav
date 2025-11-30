@@ -4,7 +4,7 @@ experiment:
   save_path: /work3/s233249/ImgiNav/experiments/diffusion/diff_clip_seg_rooms_medium_down_bottleneck_graph
   epochs_target: 1000
 dataset:
-  manifest: /work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg.csv
+  manifest: /work3/s233249/ImgiNav/dataset_v2/manifests/vae_seg_256_clip_latent_manifest_seg_with_rejections.csv
   outputs:
     latent: layout_latent_path
     text_emb: graph_embedding_path
