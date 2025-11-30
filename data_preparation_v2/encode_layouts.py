@@ -188,8 +188,12 @@ def encode_layouts(
     temp_manifest = output_subdir / "temp_manifest.csv"
     filtered_df.to_csv(temp_manifest, index=False)
     
+    # Create dataset - need to ensure paths resolve correctly
+    # Since temp manifest is in latents dir, we need to pass dataset_root for path resolution
+    # We'll pass the DataFrame directly and set manifest_dir to dataset_root
     dataset = ManifestDataset(
-        manifest=temp_manifest,
+        _df=filtered_df,
+        _manifest_dir=dataset_root,  # Use dataset_root for path resolution
         outputs={"rgb": "layout_path"},
         transform=transform_cfg,
     )
