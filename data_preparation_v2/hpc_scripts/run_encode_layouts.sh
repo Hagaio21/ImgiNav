@@ -36,7 +36,7 @@ MANIFEST_TEX="${MANIFEST_TEX:-${MANIFEST_DIR}/manifest_tex_with_rejections.csv}"
 VAE_CHECKPOINT="${VAE_CHECKPOINT:-/work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_seg_256_clip/checkpoints/vae_seg_256_clip_checkpoint_best.pt}"
 
 # Options (can be overridden via bsub -env)
-VARIANT="${VARIANT:-both}"          # tex, seg, or both
+VARIANT="${VARIANT:-seg}"          # tex, seg, or both
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 OVERWRITE="${OVERWRITE:-0}"         # Set to 1 to overwrite existing latents
