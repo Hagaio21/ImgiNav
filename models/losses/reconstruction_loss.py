@@ -319,3 +319,81 @@ class CombinedReconstructionLoss(LossComponent):
         logs["combined_reconstruction"] = total_loss.detach()
         
         return total_loss, logs
+
+
+@register_loss
+class GradientDifferenceLoss(LossComponent):
+    """
+    Gradient Difference Loss (GDL).
+    
+    Computes L1 difference between x and y gradients of prediction and target:
+    L_gdl = |grad_x(pred) - grad_x(gt)| + |grad_y(pred) - grad_y(gt)|
+    
+    This loss encourages preservation of edges and sharp transitions,
+    which is important for maintaining structural details in reconstructions.
+    
+    Config:
+        key: Key in preds for predictions (default: "rgb")
+        target_key: Key in targets for ground truth (default: "rgb")
+        weight: Loss weight (default: 1.0)
+    """
+    def _build(self):
+        super()._build()
+        
+        # Sobel kernels for x and y gradients
+        sobel_x = torch.tensor([[-1, 0, 1],
+                                [-2, 0, 2],
+                                [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+        sobel_y = torch.tensor([[-1, -2, -1],
+                                [0, 0, 0],
+                                [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+        self.register_buffer("sobel_x", sobel_x)
+        self.register_buffer("sobel_y", sobel_y)
+    
+    def _compute_gradients(self, img):
+        """
+        Compute x and y gradients using Sobel operators.
+        
+        Args:
+            img: Tensor [B, C, H, W]
+        
+        Returns:
+            grad_x: Tensor [B, C, H, W] - gradients in x direction
+            grad_y: Tensor [B, C, H, W] - gradients in y direction
+        """
+        B, C, H, W = img.shape
+        
+        # Expand kernels for all channels
+        sobel_x = self.sobel_x.expand(C, 1, 3, 3)
+        sobel_y = self.sobel_y.expand(C, 1, 3, 3)
+        
+        # Compute gradients for each channel
+        grad_x = F.conv2d(img, sobel_x, padding=1, groups=C)
+        grad_y = F.conv2d(img, sobel_y, padding=1, groups=C)
+        
+        return grad_x, grad_y
+    
+    def forward(self, preds, targets):
+        if self.key not in preds or self.target_key not in targets:
+            device = next(iter(preds.values())).device if preds else torch.device("cpu")
+            return torch.tensor(0.0, device=device, requires_grad=True), {}
+        
+        pred = preds[self.key]
+        target = targets[self.target_key]
+        
+        # Compute gradients
+        pred_grad_x, pred_grad_y = self._compute_gradients(pred)
+        target_grad_x, target_grad_y = self._compute_gradients(target)
+        
+        # Compute gradient difference loss
+        # L_gdl = |grad_x(pred) - grad_x(gt)| + |grad_y(pred) - grad_y(gt)|
+        grad_x_diff = torch.abs(pred_grad_x - target_grad_x)
+        grad_y_diff = torch.abs(pred_grad_y - target_grad_y)
+        
+        loss = (grad_x_diff.mean() + grad_y_diff.mean()) * self.weight
+        
+        return loss, {
+            f"GDL_{self.key}": loss.detach(),
+            f"GDL_x_{self.key}": grad_x_diff.mean().detach(),
+            f"GDL_y_{self.key}": grad_y_diff.mean().detach(),
+        }

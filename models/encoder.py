@@ -28,6 +28,7 @@ class Encoder(BaseComponent):
         latent_channels: Output latent channels (default: 4)
         norm_groups: Groups for GroupNorm (default: 8)
         activation: Activation function (default: SiLU)
+        channel_dropout: Channel dropout rate (default: 0.0, disabled)
     """
     
     def _build(self):
@@ -37,6 +38,7 @@ class Encoder(BaseComponent):
         latent_ch = self._init_kwargs.get("latent_channels", 4)
         norm_groups = self._init_kwargs.get("norm_groups", 8)
         act = getattr(nn, self._init_kwargs.get("activation", "SiLU"))()
+        self.channel_dropout_rate = self._init_kwargs.get("channel_dropout", 0.0)
 
         layers = []
         
@@ -102,6 +104,16 @@ class Encoder(BaseComponent):
                     x = next(v for v in x.values() if isinstance(v, torch.Tensor))
         
         features = self.feature_extractor(x)
+        
+        # Apply channel dropout if enabled (only during training)
+        if self.channel_dropout_rate > 0.0 and self.training:
+            batch_size, channels, height, width = features.shape
+            # Create random mask for channels: [channels]
+            channel_mask = torch.bernoulli(torch.ones(channels, device=features.device) * (1.0 - self.channel_dropout_rate))
+            # Reshape to [1, channels, 1, 1] for broadcasting
+            channel_mask = channel_mask.view(1, channels, 1, 1)
+            features = features * channel_mask
+        
         z = self.latent_proj(features)
         return self._to_dataflow({"latent": z, "latent_features": features})
     
@@ -159,6 +171,16 @@ class VAEEncoder(Encoder):
                     x = next(v for v in x.values() if isinstance(v, torch.Tensor))
         
         features = self.feature_extractor(x)
+        
+        # Apply channel dropout if enabled (only during training)
+        if self.channel_dropout_rate > 0.0 and self.training:
+            batch_size, channels, height, width = features.shape
+            # Create random mask for channels: [channels]
+            channel_mask = torch.bernoulli(torch.ones(channels, device=features.device) * (1.0 - self.channel_dropout_rate))
+            # Reshape to [1, channels, 1, 1] for broadcasting
+            channel_mask = channel_mask.view(1, channels, 1, 1)
+            features = features * channel_mask
+        
         mu = self.mu_head(features)
         logvar = self.logvar_head(features)
         return self._to_dataflow({"mu": mu, "logvar": logvar, "latent_features": features})

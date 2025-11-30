@@ -26,5 +26,6 @@ __all__ = [
     "PerceptualLoss",
     "SSIMLoss",
     "CombinedReconstructionLoss",
+    "GradientDifferenceLoss",
 ]
 
