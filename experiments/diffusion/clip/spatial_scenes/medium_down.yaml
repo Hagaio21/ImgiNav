@@ -12,8 +12,6 @@ dataset:
   filters:
     type:
     - scene
-    is_empty:
-    - false
     rejected: false
   return_path: false
 autoencoder:

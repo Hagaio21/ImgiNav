@@ -11,8 +11,6 @@ dataset:
   filters:
     type:
     - room
-    is_empty:
-    - false
     rejected: false
   return_path: false
 autoencoder:

@@ -10,8 +10,6 @@ dataset:
     text_emb: graph_embedding_path
     pov_emb: pov_embedding_path
   filters:
-    is_empty:
-    - false
     rejected: false
   return_path: false
 autoencoder:
