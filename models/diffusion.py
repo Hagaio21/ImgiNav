@@ -391,8 +391,15 @@ class DiffusionModel(BaseModel):
         """
         Save diffusion model checkpoint with all components nested.
         
-        Ensures decoder, UNet, and scheduler are all included in state_dict,
+        Ensures decoder, UNet, scheduler, and embedding_projection are all included in state_dict,
         even if frozen. All components are nested within the diffusion model.
+        
+        The checkpoint includes:
+        - decoder: Frozen decoder from VAE (for decoding latents to images)
+        - embedding_projection: Contains CLIP projections (frozen, loaded from checkpoint) 
+          and spatial projection layers (trained, convert CLIP embeddings to spatial features)
+        - unet: Trained UNet (denoising network)
+        - scheduler: Noise scheduler (no trainable params, but state is saved)
         """
         path = Path(path)
         state_dict = self.state_dict()
@@ -400,6 +407,7 @@ class DiffusionModel(BaseModel):
         has_decoder = any(k.startswith("decoder.") for k in state_dict.keys())
         has_unet = any(k.startswith("unet.") for k in state_dict.keys())
         has_scheduler = any(k.startswith("scheduler.") for k in state_dict.keys())
+        has_embedding_proj = any(k.startswith("embedding_projection.") for k in state_dict.keys())
         
         if not has_decoder:
             raise RuntimeError("Decoder not found in state_dict - checkpoint incomplete!")
@@ -407,6 +415,8 @@ class DiffusionModel(BaseModel):
             raise RuntimeError("UNet not found in state_dict - checkpoint incomplete!")
         if not has_scheduler:
             raise RuntimeError("Scheduler not found in state_dict - checkpoint incomplete!")
+        # embedding_projection is optional (only if conditioning is used)
+        # but if it exists, it should be in state_dict
         
         payload = {"state_dict": state_dict}
         if include_config:
