@@ -3,9 +3,9 @@
 #BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/encode_layouts.%J.out
 #BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/encode_layouts.%J.err
 #BSUB -n 4
-#BSUB -R "rusage[mem=16000]"
+#BSUB -R "rusage[mem=8000]"
 #BSUB -gpu "num=1"
-#BSUB -W 12:00
+#BSUB -W 1:00
 #BSUB -q gpul40s
 
 set -euo pipefail
