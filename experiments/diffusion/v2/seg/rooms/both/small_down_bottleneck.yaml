@@ -22,12 +22,12 @@ latent_clamp_max: 3.712635
 scale_factor: 1.830329
 embedding_projection:
   type: CLIPEmbeddingToSpatial
+  clip_projections: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_seg_256_clip/checkpoints/vae_seg_256_clip_clip_projection_latest.pt
   output_channels: 48
   spatial_size:
   - 16
   - 16
   combine_method: average
-  _clip_projections_embedded: true
 unet:
   type: UnetWithAttention
   in_channels: 4
