@@ -6,6 +6,7 @@ This script:
 1. Loads a trained VAE checkpoint
 2. Encodes layout images to latents
 3. Saves latents in dataset_v2/layouts/latents/{variant}_{vae_name}/
+4. Creates a separate manifest with latent paths (keeps original manifest unchanged)
 
 Usage:
     python encode_layouts.py \
@@ -18,10 +19,12 @@ Usage:
 
 Output Structure:
     dataset_v2/
-    └── layouts/
-        └── latents/
-            └── seg_{vae_name}/
-                └── {scene_id}_{room_id}_layout.pt
+    ├── layouts/
+    │   └── latents/
+    │       └── seg_{vae_name}/
+    │           └── {scene_id}_{room_id}_layout.pt
+    └── manifests/
+        └── {vae_name}_latent_manifest_seg.csv  # Copy of manifest_seg.csv with latent column
 """
 
 import argparse
@@ -77,6 +80,8 @@ def encode_layouts(
     device: str = "cuda",
     num_workers: int = 4,
     skip_existing: bool = True,
+    output_manifest: Path = None,
+    latent_column_name: str = None,
 ):
     """
     Encode layout images to latents using a trained VAE.
@@ -91,6 +96,8 @@ def encode_layouts(
         device: Device to use
         num_workers: Number of data loading workers
         skip_existing: Skip files that already exist
+        output_manifest: Path to output manifest (if None, auto-generates name)
+        latent_column_name: Name for latent column (if None, uses default)
     """
     device_obj = to_device(device)
     
@@ -198,7 +205,8 @@ def encode_layouts(
     
     # Encode layouts
     logger.info(f"Encoding {len(dataset)} layouts...")
-    all_latent_paths = []
+    # Track latent paths by (scene_id, room_id)
+    latent_path_map = {}
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding layouts")):
@@ -246,16 +254,75 @@ def encode_layouts(
                 # Save latent
                 latent_path = output_subdir / f"{scene_id}_{room_id}_layout.pt"
                 torch.save(sample_latent, latent_path)
-                all_latent_paths.append(str(latent_path.relative_to(dataset_root)))
+                rel_path = str(latent_path.relative_to(dataset_root))
+                latent_path_map[(scene_id, room_id)] = rel_path
     
     # Clean up temp manifest
     if temp_manifest.exists():
         temp_manifest.unlink()
     
-    logger.info(f"Encoded {len(all_latent_paths)} layouts")
+    logger.info(f"Encoded {len(latent_path_map)} layouts")
     logger.info(f"Latents saved to: {output_subdir}")
     
-    return all_latent_paths
+    # Also check for existing latents if skip_existing was True
+    # Use the original df loaded at the start (before filtering)
+    if skip_existing:
+        for _, row in df.iterrows():
+            scene_id = row.get("scene_id", "")
+            room_id = row.get("room_id", "")
+            if not scene_id or not room_id:
+                continue
+            
+            key = (scene_id, room_id)
+            if key not in latent_path_map:
+                # Check if latent already exists
+                latent_path = output_subdir / f"{scene_id}_{room_id}_layout.pt"
+                if latent_path.exists():
+                    rel_path = str(latent_path.relative_to(dataset_root))
+                    latent_path_map[key] = rel_path
+    
+    # Create output manifest with latent column
+    if output_manifest is None:
+        # Auto-generate manifest name: <vae_name>_latent_manifest_<variant>.csv
+        manifest_dir = manifest.parent
+        manifest_stem = manifest.stem
+        # Extract base name (e.g., "manifest_seg" -> "manifest_seg")
+        output_manifest = manifest_dir / f"{vae_name}_latent_{manifest_stem}.csv"
+    
+    logger.info(f"Creating latent manifest: {output_manifest}")
+    
+    # Use the original manifest (df) - make a copy to avoid modifying the original
+    df_output = df.copy()
+    
+    # Determine latent column name
+    if latent_column_name is None:
+        # Use default based on VAE type
+        if "clip" in vae_name.lower():
+            latent_column_name = "latent_path_vae_clip"
+        else:
+            latent_column_name = "layout_latent_path"
+    
+    # Add latent column
+    def get_latent_path(row):
+        scene_id = row.get("scene_id", "")
+        room_id = row.get("room_id", "")
+        if not scene_id or not room_id:
+            return ""
+        return latent_path_map.get((scene_id, room_id), "")
+    
+    df_output[latent_column_name] = df_output.apply(get_latent_path, axis=1)
+    
+    # Save output manifest
+    output_manifest.parent.mkdir(parents=True, exist_ok=True)
+    df_output.to_csv(output_manifest, index=False)
+    
+    latent_count = (df_output[latent_column_name] != "").sum()
+    logger.info(f"Saved latent manifest: {output_manifest}")
+    logger.info(f"  Total rows: {len(df_output)}")
+    logger.info(f"  Rows with latents: {latent_count}")
+    logger.info(f"  Latent column: {latent_column_name}")
+    
+    return list(latent_path_map.values())
 
 
 def main():
@@ -266,6 +333,10 @@ def main():
     parser.add_argument("--variant", required=True, choices=["seg", "tex"], help="Layout variant (seg or tex)")
     parser.add_argument("--output-dir", type=Path, default=None, 
                        help="Output directory for latents (default: dataset_root/layouts/latents)")
+    parser.add_argument("--output-manifest", type=Path, default=None,
+                       help="Output manifest path (default: <vae_name>_latent_<manifest_name>.csv)")
+    parser.add_argument("--latent-column-name", type=str, default=None,
+                       help="Name for latent column (default: latent_path_vae_clip for CLIP VAE, layout_latent_path otherwise)")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--num-workers", type=int, default=4, help="Number of data loading workers")
@@ -290,6 +361,8 @@ def main():
         device=args.device,
         num_workers=args.num_workers,
         skip_existing=not args.overwrite,
+        output_manifest=args.output_manifest,
+        latent_column_name=args.latent_column_name,
     )
 
 
