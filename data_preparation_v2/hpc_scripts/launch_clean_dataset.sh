@@ -29,6 +29,11 @@ OUTPUT_DIR="${DATASET_ROOT}/rejections"
 # Defaults
 NUM_SHARDS=50
 DRY_RUN=0
+MANIFEST_PATH=""
+CHECK_POV_PALETTE=0
+POV_COLOR_TOLERANCE=20
+POV_MIN_MATCH_RATIO=0.3
+PALETTE_COLOR_TOLERANCE=10
 
 # =============================================================================
 # PARSE ARGUMENTS
@@ -39,6 +44,27 @@ while [[ $# -gt 0 ]]; do
             NUM_SHARDS="$2"
             shift 2
             ;;
+        --manifest)
+            MANIFEST_PATH="$2"
+            CHECK_POV_PALETTE=1
+            shift 2
+            ;;
+        --check-pov-palette)
+            CHECK_POV_PALETTE=1
+            shift
+            ;;
+        --pov-color-tolerance)
+            POV_COLOR_TOLERANCE="$2"
+            shift 2
+            ;;
+        --pov-min-match-ratio)
+            POV_MIN_MATCH_RATIO="$2"
+            shift 2
+            ;;
+        --palette-color-tolerance)
+            PALETTE_COLOR_TOLERANCE="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -47,9 +73,14 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --num-shards N    Number of parallel shards (default: 10)"
-            echo "  --dry-run         Don't submit jobs, just create shards"
-            echo "  --help            Show this help"
+            echo "  --num-shards N              Number of parallel shards (default: 50)"
+            echo "  --manifest PATH             Enable POV palette checking with manifest (optional)"
+            echo "  --check-pov-palette         Enable POV palette checking (requires --manifest)"
+            echo "  --pov-color-tolerance N     Color distance tolerance (default: 20)"
+            echo "  --pov-min-match-ratio F     Min match ratio (default: 0.3)"
+            echo "  --palette-color-tolerance N Palette quantization tolerance (default: 10)"
+            echo "  --dry-run                   Don't submit jobs, just create shards"
+            echo "  --help                      Show this help"
             exit 0
             ;;
         *)
@@ -64,6 +95,17 @@ echo "Launching Parallel Dataset Cleaning"
 echo "=========================================="
 echo "Dataset Root: ${DATASET_ROOT}"
 echo "Num Shards: ${NUM_SHARDS}"
+if [ "${CHECK_POV_PALETTE}" = "1" ]; then
+    echo "POV Palette Checking: ENABLED"
+    if [ -n "${MANIFEST_PATH}" ]; then
+        echo "  Manifest: ${MANIFEST_PATH}"
+    fi
+    echo "  POV Color Tolerance: ${POV_COLOR_TOLERANCE}"
+    echo "  POV Min Match Ratio: ${POV_MIN_MATCH_RATIO}"
+    echo "  Palette Color Tolerance: ${PALETTE_COLOR_TOLERANCE}"
+else
+    echo "POV Palette Checking: DISABLED"
+fi
 echo "Dry Run: ${DRY_RUN}"
 echo ""
 
@@ -127,6 +169,24 @@ SCENES_PER_SHARD=$((TOTAL_SCENES / ACTUAL_SHARDS))
 echo "  ~${SCENES_PER_SHARD} scenes per shard"
 
 # =============================================================================
+# RESOLVE MANIFEST PATH
+# =============================================================================
+RESOLVED_MANIFEST_PATH=""
+if [ -n "${MANIFEST_PATH}" ]; then
+    # Try relative to dataset root first, then absolute
+    if [ -f "${DATASET_ROOT}/${MANIFEST_PATH}" ]; then
+        RESOLVED_MANIFEST_PATH="${DATASET_ROOT}/${MANIFEST_PATH}"
+    elif [ -f "${MANIFEST_PATH}" ]; then
+        RESOLVED_MANIFEST_PATH="${MANIFEST_PATH}"
+    else
+        echo "WARNING: Manifest file not found: ${MANIFEST_PATH}" >&2
+        echo "  POV palette checking will be disabled" >&2
+        CHECK_POV_PALETTE=0
+        RESOLVED_MANIFEST_PATH=""
+    fi
+fi
+
+# =============================================================================
 # WRITE CONFIG FILE (for job array to read)
 # =============================================================================
 CONFIG_FILE="${SHARDS_DIR}/clean_config.sh"
@@ -137,10 +197,17 @@ SCRIPTS_DIR="${SCRIPTS_DIR}"
 SHARDS_DIR="${SHARDS_DIR}"
 OUTPUT_DIR="${OUTPUT_DIR}"
 
-# Quality thresholds (for layouts - POVs rejected via propagation only)
+# Quality thresholds (for layouts)
 MIN_PIXELS="100"
 MAX_BLACK_FRACTION="0.95"
 MIN_CONTENT_FRACTION="0.05"
+
+# POV palette checking (optional - set MANIFEST_PATH to enable)
+MANIFEST_PATH="${RESOLVED_MANIFEST_PATH}"
+CHECK_POV_PALETTE="${CHECK_POV_PALETTE}"
+POV_COLOR_TOLERANCE="${POV_COLOR_TOLERANCE}"
+POV_MIN_MATCH_RATIO="${POV_MIN_MATCH_RATIO}"
+PALETTE_COLOR_TOLERANCE="${PALETTE_COLOR_TOLERANCE}"
 EOF
 
 echo ""

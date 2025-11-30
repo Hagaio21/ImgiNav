@@ -73,13 +73,34 @@ cd "${BASE_DIR}"
 echo "Running clean_dataset.py..."
 echo ""
 
-python "${SCRIPTS_DIR}/clean_dataset.py" \
-    --dataset-root "${DATASET_ROOT}" \
-    --shard-file "${SHARD_FILE}" \
-    --output "${OUTPUT_FILE}" \
-    --min-pixels "${MIN_PIXELS}" \
-    --max-black-fraction "${MAX_BLACK_FRACTION}" \
+# Build command with optional POV palette checking
+CMD_ARGS=(
+    --dataset-root "${DATASET_ROOT}"
+    --shard-file "${SHARD_FILE}"
+    --output "${OUTPUT_FILE}"
+    --min-pixels "${MIN_PIXELS}"
+    --max-black-fraction "${MAX_BLACK_FRACTION}"
     --min-content-fraction "${MIN_CONTENT_FRACTION}"
+)
+
+# Add POV palette checking if enabled
+if [ -n "${MANIFEST_PATH:-}" ] && [ "${CHECK_POV_PALETTE:-0}" = "1" ]; then
+    if [ -f "${MANIFEST_PATH}" ]; then
+        echo "POV palette checking enabled with manifest: ${MANIFEST_PATH}"
+        CMD_ARGS+=(
+            --manifest "${MANIFEST_PATH}"
+            --check-pov-palette
+            --pov-color-tolerance "${POV_COLOR_TOLERANCE:-20}"
+            --pov-min-match-ratio "${POV_MIN_MATCH_RATIO:-0.3}"
+            --palette-color-tolerance "${PALETTE_COLOR_TOLERANCE:-10}"
+        )
+    else
+        echo "WARNING: Manifest file not found: ${MANIFEST_PATH}"
+        echo "  Skipping POV palette checking"
+    fi
+fi
+
+python "${SCRIPTS_DIR}/clean_dataset.py" "${CMD_ARGS[@]}"
 
 # =============================================================================
 # DONE
