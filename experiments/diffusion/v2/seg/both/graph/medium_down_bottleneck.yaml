@@ -13,14 +13,14 @@ dataset:
     rejected: false
   return_path: false
 autoencoder:
-  checkpoint: /work3/s233249/ImgiNav/checkpoints/vae_seg_checkpoint_best.pt
+  checkpoint: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_seg_256_clip/checkpoints/vae_seg_256_clip_checkpoint_best.pt
   frozen: true
 latent_clamp_min: -3.233157
 latent_clamp_max: 3.712635
 scale_factor: 1.830329
 embedding_projection:
   type: CLIPEmbeddingToSpatial
-  clip_projections: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_seg_256_clip/checkpoints/vae_seg_256_clip_clip_projection_latest.pt
+  clip_projections: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_seg_256_clip/checkpoints/vae_seg_256_clip_clip_projection_best.pt
   output_channels: 64
   spatial_size:
   - 16
