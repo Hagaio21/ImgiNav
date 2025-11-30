@@ -5,7 +5,7 @@ Standalone script to encode layout images to latents using a trained VAE.
 This script:
 1. Loads a trained VAE checkpoint
 2. Encodes layout images to latents
-3. Saves latents in dataset_v2/layouts/latents/{variant}_{vae_name}/
+3. Saves latents in dataset_v2/layouts/latents/{vae_name}/
 4. Creates a separate manifest with latent paths (keeps original manifest unchanged)
 
 Usage:
@@ -21,7 +21,7 @@ Output Structure:
     dataset_v2/
     ├── layouts/
     │   └── latents/
-    │       └── seg_{vae_name}/
+    │       └── {vae_name}/
     │           └── {scene_id}_{room_id}_layout.pt
     └── manifests/
         └── {vae_name}_latent_manifest_seg.csv  # Copy of manifest_seg.csv with latent column
@@ -109,7 +109,9 @@ def encode_layouts(
     
     # Extract VAE name for output directory
     vae_name = extract_vae_name(vae_checkpoint)
-    output_subdir = output_dir / f"{variant}_{vae_name}"
+    # Use just vae_name since it already contains variant info (e.g., vae_seg_256_clip)
+    # This avoids duplication like "seg_vae_seg_256_clip"
+    output_subdir = output_dir / vae_name
     output_subdir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_subdir}")
     
