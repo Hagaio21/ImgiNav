@@ -318,12 +318,12 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     
     Creates per-sample structure:
     samples/conditioned/sample_X/
-        ├── conditions/  (text_emb, pov_emb, graph_text [only if text_emb in config], pov image [only if pov_emb in config])
+        ├── conditions/  (text_emb, pov_emb, graph_text, pov image)
         └── target/      (target image)
     
     Note: 
-    - graph_text is only saved when text_emb is specified in config["dataset"]["outputs"].
-    - POV image is only saved when pov_emb is specified in config["dataset"]["outputs"].
+    - graph_text and POV image are always saved if available, regardless of embedding configuration.
+    - Embeddings (text_emb, pov_emb) are only saved if they exist in the batch.
     
     Args:
         model: DiffusionModel
@@ -479,31 +479,29 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
         if pov_emb is not None and pov_emb.shape[1] == 512:
             torch.save(pov_emb[i:i+1].cpu(), conditions_dir / "pov_embedding.pt")
         
-        # Save graph text and POV image based on config
+        # Save graph text and POV image (always save if available, regardless of embedding config)
         idx = selected_indices[i] if i < len(selected_indices) else i
         row = dataset.df.iloc[idx]
         
-        # Only save graph_text if text_emb is configured in the experiment
-        if use_text_emb:
-            graph_text_path = row.get("graph_text_path", "")
-            if graph_text_path and Path(graph_text_path).exists():
-                try:
-                    with open(graph_text_path, 'r') as f:
-                        graph_text = f.read()
-                    with open(conditions_dir / "graph_text.txt", 'w') as f:
-                        f.write(graph_text)
-                except Exception:
-                    pass
+        # Always save graph_text if available
+        graph_text_path = row.get("graph_text_path", "")
+        if graph_text_path and Path(graph_text_path).exists():
+            try:
+                with open(graph_text_path, 'r') as f:
+                    graph_text = f.read()
+                with open(conditions_dir / "graph_text.txt", 'w') as f:
+                    f.write(graph_text)
+            except Exception:
+                pass
         
-        # Only save POV image if pov_emb is configured in the experiment
-        if use_pov_emb:
-            pov_path = row.get("pov_path", "")
-            if pov_path and Path(pov_path).exists():
-                try:
-                    pov_img = Image.open(pov_path)
-                    pov_img.save(conditions_dir / "pov.png")
-                except Exception:
-                    pass
+        # Always save POV image if available
+        pov_path = row.get("pov_path", "")
+        if pov_path and Path(pov_path).exists():
+            try:
+                pov_img = Image.open(pov_path)
+                pov_img.save(conditions_dir / "pov.png")
+            except Exception:
+                pass
     
     # Save global metadata
     metadata = {
