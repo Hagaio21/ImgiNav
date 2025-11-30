@@ -27,7 +27,7 @@ SHARDS_DIR="${DATASET_ROOT}/shards"
 OUTPUT_DIR="${DATASET_ROOT}/rejections"
 
 # Defaults
-NUM_SHARDS=59
+NUM_SHARDS=50
 DRY_RUN=0
 
 # =============================================================================
@@ -184,37 +184,22 @@ fi
 echo "  Submitted: Job ${ARRAY_JOB_ID}"
 echo "  Logs: ${LOG_DIR}/clean_dataset.${ARRAY_JOB_ID}.*.out"
 
-# Submit merge job with dependency
-echo ""
-echo "Submitting merge job (depends on ${ARRAY_JOB_ID})..."
-
-MERGE_OUTPUT=$(bsub -J "merge_rejections" \
-    -o "${LOG_DIR}/merge_rejections.%J.out" \
-    -e "${LOG_DIR}/merge_rejections.%J.err" \
-    -n 1 \
-    -R "rusage[mem=2000]" \
-    -W 00:30 \
-    -q hpc \
-    -w "done(${ARRAY_JOB_ID})" \
-    < "${HPC_SCRIPTS_DIR}/run_merge_rejections.sh")
-
-MERGE_JOB_ID=$(echo "${MERGE_OUTPUT}" | grep -oP '(?<=Job <)\d+(?=>)' || echo "")
-echo "  Submitted: Job ${MERGE_JOB_ID}"
-
 # =============================================================================
 # SUMMARY
 # =============================================================================
 echo ""
 echo "=========================================="
-echo "Jobs Submitted"
+echo "Job Submitted"
 echo "=========================================="
 echo "Array job: ${ARRAY_JOB_ID} (${ACTUAL_SHARDS} tasks)"
-echo "Merge job: ${MERGE_JOB_ID}"
 echo ""
 echo "Monitor with:"
 echo "  bjobs -A ${ARRAY_JOB_ID}"
-echo "  bjobs ${MERGE_JOB_ID}"
 echo ""
-echo "Output will be:"
-echo "  ${OUTPUT_DIR}/rejections.csv"
+echo "Output will be in:"
+echo "  ${OUTPUT_DIR}/rejections_shard_*.csv"
+echo ""
+echo "After completion, merge with:"
+echo "  head -1 ${OUTPUT_DIR}/rejections_shard_000.csv > ${OUTPUT_DIR}/rejections.csv"
+echo "  tail -n +2 -q ${OUTPUT_DIR}/rejections_shard_*.csv >> ${OUTPUT_DIR}/rejections.csv"
 echo "=========================================="

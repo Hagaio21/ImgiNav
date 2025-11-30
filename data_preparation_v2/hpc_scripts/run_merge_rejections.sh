@@ -4,12 +4,15 @@
 #BSUB -R "rusage[mem=2000]"
 #BSUB -W 00:30
 #BSUB -q hpc
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/merge_rejections.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/merge_rejections.%J.err
 
 # This script is submitted by launch_clean_dataset.sh with dependency on all shard jobs
 # Environment variables:
 #   REJECTIONS_DIR - Directory containing shard rejection CSVs
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
 # =============================================================================
 # CONFIGURATION
