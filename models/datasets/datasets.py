@@ -95,7 +95,25 @@ class ManifestDataset(BaseComponent, Dataset):
         # optional filters
         filters = self._init_kwargs.get("filters", None)
         if filters:
+            initial_len = len(self.df)
             self.df = self._apply_filters(self.df, filters)
+            filtered_len = len(self.df)
+            if filtered_len == 0:
+                print(f"[ERROR] Dataset is empty after applying filters!")
+                print(f"  Initial rows: {initial_len}")
+                print(f"  Filters applied: {filters}")
+                print(f"  Available columns: {list(self.df.columns) if len(self.df) > 0 else 'N/A (empty)'}")
+                if initial_len > 0:
+                    # Show sample of what's in the original data
+                    original_df = pd.read_csv(self._init_kwargs.get("manifest", ""), low_memory=False) if "_df" not in self._init_kwargs else self._init_kwargs.get("_df", pd.DataFrame())
+                    if len(original_df) > 0:
+                        print(f"  Sample of original data:")
+                        for key, value in filters.items():
+                            if key in original_df.columns:
+                                unique_vals = original_df[key].unique()[:10]
+                                print(f"    {key}: {unique_vals.tolist()}")
+            else:
+                print(f"[INFO] Applied filters: {initial_len} -> {filtered_len} rows")
 
     # ------------------------
     # Filtering
@@ -348,6 +366,10 @@ class ManifestDataset(BaseComponent, Dataset):
         if weight_column not in self.df.columns:
             raise KeyError(f"Weight column '{weight_column}' not found. Available: {list(self.df.columns)}")
         
+        # Check if dataset is empty
+        if len(self.df) == 0:
+            raise ValueError(f"Dataset is empty after filtering. Cannot create weights for zero samples.")
+        
         weights = self.df[weight_column].values.astype(np.float32)
         
         # Handle NaN values
@@ -373,6 +395,10 @@ class ManifestDataset(BaseComponent, Dataset):
             if capped > 0:
                 print(f"[INFO] Capping {capped} weights at {max_weight}")
                 weights = np.clip(weights, None, max_weight)
+        
+        # Check if weights array is empty
+        if len(weights) == 0:
+            raise ValueError(f"No valid weights found in column '{weight_column}'. Dataset may be empty after filtering.")
         
         # Print weight statistics
         print(f"[INFO] Using pre-computed weights from '{weight_column}':")
