@@ -173,6 +173,10 @@ class ManifestDataset(BaseComponent, Dataset):
             else:
                 # Equality or membership check
                 if isinstance(value, (list, tuple, set)):
+                    # Empty list means "no filter" - include all values
+                    if len(value) == 0:
+                        print(f"[INFO] Filter '{key}' has empty list - skipping (include all)")
+                        continue
                     df = df[df[key].isin(value)]
                 else:
                     df = df[df[key] == value]
