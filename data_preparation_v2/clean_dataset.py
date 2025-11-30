@@ -1,67 +1,51 @@
 #!/usr/bin/env python3
 """
-Clean Dataset - Quality Assessment Mode
+Clean Dataset - Semantic Quality Assessment
 
-Instead of deleting files, this script:
-1. Checks quality of POV and layout images
-2. Outputs a rejections CSV with quality decisions
-3. Supports sharding for parallel processing (each shard writes its own output)
+Checks for semantic content in segmentation images to determine quality.
+Instead of deleting files, outputs a rejections CSV that can be joined with manifest.
 
-The rejections CSV can then be joined with the manifest to add a 'rejected' column,
-allowing filtering during training without actually deleting files.
+Rejection Criteria for Layouts and POVs:
+1. Must have Floor (≥ min_pixels)
+2. Must have Wall (≥ min_pixels)
+3. Must have Door OR Window (≥ min_pixels)
+4. Must not be mostly black (render failure)
+5. Must not be mostly white (overexposed)
+6. Content area (floor+wall+furniture) must be reasonable (not just background)
 
-Sharding Strategy:
-- Each shard processes a subset of scenes
-- Each shard writes to its own output file (e.g., rejections_shard_001.csv)
-- After all shards complete, merge with: merge_rejections.py
-- Finally, update manifest with: update_manifest_rejections.py
+Additional POV-specific checks:
+7. Floor shouldn't dominate (camera pointing down)
+8. Wall shouldn't dominate (staring at wall)
 
-POV Quality Checks:
-- Monocolor: Single color (bad render)
-- Mostly black: >threshold pixels very dark (failed lighting)
-- Mostly white: >threshold pixels very bright (overexposed)
-- Low entropy: Lacks visual complexity (staring at wall)
+Rejection Propagation:
+- If scene layout is rejected -> all rooms and POVs in that scene are rejected
+- If room layout is rejected -> all POVs for that room are rejected
 
-Layout Quality Checks:
-- Dominant background: Too much background color (empty room)
-- Single dominant color: One color covers >threshold of image
-- Too few colors: Segmentation lacks object variety
-- Small room area: Actual room content is tiny
-- High fragmentation: Many disconnected small regions (artifacts)
+Segmentation Colors (configurable via --color-map):
+- Floor: (180, 180, 180)
+- Wall: (60, 60, 60)  
+- Door: (255, 100, 100)
+- Window: (100, 200, 255)
+- Background/Ceiling: (0, 0, 0) - black
 
 Usage:
-    # Full dataset (single process)
     python clean_dataset.py \\
         --dataset-root dataset_v2 \\
         --output rejections.csv
 
-    # Process specific shard (for parallel processing)
     python clean_dataset.py \\
         --dataset-root dataset_v2 \\
-        --shard-file shards/shard_001.txt \\
-        --output rejections_shard_001.csv
-
-    # Skip certain checks
-    python clean_dataset.py \\
-        --dataset-root dataset_v2 \\
-        --skip-layouts \\
-        --output rejections.csv
-
-    # Custom thresholds
-    python clean_dataset.py \\
-        --dataset-root dataset_v2 \\
-        --background-threshold 0.85 \\
-        --dominant-color-threshold 0.90 \\
-        --output rejections.csv
+        --shard-file shards/shard_000.txt \\
+        --output rejections_shard_000.csv
 """
 
 import argparse
 import csv
+import json
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Tuple, Set
-from collections import Counter
+from typing import Optional, List, Dict, Set, Tuple
 from enum import Enum, auto
 
 import numpy as np
@@ -76,502 +60,594 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Quality Issue Types
+# Default Segmentation Color Map
 # =============================================================================
 
-class QualityIssue(Enum):
-    """Types of quality issues detected."""
-    # POV issues
-    POV_MONOCOLOR = auto()
-    POV_MOSTLY_BLACK = auto()
-    POV_MOSTLY_WHITE = auto()
-    POV_LOW_ENTROPY = auto()
+DEFAULT_SEG_COLORS = {
+    # Structure
+    "Floor": (180, 180, 180),
+    "Wall": (60, 60, 60),
+    # Openings
+    "Door": (255, 100, 100),
+    "Window": (100, 200, 255),
+    # Background (white = outside/empty space/ceiling in top-down views)
+    "Background": (255, 255, 255),
+}
+
+# Color matching tolerance (for compression artifacts)
+COLOR_TOLERANCE = 10
+
+
+# =============================================================================
+# Rejection Reasons
+# =============================================================================
+
+class RejectionReason(Enum):
+    """Reasons for rejection."""
+    # Semantic content issues
+    NO_FLOOR = auto()
+    NO_WALL = auto()
+    NO_DOOR_OR_WINDOW = auto()
     
-    # Layout issues
-    LAYOUT_DOMINANT_BACKGROUND = auto()
-    LAYOUT_SINGLE_DOMINANT_COLOR = auto()
-    LAYOUT_TOO_FEW_COLORS = auto()
-    LAYOUT_SMALL_ROOM_AREA = auto()
-    LAYOUT_HIGH_FRAGMENTATION = auto()
+    # Render quality issues
+    MOSTLY_BLACK = auto()       # Failed render (all black)
+    TOO_LITTLE_CONTENT = auto() # Too much background, not enough room content
     
-    # Sync issues
-    MISSING_PAIR = auto()  # tex exists but seg doesn't (or vice versa)
+    # POV-specific issues
+    FLOOR_DOMINATES = auto()    # Camera pointing down
+    WALL_DOMINATES = auto()     # Staring at wall
+    
+    # Propagation
+    SCENE_LAYOUT_REJECTED = auto()
+    ROOM_LAYOUT_REJECTED = auto()
 
 
 @dataclass
-class QualityReport:
-    """Report for a single image."""
+class SemanticReport:
+    """Report for semantic content check."""
     path: Path
-    is_valid: bool
-    issues: List[QualityIssue] = field(default_factory=list)
-    details: Dict[str, float] = field(default_factory=dict)
+    total_pixels: int = 0
     
-    def __str__(self):
-        if self.is_valid:
-            return f"✓ {self.path.name}"
-        issues_str = ", ".join(i.name for i in self.issues)
-        details_str = ", ".join(f"{k}={v:.3f}" for k, v in self.details.items())
-        return f"✗ {self.path.name}: {issues_str} ({details_str})"
+    # Semantic class presence
+    has_floor: bool = False
+    has_wall: bool = False
+    has_door: bool = False
+    has_window: bool = False
+    
+    # Pixel counts
+    floor_pixels: int = 0
+    wall_pixels: int = 0
+    door_pixels: int = 0
+    window_pixels: int = 0
+    background_pixels: int = 0  # White = outside/ceiling
+    other_pixels: int = 0  # Furniture and other objects
+    
+    # Quality metrics
+    black_fraction: float = 0.0  # For detecting render failures
+    white_fraction: float = 0.0  # For reference (white is valid background)
+    content_fraction: float = 0.0  # Non-background content
+    
+    # Fractions for dominance checks
+    floor_fraction: float = 0.0
+    wall_fraction: float = 0.0
 
 
 @dataclass
 class RejectionRecord:
     """A single rejection decision."""
-    image_type: str  # 'pov' or 'layout'
-    variant: str  # 'tex' or 'seg'
-    base_name: str  # e.g., "scene123_Bedroom_door0"
-    path: str  # relative path from dataset root
+    image_type: str  # 'scene_layout', 'room_layout', 'pov'
+    scene_id: str
+    room_id: str
+    file_path: str
     rejected: bool
     rejection_reasons: List[str]
-    details: Dict[str, float]
-
-
-@dataclass 
-class CleanupStats:
-    """Statistics from cleanup operation."""
-    checked_povs: int = 0
-    checked_layouts: int = 0
-    rejected_povs: int = 0
-    rejected_layouts: int = 0
-    issues_by_type: Dict[QualityIssue, int] = field(default_factory=lambda: {i: 0 for i in QualityIssue})
+    propagated_from: str  # 'self', 'scene', 'room'
     
-    def print_summary(self):
-        logger.info("\n" + "=" * 60)
-        logger.info("QUALITY CHECK SUMMARY")
-        logger.info("=" * 60)
-        logger.info(f"POVs:    checked={self.checked_povs}, rejected={self.rejected_povs}")
-        logger.info(f"Layouts: checked={self.checked_layouts}, rejected={self.rejected_layouts}")
-        logger.info("\nIssues by type:")
-        for issue, count in sorted(self.issues_by_type.items(), key=lambda x: -x[1]):
-            if count > 0:
-                logger.info(f"  {issue.name}: {count}")
+    # Semantic details
+    has_floor: bool
+    has_wall: bool
+    has_door: bool
+    has_window: bool
+    
+    # Pixel counts
+    floor_pixels: int
+    wall_pixels: int
+    door_pixels: int
+    window_pixels: int
+    background_pixels: int
+    content_fraction: float
 
 
 # =============================================================================
-# Image Quality Checks
+# Semantic Checking
 # =============================================================================
 
-def compute_entropy(pixels: np.ndarray) -> float:
-    """Compute Shannon entropy of pixel values (0-8 for 8-bit images)."""
-    # Flatten and convert to grayscale-ish by averaging channels
-    if pixels.ndim == 3:
-        gray = pixels.mean(axis=2)
-    else:
-        gray = pixels
-    
-    # Quantize to reduce noise (256 bins -> 64 bins)
-    quantized = (gray * 63).astype(np.int32)
-    
-    # Compute histogram
-    hist, _ = np.histogram(quantized.flatten(), bins=64, range=(0, 64))
-    hist = hist[hist > 0]  # Remove zeros
-    
-    # Normalize
-    p = hist / hist.sum()
-    
-    # Shannon entropy
-    entropy = -np.sum(p * np.log2(p))
-    
-    return entropy
-
-
-def check_pov_quality(
+def check_semantic_content(
     image_path: Path,
-    monocolor_threshold: float = 0.02,
-    black_threshold: float = 0.95,
-    white_threshold: float = 0.95,
-    black_value: float = 0.05,
-    white_value: float = 0.95,
-    entropy_threshold: float = 2.0,
-) -> QualityReport:
+    seg_colors: Dict[str, Tuple[int, int, int]],
+    min_pixels: int = 100,
+    max_black_fraction: float = 0.95,
+    max_white_fraction: float = 0.95,
+    min_content_fraction: float = 0.05,
+    max_floor_fraction: float = 0.85,  # For POV dominance check
+    max_wall_fraction: float = 0.90,   # For POV dominance check
+) -> SemanticReport:
     """
-    Check POV image quality.
-    
-    Args:
-        image_path: Path to POV image
-        monocolor_threshold: Max std to consider monocolor
-        black_threshold: Fraction of pixels that must be dark to flag as "mostly black"
-        white_threshold: Fraction of pixels that must be bright to flag as "mostly white"
-        black_value: Pixel value (0-1) below which is considered "black"
-        white_value: Pixel value (0-1) above which is considered "white"
-        entropy_threshold: Min entropy to be considered valid
-    
-    Returns:
-        QualityReport with issues found
+    Check for semantic content in a segmentation image.
     """
-    report = QualityReport(path=image_path, is_valid=True)
-    
-    try:
-        img = Image.open(image_path).convert("RGB")
-        pixels = np.array(img, dtype=np.float32) / 255.0
-    except Exception as e:
-        logger.warning(f"Could not load {image_path}: {e}")
-        report.is_valid = False
-        report.issues.append(QualityIssue.POV_MONOCOLOR)
-        return report
-    
-    # Compute statistics
-    std = pixels.std()
-    mean = pixels.mean()
-    
-    # Per-pixel brightness (average across RGB)
-    brightness = pixels.mean(axis=2)
-    black_fraction = (brightness < black_value).mean()
-    white_fraction = (brightness > white_value).mean()
-    
-    # Entropy
-    entropy = compute_entropy(pixels)
-    
-    # Store details
-    report.details = {
-        "std": std,
-        "mean": mean,
-        "black_frac": black_fraction,
-        "white_frac": white_fraction,
-        "entropy": entropy,
-    }
-    
-    # Check issues
-    if std < monocolor_threshold:
-        report.issues.append(QualityIssue.POV_MONOCOLOR)
-    
-    if black_fraction > black_threshold:
-        report.issues.append(QualityIssue.POV_MOSTLY_BLACK)
-    
-    if white_fraction > white_threshold:
-        report.issues.append(QualityIssue.POV_MOSTLY_WHITE)
-    
-    if entropy < entropy_threshold:
-        report.issues.append(QualityIssue.POV_LOW_ENTROPY)
-    
-    report.is_valid = len(report.issues) == 0
-    return report
-
-
-def check_layout_quality(
-    image_path: Path,
-    background_color: Tuple[int, int, int] = (0, 0, 0),
-    background_threshold: float = 0.85,
-    dominant_color_threshold: float = 0.90,
-    min_unique_colors: int = 3,
-    min_room_area_fraction: float = 0.05,
-    max_fragmentation: float = 0.3,
-    color_tolerance: int = 5,
-) -> QualityReport:
-    """
-    Check layout image quality.
-    
-    Args:
-        image_path: Path to layout image
-        background_color: RGB tuple for background (default black)
-        background_threshold: Max fraction of background allowed
-        dominant_color_threshold: Max fraction for any single non-bg color
-        min_unique_colors: Min number of distinct colors (for segmentation)
-        min_room_area_fraction: Min fraction of image that should be room content
-        max_fragmentation: Max ratio of small disconnected regions
-        color_tolerance: Tolerance for color matching (0-255)
-    
-    Returns:
-        QualityReport with issues found
-    """
-    report = QualityReport(path=image_path, is_valid=True)
+    report = SemanticReport(path=image_path)
     
     try:
         img = Image.open(image_path).convert("RGB")
         pixels = np.array(img)
     except Exception as e:
         logger.warning(f"Could not load {image_path}: {e}")
-        report.is_valid = False
-        report.issues.append(QualityIssue.LAYOUT_DOMINANT_BACKGROUND)
         return report
     
     height, width = pixels.shape[:2]
-    total_pixels = height * width
+    report.total_pixels = height * width
     
-    # Identify background pixels
-    bg = np.array(background_color)
-    bg_mask = np.all(np.abs(pixels.astype(np.int16) - bg) <= color_tolerance, axis=2)
-    background_fraction = bg_mask.mean()
+    # Check for pure black (render failures) - not white since white is valid background
+    # Pure black = (0,0,0) pixels
+    black_mask = np.all(pixels < 5, axis=2)  # Very dark pixels
+    report.black_fraction = black_mask.mean()
     
-    # Non-background pixels
-    non_bg_mask = ~bg_mask
-    room_area_fraction = non_bg_mask.mean()
+    # White fraction (for reference, but white is valid background)
+    white_mask = np.all(pixels > 250, axis=2)  # Very bright pixels
+    report.white_fraction = white_mask.mean()
     
-    # Count unique colors (quantize to reduce noise)
-    # Quantize to nearest 8 to handle anti-aliasing
-    quantized = (pixels // 8) * 8
-    flat_colors = quantized.reshape(-1, 3)
-    non_bg_colors = flat_colors[non_bg_mask.flatten()]
+    # Count pixels for each semantic class
+    accounted_pixels = np.zeros((height, width), dtype=bool)
     
-    if len(non_bg_colors) > 0:
-        # Count unique colors
-        color_tuples = [tuple(c) for c in non_bg_colors]
-        color_counts = Counter(color_tuples)
-        unique_colors = len(color_counts)
+    for class_name, color in seg_colors.items():
+        color_arr = np.array(color)
+        diff = np.abs(pixels.astype(np.int16) - color_arr)
+        mask = np.all(diff <= COLOR_TOLERANCE, axis=2)
+        pixel_count = mask.sum()
         
-        # Find dominant non-background color
-        most_common_color, most_common_count = color_counts.most_common(1)[0]
-        dominant_color_fraction = most_common_count / len(non_bg_colors)
-    else:
-        unique_colors = 0
-        dominant_color_fraction = 1.0
+        # Mark these pixels as accounted for
+        accounted_pixels |= mask
+        
+        if class_name == "Floor":
+            report.floor_pixels = pixel_count
+            report.has_floor = pixel_count >= min_pixels
+            report.floor_fraction = pixel_count / report.total_pixels
+        elif class_name == "Wall":
+            report.wall_pixels = pixel_count
+            report.has_wall = pixel_count >= min_pixels
+            report.wall_fraction = pixel_count / report.total_pixels
+        elif class_name == "Door":
+            report.door_pixels = pixel_count
+            report.has_door = pixel_count >= min_pixels
+        elif class_name == "Window":
+            report.window_pixels = pixel_count
+            report.has_window = pixel_count >= min_pixels
+        elif class_name == "Background":
+            report.background_pixels = pixel_count
     
-    # Fragmentation check (ratio of small connected components)
-    fragmentation = 0.0
-    if room_area_fraction > 0.01:
-        try:
-            from scipy import ndimage
-            labeled, num_features = ndimage.label(non_bg_mask)
-            if num_features > 0:
-                component_sizes = ndimage.sum(non_bg_mask, labeled, range(1, num_features + 1))
-                small_components = sum(1 for s in component_sizes if s < 100)  # <100 pixels
-                fragmentation = small_components / num_features if num_features > 0 else 0
-        except ImportError:
-            # Skip fragmentation check if scipy not available
-            pass
+    # Everything else is "other" (furniture, objects, etc.)
+    report.other_pixels = (~accounted_pixels).sum()
     
-    # Store details
-    report.details = {
-        "bg_frac": background_fraction,
-        "room_frac": room_area_fraction,
-        "unique_colors": unique_colors,
-        "dominant_frac": dominant_color_fraction,
-        "fragmentation": fragmentation,
-    }
+    # Content = everything that's not background
+    content_pixels = report.total_pixels - report.background_pixels
+    report.content_fraction = content_pixels / report.total_pixels if report.total_pixels > 0 else 0
     
-    # Check issues
-    if background_fraction > background_threshold:
-        report.issues.append(QualityIssue.LAYOUT_DOMINANT_BACKGROUND)
-    
-    if dominant_color_fraction > dominant_color_threshold and unique_colors > 1:
-        report.issues.append(QualityIssue.LAYOUT_SINGLE_DOMINANT_COLOR)
-    
-    if unique_colors < min_unique_colors:
-        report.issues.append(QualityIssue.LAYOUT_TOO_FEW_COLORS)
-    
-    if room_area_fraction < min_room_area_fraction:
-        report.issues.append(QualityIssue.LAYOUT_SMALL_ROOM_AREA)
-    
-    if fragmentation > max_fragmentation:
-        report.issues.append(QualityIssue.LAYOUT_HIGH_FRAGMENTATION)
-    
-    report.is_valid = len(report.issues) == 0
     return report
 
 
+def evaluate_layout(
+    report: SemanticReport,
+    min_pixels: int = 100,
+    max_black_fraction: float = 0.95,
+    min_content_fraction: float = 0.05,
+) -> List[RejectionReason]:
+    """Evaluate a layout image and return rejection reasons."""
+    reasons = []
+    
+    # Check render quality - black means failed render
+    if report.black_fraction > max_black_fraction:
+        reasons.append(RejectionReason.MOSTLY_BLACK)
+    
+    # Check content amount (too much background = empty/invalid)
+    if report.content_fraction < min_content_fraction:
+        reasons.append(RejectionReason.TOO_LITTLE_CONTENT)
+    
+    # Check semantic requirements
+    if not report.has_floor:
+        reasons.append(RejectionReason.NO_FLOOR)
+    if not report.has_wall:
+        reasons.append(RejectionReason.NO_WALL)
+    if not report.has_door and not report.has_window:
+        reasons.append(RejectionReason.NO_DOOR_OR_WINDOW)
+    
+    return reasons
+
+
+def evaluate_pov(
+    report: SemanticReport,
+    min_pixels: int = 100,
+    max_black_fraction: float = 0.95,
+    min_content_fraction: float = 0.05,
+    max_floor_fraction: float = 0.85,
+    max_wall_fraction: float = 0.90,
+) -> List[RejectionReason]:
+    """Evaluate a POV image and return rejection reasons."""
+    reasons = []
+    
+    # Check render quality - black means failed render
+    if report.black_fraction > max_black_fraction:
+        reasons.append(RejectionReason.MOSTLY_BLACK)
+    
+    # Check content amount
+    if report.content_fraction < min_content_fraction:
+        reasons.append(RejectionReason.TOO_LITTLE_CONTENT)
+    
+    # Check semantic requirements
+    if not report.has_floor:
+        reasons.append(RejectionReason.NO_FLOOR)
+    if not report.has_wall:
+        reasons.append(RejectionReason.NO_WALL)
+    if not report.has_door and not report.has_window:
+        reasons.append(RejectionReason.NO_DOOR_OR_WINDOW)
+    
+    # POV-specific: check for bad viewpoints
+    if report.floor_fraction > max_floor_fraction:
+        reasons.append(RejectionReason.FLOOR_DOMINATES)
+    if report.wall_fraction > max_wall_fraction:
+        reasons.append(RejectionReason.WALL_DOMINATES)
+    
+    return reasons
+
+
 # =============================================================================
-# File Management
+# File Discovery
 # =============================================================================
 
 def extract_scene_id(filename: str) -> Optional[str]:
-    """
-    Extract scene ID from filename.
-    
-    Expected format: {scene_id}_{room_id}_*.png
-    Scene IDs are UUIDs (36 chars with dashes) or similar long identifiers.
-    """
+    """Extract scene ID from filename."""
     stem = Path(filename).stem
     parts = stem.split("_")
-    if len(parts) >= 2:
-        scene_id = parts[0]
-        if len(scene_id) >= 8:
-            return scene_id
+    if len(parts) >= 1 and len(parts[0]) >= 8:
+        return parts[0]
     return None
 
 
-def find_paired_files(
-    dataset_root: Path,
-    subdir: str,
-    variants: List[str] = ["tex", "seg"],
-    scene_ids: Optional[Set[str]] = None,
-) -> Dict[str, Dict[str, Path]]:
-    """
-    Find all files and their paired variants.
+def extract_room_id(filename: str, scene_id: str) -> Optional[str]:
+    """Extract room ID from filename."""
+    stem = Path(filename).stem
     
-    Args:
-        dataset_root: Root directory of dataset
-        subdir: Subdirectory (e.g., "povs", "layouts")
-        variants: List of variants to find (e.g., ["tex", "seg"])
-        scene_ids: Optional set of scene IDs to filter by
+    if stem.startswith(scene_id + "_"):
+        remainder = stem[len(scene_id) + 1:]
+    else:
+        return None
     
-    Returns:
-        Dict of base_name -> {variant: path}
-    """
-    paired = {}
+    room_types = [
+        "Bedroom", "LivingRoom", "DiningRoom", "Kitchen", "Bathroom",
+        "Balcony", "Storage", "Corridor", "OtherRoom", "Library",
+        "MasterBedroom", "SecondBedroom", "KidsRoom", "Study", "Entrance"
+    ]
     
-    for variant in variants:
-        variant_dir = dataset_root / subdir / variant
-        if not variant_dir.exists():
+    for rt in room_types:
+        if remainder.startswith(rt):
+            after_rt = remainder[len(rt):]
+            if after_rt.startswith("_"):
+                next_part = after_rt[1:].split("_")[0]
+                if next_part.isdigit():
+                    return f"{rt}_{next_part}"
+                else:
+                    return rt
+            else:
+                return rt
+    
+    return None
+
+
+def find_scene_layouts(dataset_root: Path, scene_ids: Optional[Set[str]] = None) -> Dict[str, Path]:
+    """Find all scene layout segmentation files."""
+    layouts_seg_dir = dataset_root / "layouts" / "seg"
+    if not layouts_seg_dir.exists():
+        return {}
+    
+    scene_layouts = {}
+    
+    for path in layouts_seg_dir.glob("*_seg_layout.png"):
+        scene_id = extract_scene_id(path.name)
+        if scene_id is None:
+            continue
+        if scene_ids is not None and scene_id not in scene_ids:
             continue
         
-        for img_path in variant_dir.glob("*.png"):
-            # Filter by scene ID if provided
-            if scene_ids is not None:
-                scene_id = extract_scene_id(img_path.name)
-                if scene_id is None or scene_id not in scene_ids:
-                    continue
-            
-            base_name = img_path.stem
-            if base_name not in paired:
-                paired[base_name] = {}
-            paired[base_name][variant] = img_path
+        room_id = extract_room_id(path.name, scene_id)
+        if room_id is None:
+            scene_layouts[scene_id] = path
     
-    return paired
+    return scene_layouts
+
+
+def find_room_layouts(dataset_root: Path, scene_ids: Optional[Set[str]] = None) -> Dict[Tuple[str, str], Path]:
+    """Find all room layout segmentation files."""
+    layouts_seg_dir = dataset_root / "layouts" / "seg"
+    if not layouts_seg_dir.exists():
+        return {}
+    
+    room_layouts = {}
+    
+    for path in layouts_seg_dir.glob("*_seg_layout.png"):
+        scene_id = extract_scene_id(path.name)
+        if scene_id is None:
+            continue
+        if scene_ids is not None and scene_id not in scene_ids:
+            continue
+        
+        room_id = extract_room_id(path.name, scene_id)
+        if room_id is not None:
+            room_layouts[(scene_id, room_id)] = path
+    
+    return room_layouts
+
+
+def find_povs(dataset_root: Path, scene_ids: Optional[Set[str]] = None) -> Dict[Tuple[str, str, str], Path]:
+    """Find all POV segmentation files."""
+    povs_seg_dir = dataset_root / "povs" / "seg"
+    if not povs_seg_dir.exists():
+        return {}
+    
+    povs = {}
+    
+    for path in povs_seg_dir.glob("*_seg_pov.png"):
+        scene_id = extract_scene_id(path.name)
+        if scene_id is None:
+            continue
+        if scene_ids is not None and scene_id not in scene_ids:
+            continue
+        
+        stem = path.stem
+        prefix = stem.replace("_seg_pov", "")
+        
+        if prefix.startswith(scene_id + "_"):
+            remainder = prefix[len(scene_id) + 1:]
+        else:
+            continue
+        
+        parts = remainder.rsplit("_", 1)
+        if len(parts) == 2:
+            room_id = parts[0]
+            pov_id = parts[1]
+        else:
+            continue
+        
+        povs[(scene_id, room_id, pov_id)] = path
+    
+    return povs
 
 
 # =============================================================================
-# Main Quality Check Functions
+# Main Processing
 # =============================================================================
 
-def check_povs(
+def process_dataset(
     dataset_root: Path,
-    stats: CleanupStats,
+    seg_colors: Dict[str, Tuple[int, int, int]],
     scene_ids: Optional[Set[str]] = None,
-    **quality_params,
+    min_pixels: int = 100,
+    max_black_fraction: float = 0.95,
+    min_content_fraction: float = 0.05,
+    max_floor_fraction: float = 0.85,
+    max_wall_fraction: float = 0.90,
 ) -> List[RejectionRecord]:
-    """
-    Check POV image quality.
-    
-    Returns:
-        List of RejectionRecord for each image set
-    """
-    logger.info("\n" + "=" * 60)
-    logger.info("CHECKING POV IMAGES")
-    if scene_ids is not None:
-        logger.info(f"Filtering by {len(scene_ids)} scene IDs")
-    logger.info("=" * 60)
-    
-    pov_dir = dataset_root / "povs"
-    if not pov_dir.exists():
-        logger.warning(f"POV directory not found: {pov_dir}")
-        return []
-    
-    # Find paired files
-    paired = find_paired_files(dataset_root, "povs", ["tex", "seg"], scene_ids=scene_ids)
-    logger.info(f"Found {len(paired)} POV image sets")
-    
+    """Process dataset and generate rejection records."""
     records = []
     
-    for base_name, variants in tqdm(paired.items(), desc="Checking POVs"):
-        stats.checked_povs += 1
+    rejected_scenes: Set[str] = set()
+    rejected_rooms: Set[Tuple[str, str]] = set()
+    
+    # ==========================================================================
+    # Phase 1: Check Scene Layouts
+    # ==========================================================================
+    logger.info("Phase 1: Checking scene layouts...")
+    scene_layouts = find_scene_layouts(dataset_root, scene_ids)
+    logger.info(f"  Found {len(scene_layouts)} scene layouts")
+    
+    for scene_id, seg_path in tqdm(scene_layouts.items(), desc="Scene layouts"):
+        report = check_semantic_content(seg_path, seg_colors, min_pixels)
+        reasons = evaluate_layout(report, min_pixels, max_black_fraction, 
+                                   min_content_fraction)
         
-        should_reject = False
-        issues_found = []
-        all_details = {}
+        rejected = len(reasons) > 0
+        if rejected:
+            rejected_scenes.add(scene_id)
         
-        # Check each variant
-        for variant, path in variants.items():
-            report = check_pov_quality(path, **quality_params)
+        # Record for seg file
+        records.append(RejectionRecord(
+            image_type="scene_layout",
+            scene_id=scene_id,
+            room_id="",
+            file_path=str(seg_path.relative_to(dataset_root)),
+            rejected=rejected,
+            rejection_reasons=[r.name for r in reasons],
+            propagated_from="self",
+            has_floor=report.has_floor,
+            has_wall=report.has_wall,
+            has_door=report.has_door,
+            has_window=report.has_window,
+            floor_pixels=report.floor_pixels,
+            wall_pixels=report.wall_pixels,
+            door_pixels=report.door_pixels,
+            window_pixels=report.window_pixels,
+            background_pixels=report.background_pixels,
+            content_fraction=report.content_fraction,
+        ))
+        
+        # Record for tex file
+        tex_path = seg_path.parent.parent / "tex" / seg_path.name.replace("_seg_", "_tex_")
+        if tex_path.exists():
+            records.append(RejectionRecord(
+                image_type="scene_layout",
+                scene_id=scene_id,
+                room_id="",
+                file_path=str(tex_path.relative_to(dataset_root)),
+                rejected=rejected,
+                rejection_reasons=[r.name for r in reasons],
+                propagated_from="self",
+                has_floor=report.has_floor,
+                has_wall=report.has_wall,
+                has_door=report.has_door,
+                has_window=report.has_window,
+                floor_pixels=report.floor_pixels,
+                wall_pixels=report.wall_pixels,
+                door_pixels=report.door_pixels,
+                window_pixels=report.window_pixels,
+                background_pixels=report.background_pixels,
+                content_fraction=report.content_fraction,
+            ))
+    
+    logger.info(f"  Rejected scenes: {len(rejected_scenes)}")
+    
+    # ==========================================================================
+    # Phase 2: Check Room Layouts
+    # ==========================================================================
+    logger.info("\nPhase 2: Checking room layouts...")
+    room_layouts = find_room_layouts(dataset_root, scene_ids)
+    logger.info(f"  Found {len(room_layouts)} room layouts")
+    
+    for (scene_id, room_id), seg_path in tqdm(room_layouts.items(), desc="Room layouts"):
+        if scene_id in rejected_scenes:
+            rejected = True
+            propagated_from = "scene"
+            reasons = [RejectionReason.SCENE_LAYOUT_REJECTED]
+            report = check_semantic_content(seg_path, seg_colors, min_pixels)
+        else:
+            report = check_semantic_content(seg_path, seg_colors, min_pixels)
+            reasons = evaluate_layout(report, min_pixels, max_black_fraction,
+                                       min_content_fraction)
+            rejected = len(reasons) > 0
+            propagated_from = "self"
             
-            if not report.is_valid:
-                should_reject = True
-                issues_found.extend(report.issues)
-            
-            # Prefix details with variant
-            for k, v in report.details.items():
-                all_details[f"{variant}_{k}"] = v
+            if rejected:
+                rejected_rooms.add((scene_id, room_id))
         
-        # Check for missing pairs
-        if len(variants) == 1:
-            should_reject = True
-            issues_found.append(QualityIssue.MISSING_PAIR)
+        records.append(RejectionRecord(
+            image_type="room_layout",
+            scene_id=scene_id,
+            room_id=room_id,
+            file_path=str(seg_path.relative_to(dataset_root)),
+            rejected=rejected,
+            rejection_reasons=[r.name for r in reasons],
+            propagated_from=propagated_from,
+            has_floor=report.has_floor,
+            has_wall=report.has_wall,
+            has_door=report.has_door,
+            has_window=report.has_window,
+            floor_pixels=report.floor_pixels,
+            wall_pixels=report.wall_pixels,
+            door_pixels=report.door_pixels,
+            window_pixels=report.window_pixels,
+            background_pixels=report.background_pixels,
+            content_fraction=report.content_fraction,
+        ))
         
-        # Record decision
-        if should_reject:
-            stats.rejected_povs += 1
-            for issue in issues_found:
-                stats.issues_by_type[issue] += 1
+        tex_path = seg_path.parent.parent / "tex" / seg_path.name.replace("_seg_", "_tex_")
+        if tex_path.exists():
+            records.append(RejectionRecord(
+                image_type="room_layout",
+                scene_id=scene_id,
+                room_id=room_id,
+                file_path=str(tex_path.relative_to(dataset_root)),
+                rejected=rejected,
+                rejection_reasons=[r.name for r in reasons],
+                propagated_from=propagated_from,
+                has_floor=report.has_floor,
+                has_wall=report.has_wall,
+                has_door=report.has_door,
+                has_window=report.has_window,
+                floor_pixels=report.floor_pixels,
+                wall_pixels=report.wall_pixels,
+                door_pixels=report.door_pixels,
+                window_pixels=report.window_pixels,
+                background_pixels=report.background_pixels,
+                content_fraction=report.content_fraction,
+            ))
+    
+    logger.info(f"  Rejected rooms (own issues): {len(rejected_rooms)}")
+    
+    # ==========================================================================
+    # Phase 3: Check POVs
+    # ==========================================================================
+    logger.info("\nPhase 3: Checking POVs...")
+    povs = find_povs(dataset_root, scene_ids)
+    logger.info(f"  Found {len(povs)} POVs")
+    
+    pov_rejected_self = 0
+    pov_rejected_propagated = 0
+    
+    for (scene_id, room_id, pov_id), seg_path in tqdm(povs.items(), desc="POVs"):
+        if scene_id in rejected_scenes:
+            rejected = True
+            propagated_from = "scene"
+            reasons = [RejectionReason.SCENE_LAYOUT_REJECTED]
+            pov_rejected_propagated += 1
+            report = check_semantic_content(seg_path, seg_colors, min_pixels)
+        elif (scene_id, room_id) in rejected_rooms:
+            rejected = True
+            propagated_from = "room"
+            reasons = [RejectionReason.ROOM_LAYOUT_REJECTED]
+            pov_rejected_propagated += 1
+            report = check_semantic_content(seg_path, seg_colors, min_pixels)
+        else:
+            report = check_semantic_content(seg_path, seg_colors, min_pixels)
+            reasons = evaluate_pov(report, min_pixels, max_black_fraction,
+                                    min_content_fraction,
+                                    max_floor_fraction, max_wall_fraction)
+            rejected = len(reasons) > 0
+            propagated_from = "self"
+            if rejected:
+                pov_rejected_self += 1
         
-        # Create record for each variant
-        for variant, path in variants.items():
-            rel_path = path.relative_to(dataset_root)
+        records.append(RejectionRecord(
+            image_type="pov",
+            scene_id=scene_id,
+            room_id=room_id,
+            file_path=str(seg_path.relative_to(dataset_root)),
+            rejected=rejected,
+            rejection_reasons=[r.name for r in reasons],
+            propagated_from=propagated_from,
+            has_floor=report.has_floor,
+            has_wall=report.has_wall,
+            has_door=report.has_door,
+            has_window=report.has_window,
+            floor_pixels=report.floor_pixels,
+            wall_pixels=report.wall_pixels,
+            door_pixels=report.door_pixels,
+            window_pixels=report.window_pixels,
+            background_pixels=report.background_pixels,
+            content_fraction=report.content_fraction,
+        ))
+        
+        tex_path = seg_path.parent.parent / "tex" / seg_path.name.replace("_seg_", "_tex_")
+        if tex_path.exists():
             records.append(RejectionRecord(
                 image_type="pov",
-                variant=variant,
-                base_name=base_name,
-                path=str(rel_path),
-                rejected=should_reject,
-                rejection_reasons=[i.name for i in issues_found],
-                details=all_details,
+                scene_id=scene_id,
+                room_id=room_id,
+                file_path=str(tex_path.relative_to(dataset_root)),
+                rejected=rejected,
+                rejection_reasons=[r.name for r in reasons],
+                propagated_from=propagated_from,
+                has_floor=report.has_floor,
+                has_wall=report.has_wall,
+                has_door=report.has_door,
+                has_window=report.has_window,
+                floor_pixels=report.floor_pixels,
+                wall_pixels=report.wall_pixels,
+                door_pixels=report.door_pixels,
+                window_pixels=report.window_pixels,
+                background_pixels=report.background_pixels,
+                content_fraction=report.content_fraction,
             ))
     
-    logger.info(f"POVs: {stats.rejected_povs} rejected out of {stats.checked_povs} checked")
-    return records
-
-
-def check_layouts(
-    dataset_root: Path,
-    stats: CleanupStats,
-    scene_ids: Optional[Set[str]] = None,
-    **quality_params,
-) -> List[RejectionRecord]:
-    """
-    Check layout image quality.
+    logger.info(f"  POVs rejected (own issues): {pov_rejected_self}")
+    logger.info(f"  POVs rejected (propagated): {pov_rejected_propagated}")
     
-    Returns:
-        List of RejectionRecord for each image set
-    """
-    logger.info("\n" + "=" * 60)
-    logger.info("CHECKING LAYOUT IMAGES")
-    if scene_ids is not None:
-        logger.info(f"Filtering by {len(scene_ids)} scene IDs")
-    logger.info("=" * 60)
-    
-    layouts_dir = dataset_root / "layouts"
-    if not layouts_dir.exists():
-        logger.warning(f"Layouts directory not found: {layouts_dir}")
-        return []
-    
-    # Find paired files
-    paired = find_paired_files(dataset_root, "layouts", ["tex", "seg"], scene_ids=scene_ids)
-    logger.info(f"Found {len(paired)} layout image sets")
-    
-    records = []
-    
-    for base_name, variants in tqdm(paired.items(), desc="Checking layouts"):
-        stats.checked_layouts += 1
-        
-        should_reject = False
-        issues_found = []
-        all_details = {}
-        
-        # Check each variant
-        for variant, path in variants.items():
-            report = check_layout_quality(path, **quality_params)
-            
-            if not report.is_valid:
-                should_reject = True
-                issues_found.extend(report.issues)
-            
-            # Prefix details with variant
-            for k, v in report.details.items():
-                all_details[f"{variant}_{k}"] = v
-        
-        # Check for missing pairs
-        if len(variants) == 1:
-            should_reject = True
-            issues_found.append(QualityIssue.MISSING_PAIR)
-        
-        # Record decision
-        if should_reject:
-            stats.rejected_layouts += 1
-            for issue in issues_found:
-                stats.issues_by_type[issue] += 1
-        
-        # Create record for each variant
-        for variant, path in variants.items():
-            rel_path = path.relative_to(dataset_root)
-            records.append(RejectionRecord(
-                image_type="layout",
-                variant=variant,
-                base_name=base_name,
-                path=str(rel_path),
-                rejected=should_reject,
-                rejection_reasons=[i.name for i in issues_found],
-                details=all_details,
-            ))
-    
-    logger.info(f"Layouts: {stats.rejected_layouts} rejected out of {stats.checked_layouts} checked")
     return records
 
 
@@ -585,49 +661,69 @@ def write_rejections(records: List[RejectionRecord], output_path: Path):
         logger.warning("No records to write")
         return
     
-    logger.info(f"Writing {len(records)} rejection records to {output_path}")
+    logger.info(f"\nWriting {len(records)} records to {output_path}")
     
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Collect all detail keys across all records
-    all_detail_keys = set()
-    for record in records:
-        all_detail_keys.update(record.details.keys())
-    detail_keys = sorted(all_detail_keys)
-    
     columns = [
-        "image_type", "variant", "base_name", "path", "rejected", "rejection_reasons"
-    ] + detail_keys
+        "image_type", "scene_id", "room_id", "file_path", "rejected",
+        "rejection_reasons", "propagated_from",
+        "has_floor", "has_wall", "has_door", "has_window",
+        "floor_pixels", "wall_pixels", "door_pixels", "window_pixels",
+        "background_pixels", "content_fraction",
+    ]
     
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
         
         for record in records:
-            row = {
+            writer.writerow({
                 "image_type": record.image_type,
-                "variant": record.variant,
-                "base_name": record.base_name,
-                "path": record.path,
+                "scene_id": record.scene_id,
+                "room_id": record.room_id,
+                "file_path": record.file_path,
                 "rejected": record.rejected,
                 "rejection_reasons": "|".join(record.rejection_reasons),
-            }
-            # Add details
-            for key in detail_keys:
-                row[key] = record.details.get(key, "")
-            
-            writer.writerow(row)
+                "propagated_from": record.propagated_from,
+                "has_floor": record.has_floor,
+                "has_wall": record.has_wall,
+                "has_door": record.has_door,
+                "has_window": record.has_window,
+                "floor_pixels": record.floor_pixels,
+                "wall_pixels": record.wall_pixels,
+                "door_pixels": record.door_pixels,
+                "window_pixels": record.window_pixels,
+                "background_pixels": record.background_pixels,
+                "content_fraction": round(record.content_fraction, 4),
+            })
     
     size_kb = output_path.stat().st_size / 1024
     logger.info(f"  Written: {size_kb:.2f} KB")
+    
+    # Summary
+    total = len(records)
+    rejected = sum(1 for r in records if r.rejected)
+    logger.info(f"\nSummary:")
+    logger.info(f"  Total records: {total}")
+    logger.info(f"  Rejected: {rejected} ({100*rejected/total:.1f}%)")
+    logger.info(f"  Accepted: {total - rejected} ({100*(total-rejected)/total:.1f}%)")
+    
+    # Breakdown by reason
+    reason_counts: Dict[str, int] = {}
+    for r in records:
+        if r.rejected:
+            for reason in r.rejection_reasons:
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    
+    if reason_counts:
+        logger.info(f"\nRejection reasons:")
+        for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
+            logger.info(f"  {reason}: {count}")
 
-
-# =============================================================================
-# Main
-# =============================================================================
 
 def load_scene_list(shard_file: Path) -> Set[str]:
-    """Load scene IDs from a shard file (one per line)."""
+    """Load scene IDs from a shard file."""
     scene_ids = set()
     if not shard_file.exists():
         logger.warning(f"Shard file not found: {shard_file}")
@@ -642,105 +738,82 @@ def load_scene_list(shard_file: Path) -> Set[str]:
     return scene_ids
 
 
+def load_color_map(color_map_path: Path) -> Dict[str, Tuple[int, int, int]]:
+    """Load segmentation color map from JSON file."""
+    with open(color_map_path, "r") as f:
+        data = json.load(f)
+    
+    # Convert lists to tuples
+    return {k: tuple(v) for k, v in data.items()}
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Check dataset quality and output rejection decisions",
+        description="Check dataset quality using semantic content",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
     
-    # Required
-    parser.add_argument("--dataset-root", required=True, type=Path,
-                        help="Dataset root directory")
-    parser.add_argument("--output", required=True, type=Path,
-                        help="Output CSV file for rejection decisions")
+    parser.add_argument("--dataset-root", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--shard-file", type=Path)
+    parser.add_argument("--color-map", type=Path,
+                        help="JSON file with segmentation colors (optional)")
     
-    # Sharding
-    parser.add_argument("--shard-file", type=Path,
-                        help="Path to shard file with scene IDs (one per line)")
+    # Thresholds
+    parser.add_argument("--min-pixels", type=int, default=100,
+                        help="Min pixels for class presence (default: 100)")
+    parser.add_argument("--max-black-fraction", type=float, default=0.95,
+                        help="Max fraction of black pixels - render failure (default: 0.95)")
+    parser.add_argument("--min-content-fraction", type=float, default=0.05,
+                        help="Min fraction of non-background content (default: 0.05)")
+    parser.add_argument("--max-floor-fraction", type=float, default=0.85,
+                        help="Max floor fraction for POVs (default: 0.85)")
+    parser.add_argument("--max-wall-fraction", type=float, default=0.90,
+                        help="Max wall fraction for POVs (default: 0.90)")
     
-    # Skip options
-    parser.add_argument("--skip-povs", action="store_true",
-                        help="Skip POV checking")
-    parser.add_argument("--skip-layouts", action="store_true",
-                        help="Skip layout checking")
-    
-    # POV thresholds
-    pov_group = parser.add_argument_group("POV quality thresholds")
-    pov_group.add_argument("--pov-monocolor-threshold", type=float, default=0.02,
-                           help="Max std for monocolor (default: 0.02)")
-    pov_group.add_argument("--pov-black-threshold", type=float, default=0.95,
-                           help="Fraction dark pixels for 'mostly black' (default: 0.95)")
-    pov_group.add_argument("--pov-white-threshold", type=float, default=0.95,
-                           help="Fraction bright pixels for 'mostly white' (default: 0.95)")
-    pov_group.add_argument("--pov-entropy-threshold", type=float, default=2.0,
-                           help="Min entropy for valid image (default: 2.0)")
-    
-    # Layout thresholds
-    layout_group = parser.add_argument_group("Layout quality thresholds")
-    layout_group.add_argument("--background-threshold", type=float, default=0.85,
-                              help="Max background fraction (default: 0.85)")
-    layout_group.add_argument("--dominant-color-threshold", type=float, default=0.90,
-                              help="Max single color fraction (default: 0.90)")
-    layout_group.add_argument("--min-unique-colors", type=int, default=3,
-                              help="Min unique colors for segmentation (default: 3)")
-    layout_group.add_argument("--min-room-area", type=float, default=0.05,
-                              help="Min room area fraction (default: 0.05)")
-    
-    # Verbosity
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Show details for each checked file")
+    parser.add_argument("--verbose", "-v", action="store_true")
     
     args = parser.parse_args()
     
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    dataset_root = args.dataset_root
-    if not dataset_root.exists():
-        logger.error(f"Dataset root not found: {dataset_root}")
+    if not args.dataset_root.exists():
+        logger.error(f"Dataset root not found: {args.dataset_root}")
         return 1
     
-    # Load scene IDs from shard file if provided
+    # Load color map
+    if args.color_map:
+        seg_colors = load_color_map(args.color_map)
+        logger.info(f"Loaded color map from {args.color_map}")
+    else:
+        seg_colors = DEFAULT_SEG_COLORS
+        logger.info("Using default color map")
+    
+    # Load scene IDs
     scene_ids = None
     if args.shard_file:
-        logger.info(f"Loading scene IDs from shard file: {args.shard_file}")
+        logger.info(f"Loading scene IDs from: {args.shard_file}")
         scene_ids = load_scene_list(args.shard_file)
-        logger.info(f"Loaded {len(scene_ids)} scene IDs from shard file")
+        logger.info(f"Loaded {len(scene_ids)} scene IDs")
         if len(scene_ids) == 0:
-            logger.warning("No scene IDs found in shard file, nothing to process")
+            logger.warning("No scene IDs found")
             return 0
     
-    stats = CleanupStats()
-    all_records = []
+    # Process
+    records = process_dataset(
+        args.dataset_root,
+        seg_colors,
+        scene_ids=scene_ids,
+        min_pixels=args.min_pixels,
+        max_black_fraction=args.max_black_fraction,
+        min_content_fraction=args.min_content_fraction,
+        max_floor_fraction=args.max_floor_fraction,
+        max_wall_fraction=args.max_wall_fraction,
+    )
     
-    # Check POVs
-    if not args.skip_povs:
-        pov_params = {
-            "monocolor_threshold": args.pov_monocolor_threshold,
-            "black_threshold": args.pov_black_threshold,
-            "white_threshold": args.pov_white_threshold,
-            "entropy_threshold": args.pov_entropy_threshold,
-        }
-        pov_records = check_povs(dataset_root, stats, scene_ids=scene_ids, **pov_params)
-        all_records.extend(pov_records)
-    
-    # Check layouts
-    if not args.skip_layouts:
-        layout_params = {
-            "background_threshold": args.background_threshold,
-            "dominant_color_threshold": args.dominant_color_threshold,
-            "min_unique_colors": args.min_unique_colors,
-            "min_room_area_fraction": args.min_room_area,
-        }
-        layout_records = check_layouts(dataset_root, stats, scene_ids=scene_ids, **layout_params)
-        all_records.extend(layout_records)
-    
-    # Write output
-    write_rejections(all_records, args.output)
-    
-    # Print summary
-    stats.print_summary()
+    write_rejections(records, args.output)
     
     return 0
 
