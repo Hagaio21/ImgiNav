@@ -542,7 +542,7 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     print(f"  Saved targets and conditions to {conditioned_dir}")
 
 
-def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=16, exp_name=None, guidance_scale=1.0, cfg_dropout_rate=0.0):
+def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=16, exp_name=None, guidance_scale=1.0, cfg_dropout_rate=0.0, config=None):
     """Generate and save sample images.
     
     Generates:
@@ -569,7 +569,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # ============================================================================
     # Part 1: Generate unconditioned samples (4x4 grid)
     # ============================================================================
-    sampling_seed = 42 + epoch
+    # Get sampling seed from config (default: 42 + epoch for reproducibility)
+    if config is not None:
+        sampling_seed_base = config.get("training", {}).get("sampling_seed_base", 42)
+    else:
+        sampling_seed_base = 42
+    sampling_seed = sampling_seed_base + epoch
     torch.manual_seed(sampling_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(sampling_seed)
@@ -683,6 +688,16 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             pov_emb = None
     else:
         pov_emb = None  # Don't create zero tensor - let model handle it if needed
+    
+    # Set seed for conditioned sample generation (use same base seed for consistency)
+    if config is not None:
+        sampling_seed_base = config.get("training", {}).get("sampling_seed_base", 42)
+    else:
+        sampling_seed_base = 42
+    conditioned_sampling_seed = sampling_seed_base + epoch + 1000  # Offset to ensure different from unconditioned
+    torch.manual_seed(conditioned_sampling_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(conditioned_sampling_seed)
     
     # Generate conditioned samples using DDIM (50 steps)
     ddim_steps = 50
@@ -1185,7 +1200,7 @@ def main():
         if val_loader and ((epoch + 1 == 1) or ((epoch + 1) % sample_interval == 0)):
             # Get guidance_scale from config (default 1.0 = no CFG)
             guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
-            save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale, cfg_dropout_rate=cfg_dropout_rate)
+            save_samples(model, val_loader, device_obj, output_dir, epoch + 1, sample_batch_size=64, exp_name=exp_name, guidance_scale=guidance_scale, cfg_dropout_rate=cfg_dropout_rate, config=config)
         
         # Save checkpoint (is_best was already determined above if validation ran)
         # Use same condition as evaluation: always at epoch 1, then according to eval_interval
