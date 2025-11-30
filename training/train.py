@@ -312,34 +312,49 @@ def main():
     
     should_resume = checkpoint_to_resume is not None
     if should_resume:
+        print(f"\n{'='*60}")
+        print(f"🔄 AUTO-RESUMING from checkpoint")
+        print(f"{'='*60}")
+        print(f"Checkpoint: {checkpoint_to_resume}")
+        
         # Load checkpoint with extra state
         # Use current config to ensure clip_projection and other components are properly initialized
         # The state_dict from checkpoint will still be loaded, but model structure comes from current config
+        # Use strict=False because clip_projection is saved separately
         model, extra_state = Autoencoder.load_checkpoint(
             checkpoint_to_resume,
             map_location=device_obj,
             return_extra=True,
-            config=config.get("autoencoder")  # Use current config to ensure all components are initialized
+            config=config.get("autoencoder"),  # Use current config to ensure all components are initialized
+            strict=False  # Allow missing clip_projection keys (saved separately)
         )
         model = model.to(device_obj)
         
-        # Also try to load clip_projection checkpoint if it exists separately
+        # Load clip_projection checkpoint if it exists separately
         checkpoint_dir = output_dir / "checkpoints"
         clip_proj_latest = checkpoint_dir / f"{exp_name}_clip_projection_latest.pt"
-        if clip_proj_latest.exists() and hasattr(model, 'clip_projection') and model.clip_projection is not None:
-            try:
-                clip_proj_payload = torch.load(clip_proj_latest, map_location=device_obj)
-                clip_proj_state = clip_proj_payload.get("state_dict", clip_proj_payload)
-                model.clip_projection.load_state_dict(clip_proj_state, strict=False)
-                print(f"✓ Loaded CLIP projection state from {clip_proj_latest}")
-            except Exception as e:
-                print(f"⚠ Warning: Could not load CLIP projection checkpoint: {e}")
-                print("  Continuing with clip_projection from main checkpoint...")
+        if hasattr(model, 'clip_projection') and model.clip_projection is not None:
+            if clip_proj_latest.exists():
+                try:
+                    clip_proj_payload = torch.load(clip_proj_latest, map_location=device_obj)
+                    clip_proj_state = clip_proj_payload.get("state_dict", clip_proj_payload)
+                    model.clip_projection.load_state_dict(clip_proj_state, strict=False)
+                    print(f"✓ Loaded CLIP projection state from {clip_proj_latest}")
+                except Exception as e:
+                    print(f"⚠ Warning: Could not load CLIP projection checkpoint: {e}")
+                    print("  clip_projection will be initialized fresh")
+            else:
+                print(f"ℹ Note: clip_projection checkpoint not found at {clip_proj_latest}")
+                print("  clip_projection will be initialized fresh")
         
         # Restore training state
         start_epoch = extra_state.get("epoch", 1) - 1  # epoch in checkpoint is 1-indexed
         best_val_loss = extra_state.get("best_val_loss", float("inf"))
         training_history = extra_state.get("training_history", [])
+        
+        print(f"Resuming from epoch {start_epoch + 1}")
+        print(f"Best validation loss so far: {best_val_loss:.6f}")
+        print(f"{'='*60}\n")
         
         # If checkpoint doesn't have training_history, try loading from CSV
         if not training_history:
