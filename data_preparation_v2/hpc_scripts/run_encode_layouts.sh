@@ -28,6 +28,10 @@ LOG_DIR="${BASE_DIR}/ImgiNav/data_preparation_v2/hpc_scripts/logs"
 DATASET_ROOT="${BASE_DIR}/dataset_v2"
 MANIFEST_DIR="${DATASET_ROOT}/manifests"
 
+# Manifest paths (can be overridden via bsub -env)
+MANIFEST_SEG="${MANIFEST_SEG:-${MANIFEST_DIR}/manifest_seg_with_rejections.csv}"
+MANIFEST_TEX="${MANIFEST_TEX:-${MANIFEST_DIR}/manifest_tex_with_rejections.csv}"
+
 # VAE checkpoint (can be overridden via bsub -env)
 VAE_CHECKPOINT="${VAE_CHECKPOINT:-/work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_seg_256_clip/checkpoints/vae_seg_256_clip_checkpoint_best.pt}"
 
@@ -89,7 +93,21 @@ fi
 # =============================================================================
 encode_layouts() {
     local variant=$1
-    local manifest="${MANIFEST_DIR}/manifest_${variant}.csv"
+    local manifest=""
+    
+    # Select manifest based on variant
+    case ${variant} in
+        seg)
+            manifest="${MANIFEST_SEG}"
+            ;;
+        tex)
+            manifest="${MANIFEST_TEX}"
+            ;;
+        *)
+            echo "ERROR: Invalid variant '${variant}'" >&2
+            return 1
+            ;;
+    esac
     
     if [ ! -f "${manifest}" ]; then
         echo "ERROR: Manifest not found: ${manifest}" >&2
@@ -124,6 +142,8 @@ echo "=========================================="
 echo "Dataset Root: ${DATASET_ROOT}"
 echo "VAE Checkpoint: ${VAE_CHECKPOINT}"
 echo "Variant: ${VARIANT}"
+echo "Manifest Seg: ${MANIFEST_SEG}"
+echo "Manifest Tex: ${MANIFEST_TEX}"
 echo "Batch Size: ${BATCH_SIZE}"
 echo "Num Workers: ${NUM_WORKERS}"
 echo "Overwrite: ${OVERWRITE}"
