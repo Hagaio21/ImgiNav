@@ -68,6 +68,8 @@ training:
     type: cosine
   cfg_dropout_rate: 0.15
   guidance_scale: 5.0
+  use_precomputed_weights: true
+  precomputed_weight_column: sample_weight
   loss:
     type: MSELoss
     key: pred_noise

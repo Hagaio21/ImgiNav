@@ -355,34 +355,36 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     # Get dataset to find rooms and scenes
     dataset = val_loader.dataset
     
-    # Find samples from the validation dataset (same logic as save_samples)
-    room_indices = []
-    scene_indices = []
+    # Select 8 samples from the filtered dataset
+    # The dataset is already filtered by config (type, rejected, etc.)
+    # For "both" experiments (type filter is empty), ensure 4 rooms and 4 scenes
+    # For single-type experiments, just take first 8
+    selected_indices = []
     
     if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
+        room_indices = []
+        scene_indices = []
+        
+        # Collect indices by type from the filtered dataset
         for idx in range(len(dataset)):
             row = dataset.df.iloc[idx]
             sample_type = str(row.get('type', '')).lower().strip()
-            if sample_type == 'room' and len(room_indices) < 8:
+            if sample_type == 'room':
                 room_indices.append(idx)
-            elif sample_type == 'scene' and len(scene_indices) < 8:
+            elif sample_type == 'scene':
                 scene_indices.append(idx)
-            if len(room_indices) >= 8 and len(scene_indices) >= 8:
-                break
-            if (len(room_indices) > 0 and len(scene_indices) == 0 and len(room_indices) >= 16):
-                break
-            if (len(scene_indices) > 0 and len(room_indices) == 0 and len(scene_indices) >= 16):
-                break
+        
+        # If both types exist in filtered dataset, take 4 of each
+        if len(room_indices) > 0 and len(scene_indices) > 0:
+            selected_indices = room_indices[:4] + scene_indices[:4]
+        elif len(room_indices) > 0:
+            selected_indices = room_indices[:8]
+        elif len(scene_indices) > 0:
+            selected_indices = scene_indices[:8]
+        else:
+            selected_indices = list(range(min(8, len(dataset))))
     else:
-        room_indices = list(range(min(16, len(dataset))))
-        scene_indices = []
-    
-    if len(room_indices) == 0 or len(scene_indices) == 0:
-        available_indices = room_indices if len(room_indices) > 0 else scene_indices
-        selected_indices = available_indices[:16] if len(available_indices) >= 16 else available_indices
-        dataset_type = "rooms" if len(room_indices) > 0 else "scenes"
-    else:
-        selected_indices = room_indices + scene_indices
+        selected_indices = list(range(min(8, len(dataset))))
     
     batch_size = len(selected_indices)
     
@@ -506,8 +508,7 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     # Save global metadata
     metadata = {
         "batch_size": batch_size,
-        "room_indices": room_indices,
-        "scene_indices": scene_indices,
+        "selected_indices": selected_indices,
         "selected_indices": selected_indices,
         "has_text_emb": text_emb is not None,
         "has_pov_emb": pov_emb is not None,
@@ -788,6 +789,32 @@ def main():
     # Build validation dataset
     train_dataset, val_dataset = split_dataset(dataset, config["training"])
     
+    # Save train/val split indices
+    if hasattr(train_dataset, 'df'):
+        train_indices = train_dataset.df.index.tolist()
+        train_indices_path = output_dir / "train_indices.json"
+        with open(train_indices_path, 'w') as f:
+            json.dump(train_indices, f)
+        print(f"Saved training indices ({len(train_indices)} samples) to {train_indices_path}")
+    
+    if val_dataset and hasattr(val_dataset, 'df'):
+        val_indices = val_dataset.df.index.tolist()
+        val_indices_path = output_dir / "val_indices.json"
+        with open(val_indices_path, 'w') as f:
+            json.dump(val_indices, f)
+        print(f"Saved validation indices ({len(val_indices)} samples) to {val_indices_path}")
+    
+    # Save filtered train/val manifests
+    if hasattr(train_dataset, 'df'):
+        train_manifest_path = output_dir / "manifest_train.csv"
+        train_dataset.df.to_csv(train_manifest_path, index=False)
+        print(f"Saved training manifest ({len(train_dataset.df)} samples) to {train_manifest_path}")
+    
+    if val_dataset and hasattr(val_dataset, 'df'):
+        val_manifest_path = output_dir / "manifest_val.csv"
+        val_dataset.df.to_csv(val_manifest_path, index=False)
+        print(f"Saved validation manifest ({len(val_dataset.df)} samples) to {val_manifest_path}")
+    
     device_obj = to_device(device)
     
     # Try to load VAE metadata first (if autoencoder checkpoint is specified)
@@ -971,6 +998,24 @@ def main():
         exclude_extremely_rare=config["training"].get("exclude_extremely_rare", False),
         min_samples_threshold=config["training"].get("min_samples_threshold", 50)
     )
+    
+    # Verify if weighted sampling is actually active
+    from torch.utils.data import WeightedRandomSampler
+    is_using_weights = hasattr(train_loader, 'sampler') and isinstance(train_loader.sampler, WeightedRandomSampler)
+    print(f"\n{'='*60}")
+    print(f"WEIGHTED SAMPLING STATUS")
+    print(f"{'='*60}")
+    print(f"  Config: use_precomputed_weights = {use_precomputed_weights}")
+    print(f"  Config: precomputed_weight_column = {precomputed_weight_column}")
+    print(f"  Actual: WeightedRandomSampler active = {is_using_weights}")
+    if is_using_weights:
+        print(f"  ✓ Precomputed weights ARE being used for training!")
+        if hasattr(train_loader.sampler, 'weights'):
+            weight_tensor = train_loader.sampler.weights
+            print(f"  Weight stats: min={weight_tensor.min():.4f}, max={weight_tensor.max():.4f}, mean={weight_tensor.mean():.4f}")
+    else:
+        print(f"  ✗ Precomputed weights are NOT being used (regular random sampling)")
+    print(f"{'='*60}\n")
     val_loader = None
     if val_dataset:
         val_loader = val_dataset.make_dataloader(
