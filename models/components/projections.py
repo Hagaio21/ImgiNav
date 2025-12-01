@@ -922,7 +922,7 @@ class BaseEmbeddingToSpatial(BaseComponent):
             device: Device (required if both text_emb and pov_emb are None)
         
         Returns:
-            Spatial feature map [B, output_channels, H, W]
+            Spatial feature map [B, output_channels, H, W] or None if no embeddings provided
         """
         # Infer batch size and device from available inputs
         B, device, _ = infer_batch_and_device(
@@ -934,6 +934,11 @@ class BaseEmbeddingToSpatial(BaseComponent):
         
         # Project embeddings (subclass-specific)
         text_proj, pov_proj = self._project_embeddings(text_emb, pov_emb, B, device)
+        
+        # If both are None (no embeddings configured), return None
+        # UNet will fall back to self-attention when conditioning_signal is None
+        if text_proj is None and pov_proj is None:
+            return None
         
         # Combine embeddings
         combined = combine_embeddings(text_proj, pov_proj, method=self.combine_method)

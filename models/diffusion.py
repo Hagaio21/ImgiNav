@@ -254,15 +254,14 @@ class DiffusionModel(BaseModel):
         if embedding_proj is not None and (text_emb is not None or pov_emb is not None):
             conditioning_signal = embedding_proj(text_emb, pov_emb)
             
-            # For CFG, prepare unconditional (zero) conditioning signal
-            # This must match what was used during training: zero embeddings passed through embedding_proj
-            # During training, CFG dropout sets text_emb and pov_emb to None (or zeros)
-            # The embedding_proj handles None inputs by returning zeros through its projections
+            # For CFG, prepare unconditional signal
+            # During training, CFG dropout sets embeddings to zeros (tensors), not None
+            # For unconditional signal, pass None to embedding_proj
+            # If both embeddings are None (not configured), projection returns None
+            # UNet will fall back to self-attention when conditioning_signal is None
             use_cfg = guidance_scale > 1.0
             if use_cfg:
                 # For unconditional signal, pass None to embedding_proj
-                # The projections will handle None by returning zeros of the correct shape
-                # This matches training behavior where None/zero embeddings are passed through the projection
                 # Need to provide batch_size and device if both embeddings are None
                 if text_emb is not None:
                     batch_size_cfg = text_emb.shape[0]
@@ -274,6 +273,8 @@ class DiffusionModel(BaseModel):
                     batch_size_cfg = batch_size
                     device_cfg = device
                 
+                # Pass None for unconditional - projection will return None if no embeddings configured
+                # UNet handles None by falling back to self-attention
                 unconditional_signal = embedding_proj(None, None, batch_size=batch_size_cfg, device=device_cfg)
             else:
                 unconditional_signal = None
