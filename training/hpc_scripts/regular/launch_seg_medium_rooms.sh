@@ -57,24 +57,10 @@ except Exception as e:
     
     echo "Submitting: ${exp_name}"
     echo "  Config: ${config}"
-    echo "  Seed: ${TRAINING_SEED}"
+    echo "  Seed: ${TRAINING_SEED} (override via --seed)"
     echo "  Log: train_diff_${log_suffix}.%J.out"
     
-    # Create temporary config with updated seed
-    temp_config="${config_path}.tmp_seed_${TRAINING_SEED}.yaml"
-    python3 -c "
-import yaml
-import sys
-with open('${config_path}', 'r') as f:
-    config = yaml.safe_load(f)
-config['training']['seed'] = ${TRAINING_SEED}
-with open('${temp_config}', 'w') as f:
-    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-" || {
-        echo "ERROR: Failed to create temp config with seed"
-        continue
-    }
-    
+    # Submit job with --seed argument (no YAML modification needed)
     bsub -J "${exp_name}_seed${TRAINING_SEED}" \
         -o "${LOG_DIR}/train_diff_${log_suffix}_seed${TRAINING_SEED}.%J.out" \
         -e "${LOG_DIR}/train_diff_${log_suffix}_seed${TRAINING_SEED}.%J.err" \
@@ -83,7 +69,7 @@ with open('${temp_config}', 'w') as f:
         -gpu "num=1" \
         -W 48:00 \
         -q gpul40s \
-        bash -c "cd ${BASE_DIR} && module load cuda/11.8 && module load cudnn/v8.6.0.163-prod-cuda-11.X && export MKL_INTERFACE_LAYER=LP64 && export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && if [ -f \"\$HOME/miniconda3/etc/profile.d/conda.sh\" ]; then source \"\$HOME/miniconda3/etc/profile.d/conda.sh\" && conda activate imginav || conda activate scenefactor; fi && python ${PYTHON_SCRIPT} ${temp_config} --resume && rm -f ${temp_config}"
+        bash -c "cd ${BASE_DIR} && module load cuda/11.8 && module load cudnn/v8.6.0.163-prod-cuda-11.X && export MKL_INTERFACE_LAYER=LP64 && export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && if [ -f \"\$HOME/miniconda3/etc/profile.d/conda.sh\" ]; then source \"\$HOME/miniconda3/etc/profile.d/conda.sh\" && conda activate imginav || conda activate scenefactor; fi && python ${PYTHON_SCRIPT} ${config_path} --resume --seed ${TRAINING_SEED}"
     
     sleep 2
     echo ""

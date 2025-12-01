@@ -786,6 +786,7 @@ def main():
     parser.add_argument("config", type=Path, help="Path to experiment config YAML file")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if exists")
     parser.add_argument("--no-resume", action="store_true", help="Force start from scratch")
+    parser.add_argument("--seed", type=int, default=None, help="Override training seed from config")
     
     args = parser.parse_args()
     
@@ -794,9 +795,14 @@ def main():
     exp_name = config.get("experiment", {}).get("name", "unnamed")
     
     # Set deterministic behavior
-    training_seed = config.get("training", {}).get("seed", None)
+    # Use --seed argument if provided, otherwise use config value
+    training_seed = args.seed if args.seed is not None else config.get("training", {}).get("seed", None)
     if training_seed is not None:
         set_deterministic(training_seed)
+        # Update config in memory so it's reflected in checkpoints/logs
+        if "training" not in config:
+            config["training"] = {}
+        config["training"]["seed"] = training_seed
     
     # Get device
     device = get_device(config)
