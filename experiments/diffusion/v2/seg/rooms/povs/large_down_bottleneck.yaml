@@ -48,6 +48,7 @@ scheduler:
   num_steps: 1000
 training:
   seed: 4242
+  epochs: 500
   train_split: 0.8
   batch_size: 32
   num_workers: 4
