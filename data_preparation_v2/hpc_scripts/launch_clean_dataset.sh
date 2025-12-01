@@ -179,17 +179,91 @@ if [ -n "${MANIFEST_PATH}" ]; then
         exit 1
     fi
     
-    # Check if sample_id exists, if not warn (user needs to add it via job)
+    # Check if sample_id exists, if not submit job to add it
     if [ "${SKIP_ADD_SAMPLE_ID}" = "0" ]; then
         if ! head -1 "${RESOLVED_MANIFEST_PATH}" | grep -q "sample_id"; then
-            echo "WARNING: sample_id column not found in manifest" >&2
-            echo "  You need to add sample_id first by submitting add_sample_id.py as a job" >&2
-            echo "  Or use --skip-add-sample-id if sample_id already exists" >&2
-            exit 1
+            echo "sample_id column not found, submitting job to add it..."
+            
+            # Create output path
+            MANIFEST_BASENAME=$(basename "${RESOLVED_MANIFEST_PATH}" .csv)
+            MANIFEST_WITH_IDS="${MANIFESTS_DIR}/${MANIFEST_BASENAME}_with_ids.csv"
+            
+            # Create temporary script to run add_sample_id
+            TEMP_SCRIPT="${SHARDS_DIR}/temp_add_sample_id.sh"
+            cat > "${TEMP_SCRIPT}" <<EOF
+#!/bin/bash
+#BSUB -J add_sample_id
+#BSUB -n 1
+#BSUB -R "rusage[mem=2000]"
+#BSUB -W 00:30
+#BSUB -q hpc
+
+set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
+
+cd "${BASE_DIR}"
+
+if [ -f "\$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "\$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate imginav || conda activate scenefactor || exit 1
+fi
+
+python "${SCRIPTS_DIR}/add_sample_id.py" \
+    --manifest "${RESOLVED_MANIFEST_PATH}" \
+    --output "${MANIFEST_WITH_IDS}"
+
+exit \$?
+EOF
+            chmod +x "${TEMP_SCRIPT}"
+            
+            # Submit job to add sample_id
+            echo "  Submitting job to add sample_id..."
+            ADD_ID_OUTPUT=$(bsub < "${TEMP_SCRIPT}")
+            
+            ADD_ID_JOB_ID=$(echo "${ADD_ID_OUTPUT}" | grep -oP '(?<=Job <)\d+(?=>)' || echo "")
+            
+            if [ -z "${ADD_ID_JOB_ID}" ]; then
+                echo "ERROR: Failed to submit add_sample_id job" >&2
+                exit 1
+            fi
+            
+            echo "  Submitted: Job ${ADD_ID_JOB_ID}"
+            echo "  Waiting for job to complete before proceeding with sharding..."
+            
+            # Wait for job to complete
+            while bjobs "${ADD_ID_JOB_ID}" > /dev/null 2>&1; do
+                sleep 10
+            done
+            
+            # Check job exit status
+            JOB_STATUS=$(bjobs -l "${ADD_ID_JOB_ID}" 2>/dev/null | grep -i "exit" || echo "")
+            if echo "${JOB_STATUS}" | grep -qi "exit code.*[1-9]"; then
+                echo "ERROR: add_sample_id job failed. Check logs: ${LOG_DIR}/add_sample_id.${ADD_ID_JOB_ID}.*" >&2
+                exit 1
+            fi
+            
+            # Check if output was created
+            if [ ! -f "${MANIFEST_WITH_IDS}" ]; then
+                echo "ERROR: Output manifest not created. Check logs: ${LOG_DIR}/add_sample_id.${ADD_ID_JOB_ID}.*" >&2
+                exit 1
+            fi
+            
+            # Verify sample_id column exists in output
+            if ! head -1 "${MANIFEST_WITH_IDS}" | grep -q "sample_id"; then
+                echo "ERROR: sample_id column not found in output manifest" >&2
+                exit 1
+            fi
+            
+            echo "  Job completed successfully!"
+            echo "  Manifest with IDs: ${MANIFEST_WITH_IDS}"
+            rm -f "${TEMP_SCRIPT}"
+            echo ""
+        else
+            MANIFEST_WITH_IDS="${RESOLVED_MANIFEST_PATH}"
         fi
+    else
+        MANIFEST_WITH_IDS="${RESOLVED_MANIFEST_PATH}"
     fi
-    
-    MANIFEST_WITH_IDS="${RESOLVED_MANIFEST_PATH}"
 fi
 
 # =============================================================================
