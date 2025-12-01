@@ -7,10 +7,10 @@
 # which are merged after all jobs complete.
 #
 # Usage:
-#   ./launch_clean_dataset.sh --manifest manifests/manifest_seg.csv  # With manifest (POV checking enabled)
-#   ./launch_clean_dataset.sh --manifest manifests/manifest_seg.csv --num-shards 100
-#   ./launch_clean_dataset.sh --manifest manifests/manifest_seg.csv --no-pov-check  # Disable POV
-#   ./launch_clean_dataset.sh  # Without manifest (layout checking only, uses metadata)
+#   bash launch_clean_dataset.sh --manifest /work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg.csv
+#   bash launch_clean_dataset.sh --manifest manifests/manifest_seg.csv --num-shards 100
+#   bash launch_clean_dataset.sh --manifest manifests/manifest_seg.csv --no-pov-check  # Disable POV
+#   bash launch_clean_dataset.sh  # Without manifest (layout checking only, uses metadata)
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
@@ -30,7 +30,7 @@ OUTPUT_DIR="${DATASET_ROOT}/rejections"
 # Defaults
 NUM_SHARDS=100
 DRY_RUN=0
-MANIFEST_PATH=""
+MANIFEST_PATH="/work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg.csv"  # Default manifest
 CHECK_POV_PALETTE=1  # POV checking is default when manifest provided
 POV_COLOR_TOLERANCE=20
 POV_MIN_MATCH_RATIO=0.3
@@ -56,6 +56,11 @@ while [[ $# -gt 0 ]]; do
             MANIFEST_PATH="$2"
             CHECK_POV_PALETTE=1  # Manifest enables POV checking by default
             shift 2
+            ;;
+        --no-manifest)
+            MANIFEST_PATH=""
+            CHECK_POV_PALETTE=0
+            shift
             ;;
         --pov-color-tolerance)
             POV_COLOR_TOLERANCE="$2"
