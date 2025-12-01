@@ -536,6 +536,7 @@ def process_dataset(
                 rejected_count += 1
             
             # Build result row - sample_id is the primary key for merging back into manifest
+            # Only include essential fields, not all the detail metrics
             result = {
                 "sample_id": sample_id,
                 "rejected": is_rejected,
@@ -543,31 +544,20 @@ def process_dataset(
                 "layout_valid": layout_valid,
                 "pov_valid": pov_valid if enable_pov_check else True,
             }
-            # Add additional details for debugging/analysis
-            result.update(rejection_details)
             results.append(result)
         
         # Write output
         logger.info(f"\nWriting {len(results)} sample results to {output_path}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Build column list - sample_id first, then essential fields, then details
-        base_columns = [
+        # Build column list - only essential fields
+        columns = [
             "sample_id",
             "rejected",
             "rejection_reason",
             "layout_valid",
             "pov_valid",
         ]
-        
-        # Add detail columns from first result (layout_*, pov_* details)
-        detail_columns = []
-        if results:
-            for key in results[0].keys():
-                if key not in base_columns:
-                    detail_columns.append(key)
-        
-        columns = base_columns + sorted(detail_columns)
         
         with open(output_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=columns)
