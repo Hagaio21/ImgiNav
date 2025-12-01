@@ -36,7 +36,7 @@ POV_COLOR_TOLERANCE=20
 POV_MIN_MATCH_RATIO=0.3
 PALETTE_COLOR_TOLERANCE=10
 SKIP_ADD_SAMPLE_ID=0
-MANIFESTS_DIR="${DATASET_ROOT}/manifests"
+ADD_SAMPLE_ID_JOB_ID=""  # Will be set if we submit add_sample_id job
 
 # Layout quality thresholds
 MIN_PIXELS=100
@@ -179,16 +179,12 @@ if [ -n "${MANIFEST_PATH}" ]; then
         exit 1
     fi
     
-    # Check if sample_id exists, if not submit job to add it
+    # Check if sample_id exists, if not submit job to add it (in place)
     if [ "${SKIP_ADD_SAMPLE_ID}" = "0" ]; then
         if ! head -1 "${RESOLVED_MANIFEST_PATH}" | grep -q "sample_id"; then
-            echo "sample_id column not found, submitting job to add it..."
+            echo "sample_id column not found, will submit job to add it (updating manifest in place)..."
             
-            # Create output path
-            MANIFEST_BASENAME=$(basename "${RESOLVED_MANIFEST_PATH}" .csv)
-            MANIFEST_WITH_IDS="${MANIFESTS_DIR}/${MANIFEST_BASENAME}_with_ids.csv"
-            
-            # Create temporary script to run add_sample_id
+            # Create temporary script to run add_sample_id (updates in place)
             TEMP_SCRIPT="${SHARDS_DIR}/temp_add_sample_id.sh"
             cat > "${TEMP_SCRIPT}" <<EOF
 #!/bin/bash
@@ -208,9 +204,10 @@ if [ -f "\$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     conda activate imginav || conda activate scenefactor || exit 1
 fi
 
+# Update manifest in place (output to same file)
 python "${SCRIPTS_DIR}/add_sample_id.py" \
     --manifest "${RESOLVED_MANIFEST_PATH}" \
-    --output "${MANIFEST_WITH_IDS}"
+    --output "${RESOLVED_MANIFEST_PATH}"
 
 exit \$?
 EOF
@@ -227,121 +224,182 @@ EOF
                 exit 1
             fi
             
-            echo "  Submitted: Job ${ADD_ID_JOB_ID}"
-            echo "  Waiting for job to complete before proceeding with sharding..."
-            
-            # Wait for job to complete
-            while bjobs "${ADD_ID_JOB_ID}" > /dev/null 2>&1; do
-                sleep 10
-            done
-            
-            # Check job exit status
-            JOB_STATUS=$(bjobs -l "${ADD_ID_JOB_ID}" 2>/dev/null | grep -i "exit" || echo "")
-            if echo "${JOB_STATUS}" | grep -qi "exit code.*[1-9]"; then
-                echo "ERROR: add_sample_id job failed. Check logs: ${LOG_DIR}/add_sample_id.${ADD_ID_JOB_ID}.*" >&2
-                exit 1
-            fi
-            
-            # Check if output was created
-            if [ ! -f "${MANIFEST_WITH_IDS}" ]; then
-                echo "ERROR: Output manifest not created. Check logs: ${LOG_DIR}/add_sample_id.${ADD_ID_JOB_ID}.*" >&2
-                exit 1
-            fi
-            
-            # Verify sample_id column exists in output
-            if ! head -1 "${MANIFEST_WITH_IDS}" | grep -q "sample_id"; then
-                echo "ERROR: sample_id column not found in output manifest" >&2
-                exit 1
-            fi
-            
-            echo "  Job completed successfully!"
-            echo "  Manifest with IDs: ${MANIFEST_WITH_IDS}"
+            ADD_SAMPLE_ID_JOB_ID="${ADD_ID_JOB_ID}"
+            echo "  Submitted: Job ${ADD_SAMPLE_ID_JOB_ID}"
+            echo "  Cleaning array job will depend on this job completing"
             rm -f "${TEMP_SCRIPT}"
-            echo ""
         else
-            MANIFEST_WITH_IDS="${RESOLVED_MANIFEST_PATH}"
+            ADD_SAMPLE_ID_JOB_ID=""
         fi
     else
-        MANIFEST_WITH_IDS="${RESOLVED_MANIFEST_PATH}"
+        ADD_SAMPLE_ID_JOB_ID=""
     fi
+    
+    # Use the same manifest path (will be updated in place by add_sample_id job)
+    MANIFEST_WITH_IDS="${RESOLVED_MANIFEST_PATH}"
 fi
 
 # =============================================================================
-# DISCOVER SCENE IDS (from manifest if provided, otherwise from metadata)
+# CREATE SHARDS (submit as job if add_sample_id was submitted, otherwise do it now)
 # =============================================================================
+if [ -n "${ADD_SAMPLE_ID_JOB_ID}" ] && [ -n "${MANIFEST_WITH_IDS}" ]; then
+    # Need to create shards after add_sample_id finishes - submit as job
+    echo "Will create shards after add_sample_id job completes..."
+    
+    # Create script to extract scene IDs and create shards
+    CREATE_SHARDS_SCRIPT="${SHARDS_DIR}/create_shards.sh"
+    cat > "${CREATE_SHARDS_SCRIPT}" <<EOF
+#!/bin/bash
+#BSUB -J create_shards
+#BSUB -n 1
+#BSUB -R "rusage[mem=1000]"
+#BSUB -W 00:10
+#BSUB -q hpc
+
+set -euo pipefail
+
+# Extract scene IDs from manifest
 SCENE_IDS_FILE="${SHARDS_DIR}/all_scene_ids.txt"
 
-if [ -n "${MANIFEST_WITH_IDS}" ]; then
-    echo "Extracting scene IDs from manifest..."
-    
-    # Find scene_id column index
-    SCENE_ID_COL=$(head -1 "${MANIFEST_WITH_IDS}" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="scene_id") print i}')
-    
-    if [ -z "${SCENE_ID_COL}" ]; then
-        echo "ERROR: scene_id column not found in manifest" >&2
-        exit 1
-    fi
-    
-    # Extract scene IDs using awk (skip header, get unique, sort)
-    tail -n +2 "${MANIFEST_WITH_IDS}" | \
-        awk -F',' -v col="${SCENE_ID_COL}" '{print $col}' | \
-        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
-        grep -v '^$' | \
-        sort -u > "${SCENE_IDS_FILE}"
-    
-    if [ $? -ne 0 ] || [ ! -s "${SCENE_IDS_FILE}" ]; then
-        echo "ERROR: Failed to extract scene IDs from manifest" >&2
-        exit 1
-    fi
-else
-    echo "Discovering scene IDs from metadata..."
-    
-    METADATA_DIR="${DATASET_ROOT}/metadata/scenes"
-    
-    if [ ! -d "${METADATA_DIR}" ]; then
-        echo "ERROR: Metadata directory not found: ${METADATA_DIR}" >&2
-        exit 1
-    fi
-    
-    # Extract scene IDs from JSON filenames
-    find "${METADATA_DIR}" -name "*.json" -printf "%f\n" | sed 's/\.json$//' | sort -u > "${SCENE_IDS_FILE}"
-fi
+# Find scene_id column index
+SCENE_ID_COL=\$(head -1 "${MANIFEST_WITH_IDS}" | awk -F',' '{for(i=1;i<=NF;i++) if(\$i=="scene_id") print i}')
 
-TOTAL_SCENES=$(wc -l < "${SCENE_IDS_FILE}")
-echo "  Found ${TOTAL_SCENES} scenes"
-
-if [ "${TOTAL_SCENES}" -eq 0 ]; then
-    echo "ERROR: No scene IDs found" >&2
+if [ -z "\${SCENE_ID_COL}" ]; then
+    echo "ERROR: scene_id column not found in manifest" >&2
     exit 1
 fi
 
-# =============================================================================
-# CREATE SHARDS
-# =============================================================================
-echo ""
-echo "Creating ${NUM_SHARDS} shards..."
+# Extract scene IDs using awk (skip header, get unique, sort)
+tail -n +2 "${MANIFEST_WITH_IDS}" | \\
+    awk -F',' -v col="\${SCENE_ID_COL}" '{print \$col}' | \\
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \\
+    grep -v '^$' | \\
+    sort -u > "\${SCENE_IDS_FILE}"
 
-# Remove old shard files
+if [ ! -s "\${SCENE_IDS_FILE}" ]; then
+    echo "ERROR: Failed to extract scene IDs from manifest" >&2
+    exit 1
+fi
+
+TOTAL_SCENES=\$(wc -l < "\${SCENE_IDS_FILE}")
+echo "Extracted \${TOTAL_SCENES} scene IDs"
+
+# Create shards
 rm -f "${SHARDS_DIR}"/shard_*.txt
-
-# Split scene IDs into shards
-# -n l/N splits into N files by line count (balanced)
-# -d uses numeric suffixes
-# -a 3 uses 3-digit suffixes (000, 001, ...)
-split -n "l/${NUM_SHARDS}" -d -a 3 "${SCENE_IDS_FILE}" "${SHARDS_DIR}/shard_"
+split -n "l/${NUM_SHARDS}" -d -a 3 "\${SCENE_IDS_FILE}" "${SHARDS_DIR}/shard_"
 
 # Rename to add .txt extension
 ACTUAL_SHARDS=0
 for f in "${SHARDS_DIR}"/shard_[0-9][0-9][0-9]; do
-    if [ -f "$f" ]; then
-        mv "$f" "${f}.txt"
-        ACTUAL_SHARDS=$((ACTUAL_SHARDS + 1))
+    if [ -f "\$f" ]; then
+        mv "\$f" "\${f}.txt"
+        ACTUAL_SHARDS=\$((ACTUAL_SHARDS + 1))
     fi
 done
 
-echo "  Created ${ACTUAL_SHARDS} shards"
-SCENES_PER_SHARD=$((TOTAL_SCENES / ACTUAL_SHARDS))
-echo "  ~${SCENES_PER_SHARD} scenes per shard"
+echo "Created \${ACTUAL_SHARDS} shards"
+echo "\${ACTUAL_SHARDS}" > "${SHARDS_DIR}/num_shards.txt"
+
+exit 0
+EOF
+    chmod +x "${CREATE_SHARDS_SCRIPT}"
+    
+    # Submit shard creation job (depends on add_sample_id)
+    echo "  Submitting job to create shards..."
+    SHARDS_OUTPUT=$(bsub -J "create_shards" \
+        -w "done(${ADD_SAMPLE_ID_JOB_ID})" \
+        -o "${LOG_DIR}/create_shards.%J.out" \
+        -e "${LOG_DIR}/create_shards.%J.err" \
+        -n 1 \
+        -R "rusage[mem=1000]" \
+        -W 00:10 \
+        -q hpc \
+        < "${CREATE_SHARDS_SCRIPT}")
+    
+    CREATE_SHARDS_JOB_ID=$(echo "${SHARDS_OUTPUT}" | grep -oP '(?<=Job <)\d+(?=>)' || echo "")
+    
+    if [ -z "${CREATE_SHARDS_JOB_ID}" ]; then
+        echo "ERROR: Failed to submit create_shards job" >&2
+        exit 1
+    fi
+    
+    echo "  Submitted: Job ${CREATE_SHARDS_JOB_ID}"
+    CREATE_SHARDS_JOB_ID="${CREATE_SHARDS_JOB_ID}"
+    
+    # We'll read ACTUAL_SHARDS from file after job completes, but for now estimate
+    ACTUAL_SHARDS="${NUM_SHARDS}"
+else
+    # No dependency needed - create shards now
+    SCENE_IDS_FILE="${SHARDS_DIR}/all_scene_ids.txt"
+    
+    if [ -n "${MANIFEST_WITH_IDS}" ]; then
+        echo "Extracting scene IDs from manifest..."
+        
+        # Find scene_id column index
+        SCENE_ID_COL=$(head -1 "${MANIFEST_WITH_IDS}" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="scene_id") print i}')
+        
+        if [ -z "${SCENE_ID_COL}" ]; then
+            echo "ERROR: scene_id column not found in manifest" >&2
+            exit 1
+        fi
+        
+        # Extract scene IDs using awk (skip header, get unique, sort)
+        tail -n +2 "${MANIFEST_WITH_IDS}" | \
+            awk -F',' -v col="${SCENE_ID_COL}" '{print $col}' | \
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
+            grep -v '^$' | \
+            sort -u > "${SCENE_IDS_FILE}"
+        
+        if [ $? -ne 0 ] || [ ! -s "${SCENE_IDS_FILE}" ]; then
+            echo "ERROR: Failed to extract scene IDs from manifest" >&2
+            exit 1
+        fi
+    else
+        echo "Discovering scene IDs from metadata..."
+        
+        METADATA_DIR="${DATASET_ROOT}/metadata/scenes"
+        
+        if [ ! -d "${METADATA_DIR}" ]; then
+            echo "ERROR: Metadata directory not found: ${METADATA_DIR}" >&2
+            exit 1
+        fi
+        
+        # Extract scene IDs from JSON filenames
+        find "${METADATA_DIR}" -name "*.json" -printf "%f\n" | sed 's/\.json$//' | sort -u > "${SCENE_IDS_FILE}"
+    fi
+    
+    TOTAL_SCENES=$(wc -l < "${SCENE_IDS_FILE}")
+    echo "  Found ${TOTAL_SCENES} scenes"
+    
+    if [ "${TOTAL_SCENES}" -eq 0 ]; then
+        echo "ERROR: No scene IDs found" >&2
+        exit 1
+    fi
+    
+    # Create shards
+    echo ""
+    echo "Creating ${NUM_SHARDS} shards..."
+    
+    # Remove old shard files
+    rm -f "${SHARDS_DIR}"/shard_*.txt
+    
+    # Split scene IDs into shards
+    split -n "l/${NUM_SHARDS}" -d -a 3 "${SCENE_IDS_FILE}" "${SHARDS_DIR}/shard_"
+    
+    # Rename to add .txt extension
+    ACTUAL_SHARDS=0
+    for f in "${SHARDS_DIR}"/shard_[0-9][0-9][0-9]; do
+        if [ -f "$f" ]; then
+            mv "$f" "${f}.txt"
+            ACTUAL_SHARDS=$((ACTUAL_SHARDS + 1))
+        fi
+    done
+    
+    echo "  Created ${ACTUAL_SHARDS} shards"
+    SCENES_PER_SHARD=$((TOTAL_SCENES / ACTUAL_SHARDS))
+    echo "  ~${SCENES_PER_SHARD} scenes per shard"
+    CREATE_SHARDS_JOB_ID=""
+fi
 
 
 # =============================================================================
@@ -387,15 +445,28 @@ fi
 echo ""
 echo "Submitting job array [1-${ACTUAL_SHARDS}]..."
 
-# Submit the array job
-ARRAY_OUTPUT=$(bsub -J "clean_dataset[1-${ACTUAL_SHARDS}]" \
-    -o "${LOG_DIR}/clean_dataset.%J.%I.out" \
-    -e "${LOG_DIR}/clean_dataset.%J.%I.err" \
-    -n 2 \
-    -R "rusage[mem=4000]" \
-    -W 01:00 \
-    -q hpc \
-    < "${HPC_SCRIPTS_DIR}/run_clean_dataset.sh")
+# Submit the array job with dependency on create_shards if needed
+if [ -n "${CREATE_SHARDS_JOB_ID}" ]; then
+    echo "  Array job will start after shards are created (job ${CREATE_SHARDS_JOB_ID})"
+    ARRAY_OUTPUT=$(bsub -J "clean_dataset[1-${ACTUAL_SHARDS}]" \
+        -w "done(${CREATE_SHARDS_JOB_ID})" \
+        -o "${LOG_DIR}/clean_dataset.%J.%I.out" \
+        -e "${LOG_DIR}/clean_dataset.%J.%I.err" \
+        -n 2 \
+        -R "rusage[mem=4000]" \
+        -W 01:00 \
+        -q hpc \
+        < "${HPC_SCRIPTS_DIR}/run_clean_dataset.sh")
+else
+    ARRAY_OUTPUT=$(bsub -J "clean_dataset[1-${ACTUAL_SHARDS}]" \
+        -o "${LOG_DIR}/clean_dataset.%J.%I.out" \
+        -e "${LOG_DIR}/clean_dataset.%J.%I.err" \
+        -n 2 \
+        -R "rusage[mem=4000]" \
+        -W 01:00 \
+        -q hpc \
+        < "${HPC_SCRIPTS_DIR}/run_clean_dataset.sh")
+fi
 
 # Extract job ID
 ARRAY_JOB_ID=$(echo "${ARRAY_OUTPUT}" | grep -oP '(?<=Job <)\d+(?=>)' || echo "")
