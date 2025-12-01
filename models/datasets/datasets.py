@@ -179,7 +179,23 @@ class ManifestDataset(BaseComponent, Dataset):
                         continue
                     df = df[df[key].isin(value)]
                 else:
-                    df = df[df[key] == value]
+                    # Handle boolean/string conversion for rejected column (and similar boolean columns)
+                    # Check the actual column name (col) not the filter key (which might have operator suffixes)
+                    if col == "rejected" and col in df.columns:
+                        # Convert both sides to boolean for comparison
+                        # Handle string values like "True", "False", "true", "false", "1", "0"
+                        def to_bool(val):
+                            if isinstance(val, bool):
+                                return val
+                            if isinstance(val, str):
+                                return val.lower() in ("true", "1", "yes")
+                            return bool(val)
+                        
+                        df_bool = df[col].apply(to_bool)
+                        filter_bool = to_bool(value)
+                        df = df[df_bool == filter_bool]
+                    else:
+                        df = df[df[key] == value]
         
         return df.reset_index(drop=True)
 
