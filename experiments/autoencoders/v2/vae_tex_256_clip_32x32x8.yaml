@@ -136,4 +136,3 @@ training:
         pov_dim: 512
         combine_method: average
         use_model_projections: true
-

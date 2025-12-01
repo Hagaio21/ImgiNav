@@ -73,5 +73,3 @@ training:
     key: pred_noise
     target: noise
     weight: 1.0
-
-

@@ -120,4 +120,3 @@ training:
         combine_method: average
         use_model_projections: true  # Use projections attached to Autoencoder model
         spatial_alignment: true  # Enable spatial alignment mode (preserves spatial structure)
-
