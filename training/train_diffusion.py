@@ -1086,6 +1086,7 @@ def main():
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
+    save_interval = config["training"].get("save_interval", 1)  # Default to 1 (every epoch) for backward compatibility
     use_non_uniform_sampling = config["training"].get("use_non_uniform_sampling", False)  # Default False for uniform sampling
     early_stopping_patience = config["training"].get("early_stopping_patience", None)
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
@@ -1232,7 +1233,32 @@ def main():
             except Exception:
                 pass
         
-        # Save checkpoint using Trainer
+        # Save periodic checkpoint at specified interval
+        should_save_periodic = (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs
+        if should_save_periodic:
+            checkpoint_dir = output_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            periodic_checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
+            
+            # Prepare extra state for model.save_checkpoint
+            extra_state = {
+                "epoch": epoch + 1,
+                "best_val_loss": best_val_loss,
+                "training_history": training_history,
+                "optimizer_state": trainer.optimizer.state_dict(),
+            }
+            
+            if trainer.scheduler is not None:
+                extra_state["scheduler_state"] = trainer.scheduler.state_dict()
+            
+            if trainer.scaler is not None:
+                extra_state["scaler_state"] = trainer.scaler.state_dict()
+            
+            # Save periodic checkpoint
+            model.save_checkpoint(periodic_checkpoint_path, include_config=True, exclude_projections=True, **extra_state)
+            print(f"Saved periodic checkpoint: {periodic_checkpoint_path}")
+        
+        # Save checkpoint using Trainer (always saves latest for resume, and best when applicable)
         trainer.save_training_checkpoint(
             output_dir=output_dir,
             exp_name=exp_name,
