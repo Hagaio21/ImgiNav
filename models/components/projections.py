@@ -1054,36 +1054,47 @@ class CLIPEmbeddingToSpatial(BaseEmbeddingToSpatial):
             H, W = self.spatial_size
             self.clip_projections._init_spatial_projections(H, W, device)
             
-            text_proj = project_to_spatial(
-                text_emb,
-                self.clip_projections.spatial_text_proj,
-                (H, W),
-                batch_size=batch_size,
-                device=device
-            )
+            # If embedding is None, it means it's not configured - return None
+            # If embedding is a tensor (even zeros from CFG dropout), project it
+            if text_emb is not None:
+                text_proj = project_to_spatial(
+                    text_emb,
+                    self.clip_projections.spatial_text_proj,
+                    (H, W),
+                    batch_size=batch_size,
+                    device=device
+                )
+            else:
+                text_proj = None  # Not configured
             
-            pov_proj = project_to_spatial(
-                pov_emb,
-                self.clip_projections.spatial_pov_proj,
-                (H, W),
-                batch_size=batch_size,
-                device=device
-            )
+            if pov_emb is not None:
+                pov_proj = project_to_spatial(
+                    pov_emb,
+                    self.clip_projections.spatial_pov_proj,
+                    (H, W),
+                    batch_size=batch_size,
+                    device=device
+                )
+            else:
+                pov_proj = None  # Not configured
             
             # Store flag for final projection
             self._use_spatial_mode = True
             return text_proj, pov_proj
         else:
             # Use global projections - return 1D embeddings
+            # If embedding is None, it means it's not configured (not in dataset.outputs)
+            # If embedding is a tensor (even zeros from CFG dropout), it means it IS configured
+            # Only project tensors - return None for None inputs so combine_embeddings can handle it correctly
             if text_emb is not None:
                 text_proj = self.clip_projections.text_proj(text_emb)
             else:
-                text_proj = self.clip_projections.text_proj(None, batch_size=batch_size, device=device)
+                text_proj = None  # Not configured - let combine_embeddings handle it
             
             if pov_emb is not None:
                 pov_proj = self.clip_projections.pov_proj(pov_emb, batch_size=batch_size, device=device)
             else:
-                pov_proj = self.clip_projections.pov_proj(None, batch_size=batch_size, device=device)
+                pov_proj = None  # Not configured - let combine_embeddings handle it
             
             self._use_spatial_mode = False
             return text_proj, pov_proj
