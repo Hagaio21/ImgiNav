@@ -7,11 +7,10 @@
 # which are merged after all jobs complete.
 #
 # Usage:
-#   ./launch_clean_dataset.sh                    # Default: 50 shards, layout checking only
-#   ./launch_clean_dataset.sh --num-shards 100  # More parallelism
-#   ./launch_clean_dataset.sh --dry-run         # Just create shards, don't submit
-#   ./launch_clean_dataset.sh --manifest manifests/manifest_tex.csv --check-pov-palette  # With POV checking
-#   ./launch_clean_dataset.sh --min-pixels 150 --max-black-fraction 0.90  # Custom thresholds
+#   ./launch_clean_dataset.sh --manifest manifests/manifest_seg.csv  # With manifest (POV checking enabled)
+#   ./launch_clean_dataset.sh --manifest manifests/manifest_seg.csv --num-shards 100
+#   ./launch_clean_dataset.sh --manifest manifests/manifest_seg.csv --no-pov-check  # Disable POV
+#   ./launch_clean_dataset.sh  # Without manifest (layout checking only, uses metadata)
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
@@ -32,10 +31,12 @@ OUTPUT_DIR="${DATASET_ROOT}/rejections"
 NUM_SHARDS=100
 DRY_RUN=0
 MANIFEST_PATH=""
-CHECK_POV_PALETTE=0
+CHECK_POV_PALETTE=1  # POV checking is default when manifest provided
 POV_COLOR_TOLERANCE=20
 POV_MIN_MATCH_RATIO=0.3
 PALETTE_COLOR_TOLERANCE=10
+SKIP_ADD_SAMPLE_ID=0
+MANIFESTS_DIR="${DATASET_ROOT}/manifests"
 
 # Layout quality thresholds
 MIN_PIXELS=100
@@ -53,12 +54,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         --manifest)
             MANIFEST_PATH="$2"
-            CHECK_POV_PALETTE=1
+            CHECK_POV_PALETTE=1  # Manifest enables POV checking by default
             shift 2
-            ;;
-        --check-pov-palette)
-            CHECK_POV_PALETTE=1
-            shift
             ;;
         --pov-color-tolerance)
             POV_COLOR_TOLERANCE="$2"
@@ -84,6 +81,14 @@ while [[ $# -gt 0 ]]; do
             MIN_CONTENT_FRACTION="$2"
             shift 2
             ;;
+        --skip-add-sample-id)
+            SKIP_ADD_SAMPLE_ID=1
+            shift
+            ;;
+        --no-pov-check)
+            CHECK_POV_PALETTE=0
+            shift
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -100,8 +105,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --min-content-fraction F   Min fraction of non-background content (default: 0.05)"
             echo ""
             echo "POV Palette Checking:"
-            echo "  --manifest PATH             Manifest CSV file (required for POV checking)"
-            echo "  --check-pov-palette         Enable POV palette checking (requires --manifest)"
+            echo "  --manifest PATH             Manifest CSV file with sample_id (required, enables POV checking)"
+            echo "  --no-pov-check              Disable POV palette checking"
+            echo "  --skip-add-sample-id        Skip sample_id check (assumes already present)"
             echo "  --pov-color-tolerance N     Color distance tolerance (default: 20)"
             echo "  --pov-min-match-ratio F     Min match ratio (default: 0.3)"
             echo "  --palette-color-tolerance N Palette quantization tolerance (default: 10)"
@@ -130,7 +136,7 @@ echo "  Max Black Fraction: ${MAX_BLACK_FRACTION}"
 echo "  Min Content Fraction: ${MIN_CONTENT_FRACTION}"
 echo ""
 if [ "${CHECK_POV_PALETTE}" = "1" ]; then
-    echo "POV Palette Checking: ENABLED"
+    echo "POV Palette Checking: ENABLED (default)"
     if [ -n "${MANIFEST_PATH}" ]; then
         echo "  Manifest: ${MANIFEST_PATH}"
     fi
@@ -152,20 +158,75 @@ mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${LOG_DIR}"
 
 # =============================================================================
-# DISCOVER SCENE IDS FROM METADATA
+# RESOLVE MANIFEST PATH AND ADD SAMPLE_ID
 # =============================================================================
-echo "Discovering scene IDs from metadata..."
+RESOLVED_MANIFEST_PATH=""
+MANIFEST_WITH_IDS=""
 
-METADATA_DIR="${DATASET_ROOT}/metadata/scenes"
-SCENE_IDS_FILE="${SHARDS_DIR}/all_scene_ids.txt"
-
-if [ ! -d "${METADATA_DIR}" ]; then
-    echo "ERROR: Metadata directory not found: ${METADATA_DIR}" >&2
-    exit 1
+if [ -n "${MANIFEST_PATH}" ]; then
+    # Resolve manifest path
+    if [ -f "${DATASET_ROOT}/${MANIFEST_PATH}" ]; then
+        RESOLVED_MANIFEST_PATH="${DATASET_ROOT}/${MANIFEST_PATH}"
+    elif [ -f "${MANIFEST_PATH}" ]; then
+        RESOLVED_MANIFEST_PATH="${MANIFEST_PATH}"
+    else
+        echo "ERROR: Manifest file not found: ${MANIFEST_PATH}" >&2
+        exit 1
+    fi
+    
+    # Check if sample_id exists, if not warn (user needs to add it via job)
+    if [ "${SKIP_ADD_SAMPLE_ID}" = "0" ]; then
+        if ! head -1 "${RESOLVED_MANIFEST_PATH}" | grep -q "sample_id"; then
+            echo "WARNING: sample_id column not found in manifest" >&2
+            echo "  You need to add sample_id first by submitting add_sample_id.py as a job" >&2
+            echo "  Or use --skip-add-sample-id if sample_id already exists" >&2
+            exit 1
+        fi
+    fi
+    
+    MANIFEST_WITH_IDS="${RESOLVED_MANIFEST_PATH}"
 fi
 
-# Extract scene IDs from JSON filenames
-find "${METADATA_DIR}" -name "*.json" -printf "%f\n" | sed 's/\.json$//' | sort -u > "${SCENE_IDS_FILE}"
+# =============================================================================
+# DISCOVER SCENE IDS (from manifest if provided, otherwise from metadata)
+# =============================================================================
+SCENE_IDS_FILE="${SHARDS_DIR}/all_scene_ids.txt"
+
+if [ -n "${MANIFEST_WITH_IDS}" ]; then
+    echo "Extracting scene IDs from manifest..."
+    
+    # Find scene_id column index
+    SCENE_ID_COL=$(head -1 "${MANIFEST_WITH_IDS}" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="scene_id") print i}')
+    
+    if [ -z "${SCENE_ID_COL}" ]; then
+        echo "ERROR: scene_id column not found in manifest" >&2
+        exit 1
+    fi
+    
+    # Extract scene IDs using awk (skip header, get unique, sort)
+    tail -n +2 "${MANIFEST_WITH_IDS}" | \
+        awk -F',' -v col="${SCENE_ID_COL}" '{print $col}' | \
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
+        grep -v '^$' | \
+        sort -u > "${SCENE_IDS_FILE}"
+    
+    if [ $? -ne 0 ] || [ ! -s "${SCENE_IDS_FILE}" ]; then
+        echo "ERROR: Failed to extract scene IDs from manifest" >&2
+        exit 1
+    fi
+else
+    echo "Discovering scene IDs from metadata..."
+    
+    METADATA_DIR="${DATASET_ROOT}/metadata/scenes"
+    
+    if [ ! -d "${METADATA_DIR}" ]; then
+        echo "ERROR: Metadata directory not found: ${METADATA_DIR}" >&2
+        exit 1
+    fi
+    
+    # Extract scene IDs from JSON filenames
+    find "${METADATA_DIR}" -name "*.json" -printf "%f\n" | sed 's/\.json$//' | sort -u > "${SCENE_IDS_FILE}"
+fi
 
 TOTAL_SCENES=$(wc -l < "${SCENE_IDS_FILE}")
 echo "  Found ${TOTAL_SCENES} scenes"
@@ -203,23 +264,6 @@ echo "  Created ${ACTUAL_SHARDS} shards"
 SCENES_PER_SHARD=$((TOTAL_SCENES / ACTUAL_SHARDS))
 echo "  ~${SCENES_PER_SHARD} scenes per shard"
 
-# =============================================================================
-# RESOLVE MANIFEST PATH
-# =============================================================================
-RESOLVED_MANIFEST_PATH=""
-if [ -n "${MANIFEST_PATH}" ]; then
-    # Try relative to dataset root first, then absolute
-    if [ -f "${DATASET_ROOT}/${MANIFEST_PATH}" ]; then
-        RESOLVED_MANIFEST_PATH="${DATASET_ROOT}/${MANIFEST_PATH}"
-    elif [ -f "${MANIFEST_PATH}" ]; then
-        RESOLVED_MANIFEST_PATH="${MANIFEST_PATH}"
-    else
-        echo "WARNING: Manifest file not found: ${MANIFEST_PATH}" >&2
-        echo "  POV palette checking will be disabled" >&2
-        CHECK_POV_PALETTE=0
-        RESOLVED_MANIFEST_PATH=""
-    fi
-fi
 
 # =============================================================================
 # WRITE CONFIG FILE (for job array to read)
@@ -237,8 +281,8 @@ MIN_PIXELS="${MIN_PIXELS}"
 MAX_BLACK_FRACTION="${MAX_BLACK_FRACTION}"
 MIN_CONTENT_FRACTION="${MIN_CONTENT_FRACTION}"
 
-# POV palette checking (optional - set MANIFEST_PATH to enable)
-MANIFEST_PATH="${RESOLVED_MANIFEST_PATH}"
+# POV palette checking (manifest with sample_id)
+MANIFEST_PATH="${MANIFEST_WITH_IDS}"
 CHECK_POV_PALETTE="${CHECK_POV_PALETTE}"
 POV_COLOR_TOLERANCE="${POV_COLOR_TOLERANCE}"
 POV_MIN_MATCH_RATIO="${POV_MIN_MATCH_RATIO}"
