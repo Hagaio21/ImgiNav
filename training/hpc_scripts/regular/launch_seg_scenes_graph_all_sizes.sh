@@ -1,8 +1,7 @@
 #!/bin/bash
-# Launch script for Seg Scenes Graph Diffusion experiments (all sizes)
-# Submits: small, medium, and large models
+# Launch script for Seg Scenes Graph Diffusion experiments (medium and large)
+# Submits: medium and large models (small is already training)
 # Queue distribution:
-# - small: gpuv100 (12 hours)
 # - medium: gpuv100 (12 hours)
 # - large: gpua100 (12 hours)
 
@@ -20,13 +19,12 @@ echo "==========================================================================
 echo ""
 
 # ============================================================================
-# gpuv100 queue: 2 experiments (small and medium)
+# gpuv100 queue: 1 experiment (medium)
 # ============================================================================
-echo "Submitting 2 jobs to gpuv100 queue (small and medium)..."
+echo "Submitting 1 job to gpuv100 queue (medium)..."
 echo ""
 
 GPUV100_CONFIGS=(
-    "experiments/diffusion/v2/seg/scenes/graph/small_down_bottleneck.yaml"
     "experiments/diffusion/v2/seg/scenes/graph/medium_down_bottleneck.yaml"
 )
 
@@ -131,8 +129,8 @@ except Exception as e:
 done
 
 echo "=============================================================================="
-echo "Done! Submitted 3 jobs:"
-echo "  - 2 to gpuv100 queue (scenes/graph: small, medium)"
+echo "Done! Submitted 2 jobs:"
+echo "  - 1 to gpuv100 queue (scenes/graph: medium)"
 echo "  - 1 to gpua100 queue (scenes/graph: large)"
 echo "=============================================================================="
 echo "Check job status with: bjobs"
