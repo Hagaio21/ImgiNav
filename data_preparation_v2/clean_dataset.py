@@ -16,7 +16,7 @@ Or has quality issues:
 - Too little content (mostly background)
 
 A POV is rejected if:
-- POV palette doesn't match layout palette (excluding white)
+- Room has content (not empty) AND POV is only shades of gray (above threshold)
 - Used to identify POVs looking at walls or not seeing room interior
 
 Usage:
@@ -40,6 +40,7 @@ Usage:
 import argparse
 import csv
 import logging
+import shutil
 from pathlib import Path
 from typing import Dict, Set, Tuple, List, Optional
 from collections import Counter
@@ -88,7 +89,7 @@ def extract_palette(
     image_path: Path,
     exclude_white: bool = True,
     color_tolerance: int = 10,
-    min_pixel_fraction: float = 0.001,
+    min_pixel_fraction: float = 0.005,
 ) -> Set[Tuple[int, int, int]]:
     """
     Extract color palette from an image, excluding white.
@@ -155,11 +156,14 @@ def compare_palettes(
     """
     Compare two palettes to see if they match.
     
+    Uses bidirectional matching: checks if layout colors match POV colors
+    AND if POV colors match layout colors, then uses the better ratio.
+    
     Args:
         layout_palette: Palette from layout image
         pov_palette: Palette from POV image
         color_tolerance: Maximum color distance for matching
-        min_match_ratio: Minimum ratio of layout colors that must match in POV
+        min_match_ratio: Minimum ratio of colors that must match
     
     Returns:
         (is_match, match_ratio, details)
@@ -174,29 +178,47 @@ def compare_palettes(
     layout_arr = np.array(list(layout_palette))
     pov_arr = np.array(list(pov_palette))
     
-    # For each layout color, find closest POV color
-    matched_count = 0
+    # Check layout -> POV matching
+    layout_matched = 0
     for layout_color in layout_palette:
         layout_rgb = np.array(layout_color)
-        
-        # Calculate distances to all POV colors
         distances = np.linalg.norm(pov_arr - layout_rgb, axis=1)
         min_distance = np.min(distances)
-        
         if min_distance <= color_tolerance:
-            matched_count += 1
+            layout_matched += 1
     
-    match_ratio = matched_count / len(layout_palette)
-    is_match = match_ratio >= min_match_ratio
+    # Check POV -> layout matching
+    pov_matched = 0
+    for pov_color in pov_palette:
+        pov_rgb = np.array(pov_color)
+        distances = np.linalg.norm(layout_arr - pov_rgb, axis=1)
+        min_distance = np.min(distances)
+        if min_distance <= color_tolerance:
+            pov_matched += 1
+    
+    # Use the better match ratio (more lenient)
+    layout_ratio = layout_matched / len(layout_palette) if len(layout_palette) > 0 else 0.0
+    pov_ratio = pov_matched / len(pov_palette) if len(pov_palette) > 0 else 0.0
+    match_ratio = max(layout_ratio, pov_ratio)
+    
+    # Also check intersection-based ratio (even more lenient)
+    # Count how many colors from either palette have a match in the other
+    total_colors = len(layout_palette) + len(pov_palette)
+    total_matched = layout_matched + pov_matched
+    intersection_ratio = total_matched / total_colors if total_colors > 0 else 0.0
+    
+    # Use the best ratio (most lenient)
+    final_ratio = max(match_ratio, intersection_ratio)
+    is_match = final_ratio >= min_match_ratio
     
     details = {
         "layout_colors": len(layout_palette),
         "pov_colors": len(pov_palette),
-        "matched_colors": matched_count,
-        "match_ratio": round(match_ratio, 4),
+        "matched_colors": layout_matched + pov_matched,
+        "match_ratio": round(final_ratio, 4),
     }
     
-    return is_match, match_ratio, details
+    return is_match, final_ratio, details
 
 
 # =============================================================================
@@ -316,28 +338,29 @@ def find_layouts(
 
 
 # =============================================================================
-# POV-Layout Palette Check
+# POV Grayscale Check
 # =============================================================================
 
-def check_pov_palette(
+def check_pov_grayscale(
     layout_path: Path,
     pov_path: Path,
     dataset_root: Path,
-    color_tolerance: int = 20,
-    min_match_ratio: float = 0.3,
-    palette_color_tolerance: int = 10,
+    grayscale_threshold: float = 0.9,
+    grayscale_color_tolerance: int = 10,
 ) -> Tuple[bool, str, Dict]:
     """
-    Check if POV palette matches layout palette.
+    Check if POV is only shades of gray when room has content.
+    
+    Rejects if:
+    - Layout has content (not empty)
+    - POV is mostly grayscale (above threshold)
     
     Returns:
         (is_valid, rejection_reason, details)
     """
     details = {
-        "layout_colors": 0,
-        "pov_colors": 0,
-        "matched_colors": 0,
-        "match_ratio": 0.0,
+        "layout_has_content": False,
+        "pov_grayscale_fraction": 0.0,
     }
     
     # Resolve paths
@@ -350,37 +373,50 @@ def check_pov_palette(
     if not pov_full.exists():
         return False, "POV_NOT_FOUND", details
     
-    # Extract palettes
-    layout_palette = extract_palette(
-        layout_full,
-        exclude_white=True,
-        color_tolerance=palette_color_tolerance,
-    )
+    # Check if layout has content (not empty)
+    try:
+        layout_img = Image.open(layout_full).convert("RGB")
+        layout_pixels = np.array(layout_img)
+        
+        # Count non-background pixels
+        total_pixels = layout_pixels.shape[0] * layout_pixels.shape[1]
+        background_color = np.array(SEG_COLORS["Background"])
+        bg_diff = np.abs(layout_pixels.astype(np.int16) - background_color)
+        bg_mask = np.all(bg_diff <= COLOR_TOLERANCE, axis=2)
+        content_pixels = total_pixels - bg_mask.sum()
+        content_fraction = content_pixels / total_pixels
+        
+        # Room is not empty if it has at least 5% content
+        layout_has_content = content_fraction >= 0.05
+        details["layout_has_content"] = layout_has_content
+    except Exception as e:
+        logger.warning(f"Failed to check layout content: {e}")
+        layout_has_content = False
     
-    pov_palette = extract_palette(
-        pov_full,
-        exclude_white=True,
-        color_tolerance=palette_color_tolerance,
-    )
-    
-    if len(layout_palette) == 0:
-        return False, "LAYOUT_NO_PALETTE", details
-    
-    if len(pov_palette) == 0:
-        return False, "POV_NO_PALETTE", details
-    
-    # Compare palettes
-    is_match, match_ratio, match_details = compare_palettes(
-        layout_palette,
-        pov_palette,
-        color_tolerance=color_tolerance,
-        min_match_ratio=min_match_ratio,
-    )
-    
-    details.update(match_details)
-    
-    if not is_match:
-        return False, "POV_PALETTE_MISMATCH", details
+    # Check if POV is grayscale
+    try:
+        pov_img = Image.open(pov_full).convert("RGB")
+        pov_pixels = np.array(pov_img)
+        
+        # Flatten pixels
+        h, w = pov_pixels.shape[:2]
+        pixels_flat = pov_pixels.reshape(-1, 3)
+        
+        # Check if each pixel is grayscale (R, G, B are similar)
+        # A pixel is grayscale if max(R,G,B) - min(R,G,B) <= tolerance
+        pixel_ranges = np.max(pixels_flat, axis=1) - np.min(pixels_flat, axis=1)
+        grayscale_mask = pixel_ranges <= grayscale_color_tolerance
+        
+        grayscale_fraction = grayscale_mask.mean()
+        details["pov_grayscale_fraction"] = round(grayscale_fraction, 4)
+        
+        # Reject if room has content AND POV is mostly grayscale
+        if layout_has_content and grayscale_fraction >= grayscale_threshold:
+            return False, "POV_REJECTED", details
+        
+    except Exception as e:
+        logger.warning(f"Failed to check POV grayscale: {e}")
+        return False, "POV_CHECK_ERROR", details
     
     return True, "", details
 
@@ -495,23 +531,24 @@ def process_dataset(
                 rejection_details.update({f"layout_{k}": v for k, v in layout_details.items()})
             
             # =====================================================================
-            # STEP 2: Check POV palette matching (ONLY if POV checking enabled)
+            # STEP 2: Check POV grayscale (ONLY if POV checking enabled)
+            # Reject if room has content AND POV is only shades of gray
             # =====================================================================
             pov_valid = True
             pov_reason = ""
             pov_details = {}
+            pov_full = None
             
             if enable_pov_check:
                 if pov_path:
                     pov_full = dataset_root / pov_path if not Path(pov_path).is_absolute() else Path(pov_path)
                     if layout_full and layout_full.exists() and pov_full.exists():
-                        pov_valid, pov_reason, pov_details = check_pov_palette(
+                        pov_valid, pov_reason, pov_details = check_pov_grayscale(
                             layout_full,
                             pov_full,
                             dataset_root,
-                            color_tolerance=pov_color_tolerance,
-                            min_match_ratio=pov_min_match_ratio,
-                            palette_color_tolerance=palette_color_tolerance,
+                            grayscale_threshold=pov_min_match_ratio,  # Reuse this param for grayscale threshold
+                            grayscale_color_tolerance=pov_color_tolerance,  # Reuse this param for color tolerance
                         )
                     else:
                         pov_valid = False
@@ -534,6 +571,30 @@ def process_dataset(
             is_rejected = not layout_valid or (enable_pov_check and not pov_valid)
             if is_rejected:
                 rejected_count += 1
+                
+                # Copy rejected images to separate directories
+                # Only copy the images that caused the rejection
+                if not layout_valid and layout_full and layout_full.exists():
+                    rejected_layouts_dir = dataset_root / "rejected_layouts"
+                    rejected_layouts_dir.mkdir(parents=True, exist_ok=True)
+                    # Copy with sample_id in filename to avoid conflicts
+                    dest_name = f"{sample_id}_{layout_full.name}"
+                    dest_path = rejected_layouts_dir / dest_name
+                    try:
+                        shutil.copy2(layout_full, dest_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to copy rejected layout {layout_full}: {e}")
+                
+                if enable_pov_check and not pov_valid and pov_full and pov_full.exists():
+                    rejected_pov_dir = dataset_root / "rejected_pov"
+                    rejected_pov_dir.mkdir(parents=True, exist_ok=True)
+                    # Copy with sample_id in filename to avoid conflicts
+                    dest_name = f"{sample_id}_{pov_full.name}"
+                    dest_path = rejected_pov_dir / dest_name
+                    try:
+                        shutil.copy2(pov_full, dest_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to copy rejected POV {pov_full}: {e}")
             
             # Build result row - sample_id is the primary key for merging back into manifest
             # Only include essential fields, not all the detail metrics
@@ -703,15 +764,15 @@ def main():
     parser.add_argument("--max-black-fraction", type=float, default=0.95)
     parser.add_argument("--min-content-fraction", type=float, default=0.05)
     
-    # POV palette checking parameters
+    # POV grayscale checking parameters
     parser.add_argument("--check-pov-palette", action="store_true",
-                        help="Check POV palette matching with layout (requires --manifest)")
-    parser.add_argument("--pov-color-tolerance", type=int, default=20,
-                        help="Color distance tolerance for palette matching (default: 20)")
-    parser.add_argument("--pov-min-match-ratio", type=float, default=0.3,
-                        help="Minimum ratio of layout colors that must match in POV (default: 0.3)")
+                        help="Check if POV is only grayscale when room has content (requires --manifest)")
+    parser.add_argument("--pov-color-tolerance", type=int, default=10,
+                        help="Color tolerance for grayscale detection (max R,G,B difference, default: 10)")
+    parser.add_argument("--pov-min-match-ratio", type=float, default=0.9,
+                        help="Grayscale threshold - reject if POV grayscale fraction >= this (default: 0.9)")
     parser.add_argument("--palette-color-tolerance", type=int, default=10,
-                        help="Color quantization tolerance for palette extraction (default: 10)")
+                        help="Unused (kept for backward compatibility)")
     
     args = parser.parse_args()
     
