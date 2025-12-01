@@ -1081,7 +1081,7 @@ def main():
     scheduler = build_scheduler(optimizer, config, last_epoch=last_epoch)
     
     # Training settings
-    epochs = config["training"].get("epochs", 100)
+    epochs = config["training"].get("epochs", 500)
     use_amp = config["training"].get("use_amp", True)  # Default to True for speedup and memory efficiency
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
