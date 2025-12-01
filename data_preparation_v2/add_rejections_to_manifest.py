@@ -27,30 +27,41 @@ logger = logging.getLogger(__name__)
 
 def load_rejections(rejections_path: Path) -> Dict[str, dict]:
     """
-    Load rejections CSV into a dict keyed by both seg and tex paths.
+    Load rejections CSV into a dict keyed by sample_id.
     
     Returns:
-        Dict mapping layout_path -> {rejected, rejection_reason}
+        Dict mapping sample_id -> {rejected, rejection_reason, ...}
     """
     rejections = {}
     
     with open(rejections_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            seg_path = row.get("layout_path_seg", "")
-            tex_path = row.get("layout_path_tex", "")
+            sample_id = row.get("sample_id", "")
             rejected = row.get("rejected", "False")
             reason = row.get("rejection_reason", "")
             
-            info = {
-                "rejected": rejected,
-                "rejection_reason": reason,
-            }
-            
-            if seg_path:
-                rejections[seg_path] = info
-            if tex_path:
-                rejections[tex_path] = info
+            if sample_id:
+                # New format: use sample_id
+                rejections[sample_id] = {
+                    "rejected": rejected,
+                    "rejection_reason": reason,
+                    **{k: v for k, v in row.items() if k not in ["sample_id", "rejected", "rejection_reason"]}
+                }
+            else:
+                # Old format: fallback to layout_path
+                seg_path = row.get("layout_path_seg", "")
+                tex_path = row.get("layout_path_tex", "")
+                
+                info = {
+                    "rejected": rejected,
+                    "rejection_reason": reason,
+                }
+                
+                if seg_path:
+                    rejections[seg_path] = info
+                if tex_path:
+                    rejections[tex_path] = info
     
     return rejections
 
@@ -75,24 +86,42 @@ def add_rejections_to_manifest(
     # Add new columns
     output_columns = columns + ["rejected", "rejection_reason"]
     
+    # Check if manifest has sample_id column
+    has_sample_id = "sample_id" in columns
+    
     # Match rejections
     matched = 0
     rejected_count = 0
     
     for row in rows:
-        layout_path = row.get("layout_path", "")
-        
-        if layout_path in rejections:
-            matched += 1
-            info = rejections[layout_path]
-            row["rejected"] = info["rejected"]
-            row["rejection_reason"] = info["rejection_reason"]
-            if info["rejected"] == "True":
-                rejected_count += 1
+        if has_sample_id:
+            # New format: match by sample_id
+            sample_id = row.get("sample_id", "")
+            if sample_id in rejections:
+                matched += 1
+                info = rejections[sample_id]
+                row["rejected"] = info["rejected"]
+                row["rejection_reason"] = info["rejection_reason"]
+                if info["rejected"] == "True" or info["rejected"] == True:
+                    rejected_count += 1
+            else:
+                # Sample not in rejections - assume not rejected
+                row["rejected"] = "False"
+                row["rejection_reason"] = ""
         else:
-            # Layout not in rejections - assume not rejected
-            row["rejected"] = "False"
-            row["rejection_reason"] = ""
+            # Old format: match by layout_path
+            layout_path = row.get("layout_path", "")
+            if layout_path in rejections:
+                matched += 1
+                info = rejections[layout_path]
+                row["rejected"] = info["rejected"]
+                row["rejection_reason"] = info["rejection_reason"]
+                if info["rejected"] == "True":
+                    rejected_count += 1
+            else:
+                # Layout not in rejections - assume not rejected
+                row["rejected"] = "False"
+                row["rejection_reason"] = ""
     
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +131,8 @@ def add_rejections_to_manifest(
         writer.writeheader()
         writer.writerows(rows)
     
-    logger.info(f"  Matched: {matched}/{len(rows)} layouts")
+    match_key = "samples" if has_sample_id else "layouts"
+    logger.info(f"  Matched: {matched}/{len(rows)} {match_key}")
     logger.info(f"  Rejected: {rejected_count}")
     logger.info(f"  Output: {output_path}")
 
@@ -132,11 +162,17 @@ def main():
     # Load rejections
     logger.info(f"Loading rejections from: {args.rejections}")
     rejections = load_rejections(args.rejections)
-    logger.info(f"  Loaded {len(rejections)} layout paths")
+    
+    # Check if rejections use sample_id or layout_path
+    first_key = next(iter(rejections.keys())) if rejections else ""
+    uses_sample_id = first_key and not ("/" in first_key or "\\" in first_key)
+    key_type = "sample_ids" if uses_sample_id else "layout paths"
+    logger.info(f"  Loaded {len(rejections)} {key_type}")
     
     # Count rejected
-    rejected_layouts = sum(1 for v in rejections.values() if v["rejected"] == "True")
-    logger.info(f"  Rejected layouts: {rejected_layouts}")
+    rejected_count = sum(1 for v in rejections.values() 
+                        if str(v.get("rejected", "")).lower() == "true")
+    logger.info(f"  Rejected: {rejected_count}")
     
     # Process manifests
     if args.manifest_seg and args.manifest_seg.exists():

@@ -79,7 +79,7 @@ cd "${BASE_DIR}"
 echo "Running clean_dataset.py..."
 echo ""
 
-# Build command with optional POV palette checking
+# Build command
 CMD_ARGS=(
     --dataset-root "${DATASET_ROOT}"
     --shard-file "${SHARD_FILE}"
@@ -89,20 +89,25 @@ CMD_ARGS=(
     --min-content-fraction "${MIN_CONTENT_FRACTION}"
 )
 
-# Add POV palette checking if enabled
-if [ -n "${MANIFEST_PATH:-}" ] && [ "${CHECK_POV_PALETTE:-0}" = "1" ]; then
+# Add manifest if provided (required for sample-based checking)
+if [ -n "${MANIFEST_PATH:-}" ]; then
     if [ -f "${MANIFEST_PATH}" ]; then
-        echo "POV palette checking enabled with manifest: ${MANIFEST_PATH}"
-        CMD_ARGS+=(
-            --manifest "${MANIFEST_PATH}"
-            --check-pov-palette
-            --pov-color-tolerance "${POV_COLOR_TOLERANCE:-20}"
-            --pov-min-match-ratio "${POV_MIN_MATCH_RATIO:-0.3}"
-            --palette-color-tolerance "${PALETTE_COLOR_TOLERANCE:-10}"
-        )
+        echo "Using manifest: ${MANIFEST_PATH}"
+        CMD_ARGS+=(--manifest "${MANIFEST_PATH}")
+        
+        # Add POV palette checking if enabled
+        if [ "${CHECK_POV_PALETTE:-0}" = "1" ]; then
+            echo "POV palette checking enabled"
+            CMD_ARGS+=(
+                --check-pov-palette
+                --pov-color-tolerance "${POV_COLOR_TOLERANCE:-20}"
+                --pov-min-match-ratio "${POV_MIN_MATCH_RATIO:-0.3}"
+                --palette-color-tolerance "${PALETTE_COLOR_TOLERANCE:-10}"
+            )
+        fi
     else
         echo "WARNING: Manifest file not found: ${MANIFEST_PATH}"
-        echo "  Skipping POV palette checking"
+        echo "  Will fall back to layout-only checking"
     fi
 fi
 

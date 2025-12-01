@@ -61,12 +61,20 @@ def merge_csv_files(input_files: List[Path], output_path: Path):
             file_rows = 0
             duplicates = 0
             for row in reader:
-                # Use layout_path_seg for deduplication
-                path = row.get("layout_path_seg", "")
-                if path in seen_paths:
-                    duplicates += 1
-                    continue
-                seen_paths.add(path)
+                # Use sample_id for deduplication (if available), otherwise fall back to layout_path_seg
+                sample_id = row.get("sample_id", "")
+                if sample_id:
+                    if sample_id in seen_paths:
+                        duplicates += 1
+                        continue
+                    seen_paths.add(sample_id)
+                else:
+                    # Fallback for old format without sample_id
+                    path = row.get("layout_path_seg", "")
+                    if path in seen_paths:
+                        duplicates += 1
+                        continue
+                    seen_paths.add(path)
                 all_rows.append(row)
                 file_rows += 1
             
