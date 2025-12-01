@@ -7,9 +7,11 @@
 # which are merged after all jobs complete.
 #
 # Usage:
-#   ./launch_clean_dataset.sh                    # Default: 10 shards
+#   ./launch_clean_dataset.sh                    # Default: 50 shards, layout checking only
 #   ./launch_clean_dataset.sh --num-shards 100  # More parallelism
 #   ./launch_clean_dataset.sh --dry-run         # Just create shards, don't submit
+#   ./launch_clean_dataset.sh --manifest manifests/manifest_tex.csv --check-pov-palette  # With POV checking
+#   ./launch_clean_dataset.sh --min-pixels 150 --max-black-fraction 0.90  # Custom thresholds
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
@@ -34,6 +36,11 @@ CHECK_POV_PALETTE=0
 POV_COLOR_TOLERANCE=20
 POV_MIN_MATCH_RATIO=0.3
 PALETTE_COLOR_TOLERANCE=10
+
+# Layout quality thresholds
+MIN_PIXELS=100
+MAX_BLACK_FRACTION=0.95
+MIN_CONTENT_FRACTION=0.05
 
 # =============================================================================
 # PARSE ARGUMENTS
@@ -65,6 +72,18 @@ while [[ $# -gt 0 ]]; do
             PALETTE_COLOR_TOLERANCE="$2"
             shift 2
             ;;
+        --min-pixels)
+            MIN_PIXELS="$2"
+            shift 2
+            ;;
+        --max-black-fraction)
+            MAX_BLACK_FRACTION="$2"
+            shift 2
+            ;;
+        --min-content-fraction)
+            MIN_CONTENT_FRACTION="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -74,11 +93,20 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --num-shards N              Number of parallel shards (default: 50)"
-            echo "  --manifest PATH             Enable POV palette checking with manifest (optional)"
+            echo ""
+            echo "Layout Quality Thresholds:"
+            echo "  --min-pixels N              Minimum pixels for required classes (default: 100)"
+            echo "  --max-black-fraction F     Max fraction of black pixels (default: 0.95)"
+            echo "  --min-content-fraction F   Min fraction of non-background content (default: 0.05)"
+            echo ""
+            echo "POV Palette Checking:"
+            echo "  --manifest PATH             Manifest CSV file (required for POV checking)"
             echo "  --check-pov-palette         Enable POV palette checking (requires --manifest)"
             echo "  --pov-color-tolerance N     Color distance tolerance (default: 20)"
             echo "  --pov-min-match-ratio F     Min match ratio (default: 0.3)"
             echo "  --palette-color-tolerance N Palette quantization tolerance (default: 10)"
+            echo ""
+            echo "Other:"
             echo "  --dry-run                   Don't submit jobs, just create shards"
             echo "  --help                      Show this help"
             exit 0
@@ -95,6 +123,12 @@ echo "Launching Parallel Dataset Cleaning"
 echo "=========================================="
 echo "Dataset Root: ${DATASET_ROOT}"
 echo "Num Shards: ${NUM_SHARDS}"
+echo ""
+echo "Layout Quality Thresholds:"
+echo "  Min Pixels: ${MIN_PIXELS}"
+echo "  Max Black Fraction: ${MAX_BLACK_FRACTION}"
+echo "  Min Content Fraction: ${MIN_CONTENT_FRACTION}"
+echo ""
 if [ "${CHECK_POV_PALETTE}" = "1" ]; then
     echo "POV Palette Checking: ENABLED"
     if [ -n "${MANIFEST_PATH}" ]; then
@@ -106,6 +140,7 @@ if [ "${CHECK_POV_PALETTE}" = "1" ]; then
 else
     echo "POV Palette Checking: DISABLED"
 fi
+echo ""
 echo "Dry Run: ${DRY_RUN}"
 echo ""
 
@@ -198,9 +233,9 @@ SHARDS_DIR="${SHARDS_DIR}"
 OUTPUT_DIR="${OUTPUT_DIR}"
 
 # Quality thresholds (for layouts)
-MIN_PIXELS="100"
-MAX_BLACK_FRACTION="0.95"
-MIN_CONTENT_FRACTION="0.05"
+MIN_PIXELS="${MIN_PIXELS}"
+MAX_BLACK_FRACTION="${MAX_BLACK_FRACTION}"
+MIN_CONTENT_FRACTION="${MIN_CONTENT_FRACTION}"
 
 # POV palette checking (optional - set MANIFEST_PATH to enable)
 MANIFEST_PATH="${RESOLVED_MANIFEST_PATH}"
