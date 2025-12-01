@@ -27,6 +27,12 @@ source "${CONFIG_FILE}"
 # DETERMINE SHARD FROM ARRAY INDEX
 # =============================================================================
 # LSB_JOBINDEX is 1-indexed, shard files are 0-indexed (shard_000, shard_001, ...)
+if [ -z "${LSB_JOBINDEX:-}" ]; then
+    echo "ERROR: LSB_JOBINDEX not set. This script must be run as a job array." >&2
+    echo "  Use launch_clean_dataset.sh to submit as an array job." >&2
+    exit 1
+fi
+
 SHARD_INDEX=$(printf "%03d" $((LSB_JOBINDEX - 1)))
 SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_INDEX}.txt"
 OUTPUT_FILE="${OUTPUT_DIR}/rejections_shard_${SHARD_INDEX}.csv"
