@@ -1,7 +1,7 @@
 experiment:
   name: diff_clip_spatial_scenes_medium_all
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_spatial_scenes_medium_allX0
+  save_path: /work3/s233249/ImgiNav/experiments/clip/diff_clip_spatial_scenes_medium_all
 dataset:
   manifest: /work3/s233249/ImgiNav/experiments/shared_embeddings/manifest_with_embeddings.csv
   outputs:
@@ -53,7 +53,7 @@ training:
   train_split: 0.8
   batch_size: 16
   num_workers: 4
-  shuffle: trueX0
+  shuffle: true
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
@@ -74,3 +74,4 @@ training:
     key: pred_noise
     target: noise
     weight: 1.0
+.0
