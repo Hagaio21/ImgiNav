@@ -32,8 +32,8 @@ NUM_SHARDS=100
 DRY_RUN=0
 MANIFEST_PATH="/work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg.csv"  # Default manifest
 CHECK_POV_PALETTE=1  # POV checking is default when manifest provided
-POV_COLOR_TOLERANCE=10
-POV_MIN_MATCH_RATIO=0.9
+POV_COLOR_TOLERANCE=20
+POV_MIN_MATCH_RATIO=0.7
 PALETTE_COLOR_TOLERANCE=10
 SKIP_ADD_SAMPLE_ID=0
 ADD_SAMPLE_ID_JOB_ID=""  # Will be set if we submit add_sample_id job
@@ -109,12 +109,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --max-black-fraction F     Max fraction of black pixels (default: 0.95)"
             echo "  --min-content-fraction F   Min fraction of non-background content (default: 0.05)"
             echo ""
-            echo "POV Grayscale Checking:"
+            echo "POV Uniformity Checking:"
             echo "  --manifest PATH             Manifest CSV file with sample_id (required, enables POV checking)"
-            echo "  --no-pov-check              Disable POV grayscale checking"
+            echo "  --no-pov-check              Disable POV uniformity checking"
             echo "  --skip-add-sample-id        Skip sample_id check (assumes already present)"
-            echo "  --pov-color-tolerance N     Grayscale color tolerance - max R,G,B difference (default: 10)"
-            echo "  --pov-min-match-ratio F     Grayscale threshold - reject if fraction >= this (default: 0.9)"
+            echo "  --pov-color-tolerance N     Color quantization tolerance (default: 20)"
+            echo "  --pov-min-match-ratio F     Max dominant color fraction - reject if >= this (default: 0.7)"
             echo ""
             echo "Other:"
             echo "  --dry-run                   Don't submit jobs, just create shards"
@@ -140,12 +140,12 @@ echo "  Max Black Fraction: ${MAX_BLACK_FRACTION}"
 echo "  Min Content Fraction: ${MIN_CONTENT_FRACTION}"
 echo ""
 if [ "${CHECK_POV_PALETTE}" = "1" ]; then
-            echo "POV Grayscale Checking: ENABLED (default)"
+            echo "POV Uniformity Checking: ENABLED (default)"
             if [ -n "${MANIFEST_PATH}" ]; then
                 echo "  Manifest: ${MANIFEST_PATH}"
             fi
-            echo "  Grayscale Color Tolerance: ${POV_COLOR_TOLERANCE}"
-            echo "  Grayscale Threshold: ${POV_MIN_MATCH_RATIO}"
+            echo "  Color Quantization Tolerance: ${POV_COLOR_TOLERANCE}"
+            echo "  Max Dominant Color Fraction: ${POV_MIN_MATCH_RATIO}"
 else
     echo "POV Palette Checking: DISABLED"
 fi

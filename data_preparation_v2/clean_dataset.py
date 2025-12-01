@@ -16,8 +16,8 @@ Or has quality issues:
 - Too little content (mostly background)
 
 A POV is rejected if:
-- Room has content (not empty) AND POV is only shades of gray (above threshold)
-- Used to identify POVs looking at walls or not seeing room interior
+- Room has content (not empty) AND POV is too uniform (too one-colored, above threshold)
+- Used to identify POVs looking at blank walls or empty spaces where nothing much happens
 
 Usage:
     python clean_dataset.py \\
@@ -338,29 +338,30 @@ def find_layouts(
 
 
 # =============================================================================
-# POV Grayscale Check
+# POV Uniformity Check
 # =============================================================================
 
-def check_pov_grayscale(
+def check_pov_uniformity(
     layout_path: Path,
     pov_path: Path,
     dataset_root: Path,
-    grayscale_threshold: float = 0.9,
-    grayscale_color_tolerance: int = 10,
+    max_dominant_color_fraction: float = 0.7,
+    color_tolerance: int = 20,
 ) -> Tuple[bool, str, Dict]:
     """
-    Check if POV is only shades of gray when room has content.
+    Check if POV is too uniform (too one-colored).
     
     Rejects if:
     - Layout has content (not empty)
-    - POV is mostly grayscale (above threshold)
+    - POV is too uniform (one dominant color covers too much of the image)
     
     Returns:
         (is_valid, rejection_reason, details)
     """
     details = {
         "layout_has_content": False,
-        "pov_grayscale_fraction": 0.0,
+        "pov_dominant_color_fraction": 0.0,
+        "pov_num_colors": 0,
     }
     
     # Resolve paths
@@ -393,29 +394,42 @@ def check_pov_grayscale(
         logger.warning(f"Failed to check layout content: {e}")
         layout_has_content = False
     
-    # Check if POV is grayscale
+    # Check if POV is too uniform (too one-colored)
     try:
         pov_img = Image.open(pov_full).convert("RGB")
         pov_pixels = np.array(pov_img)
         
         # Flatten pixels
         h, w = pov_pixels.shape[:2]
+        total_pixels = h * w
         pixels_flat = pov_pixels.reshape(-1, 3)
         
-        # Check if each pixel is grayscale (R, G, B are similar)
-        # A pixel is grayscale if max(R,G,B) - min(R,G,B) <= tolerance
-        pixel_ranges = np.max(pixels_flat, axis=1) - np.min(pixels_flat, axis=1)
-        grayscale_mask = pixel_ranges <= grayscale_color_tolerance
+        # Quantize colors to group similar colors together
+        # This helps identify dominant colors even with slight variations
+        quantized_colors = []
+        for pixel in pixels_flat:
+            r, g, b = pixel
+            r_q = (r // color_tolerance) * color_tolerance
+            g_q = (g // color_tolerance) * color_tolerance
+            b_q = (b // color_tolerance) * color_tolerance
+            quantized_colors.append((r_q, g_q, b_q))
         
-        grayscale_fraction = grayscale_mask.mean()
-        details["pov_grayscale_fraction"] = round(grayscale_fraction, 4)
+        # Count color frequencies
+        color_counts = Counter(quantized_colors)
+        details["pov_num_colors"] = len(color_counts)
         
-        # Reject if room has content AND POV is mostly grayscale
-        if layout_has_content and grayscale_fraction >= grayscale_threshold:
-            return False, "POV_REJECTED", details
+        # Find the most dominant color fraction
+        if len(color_counts) > 0:
+            max_count = max(color_counts.values())
+            dominant_fraction = max_count / total_pixels
+            details["pov_dominant_color_fraction"] = round(dominant_fraction, 4)
+            
+            # Reject if room has content AND POV is too uniform (one color dominates)
+            if layout_has_content and dominant_fraction >= max_dominant_color_fraction:
+                return False, "POV_REJECTED", details
         
     except Exception as e:
-        logger.warning(f"Failed to check POV grayscale: {e}")
+        logger.warning(f"Failed to check POV uniformity: {e}")
         return False, "POV_CHECK_ERROR", details
     
     return True, "", details
@@ -465,36 +479,34 @@ def process_dataset(
             logger.error("Manifest must have 'sample_id' column. Run add_sample_id.py first.")
             return
         
-        # Filter to rows with layout (and optionally POV if POV checking enabled)
+        # Filter by scene_ids if provided (for shard processing)
+        if scene_ids:
+            df = df[df["scene_id"].isin(scene_ids)].copy()
+            logger.info(f"  Filtered to {len(df)} samples in shard")
+        
+        if len(df) == 0:
+            logger.warning("No samples in shard")
+            return
+        
+        # Count samples with/without required paths for logging
         has_layout = df["layout_path"].notna() & (df["layout_path"] != "")
         if enable_pov_check:
             has_pov = df["pov_path"].notna() & (df["pov_path"] != "")
             valid_rows = df[has_layout & has_pov].copy()
             logger.info(f"  Found {len(valid_rows)} samples with both layout and POV")
+            logger.info(f"  Found {len(df) - len(valid_rows)} samples missing layout or POV (will be marked as rejected)")
         else:
             valid_rows = df[has_layout].copy()
             logger.info(f"  Found {len(valid_rows)} samples with layout")
+            logger.info(f"  Found {len(df) - len(valid_rows)} samples missing layout (will be marked as rejected)")
         
-        if len(valid_rows) == 0:
-            logger.warning("No valid samples found in manifest")
-            return
-        
-        # Filter by scene_ids if provided (for shard processing)
-        if scene_ids:
-            valid_rows = valid_rows[valid_rows["scene_id"].isin(scene_ids)].copy()
-            logger.info(f"  Filtered to {len(valid_rows)} samples in shard")
-        
-        if len(valid_rows) == 0:
-            logger.warning("No samples in shard")
-            return
-        
-        # Check each sample
+        # Check each sample - process ALL samples, not just those with paths
         check_desc = "Checking samples (layout" + (" + POV" if enable_pov_check else "") + ")"
         logger.info(check_desc)
         results = []
         rejected_count = 0
         
-        for idx, row in tqdm(valid_rows.iterrows(), total=len(valid_rows), desc="Checking samples"):
+        for idx, row in tqdm(df.iterrows(), total=len(df), desc="Checking samples"):
             sample_id = row["sample_id"]
             layout_path = row["layout_path"]
             pov_path = row.get("pov_path", "") if enable_pov_check else ""
@@ -531,8 +543,8 @@ def process_dataset(
                 rejection_details.update({f"layout_{k}": v for k, v in layout_details.items()})
             
             # =====================================================================
-            # STEP 2: Check POV grayscale (ONLY if POV checking enabled)
-            # Reject if room has content AND POV is only shades of gray
+            # STEP 2: Check POV uniformity (ONLY if POV checking enabled)
+            # Reject if room has content AND POV is too uniform (too one-colored)
             # =====================================================================
             pov_valid = True
             pov_reason = ""
@@ -540,19 +552,19 @@ def process_dataset(
             pov_full = None
             
             if enable_pov_check:
-                if pov_path:
+                if pov_path and pd.notna(pov_path):
                     pov_full = dataset_root / pov_path if not Path(pov_path).is_absolute() else Path(pov_path)
                     if layout_full and layout_full.exists() and pov_full.exists():
-                        pov_valid, pov_reason, pov_details = check_pov_grayscale(
+                        pov_valid, pov_reason, pov_details = check_pov_uniformity(
                             layout_full,
                             pov_full,
                             dataset_root,
-                            grayscale_threshold=pov_min_match_ratio,  # Reuse this param for grayscale threshold
-                            grayscale_color_tolerance=pov_color_tolerance,  # Reuse this param for color tolerance
+                            max_dominant_color_fraction=pov_min_match_ratio,  # Reuse this param for uniformity threshold
+                            color_tolerance=pov_color_tolerance,  # Reuse this param for color quantization
                         )
                     else:
                         pov_valid = False
-                        if not layout_full.exists():
+                        if not layout_full or not layout_full.exists():
                             pov_reason = "LAYOUT_NOT_FOUND"
                         elif not pov_full.exists():
                             pov_reason = "POV_NOT_FOUND"
@@ -764,13 +776,13 @@ def main():
     parser.add_argument("--max-black-fraction", type=float, default=0.95)
     parser.add_argument("--min-content-fraction", type=float, default=0.05)
     
-    # POV grayscale checking parameters
+    # POV uniformity checking parameters
     parser.add_argument("--check-pov-palette", action="store_true",
-                        help="Check if POV is only grayscale when room has content (requires --manifest)")
-    parser.add_argument("--pov-color-tolerance", type=int, default=10,
-                        help="Color tolerance for grayscale detection (max R,G,B difference, default: 10)")
-    parser.add_argument("--pov-min-match-ratio", type=float, default=0.9,
-                        help="Grayscale threshold - reject if POV grayscale fraction >= this (default: 0.9)")
+                        help="Check if POV is too uniform (too one-colored) when room has content (requires --manifest)")
+    parser.add_argument("--pov-color-tolerance", type=int, default=20,
+                        help="Color quantization tolerance for uniformity detection (default: 20)")
+    parser.add_argument("--pov-min-match-ratio", type=float, default=0.7,
+                        help="Uniformity threshold - reject if dominant color fraction >= this (default: 0.7)")
     parser.add_argument("--palette-color-tolerance", type=int, default=10,
                         help="Unused (kept for backward compatibility)")
     
