@@ -405,111 +405,23 @@ def process_dataset(
     """
     Check all layouts and write rejections CSV.
     
-    If manifest_path is provided and enable_pov_check is True, also checks
-    POV palette matching with layouts.
+    Always checks layout quality. If manifest_path is provided and enable_pov_check is True,
+    also checks POV palette matching with layouts.
     """
     
-    if manifest_path and enable_pov_check:
-        # Process manifest rows (check POV palette matching)
-        logger.info("Loading manifest...")
-        try:
-            df = pd.read_csv(manifest_path, low_memory=False)
-            df.columns = df.columns.str.strip()
-            logger.info(f"  Loaded {len(df)} rows")
-        except Exception as e:
-            logger.error(f"Failed to load manifest: {e}")
-            return
-        
-        # Filter to rows with both layout and POV
-        has_layout = df["layout_path"].notna() & (df["layout_path"] != "")
-        has_pov = df["pov_path"].notna() & (df["pov_path"] != "")
-        valid_rows = df[has_layout & has_pov].copy()
-        logger.info(f"  Found {len(valid_rows)} rows with both layout and POV")
-        
-        if len(valid_rows) == 0:
-            logger.warning("No rows with both layout and POV found")
-            return
-        
-        # Check each row
-        logger.info("Checking POV palette matching...")
-        results = []
-        rejected_count = 0
-        
-        for idx, row in tqdm(valid_rows.iterrows(), total=len(valid_rows), desc="Checking"):
-            layout_path = row["layout_path"]
-            pov_path = row["pov_path"]
-            
-            # Check POV palette
-            is_valid, reason, details = check_pov_palette(
-                Path(layout_path),
-                Path(pov_path),
-                dataset_root,
-                color_tolerance=pov_color_tolerance,
-                min_match_ratio=pov_min_match_ratio,
-                palette_color_tolerance=palette_color_tolerance,
-            )
-            
-            rejected = not is_valid
-            if rejected:
-                rejected_count += 1
-            
-            results.append({
-                "path": pov_path,  # Use POV path as primary identifier
-                "layout_path": layout_path,
-                "pov_path": pov_path,
-                "rejected": rejected,
-                "rejection_reason": reason,
-                **details,
-            })
-        
-        # Write output
-        logger.info(f"Writing {len(results)} results to {output_path}")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        columns = [
-            "path", "layout_path", "pov_path", "rejected", "rejection_reason",
-            "layout_colors", "pov_colors", "matched_colors", "match_ratio",
-        ]
-        
-        with open(output_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=columns)
-            writer.writeheader()
-            writer.writerows(results)
-        
-        # Summary
-        logger.info(f"\nSummary:")
-        logger.info(f"  Total samples: {len(results)}")
-        logger.info(f"  Rejected: {rejected_count} ({100*rejected_count/len(results):.1f}%)")
-        logger.info(f"  Accepted: {len(results) - rejected_count}")
-        
-        # Breakdown by reason
-        reason_counts: Dict[str, int] = {}
-        for r in results:
-            if r["rejected"]:
-                reason = r["rejection_reason"]
-                reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        
-        if reason_counts:
-            logger.info(f"\nRejection reasons:")
-            for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
-                logger.info(f"  {reason}: {count}")
+    # =============================================================================
+    # STEP 1: Check Layout Quality (always done)
+    # =============================================================================
+    logger.info("Finding layouts...")
+    layouts = find_layouts(dataset_root, scene_ids)
+    logger.info(f"  Found {len(layouts)} layouts")
     
-    else:
-        # Original behavior: check layouts only
-        logger.info("Finding layouts...")
-        layouts = find_layouts(dataset_root, scene_ids)
-        logger.info(f"  Found {len(layouts)} layouts")
-        
-        if not layouts:
-            logger.warning("No layouts found")
-            return
-        
-        # Check each layout
-        logger.info("Checking layouts...")
-        results = []
-        
-        rejected_count = 0
-        for layout_path in tqdm(layouts, desc="Checking"):
+    layout_results = []
+    layout_rejected_count = 0
+    
+    if layouts:
+        logger.info("Checking layout quality...")
+        for layout_path in tqdm(layouts, desc="Checking layouts"):
             is_valid, reason, details = check_layout(
                 layout_path,
                 min_pixels=min_pixels,
@@ -519,52 +431,154 @@ def process_dataset(
             
             rejected = not is_valid
             if rejected:
-                rejected_count += 1
+                layout_rejected_count += 1
             
             # Store both seg and tex paths
             seg_path = str(layout_path.relative_to(dataset_root))
             tex_path = seg_path.replace("/seg/", "/tex/").replace("_seg_", "_tex_")
             
-            results.append({
+            layout_results.append({
                 "layout_path_seg": seg_path,
                 "layout_path_tex": tex_path,
                 "rejected": rejected,
                 "rejection_reason": reason,
                 **details,
             })
+    
+    # =============================================================================
+    # STEP 2: Check POV Palette Matching (if enabled)
+    # =============================================================================
+    pov_results = []
+    pov_rejected_count = 0
+    
+    if manifest_path and enable_pov_check:
+        # Process manifest rows (check POV palette matching)
+        logger.info("\nLoading manifest for POV checking...")
+        try:
+            df = pd.read_csv(manifest_path, low_memory=False)
+            df.columns = df.columns.str.strip()
+            logger.info(f"  Loaded {len(df)} rows")
+        except Exception as e:
+            logger.error(f"Failed to load manifest: {e}")
+            logger.warning("  Continuing with layout checks only")
+        else:
+            # Filter to rows with both layout and POV
+            has_layout = df["layout_path"].notna() & (df["layout_path"] != "")
+            has_pov = df["pov_path"].notna() & (df["pov_path"] != "")
+            valid_rows = df[has_layout & has_pov].copy()
+            logger.info(f"  Found {len(valid_rows)} rows with both layout and POV")
+            
+            if len(valid_rows) > 0:
+                # Check each row
+                logger.info("Checking POV palette matching...")
+                
+                for idx, row in tqdm(valid_rows.iterrows(), total=len(valid_rows), desc="Checking POVs"):
+                    layout_path = row["layout_path"]
+                    pov_path = row["pov_path"]
+                    
+                    # Check POV palette
+                    is_valid, reason, details = check_pov_palette(
+                        Path(layout_path),
+                        Path(pov_path),
+                        dataset_root,
+                        color_tolerance=pov_color_tolerance,
+                        min_match_ratio=pov_min_match_ratio,
+                        palette_color_tolerance=palette_color_tolerance,
+                    )
+                    
+                    rejected = not is_valid
+                    if rejected:
+                        pov_rejected_count += 1
+                    
+                    pov_results.append({
+                        "path": pov_path,  # Use POV path as primary identifier
+                        "layout_path": layout_path,
+                        "pov_path": pov_path,
+                        "rejected": rejected,
+                        "rejection_reason": reason,
+                        **details,
+                    })
+    
+    # =============================================================================
+    # STEP 3: Write Combined Output
+    # =============================================================================
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Write layout results
+    if layout_results:
+        logger.info(f"\nWriting {len(layout_results)} layout results to {output_path}")
         
-        # Write output
-        logger.info(f"Writing {len(results)} results to {output_path}")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        columns = [
+        layout_columns = [
             "layout_path_seg", "layout_path_tex", "rejected", "rejection_reason",
             "floor_pixels", "wall_pixels", "door_pixels", "window_pixels",
             "background_pixels", "black_fraction", "content_fraction",
         ]
         
         with open(output_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=columns)
+            writer = csv.DictWriter(f, fieldnames=layout_columns)
             writer.writeheader()
-            writer.writerows(results)
+            writer.writerows(layout_results)
         
-        # Summary
-        logger.info(f"\nSummary:")
-        logger.info(f"  Total layouts: {len(results)}")
-        logger.info(f"  Rejected: {rejected_count} ({100*rejected_count/len(results):.1f}%)")
-        logger.info(f"  Accepted: {len(results) - rejected_count}")
+        # Layout summary
+        logger.info(f"\nLayout Quality Summary:")
+        logger.info(f"  Total layouts: {len(layout_results)}")
+        logger.info(f"  Rejected: {layout_rejected_count} ({100*layout_rejected_count/len(layout_results):.1f}%)")
+        logger.info(f"  Accepted: {len(layout_results) - layout_rejected_count}")
         
         # Breakdown by reason
-        reason_counts: Dict[str, int] = {}
-        for r in results:
+        layout_reason_counts: Dict[str, int] = {}
+        for r in layout_results:
             if r["rejected"]:
                 reason = r["rejection_reason"]
-                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                layout_reason_counts[reason] = layout_reason_counts.get(reason, 0) + 1
         
-        if reason_counts:
-            logger.info(f"\nRejection reasons:")
-            for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
+        if layout_reason_counts:
+            logger.info(f"\nLayout rejection reasons:")
+            for reason, count in sorted(layout_reason_counts.items(), key=lambda x: -x[1]):
                 logger.info(f"  {reason}: {count}")
+    
+    # Write POV results (append to same file or separate)
+    if pov_results:
+        pov_output_path = output_path.parent / f"{output_path.stem}_povs.csv"
+        logger.info(f"\nWriting {len(pov_results)} POV results to {pov_output_path}")
+        
+        pov_columns = [
+            "path", "layout_path", "pov_path", "rejected", "rejection_reason",
+            "layout_colors", "pov_colors", "matched_colors", "match_ratio",
+        ]
+        
+        with open(pov_output_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=pov_columns)
+            writer.writeheader()
+            writer.writerows(pov_results)
+        
+        # POV summary
+        logger.info(f"\nPOV Palette Matching Summary:")
+        logger.info(f"  Total POVs: {len(pov_results)}")
+        logger.info(f"  Rejected: {pov_rejected_count} ({100*pov_rejected_count/len(pov_results):.1f}%)")
+        logger.info(f"  Accepted: {len(pov_results) - pov_rejected_count}")
+        
+        # Breakdown by reason
+        pov_reason_counts: Dict[str, int] = {}
+        for r in pov_results:
+            if r["rejected"]:
+                reason = r["rejection_reason"]
+                pov_reason_counts[reason] = pov_reason_counts.get(reason, 0) + 1
+        
+        if pov_reason_counts:
+            logger.info(f"\nPOV rejection reasons:")
+            for reason, count in sorted(pov_reason_counts.items(), key=lambda x: -x[1]):
+                logger.info(f"  {reason}: {count}")
+    
+    # Overall summary
+    if layout_results or pov_results:
+        total_rejected = layout_rejected_count + pov_rejected_count
+        total_checked = len(layout_results) + len(pov_results)
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Overall Summary:")
+        logger.info(f"  Total checked: {total_checked} (layouts: {len(layout_results)}, POVs: {len(pov_results)})")
+        logger.info(f"  Total rejected: {total_rejected} (layouts: {layout_rejected_count}, POVs: {pov_rejected_count})")
+        logger.info(f"{'='*50}")
 
 
 def load_scene_list(shard_file: Path) -> Set[str]:
