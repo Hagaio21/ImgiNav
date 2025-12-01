@@ -191,8 +191,19 @@ class DiffusionModel(BaseModel):
         """
         # Prepare conditioning signal
         embedding_proj = getattr(self, 'embedding_projection', None)
-        if embedding_proj is not None and (text_emb is not None or pov_emb is not None):
-            conditioning_signal = embedding_proj(text_emb, pov_emb)
+        
+        # Check if embeddings are effectively zero (from CFG dropout) - treat as None
+        # This is critical: during CFG dropout, embeddings are set to zeros (not None),
+        # but we should treat them as unconditional (None) to disable conditioning
+        text_emb_valid = text_emb is not None and text_emb.abs().max().item() > 1e-6
+        pov_emb_valid = pov_emb is not None and pov_emb.abs().max().item() > 1e-6
+        
+        if embedding_proj is not None and (text_emb_valid or pov_emb_valid):
+            # Only pass valid (non-zero) embeddings to projection
+            # Pass None for zero embeddings so projection treats them as unconditional
+            text_emb_for_proj = text_emb if text_emb_valid else None
+            pov_emb_for_proj = pov_emb if pov_emb_valid else None
+            conditioning_signal = embedding_proj(text_emb_for_proj, pov_emb_for_proj)
         else:
             conditioning_signal = None
         
@@ -251,8 +262,19 @@ class DiffusionModel(BaseModel):
         
         # Prepare conditioning signal for conditional pass
         embedding_proj = getattr(self, 'embedding_projection', None)
-        if embedding_proj is not None and (text_emb is not None or pov_emb is not None):
-            conditioning_signal = embedding_proj(text_emb, pov_emb)
+        
+        # Check if embeddings are effectively zero (from CFG dropout) - treat as None
+        # This is critical: during CFG dropout, embeddings are set to zeros (not None),
+        # but we should treat them as unconditional (None) to disable conditioning
+        text_emb_valid = text_emb is not None and text_emb.abs().max().item() > 1e-6
+        pov_emb_valid = pov_emb is not None and pov_emb.abs().max().item() > 1e-6
+        
+        if embedding_proj is not None and (text_emb_valid or pov_emb_valid):
+            # Only pass valid (non-zero) embeddings to projection
+            # Pass None for zero embeddings so projection treats them as unconditional
+            text_emb_for_proj = text_emb if text_emb_valid else None
+            pov_emb_for_proj = pov_emb if pov_emb_valid else None
+            conditioning_signal = embedding_proj(text_emb_for_proj, pov_emb_for_proj)
             
             # For CFG, prepare unconditional signal
             # During training, CFG dropout sets embeddings to zeros (tensors), not None
@@ -263,10 +285,10 @@ class DiffusionModel(BaseModel):
             if use_cfg:
                 # For unconditional signal, pass None to embedding_proj
                 # Need to provide batch_size and device if both embeddings are None
-                if text_emb is not None:
+                if text_emb_valid:
                     batch_size_cfg = text_emb.shape[0]
                     device_cfg = text_emb.device
-                elif pov_emb is not None:
+                elif pov_emb_valid:
                     batch_size_cfg = pov_emb.shape[0]
                     device_cfg = pov_emb.device
                 else:
