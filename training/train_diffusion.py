@@ -660,30 +660,34 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     batch_size = metadata["batch_size"]
     
     # Get total number of samples to generate from config (default: 16)
-    # This is the TOTAL number, not per condition
+    # This is the TOTAL number of samples, with 1 sample per condition
     if config is not None:
         total_samples = config.get("training", {}).get("num_conditioned_samples_per_type", 16)
     else:
         total_samples = 16
     
-    # Distribute samples across conditions
-    # If we have fewer conditions than total_samples, use all conditions and repeat
-    # If we have more conditions, use first total_samples conditions
+    # Use up to total_samples conditions, 1 sample per condition
+    # If we have fewer conditions than total_samples, repeat conditions
     num_conditions_to_use = min(batch_size, total_samples)
-    samples_per_condition = max(1, total_samples // num_conditions_to_use)
-    # Adjust if we need to distribute remainder
-    remainder = total_samples % num_conditions_to_use
+    samples_per_condition = 1  # Always 1 sample per condition
     samples_per_condition_list = [samples_per_condition] * num_conditions_to_use
-    for i in range(remainder):
-        samples_per_condition_list[i] += 1
     
-    print(f"  Generating {total_samples} total samples across {num_conditions_to_use} conditions")
-    print(f"  Samples per condition: {samples_per_condition_list}")
+    # If we need more samples than we have conditions, repeat the conditions
+    if total_samples > batch_size:
+        # Repeat conditions to reach total_samples
+        num_repeats = (total_samples + batch_size - 1) // batch_size  # Ceiling division
+        samples_per_condition_list = [samples_per_condition] * min(total_samples, batch_size * num_repeats)
+        # Truncate to exactly total_samples
+        samples_per_condition_list = samples_per_condition_list[:total_samples]
+        num_conditions_to_use = batch_size  # Use all available conditions, repeat as needed
     
-    # Load embeddings (batch-level for generation)
+    print(f"  Generating {total_samples} total samples (1 sample per condition, using {num_conditions_to_use} conditions)")
+    
+    # Load embeddings for all conditions we'll use
+    # If we need more samples than conditions, we'll repeat conditions
     text_emb_list = []
     pov_emb_list = []
-    for i in range(num_conditions_to_use):
+    for i in range(batch_size):  # Load all available conditions
         sample_dir = conditioned_dir / f"sample_{i}"
         conditions_dir = sample_dir / "conditions"
         
@@ -707,10 +711,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         elif text_emb_single.abs().max().item() < 1e-6:
             text_emb = None
         else:
-            # Repeat each condition according to samples_per_condition_list
+            # Repeat conditions to get exactly total_samples (1 sample per condition)
+            # Cycle through available conditions if needed
             text_emb_repeated = []
-            for i, num_samples in enumerate(samples_per_condition_list):
-                text_emb_repeated.append(text_emb_single[i:i+1].repeat(num_samples, 1))
+            for i in range(total_samples):
+                condition_idx = i % batch_size  # Cycle through conditions
+                text_emb_repeated.append(text_emb_single[condition_idx:condition_idx+1])
             text_emb = torch.cat(text_emb_repeated, dim=0)
     else:
         text_emb = None  # Don't create zero tensor - let model handle it if needed
@@ -725,10 +731,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         elif pov_emb_single.abs().max().item() < 1e-6:
             pov_emb = None
         else:
-            # Repeat each condition according to samples_per_condition_list
+            # Repeat conditions to get exactly total_samples (1 sample per condition)
+            # Cycle through available conditions if needed
             pov_emb_repeated = []
-            for i, num_samples in enumerate(samples_per_condition_list):
-                pov_emb_repeated.append(pov_emb_single[i:i+1].repeat(num_samples, 1))
+            for i in range(total_samples):
+                condition_idx = i % batch_size  # Cycle through conditions
+                pov_emb_repeated.append(pov_emb_single[condition_idx:condition_idx+1])
             pov_emb = torch.cat(pov_emb_repeated, dim=0)
     else:
         pov_emb = None  # Don't create zero tensor - let model handle it if needed
@@ -748,9 +756,10 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     max_chunk_size = 32  # Process up to 32 samples at a time
     ddim_steps = 50
     
-    # Load target images for comparison grids (only for conditions we're using)
+    # Load target images for comparison grids (use first min(batch_size, total_samples) conditions)
     target_images = []
-    for i in range(num_conditions_to_use):
+    num_targets_to_load = min(batch_size, total_samples)
+    for i in range(num_targets_to_load):
         sample_dir = conditioned_dir / f"sample_{i}"
         target_path = sample_dir / "target" / "target.png"
         if target_path.exists():
@@ -814,45 +823,44 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         return
     
     # Save generated images - create separate top-level folders for each generated sample
-    sample_idx = 0
-    for condition_idx in range(num_conditions_to_use):
-        num_samples_for_this_condition = samples_per_condition_list[condition_idx]
-        for _ in range(num_samples_for_this_condition):
-            if sample_idx < len(all_generated_images):
-                # Create separate folder for each generated sample at top level
-                # Numbering: sample_0 to sample_N-1 are original conditions, sample_N onwards are generated
-                generated_sample_num = batch_size + sample_idx
-                generated_sample_dir = conditioned_dir / f"sample_{generated_sample_num}"
-                generated_sample_dir.mkdir(parents=True, exist_ok=True)
-                
-                generated_img = all_generated_images[sample_idx]
-                generated_img.save(generated_sample_dir / f"epoch_{epoch:03d}.png")
-                sample_idx += 1
+    # We should have exactly total_samples images (1 per condition)
+    if len(all_generated_images) != total_samples:
+        print(f"  Warning: Expected {total_samples} samples but got {len(all_generated_images)}")
+    
+    print(f"  Saving {len(all_generated_images)} generated samples (1 per condition) to separate folders...")
+    for sample_idx in range(len(all_generated_images)):
+        # Create separate folder for each generated sample at top level
+        # Numbering: sample_0 to sample_N-1 are original conditions, sample_N onwards are generated
+        generated_sample_num = batch_size + sample_idx
+        generated_sample_dir = conditioned_dir / f"sample_{generated_sample_num}"
+        generated_sample_dir.mkdir(parents=True, exist_ok=True)
+        
+        generated_img = all_generated_images[sample_idx]
+        generated_img.save(generated_sample_dir / f"epoch_{epoch:03d}.png")
+    
+    print(f"  Saved {len(all_generated_images)} generated samples to folders sample_{batch_size} through sample_{batch_size + len(all_generated_images) - 1}")
     
     # Create comparison grids for easy viewing
-    # Show one generated sample per condition (first sample, index 0)
+    # Show one generated sample per condition
     img_size = target_images[0].size[0]
     grid_n = 4  # 4 columns
-    num_rows = (num_conditions_to_use + grid_n - 1) // grid_n
+    num_rows = (min(len(target_images), len(all_generated_images)) + grid_n - 1) // grid_n
     
     # Create target grid
     target_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
-    for idx, img in enumerate(target_images):
+    for idx, img in enumerate(target_images[:len(all_generated_images)]):
         row = idx // grid_n
         col = idx % grid_n
         target_grid.paste(img, (col * img_size, row * img_size))
     
-    # Create generated grid - use first generated sample for each condition
+    # Create generated grid - one sample per condition
     generated_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
-    sample_idx = 0
-    for condition_idx in range(num_conditions_to_use):
-        if sample_idx < len(all_generated_images):
-            generated_img = all_generated_images[sample_idx]
-            row = condition_idx // grid_n
-            col = condition_idx % grid_n
+    for idx in range(min(len(target_images), len(all_generated_images))):
+        if idx < len(all_generated_images):
+            generated_img = all_generated_images[idx]
+            row = idx // grid_n
+            col = idx % grid_n
             generated_grid.paste(generated_img, (col * img_size, row * img_size))
-            # Skip to next condition's first sample
-            sample_idx += samples_per_condition_list[condition_idx]
     
     # Concatenate horizontally (side by side) for comparison
     comparison_width = img_size * grid_n * 2
