@@ -70,12 +70,38 @@ class UnetWithAttention(BaseComponent):
 
         # Build downsampling blocks
         use_attn_downs = use_attention and "downs" in attention_at
+        
+        # Calculate adaptive window sizes based on resolution
+        # Assume input resolution is 32x32 (typical for 256x256 images with 4 downsampling steps)
+        # For other resolutions, window_size will scale proportionally
+        input_resolution = 32  # Default assumption for latent space
+        
         for i in range(depth):
             ch = base_ch * (2 ** i)
             if use_attn_downs:
-                # Alternate between shifted and non-shifted windows for cross-window communication
-                # Use shifted windows on even layers, non-shifted on odd layers
-                layer_window_size = window_size if window_size is not None else None
+                # Calculate adaptive window size for this layer
+                # Resolution decreases by 2x each down layer: 32→16→8→4→2
+                layer_resolution = input_resolution // (2 ** i)
+                
+                if window_size is not None:
+                    # Scale window_size proportionally to maintain consistent window count
+                    # For 2×2 windows: window_size = layer_resolution / 2
+                    # This ensures we always have ~2×2 windows at each resolution
+                    adaptive_window = int(window_size * (layer_resolution / input_resolution))
+                    
+                    # Clamp to reasonable values:
+                    # - Minimum: 2 (for 2×2 windows)
+                    # - Maximum: layer_resolution (single window = full attention)
+                    # - If too small (< 2), use full attention
+                    if adaptive_window < 2:
+                        layer_window_size = None  # Full attention for very small resolutions
+                    elif adaptive_window >= layer_resolution:
+                        layer_window_size = None  # Single window = full attention
+                    else:
+                        layer_window_size = adaptive_window
+                else:
+                    layer_window_size = None
+                
                 # Note: shift is handled internally by SelfAttentionBlock based on shift_size
                 self.downs.append(DownBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
@@ -92,12 +118,26 @@ class UnetWithAttention(BaseComponent):
         # Bottleneck with optional attention
         use_attn_bottleneck = use_attention and "bottleneck" in attention_at
         if use_attn_bottleneck:
+            # Bottleneck is at the smallest resolution (after all downs)
+            bottleneck_resolution = input_resolution // (2 ** depth)
+            
+            if window_size is not None:
+                # Scale window_size for bottleneck
+                adaptive_window = int(window_size * (bottleneck_resolution / input_resolution))
+                # For very small resolutions (e.g., 2×2), use full attention
+                if adaptive_window < 2 or adaptive_window >= bottleneck_resolution:
+                    bottleneck_window_size = None
+                else:
+                    bottleneck_window_size = adaptive_window
+            else:
+                bottleneck_window_size = None
+            
             self.bottleneck = ResidualBlockWithAttention(
                 prev_ch, prev_ch, time_dim, norm_groups, dropout,
                 use_attention=True, attention_heads=attention_heads,
                 enable_cross_attention=enable_cross_attention,
                 conditioning_channels=conditioning_channels,
-                window_size=window_size
+                window_size=bottleneck_window_size
             )
         else:
             self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups, dropout)
@@ -105,9 +145,32 @@ class UnetWithAttention(BaseComponent):
         # Build upsampling blocks
         self.ups = nn.ModuleList()
         use_attn_ups = use_attention and "ups" in attention_at
-        for ch in reversed(feats):
+        # Upsampling layers mirror downsampling layers in reverse order
+        # Resolution increases: 2→4→8→16→32
+        for up_idx, ch in enumerate(reversed(feats)):
             if use_attn_ups:
-                layer_window_size = window_size if window_size is not None else None
+                # Calculate resolution for this upsampling layer
+                # After bottleneck (depth), we start upsampling
+                # up_idx=0 corresponds to resolution after first up: 2*2^0 = 4 (if bottleneck was 2)
+                # Actually, let's think: after bottleneck at 2×2, first up gives 4×4, etc.
+                # So resolution = bottleneck_resolution * (2 ** (up_idx + 1))
+                bottleneck_resolution = input_resolution // (2 ** depth)
+                layer_resolution = bottleneck_resolution * (2 ** (up_idx + 1))
+                
+                if window_size is not None:
+                    # Scale window_size proportionally
+                    adaptive_window = int(window_size * (layer_resolution / input_resolution))
+                    
+                    # Clamp to reasonable values
+                    if adaptive_window < 2:
+                        layer_window_size = None
+                    elif adaptive_window >= layer_resolution:
+                        layer_window_size = None
+                    else:
+                        layer_window_size = adaptive_window
+                else:
+                    layer_window_size = None
+                
                 self.ups.append(UpBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
                     use_attention=True, attention_heads=attention_heads,
