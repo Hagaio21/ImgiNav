@@ -601,13 +601,19 @@ def process_dataset(
             # STEP 2b: Check POV uniformity (ONLY if POV checking enabled)
             # Reject ONLY if: room has content (not empty) AND POV is too uniform
             # Do NOT reject if: room is empty (even if POV is bad)
+            # IMPORTANT: Scenes don't have POVs, so skip POV checking for scenes
             # =====================================================================
             pov_valid = True
             pov_reason = ""
             pov_details = {}
             pov_full = None
             
-            if enable_pov_check:
+            # Check if this is a scene (scenes don't have POVs, so skip POV checking)
+            sample_type = row.get("type", "").lower().strip() if "type" in row else ""
+            is_scene = sample_type == "scene"
+            
+            if enable_pov_check and not is_scene:
+                # Only check POV for rooms (not scenes)
                 if pov_path and pd.notna(pov_path):
                     pov_full = dataset_root / pov_path if not Path(pov_path).is_absolute() else Path(pov_path)
                     if layout_full and layout_full.exists() and pov_full.exists():
@@ -635,14 +641,21 @@ def process_dataset(
                 if not pov_valid:
                     rejection_reasons.append(f"POV:{pov_reason}")
                     rejection_details.update({f"pov_{k}": v for k, v in pov_details.items()})
+            elif enable_pov_check and is_scene:
+                # Scenes don't have POVs - this is expected, so POV is always valid for scenes
+                pov_valid = True
+                # No need to add rejection reason for scenes without POVs
             
             # =====================================================================
             # STEP 3: Determine if sample is rejected
             # Sample is rejected if:
             # - Layout is bad (rejects ALL samples with that layout), OR
             # - POV is bad AND room is not empty (POV check already handles this)
+            # Note: Scenes are never rejected due to POV (they don't have POVs)
             # =====================================================================
-            is_rejected = not layout_valid or (enable_pov_check and not pov_valid)
+            # Only consider POV rejection for non-scenes when POV checking is enabled
+            pov_rejection_applies = enable_pov_check and not is_scene and not pov_valid
+            is_rejected = not layout_valid or pov_rejection_applies
             if is_rejected:
                 rejected_count += 1
                 

@@ -132,6 +132,8 @@ def add_rejections_to_manifest(
     # Match rejections
     matched = 0
     rejected_count = 0
+    empty_sample_ids = 0
+    missing_in_rejections = 0
     
     for row in rows:
         matched_this_row = False
@@ -139,7 +141,9 @@ def add_rejections_to_manifest(
         if has_sample_id:
             # Try to match by sample_id first
             sample_id = row.get("sample_id", "")
-            if sample_id and sample_id in rejections:
+            if not sample_id or sample_id == "":
+                empty_sample_ids += 1
+            elif sample_id in rejections:
                 matched += 1
                 matched_this_row = True
                 info = rejections[sample_id]
@@ -147,6 +151,9 @@ def add_rejections_to_manifest(
                 row["rejection_reason"] = info["rejection_reason"]
                 if str(info["rejected"]).lower() == "true":
                     rejected_count += 1
+            else:
+                # sample_id exists but not in rejections
+                missing_in_rejections += 1
         
         # If not matched by sample_id, try matching by layout_path -> sample_id
         if not matched_this_row and layout_to_sample_id:
@@ -190,6 +197,14 @@ def add_rejections_to_manifest(
     match_key = "samples" if has_sample_id else "layouts"
     logger.info(f"  Matched: {matched}/{len(rows)} {match_key}")
     logger.info(f"  Rejected: {rejected_count}")
+    if has_sample_id:
+        unmatched = len(rows) - matched
+        if unmatched > 0:
+            logger.warning(f"  Unmatched: {unmatched} samples")
+            if empty_sample_ids > 0:
+                logger.warning(f"    - Empty/missing sample_id: {empty_sample_ids}")
+            if missing_in_rejections > 0:
+                logger.warning(f"    - sample_id not found in rejections: {missing_in_rejections}")
     logger.info(f"  Output: {output_path}")
 
 
