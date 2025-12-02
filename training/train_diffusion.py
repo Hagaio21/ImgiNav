@@ -810,6 +810,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
                 generated_img.save(generated_dir / f"sample_{sample_idx}_epoch_{epoch:03d}.png")
     
     # Create comparison grids for easy viewing
+    # Show one generated sample per condition (first sample, index 0)
     img_size = target_images[0].size[0]
     grid_n = 4  # 4 columns
     num_rows = (batch_size + grid_n - 1) // grid_n
@@ -821,12 +822,16 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         col = idx % grid_n
         target_grid.paste(img, (col * img_size, row * img_size))
     
-    # Create generated grid
+    # Create generated grid - use first sample (index 0) for each condition
     generated_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
-    for idx, img in enumerate(generated_images):
-        row = idx // grid_n
-        col = idx % grid_n
-        generated_grid.paste(img, (col * img_size, row * img_size))
+    for condition_idx in range(batch_size):
+        # Get first sample (index 0) for this condition
+        first_sample_idx = condition_idx * num_samples_per_condition
+        if first_sample_idx < len(all_generated_images):
+            generated_img = all_generated_images[first_sample_idx]
+            row = condition_idx // grid_n
+            col = condition_idx % grid_n
+            generated_grid.paste(generated_img, (col * img_size, row * img_size))
     
     # Concatenate horizontally (side by side) for comparison
     comparison_width = img_size * grid_n * 2
