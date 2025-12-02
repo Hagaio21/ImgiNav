@@ -263,8 +263,14 @@ cd "${BASE_DIR}"
 export MKL_INTERFACE_LAYER=LP64
 
 if [ -f "\$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    # Temporarily disable -u (unset variable check) during conda activation
+    set +u
     source "\$HOME/miniconda3/etc/profile.d/conda.sh"
-    conda activate imginav || conda activate scenefactor || exit 1
+    conda activate imginav || conda activate scenefactor || {
+        set -u
+        exit 1
+    }
+    set -u
 fi
 
 # Use Python from conda environment to create CSV shards with sample_id, scene_id, type
@@ -369,11 +375,15 @@ else
         # Set MKL_INTERFACE_LAYER before conda activation (required by conda env)
         export MKL_INTERFACE_LAYER=LP64
         if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+            # Temporarily disable -u (unset variable check) during conda activation
+            set +u
             source "$HOME/miniconda3/etc/profile.d/conda.sh"
             conda activate imginav || conda activate scenefactor || {
                 echo "ERROR: Failed to activate conda environment" >&2
+                set -u
                 exit 1
             }
+            set -u
         fi
         
         # Use Python from conda environment to extract sample_id, scene_id, and type columns and create shards
