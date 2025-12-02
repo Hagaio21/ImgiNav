@@ -1,7 +1,7 @@
 experiment:
-  name: diff_clip_seg_both_small_down_bottleneck_32x32x8
+  name: diff_clip_seg_both_small_down_bottleneck_32x32x8_both
   phase: diffusion_training
-  save_path: /work3/s233249/ImgiNav/experiments/diffusion/diff_clip_seg_both_small_down_bottleneck_32x32x8
+  save_path: /work3/s233249/ImgiNav/experiments/diffusion/diff_clip_seg_both_small_down_bottleneck_32x32x8_both
 dataset:
   manifest: /work3/s233249/ImgiNav/dataset_v2/manifests/vae_seg_256_clip_32x32x8_latent_manifest_seg_with_rejections.csv
   outputs:
@@ -41,6 +41,7 @@ unet:
   - downs
   - bottleneck
   enable_cross_attention: true
+  window_size: 8  # Window size for windowed attention (8x8 windows for 32x32 latents). Set to null for full attention.
   use_ema: false
 scheduler:
   type: LinearScheduler
@@ -64,7 +65,7 @@ training:
   scheduler:
     type: cosine
   cfg_dropout_rate: 0.15
-  guidance_scale: 5.0
+  guidance_scale: 7.0
   use_precomputed_weights: true
   precomputed_weight_column: sample_weight
   sampling_seed_base: 42
