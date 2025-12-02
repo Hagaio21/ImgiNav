@@ -43,6 +43,7 @@ unet:
   - downs
   - bottleneck
   enable_cross_attention: true
+  window_size: 8  # Window size for windowed attention (8x8 windows for 32x32 latents). Set to null for full attention.
   use_ema: false
 scheduler:
   type: LinearScheduler

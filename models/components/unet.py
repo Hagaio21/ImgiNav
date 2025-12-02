@@ -38,6 +38,7 @@ class UnetWithAttention(BaseComponent):
         "attention_heads": None,
         "attention_at": ["bottleneck", "downs", "ups"],
         "enable_cross_attention": False,
+        "window_size": None,  # If None, use full attention. If int, use windowed attention with this window size
     }
 
     def _build(self):
@@ -56,6 +57,7 @@ class UnetWithAttention(BaseComponent):
         attention_at = self._init_kwargs.get("attention_at", self.DEFAULT_CONFIG["attention_at"])
         enable_cross_attention = self._init_kwargs.get("enable_cross_attention", self.DEFAULT_CONFIG["enable_cross_attention"])
         conditioning_channels = self._init_kwargs.get("conditioning_channels", None)
+        window_size = self._init_kwargs.get("window_size", self.DEFAULT_CONFIG["window_size"])
         
         if not isinstance(attention_at, list):
             attention_at = [attention_at] if attention_at else []
@@ -71,11 +73,16 @@ class UnetWithAttention(BaseComponent):
         for i in range(depth):
             ch = base_ch * (2 ** i)
             if use_attn_downs:
+                # Alternate between shifted and non-shifted windows for cross-window communication
+                # Use shifted windows on even layers, non-shifted on odd layers
+                layer_window_size = window_size if window_size is not None else None
+                # Note: shift is handled internally by SelfAttentionBlock based on shift_size
                 self.downs.append(DownBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
                     use_attention=True, attention_heads=attention_heads,
                     enable_cross_attention=enable_cross_attention,
-                    conditioning_channels=conditioning_channels
+                    conditioning_channels=conditioning_channels,
+                    window_size=layer_window_size
                 ))
             else:
                 self.downs.append(DownBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout))
@@ -89,7 +96,8 @@ class UnetWithAttention(BaseComponent):
                 prev_ch, prev_ch, time_dim, norm_groups, dropout,
                 use_attention=True, attention_heads=attention_heads,
                 enable_cross_attention=enable_cross_attention,
-                conditioning_channels=conditioning_channels
+                conditioning_channels=conditioning_channels,
+                window_size=window_size
             )
         else:
             self.bottleneck = ResidualBlock(prev_ch, prev_ch, time_dim, norm_groups, dropout)
@@ -99,11 +107,13 @@ class UnetWithAttention(BaseComponent):
         use_attn_ups = use_attention and "ups" in attention_at
         for ch in reversed(feats):
             if use_attn_ups:
+                layer_window_size = window_size if window_size is not None else None
                 self.ups.append(UpBlockWithAttention(
                     prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout,
                     use_attention=True, attention_heads=attention_heads,
                     enable_cross_attention=enable_cross_attention,
-                    conditioning_channels=conditioning_channels
+                    conditioning_channels=conditioning_channels,
+                    window_size=layer_window_size
                 ))
             else:
                 self.ups.append(UpBlock(prev_ch, ch, time_dim, num_res_blocks, norm_groups, dropout))

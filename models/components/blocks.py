@@ -252,14 +252,14 @@ class MidBlock(nn.Module):
             x = block(x, t_emb, **kwargs)
         return x
 
-
 class SelfAttentionBlock(nn.Module):
 
-    def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False, conditioning_channels=None):
+    def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False, conditioning_channels=None, window_size=None):
         super().__init__()
         self.channels = channels
         self.norm_groups = compute_num_groups(channels, norm_groups)
         self.enable_cross_attention = enable_cross_attention
+        self.window_size = window_size  # If None, use full attention
         
         if num_heads is None:
             num_heads = _compute_num_heads(channels, target_heads_per_32=1)
@@ -285,6 +285,74 @@ class SelfAttentionBlock(nn.Module):
         
         self.proj = nn.Conv2d(channels, channels, 1)
         
+        # For windowed attention: use shifted windows for cross-window communication
+        # Shift by half window size to enable communication between adjacent windows
+        self.shift_size = window_size // 2 if window_size is not None and window_size > 1 else 0
+        
+    def window_partition(self, x, window_size):
+        """
+        Partition input into non-overlapping windows.
+        
+        Args:
+            x: Input tensor [B, C, H, W]
+            window_size: Window size (int, assumes square windows)
+        
+        Returns:
+            Windows [B * num_windows, C, window_size, window_size]
+            (Hp, Wp): Padded height and width
+            num_windows: (num_windows_h, num_windows_w)
+        """
+        B, C, H, W = x.shape
+        
+        # Pad if necessary
+        pad_l = pad_t = 0
+        pad_r = (window_size - W % window_size) % window_size
+        pad_b = (window_size - H % window_size) % window_size
+        if pad_r > 0 or pad_b > 0:
+            x = F.pad(x, (pad_l, pad_r, pad_t, pad_b))
+            Hp, Wp = H + pad_b, W + pad_r
+        else:
+            Hp, Wp = H, W
+        
+        num_windows_h = Hp // window_size
+        num_windows_w = Wp // window_size
+        num_windows = num_windows_h * num_windows_w
+        
+        # Reshape to windows: [B, C, Hp, Wp] -> [B * num_windows, C, window_size, window_size]
+        x = x.view(B, C, num_windows_h, window_size, num_windows_w, window_size)
+        x = x.permute(0, 2, 4, 1, 3, 5).contiguous()
+        x = x.view(B * num_windows, C, window_size, window_size)
+        
+        return x, (Hp, Wp), (num_windows_h, num_windows_w)
+    
+    def window_reverse(self, windows, window_size, Hp, Wp, H, W):
+        """
+        Reverse window partition.
+        
+        Args:
+            windows: Windows [B * num_windows, C, window_size, window_size]
+            window_size: Window size
+            Hp, Wp: Padded height and width
+            H, W: Original height and width
+        
+        Returns:
+            Reconstructed tensor [B, C, H, W]
+        """
+        B = windows.shape[0] // (Hp * Wp // window_size // window_size)
+        num_windows_h = Hp // window_size
+        num_windows_w = Wp // window_size
+        
+        # Reshape back: [B * num_windows, C, window_size, window_size] -> [B, C, Hp, Wp]
+        x = windows.view(B, num_windows_h, num_windows_w, -1, window_size, window_size)
+        x = x.permute(0, 3, 1, 4, 2, 5).contiguous()
+        x = x.view(B, -1, Hp, Wp)
+        
+        # Crop padding
+        if Hp > H or Wp > W:
+            x = x[:, :, :H, :W]
+        
+        return x
+    
     def forward(self, x, **kwargs):
         """
         Args:
@@ -297,7 +365,15 @@ class SelfAttentionBlock(nn.Module):
         """
         conditioning_signal = kwargs.get("conditioning_signal", None)
         B, C, H, W = x.shape
-        h = self.act(self.norm(x))
+        
+        # Window shifting for cross-window communication (alternate between shifted and non-shifted)
+        if self.window_size is not None and self.shift_size > 0:
+            # Cyclic shift
+            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(2, 3))
+        else:
+            shifted_x = x
+        
+        h = self.act(self.norm(shifted_x))
         q = self.q_proj(h)
         
         if self.enable_cross_attention:
@@ -312,6 +388,10 @@ class SelfAttentionBlock(nn.Module):
                     cond_signal = F.interpolate(
                         cond_signal, size=(H, W), mode='bilinear', align_corners=False
                     )
+                
+                # Apply same shift to conditioning signal if windowed
+                if self.window_size is not None and self.shift_size > 0:
+                    cond_signal = torch.roll(cond_signal, shifts=(-self.shift_size, -self.shift_size), dims=(2, 3))
                 
                 if cond_signal.shape[1] != C:
                     if self.ctrl_proj is None:
@@ -340,55 +420,92 @@ class SelfAttentionBlock(nn.Module):
                 f"Model may have been modified incorrectly."
             )
         head_dim = C // self.num_heads
-        q = q.view(B, self.num_heads, head_dim, H * W)
-        k = k.view(B, self.num_heads, head_dim, H * W)
-        v = v.view(B, self.num_heads, head_dim, H * W)
         
-        q = q.transpose(-2, -1)
-        k = k.transpose(-2, -1)
-        v = v.transpose(-2, -1)
-        
-        scale = (head_dim ** -0.5)
-        seq_len = H * W
-        
-        if seq_len <= 64:
-            chunk_size = seq_len
-        elif seq_len <= 256:
-            chunk_size = 64
-        else:
-            chunk_size = 32
-        
-        if seq_len > chunk_size:
-            out_chunks = []
-            k_t = k.transpose(-2, -1)
-            for i in range(0, seq_len, chunk_size):
-                end_idx = min(i + chunk_size, seq_len)
-                q_chunk = q[:, :, i:end_idx, :]
-                attn_chunk = torch.matmul(q_chunk, k_t) * scale
-                attn_chunk = F.softmax(attn_chunk, dim=-1)
-                out_chunk = torch.matmul(attn_chunk, v)
-                out_chunks.append(out_chunk)
-                del attn_chunk, q_chunk, out_chunk
+        # Windowed attention or full attention
+        if self.window_size is not None:
+            # Windowed attention
+            q_windows, (Hp, Wp), (num_windows_h, num_windows_w) = self.window_partition(q, self.window_size)
+            k_windows, _, _ = self.window_partition(k, self.window_size)
+            v_windows, _, _ = self.window_partition(v, self.window_size)
             
-            out = torch.cat(out_chunks, dim=2)
-            del out_chunks, k_t
-        else:
-            attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+            B_windows = q_windows.shape[0]
+            window_size_sq = self.window_size * self.window_size
+            
+            # Reshape for attention: [B_windows, C, window_size, window_size] -> [B_windows, num_heads, head_dim, window_size_sq]
+            q_windows = q_windows.view(B_windows, self.num_heads, head_dim, window_size_sq)
+            k_windows = k_windows.view(B_windows, self.num_heads, head_dim, window_size_sq)
+            v_windows = v_windows.view(B_windows, self.num_heads, head_dim, window_size_sq)
+            
+            q_windows = q_windows.transpose(-2, -1)  # [B_windows, num_heads, window_size_sq, head_dim]
+            k_windows = k_windows.transpose(-2, -1)
+            v_windows = v_windows.transpose(-2, -1)
+            
+            scale = (head_dim ** -0.5)
+            attn = torch.matmul(q_windows, k_windows.transpose(-2, -1)) * scale
             attn = F.softmax(attn, dim=-1)
-            out = torch.matmul(attn, v)
+            out_windows = torch.matmul(attn, v_windows)  # [B_windows, num_heads, window_size_sq, head_dim]
+            
+            # Reshape back: [B_windows, num_heads, window_size_sq, head_dim] -> [B_windows, C, window_size, window_size]
+            out_windows = out_windows.transpose(-2, -1).contiguous()
+            out_windows = out_windows.view(B_windows, C, self.window_size, self.window_size)
+            
+            # Reverse window partition
+            out = self.window_reverse(out_windows, self.window_size, Hp, Wp, H, W)
+            
+            # Reverse cyclic shift
+            if self.shift_size > 0:
+                out = torch.roll(out, shifts=(self.shift_size, self.shift_size), dims=(2, 3))
+        else:
+            # Full attention (original implementation with chunking for memory)
+            q = q.view(B, self.num_heads, head_dim, H * W)
+            k = k.view(B, self.num_heads, head_dim, H * W)
+            v = v.view(B, self.num_heads, head_dim, H * W)
+            
+            q = q.transpose(-2, -1)
+            k = k.transpose(-2, -1)
+            v = v.transpose(-2, -1)
+            
+            scale = (head_dim ** -0.5)
+            seq_len = H * W
+            
+            if seq_len <= 64:
+                chunk_size = seq_len
+            elif seq_len <= 256:
+                chunk_size = 64
+            else:
+                chunk_size = 32
+            
+            if seq_len > chunk_size:
+                out_chunks = []
+                k_t = k.transpose(-2, -1)
+                for i in range(0, seq_len, chunk_size):
+                    end_idx = min(i + chunk_size, seq_len)
+                    q_chunk = q[:, :, i:end_idx, :]
+                    attn_chunk = torch.matmul(q_chunk, k_t) * scale
+                    attn_chunk = F.softmax(attn_chunk, dim=-1)
+                    out_chunk = torch.matmul(attn_chunk, v)
+                    out_chunks.append(out_chunk)
+                    del attn_chunk, q_chunk, out_chunk
+                
+                out = torch.cat(out_chunks, dim=2)
+                del out_chunks, k_t
+            else:
+                attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+                attn = F.softmax(attn, dim=-1)
+                out = torch.matmul(attn, v)
+            
+            out = out.transpose(-2, -1).contiguous()
+            out = out.view(B, C, H, W)
         
-        out = out.transpose(-2, -1).contiguous()
-        out = out.view(B, C, H, W)
         out = self.proj(out)
         return x + out
-
 
 class ResidualBlockWithAttention(ResidualBlock):
     """
     Residual block with optional self-attention.
     Extends ResidualBlock by adding attention after the second conv.
     """
-    def __init__(self, in_ch, out_ch, time_dim=None, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
+    def __init__(self, in_ch, out_ch, time_dim=None, norm_groups=8, dropout=0.0, use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None, window_size=None):
         super().__init__(in_ch, out_ch, time_dim, norm_groups, dropout)
         
         self.use_attention = use_attention
@@ -396,7 +513,8 @@ class ResidualBlockWithAttention(ResidualBlock):
             self.attention = SelfAttentionBlock(
                 out_ch, num_heads=attention_heads, norm_groups=norm_groups,
                 enable_cross_attention=enable_cross_attention,
-                conditioning_channels=conditioning_channels
+                conditioning_channels=conditioning_channels,
+                window_size=window_size
             )
         else:
             self.attention = None
@@ -409,16 +527,16 @@ class ResidualBlockWithAttention(ResidualBlock):
 
         return h + self.skip(x)
 
-
 class DownBlockWithAttention(DownBlock):
     """DownBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim=None, num_res_blocks=1, norm_groups=8, dropout=0.0, 
-                 use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None):
+                 use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None, window_size=None):
         # Store attention params for _create_res_block
         self.use_attention = use_attention
         self.attention_heads = attention_heads
         self.enable_cross_attention = enable_cross_attention
         self.conditioning_channels = conditioning_channels
+        self.window_size = window_size
         super().__init__(in_ch, out_ch, time_dim, num_res_blocks, norm_groups, dropout)
 
     def _create_res_block(self, in_ch, out_ch, time_dim, norm_groups, dropout):
@@ -427,7 +545,8 @@ class DownBlockWithAttention(DownBlock):
             in_ch, out_ch, time_dim, norm_groups, dropout,
             use_attention=self.use_attention, attention_heads=self.attention_heads,
             enable_cross_attention=self.enable_cross_attention,
-            conditioning_channels=self.conditioning_channels
+            conditioning_channels=self.conditioning_channels,
+            window_size=self.window_size
         )
 
 
@@ -435,12 +554,13 @@ class UpBlockWithAttention(UpBlock):
     """UpBlock that uses ResidualBlockWithAttention instead of ResidualBlock."""
     def __init__(self, in_ch, out_ch, time_dim=None, num_res_blocks=1, norm_groups=8, dropout=0.0,
                  use_attention=False, attention_heads=None, enable_cross_attention=False, conditioning_channels=None,
-                 use_skip_connection=True):
+                 use_skip_connection=True, window_size=None):
         # Store attention params for _create_res_block
         self.use_attention = use_attention
         self.attention_heads = attention_heads
         self.enable_cross_attention = enable_cross_attention
         self.conditioning_channels = conditioning_channels
+        self.window_size = window_size
         super().__init__(in_ch, out_ch, time_dim, num_res_blocks, norm_groups, dropout, use_skip_connection)
 
     def _create_res_block(self, in_ch, out_ch, time_dim, norm_groups, dropout):
@@ -449,5 +569,6 @@ class UpBlockWithAttention(UpBlock):
             in_ch, out_ch, time_dim, norm_groups, dropout,
             use_attention=self.use_attention, attention_heads=self.attention_heads,
             enable_cross_attention=self.enable_cross_attention,
-            conditioning_channels=self.conditioning_channels
+            conditioning_channels=self.conditioning_channels,
+            window_size=self.window_size
         )

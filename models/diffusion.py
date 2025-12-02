@@ -372,12 +372,14 @@ class DiffusionModel(BaseModel):
             if return_history:
                 history.append(latents.clone())
         
+        # First, convert latents back to original VAE scale
+        if self.scale_factor != 1.0:
+            latents = latents / self.scale_factor
+        
+        # Then clamp in original VAE scale (where clamp values are defined)
         clamp_min = getattr(self, '_latent_clamp_min', -6.0)
         clamp_max = getattr(self, '_latent_clamp_max', 6.0)
         latents_clamped = torch.clamp(latents, clamp_min, clamp_max)
-        
-        if self.scale_factor != 1.0:
-            latents_clamped = latents_clamped / self.scale_factor
         
         result = {"latent": latents_clamped}
         
