@@ -3,21 +3,26 @@
 Clean Dataset - Check layout quality and output rejections.
 
 Scans layout segmentation images and checks for required semantic content.
-Also checks POV images for palette matching with layouts.
-Outputs a CSV of layout paths with rejection status.
+Also checks POV images for uniformity when room has content.
+Outputs a CSV of sample rejections.
 
-A layout is rejected if missing:
-- Floor (≥ min_pixels)
-- Wall (≥ min_pixels)
-- Door OR Window (≥ min_pixels)
+Rejection Rules:
+1. If layout is bad -> reject ALL samples with that layout
+   A layout is rejected if missing:
+   - Floor (≥ min_pixels)
+   - Wall (≥ min_pixels)
+   - Door OR Window (≥ min_pixels)
+   Or has quality issues:
+   - Mostly black (render failure)
+   - Too little content (mostly background)
 
-Or has quality issues:
-- Mostly black (render failure)
-- Too little content (mostly background)
+2. If POV is bad and room is empty -> do NOT reject sample
+   (Empty rooms may have uniform POVs, which is acceptable)
 
-A POV is rejected if:
-- Room has content (not empty) AND POV is too uniform (too one-colored, above threshold)
-- Used to identify POVs looking at blank walls or empty spaces where nothing much happens
+3. If POV is bad and room is not empty -> reject that sample
+   A POV is rejected if:
+   - Room has content (not empty) AND POV is too uniform (too one-colored, above threshold)
+   - Used to identify POVs looking at blank walls or empty spaces where something should be visible
 
 Usage:
     python clean_dataset.py \\
@@ -351,9 +356,12 @@ def check_pov_uniformity(
     """
     Check if POV is too uniform (too one-colored).
     
-    Rejects if:
-    - Layout has content (not empty)
-    - POV is too uniform (one dominant color covers too much of the image)
+    Rejection logic:
+    - If room is empty (no content) -> do NOT reject (returns True), even if POV is uniform
+    - If room has content AND POV is too uniform -> reject (returns False)
+    
+    This ensures that empty rooms with uniform POVs are acceptable, but rooms with
+    content should have diverse POVs showing the content.
     
     Returns:
         (is_valid, rejection_reason, details)
@@ -418,15 +426,16 @@ def check_pov_uniformity(
         color_counts = Counter(quantized_colors)
         details["pov_num_colors"] = len(color_counts)
         
-        # Find the most dominant color fraction
-        if len(color_counts) > 0:
-            max_count = max(color_counts.values())
-            dominant_fraction = max_count / total_pixels
-            details["pov_dominant_color_fraction"] = round(dominant_fraction, 4)
-            
-            # Reject if room has content AND POV is too uniform (one color dominates)
-            if layout_has_content and dominant_fraction >= max_dominant_color_fraction:
-                return False, "POV_REJECTED", details
+            # Find the most dominant color fraction
+            if len(color_counts) > 0:
+                max_count = max(color_counts.values())
+                dominant_fraction = max_count / total_pixels
+                details["pov_dominant_color_fraction"] = round(dominant_fraction, 4)
+                
+                # Reject ONLY if room has content AND POV is too uniform
+                # If room is empty, do NOT reject (even if POV is uniform)
+                if layout_has_content and dominant_fraction >= max_dominant_color_fraction:
+                    return False, "POV_REJECTED", details
         
     except Exception as e:
         logger.warning(f"Failed to check POV uniformity: {e}")
@@ -455,8 +464,12 @@ def process_dataset(
     """
     Check samples from manifest and write rejections CSV.
     
-    If manifest_path is provided, checks each sample (layout + POV) and rejects
-    the sample if either the layout quality check or POV palette check fails.
+    Rejection logic:
+    1. First pass: Check all unique layouts. If a layout is bad, mark it for rejection.
+    2. Second pass: For each sample:
+       - If layout is bad -> reject ALL samples with that layout
+       - If POV is bad and room is empty -> do NOT reject sample
+       - If POV is bad and room is not empty -> reject that sample
     
     If manifest_path is not provided, falls back to checking all layouts only.
     """
@@ -500,7 +513,47 @@ def process_dataset(
             logger.info(f"  Found {len(valid_rows)} samples with layout")
             logger.info(f"  Found {len(df) - len(valid_rows)} samples missing layout (will be marked as rejected)")
         
-        # Check each sample - process ALL samples, not just those with paths
+        # =====================================================================
+        # STEP 1: First pass - Check all unique layouts and build bad layouts set
+        # If a layout is bad, ALL samples with that layout will be rejected
+        # =====================================================================
+        logger.info("First pass: Checking all unique layouts...")
+        bad_layouts: Set[str] = set()
+        layout_cache: Dict[str, Tuple[bool, str, Dict]] = {}  # Cache layout check results
+        
+        # Get unique layouts, handling NaN and empty strings consistently
+        unique_layouts = df["layout_path"].fillna("").unique()
+        logger.info(f"  Found {len(unique_layouts)} unique layouts")
+        
+        for layout_path in tqdm(unique_layouts, desc="Checking layouts"):
+            # Normalize: treat NaN and empty string as empty
+            if not layout_path or layout_path == "":
+                bad_layouts.add("")  # Empty path is bad
+                layout_cache[""] = (False, "NO_LAYOUT_PATH", {})
+                continue
+            
+            layout_full = dataset_root / layout_path if not Path(layout_path).is_absolute() else Path(layout_path)
+            if not layout_full.exists():
+                bad_layouts.add(layout_path)
+                layout_cache[layout_path] = (False, "LAYOUT_NOT_FOUND", {})
+                continue
+            
+            layout_valid, layout_reason, layout_details = check_layout(
+                layout_full,
+                min_pixels=min_pixels,
+                max_black_fraction=max_black_fraction,
+                min_content_fraction=min_content_fraction,
+            )
+            
+            layout_cache[layout_path] = (layout_valid, layout_reason, layout_details)
+            if not layout_valid:
+                bad_layouts.add(layout_path)
+        
+        logger.info(f"  Found {len(bad_layouts)} bad layouts (will reject all samples with these layouts)")
+        
+        # =====================================================================
+        # STEP 2: Second pass - Check each sample
+        # =====================================================================
         check_desc = "Checking samples (layout" + (" + POV" if enable_pov_check else "") + ")"
         logger.info(check_desc)
         results = []
@@ -508,43 +561,46 @@ def process_dataset(
         
         for idx, row in tqdm(df.iterrows(), total=len(df), desc="Checking samples"):
             sample_id = row["sample_id"]
-            layout_path = row["layout_path"]
+            layout_path = row["layout_path"] if pd.notna(row["layout_path"]) else ""
             pov_path = row.get("pov_path", "") if enable_pov_check else ""
             
             rejection_reasons = []
             rejection_details = {}
             
             # =====================================================================
-            # STEP 1: Check layout quality (ALWAYS done for every sample)
+            # STEP 2a: Check if layout is bad (from first pass)
+            # If layout is bad, reject ALL samples with that layout
             # =====================================================================
             layout_valid = True
             layout_reason = ""
             layout_details = {}
             layout_full = None
             
-            if layout_path:
-                layout_full = dataset_root / layout_path if not Path(layout_path).is_absolute() else Path(layout_path)
-                if layout_full.exists():
-                    layout_valid, layout_reason, layout_details = check_layout(
-                        layout_full,
-                        min_pixels=min_pixels,
-                        max_black_fraction=max_black_fraction,
-                        min_content_fraction=min_content_fraction,
-                    )
-                else:
-                    layout_valid = False
-                    layout_reason = "LAYOUT_NOT_FOUND"
-            else:
+            if layout_path in bad_layouts:
+                # Layout is bad - reject this sample
                 layout_valid = False
-                layout_reason = "NO_LAYOUT_PATH"
-            
-            if not layout_valid:
+                cached_result = layout_cache.get(layout_path, (False, "UNKNOWN", {}))
+                layout_reason = cached_result[1]
+                layout_details = cached_result[2]
                 rejection_reasons.append(f"LAYOUT:{layout_reason}")
                 rejection_details.update({f"layout_{k}": v for k, v in layout_details.items()})
+            elif layout_path:
+                # Layout is good (from cache)
+                cached_result = layout_cache.get(layout_path, (True, "", {}))
+                layout_valid = cached_result[0]
+                layout_reason = cached_result[1]
+                layout_details = cached_result[2]
+                layout_full = dataset_root / layout_path if not Path(layout_path).is_absolute() else Path(layout_path)
+            else:
+                # No layout path
+                layout_valid = False
+                layout_reason = "NO_LAYOUT_PATH"
+                rejection_reasons.append(f"LAYOUT:{layout_reason}")
             
             # =====================================================================
-            # STEP 2: Check POV uniformity (ONLY if POV checking enabled)
-            # Reject if room has content AND POV is too uniform (too one-colored)
+            # STEP 2b: Check POV uniformity (ONLY if POV checking enabled)
+            # Reject ONLY if: room has content (not empty) AND POV is too uniform
+            # Do NOT reject if: room is empty (even if POV is bad)
             # =====================================================================
             pov_valid = True
             pov_reason = ""
@@ -562,6 +618,8 @@ def process_dataset(
                             max_dominant_color_fraction=pov_min_match_ratio,  # Reuse this param for uniformity threshold
                             color_tolerance=pov_color_tolerance,  # Reuse this param for color quantization
                         )
+                        # Note: check_pov_uniformity only rejects if room has content AND POV is too uniform
+                        # If room is empty, it returns True (valid), which is what we want
                     else:
                         pov_valid = False
                         if not layout_full or not layout_full.exists():
@@ -572,13 +630,17 @@ def process_dataset(
                     pov_valid = False
                     pov_reason = "NO_POV_PATH"
                 
+                # Only add POV rejection reason if POV is actually invalid
+                # (check_pov_uniformity already handles the "room empty" case correctly)
                 if not pov_valid:
                     rejection_reasons.append(f"POV:{pov_reason}")
                     rejection_details.update({f"pov_{k}": v for k, v in pov_details.items()})
             
             # =====================================================================
             # STEP 3: Determine if sample is rejected
-            # Sample is rejected if layout fails OR (if POV checking enabled) POV fails
+            # Sample is rejected if:
+            # - Layout is bad (rejects ALL samples with that layout), OR
+            # - POV is bad AND room is not empty (POV check already handles this)
             # =====================================================================
             is_rejected = not layout_valid or (enable_pov_check and not pov_valid)
             if is_rejected:
