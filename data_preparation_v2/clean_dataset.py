@@ -426,16 +426,16 @@ def check_pov_uniformity(
         color_counts = Counter(quantized_colors)
         details["pov_num_colors"] = len(color_counts)
         
-            # Find the most dominant color fraction
-            if len(color_counts) > 0:
-                max_count = max(color_counts.values())
-                dominant_fraction = max_count / total_pixels
-                details["pov_dominant_color_fraction"] = round(dominant_fraction, 4)
-                
-                # Reject ONLY if room has content AND POV is too uniform
-                # If room is empty, do NOT reject (even if POV is uniform)
-                if layout_has_content and dominant_fraction >= max_dominant_color_fraction:
-                    return False, "POV_REJECTED", details
+        # Find the most dominant color fraction
+        if len(color_counts) > 0:
+            max_count = max(color_counts.values())
+            dominant_fraction = max_count / total_pixels
+            details["pov_dominant_color_fraction"] = round(dominant_fraction, 4)
+            
+            # Reject ONLY if room has content AND POV is too uniform
+            # If room is empty, do NOT reject (even if POV is uniform)
+            if layout_has_content and dominant_fraction >= max_dominant_color_fraction:
+                return False, "POV_REJECTED", details
         
     except Exception as e:
         logger.warning(f"Failed to check POV uniformity: {e}")
