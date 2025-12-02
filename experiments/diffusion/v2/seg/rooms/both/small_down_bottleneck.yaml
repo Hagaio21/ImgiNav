@@ -66,7 +66,7 @@ training:
   gradient_accumulation_steps: 1
   scheduler:
     type: cosine
-  cfg_dropout_rate: 0.15
+  cfg_dropout_rate: 0.25
   guidance_scale: 7.0
   use_precomputed_weights: true
   precomputed_weight_column: sample_weight

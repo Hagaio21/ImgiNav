@@ -42,7 +42,7 @@ unet:
   - downs
   - bottleneck
   enable_cross_attention: true
-  window_size: 8  # Window size for windowed attention (8x8 windows for 32x32 latents). Set to null for full attention.
+  window_size: 16  # Window size for windowed attention (16x16 windows for 32x32 latents). Set to null for full attention.
   use_ema: false
 scheduler:
   type: LinearScheduler
@@ -65,7 +65,7 @@ training:
   gradient_accumulation_steps: 1
   scheduler:
     type: cosine
-  cfg_dropout_rate: 0.15
+  cfg_dropout_rate: 0.25
   guidance_scale: 7.0
   sampling_seed_base: 42
   # Number of samples to generate per condition during evaluation

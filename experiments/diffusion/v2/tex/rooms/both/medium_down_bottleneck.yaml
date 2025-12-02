@@ -65,7 +65,7 @@ training:
   gradient_accumulation_steps: 1
   scheduler:
     type: cosine
-  cfg_dropout_rate: 0.15
+  cfg_dropout_rate: 0.25
   guidance_scale: 7.0
   sampling_seed_base: 42
   num_conditioned_samples_per_type: 8
