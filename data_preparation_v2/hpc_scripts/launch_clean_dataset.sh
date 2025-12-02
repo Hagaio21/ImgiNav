@@ -310,12 +310,17 @@ shard_df['shard_num'] = shard_df['shard_num'].clip(upper=num_shards - 1)
 shards_dir.mkdir(parents=True, exist_ok=True)
 
 # Create new shards (user will manually delete old ones if needed)
+# Always create all shard files (even if empty) so array job size matches
 for shard_num in range(num_shards):
     shard_data = shard_df[shard_df['shard_num'] == shard_num][['sample_id', 'scene_id', 'type']]
+    shard_file = shards_dir / f"shard_{shard_num:03d}.csv"
     if len(shard_data) > 0:
-        shard_file = shards_dir / f"shard_{shard_num:03d}.csv"
         shard_data.to_csv(shard_file, index=False, header=True)
         print(f"Created {shard_file} with {len(shard_data)} samples")
+    else:
+        # Create empty shard file with just header
+        pd.DataFrame(columns=['sample_id', 'scene_id', 'type']).to_csv(shard_file, index=False)
+        print(f"Created empty {shard_file}")
 
 # Also create scene_ids file for compatibility
 scene_ids_file = shards_dir / "all_scene_ids.txt"
@@ -418,12 +423,17 @@ shard_df['shard_num'] = shard_df['shard_num'].clip(upper=num_shards - 1)
 shards_dir.mkdir(parents=True, exist_ok=True)
 
 # Create new shards (user will manually delete old ones if needed)
+# Always create all shard files (even if empty) so array job size matches
 for shard_num in range(num_shards):
     shard_data = shard_df[shard_df['shard_num'] == shard_num][['sample_id', 'scene_id', 'type']]
+    shard_file = shards_dir / f"shard_{shard_num:03d}.csv"
     if len(shard_data) > 0:
-        shard_file = shards_dir / f"shard_{shard_num:03d}.csv"
         shard_data.to_csv(shard_file, index=False, header=True)
         print(f"Created {shard_file} with {len(shard_data)} samples")
+    else:
+        # Create empty shard file with just header
+        pd.DataFrame(columns=['sample_id', 'scene_id', 'type']).to_csv(shard_file, index=False)
+        print(f"Created empty {shard_file}")
 
 # Also create scene_ids file for compatibility
 scene_ids_file = shards_dir / "all_scene_ids.txt"
