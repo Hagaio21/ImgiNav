@@ -34,7 +34,15 @@ if [ -z "${LSB_JOBINDEX:-}" ]; then
 fi
 
 SHARD_INDEX=$(printf "%03d" $((LSB_JOBINDEX - 1)))
-SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_INDEX}.txt"
+# Try CSV first (new format), fall back to .txt (legacy)
+if [ -f "${SHARDS_DIR}/shard_${SHARD_INDEX}.csv" ]; then
+    SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_INDEX}.csv"
+elif [ -f "${SHARDS_DIR}/shard_${SHARD_INDEX}.txt" ]; then
+    SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_INDEX}.txt"
+else
+    echo "ERROR: Shard file not found: ${SHARDS_DIR}/shard_${SHARD_INDEX}.csv or .txt" >&2
+    exit 1
+fi
 OUTPUT_FILE="${OUTPUT_DIR}/rejections_shard_${SHARD_INDEX}.csv"
 
 echo "=========================================="
@@ -54,8 +62,14 @@ if [ ! -f "${SHARD_FILE}" ]; then
     exit 1
 fi
 
-NUM_SCENES=$(wc -l < "${SHARD_FILE}")
-echo "Scenes in shard: ${NUM_SCENES}"
+# Count samples/scenes in shard
+if [ "${SHARD_FILE##*.}" = "csv" ]; then
+    NUM_SAMPLES=$(tail -n +2 "${SHARD_FILE}" | wc -l)
+    echo "Samples in shard: ${NUM_SAMPLES}"
+else
+    NUM_SCENES=$(wc -l < "${SHARD_FILE}")
+    echo "Scenes in shard: ${NUM_SCENES}"
+fi
 echo ""
 
 # =============================================================================

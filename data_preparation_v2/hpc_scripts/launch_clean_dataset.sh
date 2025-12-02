@@ -244,61 +244,90 @@ if [ -n "${ADD_SAMPLE_ID_JOB_ID}" ] && [ -n "${MANIFEST_WITH_IDS}" ]; then
     # Need to create shards after add_sample_id finishes - submit as job
     echo "Will create shards after add_sample_id job completes..."
     
-    # Create script to extract scene IDs and create shards
+    # Create script to extract sample_id, scene_id, type and create CSV shards
     CREATE_SHARDS_SCRIPT="${SHARDS_DIR}/create_shards.sh"
     cat > "${CREATE_SHARDS_SCRIPT}" <<EOF
 #!/bin/bash
 #BSUB -J create_shards
 #BSUB -n 1
-#BSUB -R "rusage[mem=1000]"
+#BSUB -R "rusage[mem=2000]"
 #BSUB -W 00:10
 #BSUB -q hpc
 
 set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
 
-# Extract scene IDs from manifest
-SCENE_IDS_FILE="${SHARDS_DIR}/all_scene_ids.txt"
+cd "${BASE_DIR}"
 
-# Find scene_id column index
-SCENE_ID_COL=\$(head -1 "${MANIFEST_WITH_IDS}" | awk -F',' '{for(i=1;i<=NF;i++) if(\$i=="scene_id") print i}')
-
-if [ -z "\${SCENE_ID_COL}" ]; then
-    echo "ERROR: scene_id column not found in manifest" >&2
-    exit 1
+if [ -f "\$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "\$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate imginav || conda activate scenefactor || exit 1
 fi
 
-# Extract scene IDs using awk (skip header, get unique, sort)
-tail -n +2 "${MANIFEST_WITH_IDS}" | \\
-    awk -F',' -v col="\${SCENE_ID_COL}" '{print \$col}' | \\
-    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \\
-    grep -v '^$' | \\
-    sort -u > "\${SCENE_IDS_FILE}"
+# Use Python to create CSV shards with sample_id, scene_id, type
+python3 <<PYTHON_SCRIPT
+import pandas as pd
+import sys
+from pathlib import Path
 
-if [ ! -s "\${SCENE_IDS_FILE}" ]; then
-    echo "ERROR: Failed to extract scene IDs from manifest" >&2
-    exit 1
-fi
+manifest_path = "${MANIFEST_WITH_IDS}"
+shards_dir = Path("${SHARDS_DIR}")
+num_shards = ${NUM_SHARDS}
 
-TOTAL_SCENES=\$(wc -l < "\${SCENE_IDS_FILE}")
-echo "Extracted \${TOTAL_SCENES} scene IDs"
+# Load manifest
+df = pd.read_csv(manifest_path, low_memory=False)
+df.columns = df.columns.str.strip()
 
-# Create shards
-rm -f "${SHARDS_DIR}"/shard_*.txt
-split -n "l/${NUM_SHARDS}" -d -a 3 "\${SCENE_IDS_FILE}" "${SHARDS_DIR}/shard_"
+# Check required columns
+required_cols = ['sample_id', 'scene_id']
+if 'type' not in df.columns:
+    print("WARNING: 'type' column not found in manifest, will use empty string", file=sys.stderr)
+    df['type'] = ''
 
-# Rename to add .txt extension
-ACTUAL_SHARDS=0
-for f in "${SHARDS_DIR}"/shard_[0-9][0-9][0-9]; do
-    if [ -f "\$f" ]; then
-        mv "\$f" "\${f}.txt"
-        ACTUAL_SHARDS=\$((ACTUAL_SHARDS + 1))
-    fi
-done
+# Extract sample_id, scene_id, type
+shard_df = df[['sample_id', 'scene_id', 'type']].copy()
+shard_df = shard_df.dropna(subset=['sample_id', 'scene_id'])
 
-echo "Created \${ACTUAL_SHARDS} shards"
-echo "\${ACTUAL_SHARDS}" > "${SHARDS_DIR}/num_shards.txt"
+# Get unique scene IDs for splitting
+unique_scenes = shard_df['scene_id'].unique()
+num_scenes = len(unique_scenes)
+scenes_per_shard = max(1, num_scenes // num_shards)
 
-exit 0
+# Group by scene_id and assign to shards
+shard_df['shard_num'] = shard_df.groupby('scene_id').ngroup() // scenes_per_shard
+shard_df['shard_num'] = shard_df['shard_num'].clip(upper=num_shards - 1)
+
+# Write shards as CSV
+shards_dir.mkdir(parents=True, exist_ok=True)
+# Remove old shard files
+import glob
+for old_shard in glob.glob(str(shards_dir / "shard_*.csv")):
+    Path(old_shard).unlink()
+for old_shard in glob.glob(str(shards_dir / "shard_*.txt")):
+    Path(old_shard).unlink()
+
+for shard_num in range(num_shards):
+    shard_data = shard_df[shard_df['shard_num'] == shard_num][['sample_id', 'scene_id', 'type']]
+    if len(shard_data) > 0:
+        shard_file = shards_dir / f"shard_{shard_num:03d}.csv"
+        shard_data.to_csv(shard_file, index=False, header=True)
+        print(f"Created {shard_file} with {len(shard_data)} samples")
+
+# Also create scene_ids file for compatibility
+scene_ids_file = shards_dir / "all_scene_ids.txt"
+unique_scenes_sorted = sorted(unique_scenes)
+with open(scene_ids_file, 'w') as f:
+    for scene_id in unique_scenes_sorted:
+        f.write(f"{scene_id}\n")
+print(f"Created {scene_ids_file} with {len(unique_scenes_sorted)} unique scene IDs")
+
+# Write number of shards
+actual_shards = len([f for f in shards_dir.glob("shard_*.csv")])
+(shards_dir / "num_shards.txt").write_text(str(actual_shards))
+print(f"Created {actual_shards} shards")
+PYTHON_SCRIPT
+
+exit \$?
 EOF
     chmod +x "${CREATE_SHARDS_SCRIPT}"
     
@@ -331,25 +360,75 @@ else
     SCENE_IDS_FILE="${SHARDS_DIR}/all_scene_ids.txt"
     
     if [ -n "${MANIFEST_WITH_IDS}" ]; then
-        echo "Extracting scene IDs from manifest..."
+        echo "Creating shards with sample_id,scene_id,type from manifest..."
         
-        # Find scene_id column index
-        SCENE_ID_COL=$(head -1 "${MANIFEST_WITH_IDS}" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="scene_id") print i}')
+        # Use Python to extract sample_id, scene_id, and type columns and create shards
+        python3 <<PYTHON_SCRIPT
+import pandas as pd
+import sys
+from pathlib import Path
+
+manifest_path = "${MANIFEST_WITH_IDS}"
+shards_dir = Path("${SHARDS_DIR}")
+num_shards = ${NUM_SHARDS}
+
+# Load manifest
+df = pd.read_csv(manifest_path, low_memory=False)
+df.columns = df.columns.str.strip()
+
+# Check required columns
+required_cols = ['sample_id', 'scene_id']
+if 'type' not in df.columns:
+    print("WARNING: 'type' column not found in manifest, will use empty string", file=sys.stderr)
+    df['type'] = ''
+
+# Extract sample_id, scene_id, type
+shard_df = df[['sample_id', 'scene_id', 'type']].copy()
+shard_df = shard_df.dropna(subset=['sample_id', 'scene_id'])
+
+# Get unique scene IDs for splitting
+unique_scenes = shard_df['scene_id'].unique()
+num_scenes = len(unique_scenes)
+scenes_per_shard = max(1, num_scenes // num_shards)
+
+# Group by scene_id and assign to shards
+shard_df['shard_num'] = shard_df.groupby('scene_id').ngroup() // scenes_per_shard
+shard_df['shard_num'] = shard_df['shard_num'].clip(upper=num_shards - 1)
+
+# Write shards
+shards_dir.mkdir(parents=True, exist_ok=True)
+# Remove old shard files
+import glob
+for old_shard in glob.glob(str(shards_dir / "shard_*.csv")):
+    Path(old_shard).unlink()
+for old_shard in glob.glob(str(shards_dir / "shard_*.txt")):
+    Path(old_shard).unlink()
+
+for shard_num in range(num_shards):
+    shard_data = shard_df[shard_df['shard_num'] == shard_num][['sample_id', 'scene_id', 'type']]
+    if len(shard_data) > 0:
+        shard_file = shards_dir / f"shard_{shard_num:03d}.csv"
+        shard_data.to_csv(shard_file, index=False, header=True)
+        print(f"Created {shard_file} with {len(shard_data)} samples")
+
+# Also create scene_ids file for compatibility
+scene_ids_file = shards_dir / "all_scene_ids.txt"
+unique_scenes_sorted = sorted(unique_scenes)
+with open(scene_ids_file, 'w') as f:
+    for scene_id in unique_scenes_sorted:
+        f.write(f"{scene_id}\n")
+print(f"Created {scene_ids_file} with {len(unique_scenes_sorted)} unique scene IDs")
+PYTHON_SCRIPT
         
-        if [ -z "${SCENE_ID_COL}" ]; then
-            echo "ERROR: scene_id column not found in manifest" >&2
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to create shards from manifest" >&2
             exit 1
         fi
         
-        # Extract scene IDs using awk (skip header, get unique, sort)
-        tail -n +2 "${MANIFEST_WITH_IDS}" | \
-            awk -F',' -v col="${SCENE_ID_COL}" '{print $col}' | \
-            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
-            grep -v '^$' | \
-            sort -u > "${SCENE_IDS_FILE}"
-        
-        if [ $? -ne 0 ] || [ ! -s "${SCENE_IDS_FILE}" ]; then
-            echo "ERROR: Failed to extract scene IDs from manifest" >&2
+        # Count shards created
+        ACTUAL_SHARDS=$(ls -1 "${SHARDS_DIR}"/shard_*.csv 2>/dev/null | wc -l)
+        if [ "${ACTUAL_SHARDS}" -eq 0 ]; then
+            echo "ERROR: No shards were created" >&2
             exit 1
         fi
     else
@@ -378,20 +457,15 @@ else
     echo ""
     echo "Creating ${NUM_SHARDS} shards..."
     
-    # Remove old shard files
-    rm -f "${SHARDS_DIR}"/shard_*.txt
+    # Remove old shard files (both .txt and .csv)
+    rm -f "${SHARDS_DIR}"/shard_*.txt "${SHARDS_DIR}"/shard_*.csv
     
-    # Split scene IDs into shards
-    split -n "l/${NUM_SHARDS}" -d -a 3 "${SCENE_IDS_FILE}" "${SHARDS_DIR}/shard_"
-    
-    # Rename to add .txt extension
-    ACTUAL_SHARDS=0
-    for f in "${SHARDS_DIR}"/shard_[0-9][0-9][0-9]; do
-        if [ -f "$f" ]; then
-            mv "$f" "${f}.txt"
-            ACTUAL_SHARDS=$((ACTUAL_SHARDS + 1))
-        fi
-    done
+    # Count shards created by Python script
+    ACTUAL_SHARDS=$(ls -1 "${SHARDS_DIR}"/shard_*.csv 2>/dev/null | wc -l)
+    if [ "${ACTUAL_SHARDS}" -eq 0 ]; then
+        echo "ERROR: No shards were created" >&2
+        exit 1
+    fi
     
     echo "  Created ${ACTUAL_SHARDS} shards"
     SCENES_PER_SHARD=$((TOTAL_SCENES / ACTUAL_SHARDS))

@@ -493,9 +493,21 @@ def process_dataset(
             return
         
         # Filter by scene_ids if provided (for shard processing)
+        # If scene_ids is a dict with sample_id->type mapping, use it to add type column
         if scene_ids:
-            df = df[df["scene_id"].isin(scene_ids)].copy()
-            logger.info(f"  Filtered to {len(df)} samples in shard")
+            if isinstance(scene_ids, dict):
+                # scene_ids is actually a mapping from shard file (sample_id -> type)
+                # Filter manifest by sample_ids and add type column
+                sample_ids_in_shard = set(scene_ids.keys())
+                df = df[df["sample_id"].isin(sample_ids_in_shard)].copy()
+                # Add type column from shard mapping
+                df["type"] = df["sample_id"].map(scene_ids).fillna("")
+                logger.info(f"  Filtered to {len(df)} samples in shard")
+                logger.info(f"  Type distribution: {df['type'].value_counts().to_dict()}")
+            else:
+                # Legacy: scene_ids is a set of scene_id strings
+                df = df[df["scene_id"].isin(scene_ids)].copy()
+                logger.info(f"  Filtered to {len(df)} samples in shard")
         
         if len(df) == 0:
             logger.warning("No samples in shard")
@@ -608,13 +620,32 @@ def process_dataset(
             pov_details = {}
             pov_full = None
             
-            # Check if this is a scene (scenes don't have POVs, so skip POV checking)
-            sample_type = row.get("type", "").lower().strip() if "type" in row else ""
-            is_scene = sample_type == "scene"
+            # Determine if this is a scene or room
+            # KEY INSIGHT: Only rooms have POVs. Scenes don't have POVs.
+            # So we can use POV path presence as the indicator:
+            # - No POV path = scene (skip POV checking)
+            # - Has POV path = room (check POV quality)
+            has_pov_path = pov_path and pd.notna(pov_path) and str(pov_path).strip() != ""
             
-            if enable_pov_check and not is_scene:
-                # Only check POV for rooms (not scenes)
-                if pov_path and pd.notna(pov_path):
+            # Also check type column if available (for logging/debugging, but POV path is the source of truth)
+            sample_type = ""
+            if "type" in df.columns:
+                type_val = row.get("type", "")
+                if pd.notna(type_val):
+                    sample_type = str(type_val).lower().strip()
+            
+            # If POV checking is enabled:
+            # - Scenes don't have POVs (expected) -> skip POV check, always valid
+            # - Rooms should have POVs -> check POV quality
+            if enable_pov_check:
+                if not has_pov_path:
+                    # No POV path = scene (scenes don't have POVs)
+                    # This is expected behavior, so POV is always valid for scenes
+                    pov_valid = True
+                    # No need to add rejection reason for scenes without POVs
+                else:
+                    # Has POV path = room (only rooms have POVs)
+                    # Check POV quality
                     pov_full = dataset_root / pov_path if not Path(pov_path).is_absolute() else Path(pov_path)
                     if layout_full and layout_full.exists() and pov_full.exists():
                         pov_valid, pov_reason, pov_details = check_pov_uniformity(
@@ -632,29 +663,23 @@ def process_dataset(
                             pov_reason = "LAYOUT_NOT_FOUND"
                         elif not pov_full.exists():
                             pov_reason = "POV_NOT_FOUND"
-                else:
-                    pov_valid = False
-                    pov_reason = "NO_POV_PATH"
-                
-                # Only add POV rejection reason if POV is actually invalid
-                # (check_pov_uniformity already handles the "room empty" case correctly)
-                if not pov_valid:
-                    rejection_reasons.append(f"POV:{pov_reason}")
-                    rejection_details.update({f"pov_{k}": v for k, v in pov_details.items()})
-            elif enable_pov_check and is_scene:
-                # Scenes don't have POVs - this is expected, so POV is always valid for scenes
-                pov_valid = True
-                # No need to add rejection reason for scenes without POVs
+                    
+                    # Only add POV rejection reason if POV is actually invalid
+                    # (check_pov_uniformity already handles the "room empty" case correctly)
+                    if not pov_valid:
+                        rejection_reasons.append(f"POV:{pov_reason}")
+                        rejection_details.update({f"pov_{k}": v for k, v in pov_details.items()})
             
             # =====================================================================
             # STEP 3: Determine if sample is rejected
             # Sample is rejected if:
             # - Layout is bad (rejects ALL samples with that layout), OR
-            # - POV is bad AND room is not empty (POV check already handles this)
+            # - POV is bad (only for rooms, since only rooms have POVs)
             # Note: Scenes are never rejected due to POV (they don't have POVs)
             # =====================================================================
-            # Only consider POV rejection for non-scenes when POV checking is enabled
-            pov_rejection_applies = enable_pov_check and not is_scene and not pov_valid
+            # Only consider POV rejection for samples with POV paths (rooms)
+            # Samples without POV paths (scenes) are never rejected due to POV
+            pov_rejection_applies = enable_pov_check and has_pov_path and not pov_valid
             is_rejected = not layout_valid or pov_rejection_applies
             if is_rejected:
                 rejected_count += 1
@@ -822,15 +847,41 @@ def process_dataset(
             logger.info(f"  {reason}: {count}")
 
 
-def load_scene_list(shard_file: Path) -> Set[str]:
-    """Load scene IDs from shard file."""
-    scene_ids = set()
-    with open(shard_file, "r", encoding="utf-8") as f:
-        for line in f:
-            scene_id = line.strip()
-            if scene_id and not scene_id.startswith("#"):
-                scene_ids.add(scene_id)
-    return scene_ids
+def load_scene_list(shard_file: Path):
+    """
+    Load shard data from file.
+    
+    Returns:
+        - If CSV file: dict mapping sample_id -> type (for filtering manifest)
+        - If text file: set of scene_ids (legacy format)
+    """
+    if shard_file.suffix == ".csv":
+        # CSV format: sample_id,scene_id,type
+        import pandas as pd
+        shard_df = pd.read_csv(shard_file, low_memory=False)
+        shard_df.columns = shard_df.columns.str.strip()
+        
+        # Return dict mapping sample_id -> type
+        if "sample_id" in shard_df.columns and "type" in shard_df.columns:
+            return dict(zip(shard_df["sample_id"], shard_df["type"]))
+        elif "sample_id" in shard_df.columns:
+            # If no type column, return set of sample_ids
+            return set(shard_df["sample_id"].unique())
+        else:
+            # Fallback to scene_id if sample_id not present
+            if "scene_id" in shard_df.columns:
+                return set(shard_df["scene_id"].unique())
+            else:
+                raise ValueError(f"Shard CSV must have 'sample_id' or 'scene_id' column: {shard_file}")
+    else:
+        # Legacy text format: one scene_id per line
+        scene_ids = set()
+        with open(shard_file, "r", encoding="utf-8") as f:
+            for line in f:
+                scene_id = line.strip()
+                if scene_id and not scene_id.startswith("#"):
+                    scene_ids.add(scene_id)
+        return scene_ids
 
 
 def main():
