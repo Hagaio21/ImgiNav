@@ -259,6 +259,9 @@ export MKL_INTERFACE_LAYER=LP64
 
 cd "${BASE_DIR}"
 
+# Set MKL_INTERFACE_LAYER before conda activation (required by conda env activation script)
+export MKL_INTERFACE_LAYER=LP64
+
 if [ -f "\$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     source "\$HOME/miniconda3/etc/profile.d/conda.sh"
     conda activate imginav || conda activate scenefactor || exit 1
@@ -363,6 +366,8 @@ else
         echo "Creating shards with sample_id,scene_id,type from manifest..."
         
         # Activate conda environment and use its Python
+        # Set MKL_INTERFACE_LAYER before conda activation (required by conda env)
+        export MKL_INTERFACE_LAYER=LP64
         if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
             source "$HOME/miniconda3/etc/profile.d/conda.sh"
             conda activate imginav || conda activate scenefactor || {
