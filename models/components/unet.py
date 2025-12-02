@@ -38,7 +38,7 @@ class UnetWithAttention(BaseComponent):
         "attention_heads": None,
         "attention_at": ["bottleneck", "downs", "ups"],
         "enable_cross_attention": False,
-        "window_size": None,  # If None, use full attention. If int, use windowed attention with this window size
+        "window_size": None,  # If None, use full attention. If int, use adaptive windowed attention: this is the window size at input resolution (e.g., 16 for 32x32), automatically scaled for smaller resolutions.
     }
 
     def _build(self):
