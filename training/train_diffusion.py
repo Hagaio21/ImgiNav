@@ -723,28 +723,10 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         torch.cuda.manual_seed_all(conditioned_sampling_seed)
     
     # Generate conditioned samples using DDIM (50 steps)
-    # Total batch size is num_conditions * num_samples_per_condition
-    total_batch_size = batch_size * num_samples_per_condition
+    # Process in chunks to avoid OOM - max batch size per chunk
+    # Use smaller chunks: max 2 conditions at a time (2 * num_samples_per_condition)
+    max_conditions_per_chunk = max(1, min(2, batch_size))  # Process 1-2 conditions at a time
     ddim_steps = 50
-    
-    with torch.no_grad():
-        conditioned_output = model.sample(
-            batch_size=total_batch_size,
-            num_steps=ddim_steps,
-            method="ddim",
-            eta=0.0,
-            guidance_scale=guidance_scale,
-            text_emb=text_emb,
-            pov_emb=pov_emb,
-            device=device_obj,
-            verbose=False
-        )
-        
-        # Decode generated latents to RGB
-        generated_rgb = latents2rgb(model, conditioned_output, warning_prefix="Decoder for generated samples")
-    
-    if generated_rgb is None:
-        return
     
     # Load target images for comparison grids
     target_images = []
@@ -757,12 +739,62 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             print(f"  Warning: Target image for sample {i} not found")
             return
     
-    # Convert generated to images
-    generated_np = (generated_rgb.cpu().numpy() * 255.0).astype(np.uint8)
-    generated_images = []
-    for i in range(total_batch_size):
-        generated_img = Image.fromarray(generated_np[i].transpose(1, 2, 0))
-        generated_images.append(generated_img)
+    # Process conditions in chunks
+    all_generated_images = []
+    condition_offset = 0
+    
+    for chunk_start in range(0, batch_size, max_conditions_per_chunk):
+        chunk_end = min(chunk_start + max_conditions_per_chunk, batch_size)
+        chunk_batch_size = chunk_end - chunk_start
+        
+        # Extract embeddings for this chunk
+        chunk_text_emb = None
+        chunk_pov_emb = None
+        
+        if text_emb is not None:
+            chunk_text_emb = text_emb[chunk_start * num_samples_per_condition:chunk_end * num_samples_per_condition]
+        
+        if pov_emb is not None:
+            chunk_pov_emb = pov_emb[chunk_start * num_samples_per_condition:chunk_end * num_samples_per_condition]
+        
+        chunk_total_batch_size = chunk_batch_size * num_samples_per_condition
+        
+        print(f"  Generating samples for conditions {chunk_start}-{chunk_end-1} (batch size: {chunk_total_batch_size})...")
+        
+        with torch.no_grad():
+            chunk_output = model.sample(
+                batch_size=chunk_total_batch_size,
+                num_steps=ddim_steps,
+                method="ddim",
+                eta=0.0,
+                guidance_scale=guidance_scale,
+                text_emb=chunk_text_emb,
+                pov_emb=chunk_pov_emb,
+                device=device_obj,
+                verbose=False
+            )
+            
+            # Decode generated latents to RGB
+            chunk_rgb = latents2rgb(model, chunk_output, warning_prefix=f"Decoder for chunk {chunk_start}-{chunk_end-1}")
+        
+        if chunk_rgb is None:
+            print(f"  Warning: Failed to decode chunk {chunk_start}-{chunk_end-1}")
+            continue
+        
+        # Convert chunk to images
+        chunk_np = (chunk_rgb.cpu().numpy() * 255.0).astype(np.uint8)
+        for i in range(chunk_total_batch_size):
+            generated_img = Image.fromarray(chunk_np[i].transpose(1, 2, 0))
+            all_generated_images.append(generated_img)
+        
+        # Clear GPU memory
+        del chunk_output, chunk_rgb, chunk_np
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    if len(all_generated_images) == 0:
+        print("  Error: No samples were generated")
+        return
     
     # Save generated images per-condition and per-sample
     for condition_idx in range(batch_size):
@@ -773,8 +805,9 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         # Save all samples for this condition
         for sample_idx in range(num_samples_per_condition):
             global_idx = condition_idx * num_samples_per_condition + sample_idx
-            generated_img = generated_images[global_idx]
-            generated_img.save(generated_dir / f"sample_{sample_idx}_epoch_{epoch:03d}.png")
+            if global_idx < len(all_generated_images):
+                generated_img = all_generated_images[global_idx]
+                generated_img.save(generated_dir / f"sample_{sample_idx}_epoch_{epoch:03d}.png")
     
     # Create comparison grids for easy viewing
     img_size = target_images[0].size[0]
