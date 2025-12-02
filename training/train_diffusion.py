@@ -526,11 +526,22 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
                     except Exception:
                         pass
     
+    # Collect type information for each selected sample
+    sample_types = []
+    if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
+        for idx in selected_indices:
+            row = dataset.df.iloc[idx]
+            sample_type = str(row.get('type', '')).lower().strip()
+            sample_types.append(sample_type)
+    else:
+        sample_types = ['unknown'] * batch_size
+    
     # Save global metadata
     metadata = {
         "batch_size": batch_size,
         "selected_indices": selected_indices,
-        "selected_indices": selected_indices,
+        "sample_types": sample_types,
+        "num_samples_per_type": num_samples_per_type,
         "has_text_emb": text_emb is not None,
         "has_pov_emb": pov_emb is not None,
         "use_text_emb": use_text_emb,
@@ -648,6 +659,12 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     batch_size = metadata["batch_size"]
     
+    # Get number of samples per condition from config (default: 4)
+    if config is not None:
+        num_samples_per_condition = config.get("training", {}).get("num_conditioned_samples_per_type", 4)
+    else:
+        num_samples_per_condition = 4
+    
     # Load embeddings (batch-level for generation)
     text_emb_list = []
     pov_emb_list = []
@@ -666,26 +683,32 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # Stack embeddings back to batch and validate dimensions
     # If file doesn't exist, leave as None (don't create zero tensors here)
     if text_emb_list:
-        text_emb = torch.cat(text_emb_list, dim=0)
+        text_emb_single = torch.cat(text_emb_list, dim=0)
         # Validate text_emb has correct shape [B, 384]
-        if text_emb.shape[1] != 384:
-            print(f"  Warning: text_emb had wrong dimension ({text_emb.shape[1]}), expected 384. Skipping text_emb.")
+        if text_emb_single.shape[1] != 384:
+            print(f"  Warning: text_emb had wrong dimension ({text_emb_single.shape[1]}), expected 384. Skipping text_emb.")
             text_emb = None
         # Skip if it's all zeros (was a placeholder for missing condition)
-        elif text_emb.abs().max().item() < 1e-6:
+        elif text_emb_single.abs().max().item() < 1e-6:
             text_emb = None
+        else:
+            # Repeat each condition num_samples_per_condition times
+            text_emb = text_emb_single.repeat_interleave(num_samples_per_condition, dim=0)
     else:
         text_emb = None  # Don't create zero tensor - let model handle it if needed
     
     if pov_emb_list:
-        pov_emb = torch.cat(pov_emb_list, dim=0)
+        pov_emb_single = torch.cat(pov_emb_list, dim=0)
         # Validate pov_emb has correct shape [B, 512]
-        if pov_emb.shape[1] != 512:
-            print(f"  Warning: pov_emb had wrong dimension ({pov_emb.shape[1]}), expected 512. Skipping pov_emb.")
+        if pov_emb_single.shape[1] != 512:
+            print(f"  Warning: pov_emb had wrong dimension ({pov_emb_single.shape[1]}), expected 512. Skipping pov_emb.")
             pov_emb = None
         # Skip if it's all zeros (was a placeholder for missing condition)
-        elif pov_emb.abs().max().item() < 1e-6:
+        elif pov_emb_single.abs().max().item() < 1e-6:
             pov_emb = None
+        else:
+            # Repeat each condition num_samples_per_condition times
+            pov_emb = pov_emb_single.repeat_interleave(num_samples_per_condition, dim=0)
     else:
         pov_emb = None  # Don't create zero tensor - let model handle it if needed
     
@@ -700,11 +723,13 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         torch.cuda.manual_seed_all(conditioned_sampling_seed)
     
     # Generate conditioned samples using DDIM (50 steps)
+    # Total batch size is num_conditions * num_samples_per_condition
+    total_batch_size = batch_size * num_samples_per_condition
     ddim_steps = 50
     
     with torch.no_grad():
         conditioned_output = model.sample(
-            batch_size=batch_size,
+            batch_size=total_batch_size,
             num_steps=ddim_steps,
             method="ddim",
             eta=0.0,
@@ -735,18 +760,21 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     # Convert generated to images
     generated_np = (generated_rgb.cpu().numpy() * 255.0).astype(np.uint8)
     generated_images = []
-    for i in range(batch_size):
+    for i in range(total_batch_size):
         generated_img = Image.fromarray(generated_np[i].transpose(1, 2, 0))
         generated_images.append(generated_img)
     
-    # Save generated images per-sample
-    for i in range(batch_size):
-        sample_dir = conditioned_dir / f"sample_{i}"
+    # Save generated images per-condition and per-sample
+    for condition_idx in range(batch_size):
+        sample_dir = conditioned_dir / f"sample_{condition_idx}"
         generated_dir = sample_dir / "generated"
         generated_dir.mkdir(parents=True, exist_ok=True)
         
-        generated_img = generated_images[i]
-        generated_img.save(generated_dir / f"sample_{i}_epoch_{epoch:03d}.png")
+        # Save all samples for this condition
+        for sample_idx in range(num_samples_per_condition):
+            global_idx = condition_idx * num_samples_per_condition + sample_idx
+            generated_img = generated_images[global_idx]
+            generated_img.save(generated_dir / f"sample_{sample_idx}_epoch_{epoch:03d}.png")
     
     # Create comparison grids for easy viewing
     img_size = target_images[0].size[0]

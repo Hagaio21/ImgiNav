@@ -68,6 +68,9 @@ training:
   use_precomputed_weights: true
   precomputed_weight_column: sample_weight
   sampling_seed_base: 42
+  # Number of samples to generate per condition during evaluation
+  # For single-type experiments: generates this many samples for each selected condition
+  # For "both" experiments: selects this many conditions per type, then generates this many samples per condition
   num_conditioned_samples_per_type: 8
   loss:
     type: MSELoss
