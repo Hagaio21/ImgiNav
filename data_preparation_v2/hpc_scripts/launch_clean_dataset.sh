@@ -264,8 +264,8 @@ if [ -f "\$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     conda activate imginav || conda activate scenefactor || exit 1
 fi
 
-# Use Python to create CSV shards with sample_id, scene_id, type
-python3 <<PYTHON_SCRIPT
+# Use Python from conda environment to create CSV shards with sample_id, scene_id, type
+python <<PYTHON_SCRIPT
 import pandas as pd
 import sys
 from pathlib import Path
@@ -362,8 +362,17 @@ else
     if [ -n "${MANIFEST_WITH_IDS}" ]; then
         echo "Creating shards with sample_id,scene_id,type from manifest..."
         
-        # Use Python to extract sample_id, scene_id, and type columns and create shards
-        python3 <<PYTHON_SCRIPT
+        # Activate conda environment and use its Python
+        if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+            source "$HOME/miniconda3/etc/profile.d/conda.sh"
+            conda activate imginav || conda activate scenefactor || {
+                echo "ERROR: Failed to activate conda environment" >&2
+                exit 1
+            }
+        fi
+        
+        # Use Python from conda environment to extract sample_id, scene_id, and type columns and create shards
+        python <<PYTHON_SCRIPT
 import pandas as pd
 import sys
 from pathlib import Path
