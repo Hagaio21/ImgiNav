@@ -308,13 +308,8 @@ shard_df['shard_num'] = shard_df['shard_num'].clip(upper=num_shards - 1)
 
 # Write shards as CSV
 shards_dir.mkdir(parents=True, exist_ok=True)
-# Remove old shard files
-import glob
-for old_shard in glob.glob(str(shards_dir / "shard_*.csv")):
-    Path(old_shard).unlink()
-for old_shard in glob.glob(str(shards_dir / "shard_*.txt")):
-    Path(old_shard).unlink()
 
+# Create new shards (user will manually delete old ones if needed)
 for shard_num in range(num_shards):
     shard_data = shard_df[shard_df['shard_num'] == shard_num][['sample_id', 'scene_id', 'type']]
     if len(shard_data) > 0:
@@ -421,13 +416,8 @@ shard_df['shard_num'] = shard_df['shard_num'].clip(upper=num_shards - 1)
 
 # Write shards
 shards_dir.mkdir(parents=True, exist_ok=True)
-# Remove old shard files
-import glob
-for old_shard in glob.glob(str(shards_dir / "shard_*.csv")):
-    Path(old_shard).unlink()
-for old_shard in glob.glob(str(shards_dir / "shard_*.txt")):
-    Path(old_shard).unlink()
 
+# Create new shards (user will manually delete old ones if needed)
 for shard_num in range(num_shards):
     shard_data = shard_df[shard_df['shard_num'] == shard_num][['sample_id', 'scene_id', 'type']]
     if len(shard_data) > 0:
@@ -455,6 +445,10 @@ PYTHON_SCRIPT
             echo "ERROR: No shards were created" >&2
             exit 1
         fi
+        
+        echo "  Created ${ACTUAL_SHARDS} CSV shards"
+        echo "  ACTUAL_SHARDS=${ACTUAL_SHARDS}"
+        CREATE_SHARDS_JOB_ID=""
     else
         echo "Discovering scene IDs from metadata..."
         
@@ -467,34 +461,37 @@ PYTHON_SCRIPT
         
         # Extract scene IDs from JSON filenames
         find "${METADATA_DIR}" -name "*.json" -printf "%f\n" | sed 's/\.json$//' | sort -u > "${SCENE_IDS_FILE}"
+        
+        TOTAL_SCENES=$(wc -l < "${SCENE_IDS_FILE}")
+        echo "  Found ${TOTAL_SCENES} scenes"
+        
+        if [ "${TOTAL_SCENES}" -eq 0 ]; then
+            echo "ERROR: No scene IDs found" >&2
+            exit 1
+        fi
+        
+        # Create shards (legacy method - text files with scene IDs)
+        echo ""
+        echo "Creating ${NUM_SHARDS} shards..."
+        echo "NOTE: Old shard files will not be deleted automatically (delete manually if needed)"
+        
+        # Split scene IDs into shards
+        split -n "l/${NUM_SHARDS}" -d -a 3 "${SCENE_IDS_FILE}" "${SHARDS_DIR}/shard_"
+        
+        # Rename to add .txt extension
+        ACTUAL_SHARDS=0
+        for f in "${SHARDS_DIR}"/shard_[0-9][0-9][0-9]; do
+            if [ -f "$f" ]; then
+                mv "$f" "${f}.txt"
+                ACTUAL_SHARDS=$((ACTUAL_SHARDS + 1))
+            fi
+        done
+        
+        echo "  Created ${ACTUAL_SHARDS} shards"
+        SCENES_PER_SHARD=$((TOTAL_SCENES / ACTUAL_SHARDS))
+        echo "  ~${SCENES_PER_SHARD} scenes per shard"
+        CREATE_SHARDS_JOB_ID=""
     fi
-    
-    TOTAL_SCENES=$(wc -l < "${SCENE_IDS_FILE}")
-    echo "  Found ${TOTAL_SCENES} scenes"
-    
-    if [ "${TOTAL_SCENES}" -eq 0 ]; then
-        echo "ERROR: No scene IDs found" >&2
-        exit 1
-    fi
-    
-    # Create shards
-    echo ""
-    echo "Creating ${NUM_SHARDS} shards..."
-    
-    # Remove old shard files (both .txt and .csv)
-    rm -f "${SHARDS_DIR}"/shard_*.txt "${SHARDS_DIR}"/shard_*.csv
-    
-    # Count shards created by Python script
-    ACTUAL_SHARDS=$(ls -1 "${SHARDS_DIR}"/shard_*.csv 2>/dev/null | wc -l)
-    if [ "${ACTUAL_SHARDS}" -eq 0 ]; then
-        echo "ERROR: No shards were created" >&2
-        exit 1
-    fi
-    
-    echo "  Created ${ACTUAL_SHARDS} shards"
-    SCENES_PER_SHARD=$((TOTAL_SCENES / ACTUAL_SHARDS))
-    echo "  ~${SCENES_PER_SHARD} scenes per shard"
-    CREATE_SHARDS_JOB_ID=""
 fi
 
 
@@ -540,6 +537,12 @@ fi
 
 echo ""
 echo "Submitting job array [1-${ACTUAL_SHARDS}]..."
+echo "ACTUAL_SHARDS=${ACTUAL_SHARDS}"
+
+if [ -z "${ACTUAL_SHARDS}" ] || [ "${ACTUAL_SHARDS}" -eq 0 ]; then
+    echo "ERROR: ACTUAL_SHARDS is not set or is 0. Cannot submit job array." >&2
+    exit 1
+fi
 
 # Submit the array job with dependency on create_shards if needed
 if [ -n "${CREATE_SHARDS_JOB_ID}" ]; then
