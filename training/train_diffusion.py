@@ -355,14 +355,14 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     # Get dataset to find rooms and scenes
     dataset = val_loader.dataset
     
-    # Get total number of samples to select from config (default: 16)
-    # This is the TOTAL number, not per type
-    total_samples = config.get("training", {}).get("num_conditioned_samples_per_type", 16)
+    # Get number of samples per type from config (default: 16)
+    # This is the number PER TYPE, so for "both" experiments: samples_per_type for rooms + samples_per_type for scenes
+    samples_per_type = config.get("training", {}).get("num_conditioned_samples_per_type", 16)
     
     # Select samples from the filtered dataset
     # The dataset is already filtered by config (type, rejected, etc.)
-    # For "both" experiments (type filter is empty), distribute total_samples across types
-    # For single-type experiments, just take total_samples
+    # For "both" experiments (type filter is empty), take samples_per_type from each type
+    # For single-type experiments, take samples_per_type from that type
     selected_indices = []
     
     if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
@@ -378,20 +378,18 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
             elif sample_type == 'scene':
                 scene_indices.append(idx)
         
-        # If both types exist in filtered dataset, distribute total_samples evenly
+        # If both types exist in filtered dataset, take samples_per_type from each type
         if len(room_indices) > 0 and len(scene_indices) > 0:
-            samples_per_type = total_samples // 2
-            remainder = total_samples % 2
-            # Take equal number from each type, with remainder going to rooms
-            selected_indices = room_indices[:samples_per_type + remainder] + scene_indices[:samples_per_type]
+            # Take samples_per_type from each type
+            selected_indices = room_indices[:samples_per_type] + scene_indices[:samples_per_type]
         elif len(room_indices) > 0:
-            selected_indices = room_indices[:total_samples]
+            selected_indices = room_indices[:samples_per_type]
         elif len(scene_indices) > 0:
-            selected_indices = scene_indices[:total_samples]
+            selected_indices = scene_indices[:samples_per_type]
         else:
-            selected_indices = list(range(min(total_samples, len(dataset))))
+            selected_indices = list(range(min(samples_per_type, len(dataset))))
     else:
-        selected_indices = list(range(min(total_samples, len(dataset))))
+        selected_indices = list(range(min(samples_per_type, len(dataset))))
     
     batch_size = len(selected_indices)
     
@@ -545,7 +543,7 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
         "batch_size": batch_size,
         "selected_indices": selected_indices,
         "sample_types": sample_types,
-        "num_samples_per_type": total_samples,
+        "num_samples_per_type": samples_per_type,
         "has_text_emb": text_emb is not None,
         "has_pov_emb": pov_emb is not None,
         "use_text_emb": use_text_emb,
@@ -663,27 +661,13 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     batch_size = metadata["batch_size"]
     
-    # Get total number of samples to generate from config (default: 16)
-    # This is the TOTAL number of samples, with 1 sample per condition
-    if config is not None:
-        total_samples = config.get("training", {}).get("num_conditioned_samples_per_type", 16)
-    else:
-        total_samples = 16
-    
-    # Use up to total_samples conditions, 1 sample per condition
-    # If we have fewer conditions than total_samples, repeat conditions
-    num_conditions_to_use = min(batch_size, total_samples)
+    # Generate 1 sample per condition that was saved
+    # The number of conditions saved is determined by save_targets_and_conditions()
+    # which uses num_conditioned_samples_per_type per type
+    total_samples = batch_size  # Generate samples for all saved conditions
     samples_per_condition = 1  # Always 1 sample per condition
-    samples_per_condition_list = [samples_per_condition] * num_conditions_to_use
-    
-    # If we need more samples than we have conditions, repeat the conditions
-    if total_samples > batch_size:
-        # Repeat conditions to reach total_samples
-        num_repeats = (total_samples + batch_size - 1) // batch_size  # Ceiling division
-        samples_per_condition_list = [samples_per_condition] * min(total_samples, batch_size * num_repeats)
-        # Truncate to exactly total_samples
-        samples_per_condition_list = samples_per_condition_list[:total_samples]
-        num_conditions_to_use = batch_size  # Use all available conditions, repeat as needed
+    samples_per_condition_list = [samples_per_condition] * total_samples
+    num_conditions_to_use = batch_size  # Use all available conditions
     
     print(f"  Generating {total_samples} total samples (1 sample per condition, using {num_conditions_to_use} conditions)")
     
