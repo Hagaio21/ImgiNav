@@ -21,7 +21,7 @@ scale_factor: 1.830329
 embedding_projection:
   type: CLIPEmbeddingToSpatial
   clip_projections: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_seg_256_clip/checkpoints/vae_seg_256_clip_clip_projection_best.pt
-  output_channels: 256
+  output_channels: 192
   spatial_size:
   - 16
   - 16
@@ -30,14 +30,14 @@ unet:
   type: UnetWithAttention
   in_channels: 4
   out_channels: 4
-  base_channels: 256
+  base_channels: 192
   depth: 4
-  num_res_blocks: 3
-  time_dim: 512
-  norm_groups: 16
+  num_res_blocks: 2
+  time_dim: 384
+  norm_groups: 12
   dropout: 0.1
   use_attention: true
-  attention_heads: 16
+  attention_heads: 12
   attention_at:
   - downs
   - bottleneck
