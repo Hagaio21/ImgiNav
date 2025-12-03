@@ -460,11 +460,11 @@ def render_pov_layout(
     return img, camera_info
 
 
-def create_debug_layout(layout: Image.Image, margin: int = 15) -> Image.Image:
+def create_layout_with_cam(layout: Image.Image, margin: int = 15) -> Image.Image:
     """Add camera marker at bottom-center pointing up."""
-    debug_img = layout.copy().convert("RGB")
-    draw = ImageDraw.Draw(debug_img)
-    width, height = debug_img.size
+    img = layout.copy().convert("RGB")
+    draw = ImageDraw.Draw(img)
+    width, height = img.size
     
     cam_x = width // 2
     cam_y = height - margin  # Same margin as rendering
@@ -481,7 +481,86 @@ def create_debug_layout(layout: Image.Image, margin: int = 15) -> Image.Image:
     draw.ellipse([cam_x - 5, cam_y - 5, cam_x + 5, cam_y + 5],
                  fill=(255, 255, 255), outline=(0, 0, 0))
     
-    return debug_img
+    return img
+
+
+# ============================================================================
+# POV (First-Person 3D) Rendering
+# ============================================================================
+
+def try_render_pov_pyrender(
+    meshes: List[trimesh.Trimesh],
+    camera_info: Dict,
+    width: int,
+    height: int,
+    fov: float = 80.0
+) -> Optional[Image.Image]:
+    """Render first-person POV using pyrender."""
+    try:
+        import pyrender
+    except ImportError:
+        logger.warning("pyrender not available for POV rendering")
+        return None
+    
+    try:
+        eye = np.array(camera_info["eye"])
+        look_at = np.array(camera_info["look_at"])
+        up = np.array([0.0, 1.0, 0.0])
+        
+        scene = pyrender.Scene(bg_color=[0.53, 0.81, 0.92, 1.0], ambient_light=[0.4, 0.4, 0.4])
+        
+        for mesh in meshes:
+            if len(mesh.vertices) == 0:
+                continue
+            try:
+                pr_mesh = pyrender.Mesh.from_trimesh(mesh, smooth=False)
+                scene.add(pr_mesh)
+            except Exception:
+                continue
+        
+        cam = pyrender.PerspectiveCamera(yfov=np.radians(fov), aspectRatio=width/height)
+        
+        forward = look_at - eye
+        forward = forward / (np.linalg.norm(forward) + 1e-9)
+        right = np.cross(forward, up)
+        right = right / (np.linalg.norm(right) + 1e-9)
+        cam_up = np.cross(right, forward)
+        
+        cam_pose = np.eye(4)
+        cam_pose[:3, 0] = right
+        cam_pose[:3, 1] = cam_up
+        cam_pose[:3, 2] = -forward
+        cam_pose[:3, 3] = eye
+        
+        scene.add(cam, pose=cam_pose)
+        
+        light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
+        scene.add(light, pose=cam_pose)
+        
+        renderer = pyrender.OffscreenRenderer(width, height)
+        color, _ = renderer.render(scene)
+        renderer.delete()
+        
+        return Image.fromarray(color)
+    except Exception as e:
+        logger.warning(f"pyrender POV failed: {e}")
+        return None
+
+
+def render_pov_image(
+    meshes: List[trimesh.Trimesh],
+    camera_info: Dict,
+    width: int = 1280,
+    height: int = 720,
+    fov: float = 80.0
+) -> Image.Image:
+    """Render first-person POV image."""
+    img = try_render_pov_pyrender(meshes, camera_info, width, height, fov)
+    if img is not None:
+        return img
+    
+    # Fallback: return placeholder
+    return Image.new("RGB", (width, height), (135, 206, 235))
 
 
 # ============================================================================
@@ -651,10 +730,14 @@ def process_one_room(
     resolution: int,
     door_color: Tuple[int, int, int],
     window_color: Tuple[int, int, int],
-    generate_debug: bool = True,
+    generate_cam: bool = True,
     generate_graphs: bool = True,
+    render_povs: bool = True,
+    pov_width: int = 1280,
+    pov_height: int = 720,
+    pov_fov: float = 80.0,
 ) -> List[Dict]:
-    """Process one room, generating POV layouts for each door/window."""
+    """Process one room, generating POV layouts and first-person renders for each door/window."""
     
     room_id = room_meta.get("room_id", room_meta.get("room_type", "Unknown"))
     bbox = room_meta.get("bbox", {})
@@ -711,24 +794,60 @@ def process_one_room(
         )
         
         # Save layouts
-        tex_dir = output_dir / "layouts_pov" / "tex"
-        seg_dir = output_dir / "layouts_pov" / "seg"
-        tex_dir.mkdir(parents=True, exist_ok=True)
-        seg_dir.mkdir(parents=True, exist_ok=True)
+        tex_layout_dir = output_dir / "layouts_pov" / "tex"
+        seg_layout_dir = output_dir / "layouts_pov" / "seg"
+        tex_layout_dir.mkdir(parents=True, exist_ok=True)
+        seg_layout_dir.mkdir(parents=True, exist_ok=True)
         
-        tex_path = tex_dir / f"{scene_id}_{room_id}_{pov_id}_tex_layout.png"
-        seg_path = seg_dir / f"{scene_id}_{room_id}_{pov_id}_seg_layout.png"
+        tex_layout_path = tex_layout_dir / f"{scene_id}_{room_id}_{pov_id}_tex_layout.png"
+        seg_layout_path = seg_layout_dir / f"{scene_id}_{room_id}_{pov_id}_seg_layout.png"
         
-        tex_img.save(tex_path)
-        seg_img.save(seg_path)
+        tex_img.save(tex_layout_path)
+        seg_img.save(seg_layout_path)
         
-        # Debug layout
-        if generate_debug:
-            debug_dir = output_dir / "layouts_debug"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            debug_img = create_debug_layout(tex_img)
-            debug_path = debug_dir / f"{scene_id}_{room_id}_{pov_id}_debug_layout.png"
-            debug_img.save(debug_path)
+        # Layouts with camera marker
+        tex_cam_path = ""
+        seg_cam_path = ""
+        if generate_cam:
+            cam_tex_dir = output_dir / "layouts_with_cam" / "tex"
+            cam_seg_dir = output_dir / "layouts_with_cam" / "seg"
+            cam_tex_dir.mkdir(parents=True, exist_ok=True)
+            cam_seg_dir.mkdir(parents=True, exist_ok=True)
+            
+            tex_cam_img = create_layout_with_cam(tex_img)
+            seg_cam_img = create_layout_with_cam(seg_img)
+            
+            tex_cam_path = cam_tex_dir / f"{scene_id}_{room_id}_{pov_id}_tex_layout.png"
+            seg_cam_path = cam_seg_dir / f"{scene_id}_{room_id}_{pov_id}_seg_layout.png"
+            
+            tex_cam_img.save(tex_cam_path)
+            seg_cam_img.save(seg_cam_path)
+            
+            tex_cam_path = str(tex_cam_path.relative_to(output_dir))
+            seg_cam_path = str(seg_cam_path.relative_to(output_dir))
+        
+        # Render first-person POV images
+        tex_pov_path = ""
+        seg_pov_path = ""
+        if render_povs:
+            pov_tex_dir = output_dir / "povs" / "tex"
+            pov_seg_dir = output_dir / "povs" / "seg"
+            pov_tex_dir.mkdir(parents=True, exist_ok=True)
+            pov_seg_dir.mkdir(parents=True, exist_ok=True)
+            
+            tex_pov_path = pov_tex_dir / f"{scene_id}_{room_id}_{pov_id}_tex_pov.png"
+            seg_pov_path = pov_seg_dir / f"{scene_id}_{room_id}_{pov_id}_seg_pov.png"
+            
+            # Render tex POV
+            tex_pov_img = render_pov_image(tex_meshes, camera_info, pov_width, pov_height, pov_fov)
+            tex_pov_img.save(tex_pov_path)
+            
+            # Render seg POV
+            seg_pov_img = render_pov_image(seg_meshes, camera_info, pov_width, pov_height, pov_fov)
+            seg_pov_img.save(seg_pov_path)
+            
+            tex_pov_path = str(tex_pov_path.relative_to(output_dir))
+            seg_pov_path = str(seg_pov_path.relative_to(output_dir))
         
         # Generate graph
         graph = None
@@ -756,9 +875,13 @@ def process_one_room(
             "pov_id": pov_id,
             "pov_type": pov_type,
             "camera": camera_info,
-            "layout_path_tex": str(tex_path.relative_to(output_dir)),
-            "layout_path_seg": str(seg_path.relative_to(output_dir)),
-            "graph_path": f"pov_graphs/jsons/{scene_id}_{room_id}_{pov_id}_room_graph.json" if graph else "",
+            "layout_tex": str(tex_layout_path.relative_to(output_dir)),
+            "layout_seg": str(seg_layout_path.relative_to(output_dir)),
+            "layout_with_cam_tex": tex_cam_path,
+            "layout_with_cam_seg": seg_cam_path,
+            "pov_tex": tex_pov_path,
+            "pov_seg": seg_pov_path,
+            "graph": f"pov_graphs/jsons/{scene_id}_{room_id}_{pov_id}_room_graph.json" if graph else "",
         }
         pov_info_list.append(pov_info)
         
@@ -776,6 +899,12 @@ def process_one_scene(
     resolution: int,
     door_color: Tuple[int, int, int],
     window_color: Tuple[int, int, int],
+    generate_cam: bool = True,
+    generate_graphs: bool = True,
+    render_povs: bool = True,
+    pov_width: int = 1280,
+    pov_height: int = 720,
+    pov_fov: float = 80.0,
 ) -> Tuple[bool, Optional[str], List[Dict]]:
     """Process one scene."""
     try:
@@ -787,7 +916,13 @@ def process_one_scene(
         for room_meta in rooms_metadata:
             pov_info = process_one_room(
                 scene_id, room_meta, tex_meshes, seg_meshes,
-                output_dir, resolution, door_color, window_color
+                output_dir, resolution, door_color, window_color,
+                generate_cam=generate_cam,
+                generate_graphs=generate_graphs,
+                render_povs=render_povs,
+                pov_width=pov_width,
+                pov_height=pov_height,
+                pov_fov=pov_fov,
             )
             all_pov_info.extend(pov_info)
         
@@ -894,14 +1029,18 @@ def main():
     parser.add_argument("--dataset-root", required=True, help="Root directory of dataset")
     parser.add_argument("--scene-list", default=None, help="File with scene IDs")
     parser.add_argument("--room-list", default=None, help="File with room metadata paths")
-    parser.add_argument("--resolution", type=int, default=512, help="Output image resolution")
+    parser.add_argument("--resolution", type=int, default=512, help="Layout image resolution")
     parser.add_argument("--hpc", action="store_true", help="Enable HPC mode")
     parser.add_argument("--backend", default="auto", choices=["auto", "egl", "osmesa", "xvfb"])
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--shard-id", type=str, default=None)
-    parser.add_argument("--no-debug", action="store_true", help="Skip debug layout generation")
+    parser.add_argument("--no-cam", action="store_true", help="Skip layouts with camera marker")
     parser.add_argument("--no-graphs", action="store_true", help="Skip graph generation")
+    parser.add_argument("--no-povs", action="store_true", help="Skip first-person POV rendering")
+    parser.add_argument("--pov-width", type=int, default=1280, help="POV image width")
+    parser.add_argument("--pov-height", type=int, default=720, help="POV image height")
+    parser.add_argument("--pov-fov", type=float, default=80.0, help="POV field of view in degrees")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
     
@@ -1001,7 +1140,13 @@ def main():
             
             success, error, pov_info = process_one_scene(
                 scene_id, tex_glb, seg_glb, rooms_metadata,
-                output_dir, args.resolution, door_color, window_color
+                output_dir, args.resolution, door_color, window_color,
+                generate_cam=not args.no_cam,
+                generate_graphs=not args.no_graphs,
+                render_povs=not args.no_povs,
+                pov_width=args.pov_width,
+                pov_height=args.pov_height,
+                pov_fov=args.pov_fov,
             )
             
             if success:
@@ -1012,10 +1157,13 @@ def main():
                 logger.warning(f"[{i}/{total_scenes}] ✗ {scene_id}: {error}")
         
         # Save POV info
+        pov_info_dir = output_dir / "pov_info"
+        pov_info_dir.mkdir(parents=True, exist_ok=True)
+        
         if args.shard_id:
-            info_path = output_dir / f"pov_info_shard_{args.shard_id}.json"
+            info_path = pov_info_dir / f"shard_{args.shard_id}.json"
         else:
-            info_path = output_dir / "pov_info.json"
+            info_path = pov_info_dir / "pov_info.json"
         
         with open(info_path, "w") as f:
             json.dump(all_pov_info, f, indent=2)
