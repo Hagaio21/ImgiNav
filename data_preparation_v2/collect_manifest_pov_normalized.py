@@ -403,7 +403,7 @@ def collect_manifest_data_pov_normalized(
     room_layout_index = build_room_layout_index(layouts_dir, variant)
     
     # Load POV layout metadata
-    pov_layout_info = load_pov_layouts_info(layouts_dir)
+    pov_layout_info = load_pov_layouts_info(dataset_root)
     
     # Index POV-specific graphs
     pov_graph_index = build_pov_graph_index(graphs_dir)
