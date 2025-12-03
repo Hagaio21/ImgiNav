@@ -109,7 +109,7 @@ class Autoencoder(BaseModel):
         cfg.pop("clip_projection", None)
         return cfg
     
-    def save_checkpoint(self, path, include_config=True, exclude_projections=True, **extra_state):
+    def save_checkpoint(self, path, include_config=True, exclude_projections=True, use_compression=False, **extra_state):
         """
         Save autoencoder checkpoint, excluding projection components.
         
@@ -138,11 +138,20 @@ class Autoencoder(BaseModel):
                     filtered_state_dict[key] = value
             state_dict = filtered_state_dict
         
+        import gzip
+        import pickle
+        
         payload = {"state_dict": state_dict}
         if include_config:
             payload["config"] = self.to_config()
         payload.update(extra_state)
-        torch.save(payload, path)
+        
+        if use_compression:
+            # Save with gzip compression
+            with gzip.open(path, 'wb') as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            torch.save(payload, path)
     
     @classmethod
     def from_component_checkpoints(cls, component_paths, map_location="cpu"):

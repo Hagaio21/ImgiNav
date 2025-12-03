@@ -355,13 +355,14 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     # Get dataset to find rooms and scenes
     dataset = val_loader.dataset
     
-    # Get number of samples per type from config (default: 4)
-    num_samples_per_type = config.get("training", {}).get("num_conditioned_samples_per_type", 4)
+    # Get total number of samples to select from config (default: 16)
+    # This is the TOTAL number, not per type
+    total_samples = config.get("training", {}).get("num_conditioned_samples_per_type", 16)
     
     # Select samples from the filtered dataset
     # The dataset is already filtered by config (type, rejected, etc.)
-    # For "both" experiments (type filter is empty), take num_samples_per_type of each type
-    # For single-type experiments, just take num_samples_per_type
+    # For "both" experiments (type filter is empty), distribute total_samples across types
+    # For single-type experiments, just take total_samples
     selected_indices = []
     
     if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
@@ -377,17 +378,20 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
             elif sample_type == 'scene':
                 scene_indices.append(idx)
         
-        # If both types exist in filtered dataset, take num_samples_per_type of each
+        # If both types exist in filtered dataset, distribute total_samples evenly
         if len(room_indices) > 0 and len(scene_indices) > 0:
-            selected_indices = room_indices[:num_samples_per_type] + scene_indices[:num_samples_per_type]
+            samples_per_type = total_samples // 2
+            remainder = total_samples % 2
+            # Take equal number from each type, with remainder going to rooms
+            selected_indices = room_indices[:samples_per_type + remainder] + scene_indices[:samples_per_type]
         elif len(room_indices) > 0:
-            selected_indices = room_indices[:num_samples_per_type]
+            selected_indices = room_indices[:total_samples]
         elif len(scene_indices) > 0:
-            selected_indices = scene_indices[:num_samples_per_type]
+            selected_indices = scene_indices[:total_samples]
         else:
-            selected_indices = list(range(min(num_samples_per_type, len(dataset))))
+            selected_indices = list(range(min(total_samples, len(dataset))))
     else:
-        selected_indices = list(range(min(num_samples_per_type, len(dataset))))
+        selected_indices = list(range(min(total_samples, len(dataset))))
     
     batch_size = len(selected_indices)
     
@@ -541,7 +545,7 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
         "batch_size": batch_size,
         "selected_indices": selected_indices,
         "sample_types": sample_types,
-        "num_samples_per_type": num_samples_per_type,
+        "num_samples_per_type": total_samples,
         "has_text_emb": text_emb is not None,
         "has_pov_emb": pov_emb is not None,
         "use_text_emb": use_text_emb,
@@ -822,23 +826,25 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         print("  Error: No samples were generated")
         return
     
-    # Save generated images - create separate top-level folders for each generated sample
+    # Save generated images inside the original sample folders
     # We should have exactly total_samples images (1 per condition)
     if len(all_generated_images) != total_samples:
         print(f"  Warning: Expected {total_samples} samples but got {len(all_generated_images)}")
     
-    print(f"  Saving {len(all_generated_images)} generated samples (1 per condition) to separate folders...")
+    print(f"  Saving {len(all_generated_images)} generated samples (1 per condition) inside original sample folders...")
     for sample_idx in range(len(all_generated_images)):
-        # Create separate folder for each generated sample at top level
-        # Numbering: sample_0 to sample_N-1 are original conditions, sample_N onwards are generated
-        generated_sample_num = batch_size + sample_idx
-        generated_sample_dir = conditioned_dir / f"sample_{generated_sample_num}"
-        generated_sample_dir.mkdir(parents=True, exist_ok=True)
+        # Determine which condition this sample corresponds to (cycle through if needed)
+        condition_idx = sample_idx % batch_size
+        
+        # Save inside the original sample folder
+        sample_dir = conditioned_dir / f"sample_{condition_idx}"
+        generated_dir = sample_dir / "generated"
+        generated_dir.mkdir(parents=True, exist_ok=True)
         
         generated_img = all_generated_images[sample_idx]
-        generated_img.save(generated_sample_dir / f"epoch_{epoch:03d}.png")
+        generated_img.save(generated_dir / f"epoch_{epoch:03d}.png")
     
-    print(f"  Saved {len(all_generated_images)} generated samples to folders sample_{batch_size} through sample_{batch_size + len(all_generated_images) - 1}")
+    print(f"  Saved {len(all_generated_images)} generated samples inside sample folders")
     
     # Create comparison grids for easy viewing
     # Show one generated sample per condition
@@ -1187,7 +1193,8 @@ def main():
     max_grad_norm = config["training"].get("max_grad_norm", None)
     eval_interval = config["training"].get("eval_interval", 5)
     sample_interval = config["training"].get("sample_interval", 10)
-    save_interval = config["training"].get("save_interval", 1)  # Default to 1 (every epoch) for backward compatibility
+    save_interval = config["training"].get("save_interval", 20)  # Default to 20 (every 20 epochs)
+    compress_checkpoints = config["training"].get("compress_checkpoints", False)  # Enable gzip compression
     use_non_uniform_sampling = config["training"].get("use_non_uniform_sampling", False)  # Default False for uniform sampling
     early_stopping_patience = config["training"].get("early_stopping_patience", None)
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
@@ -1356,8 +1363,8 @@ def main():
                 extra_state["scaler_state"] = trainer.scaler.state_dict()
             
             # Save periodic checkpoint
-            model.save_checkpoint(periodic_checkpoint_path, include_config=True, exclude_projections=True, **extra_state)
-            print(f"Saved periodic checkpoint: {periodic_checkpoint_path}")
+            model.save_checkpoint(periodic_checkpoint_path, include_config=True, exclude_projections=True, use_compression=compress_checkpoints, **extra_state)
+            print(f"Saved periodic checkpoint: {periodic_checkpoint_path}" + (" (compressed)" if compress_checkpoints else ""))
         
         # Save checkpoint using Trainer (always saves latest for resume, and best when applicable)
         trainer.save_training_checkpoint(
@@ -1366,7 +1373,8 @@ def main():
             epoch=epoch + 1,
             best_val_loss=best_val_loss,
             training_history=training_history,
-            is_best=is_best
+            is_best=is_best,
+            use_compression=compress_checkpoints
             )
         
         # Early stopping check

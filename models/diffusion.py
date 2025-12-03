@@ -20,8 +20,16 @@ class DiffusionModel(BaseModel):
         Returns:
             BaseModel instance with decoder attribute
         """
+        import gzip
+        import pickle
+        
         path = Path(checkpoint_path)
-        payload = torch.load(path, map_location="cpu")
+        # Try to detect if file is compressed
+        try:
+            with gzip.open(path, 'rb') as f:
+                payload = pickle.load(f)
+        except (gzip.BadGzipFile, OSError):
+            payload = torch.load(path, map_location="cpu")
         
         config = payload.get("config")
         if not config:
@@ -412,7 +420,7 @@ class DiffusionModel(BaseModel):
         
         return cfg
 
-    def save_checkpoint(self, path, include_config=True, **extra_state):
+    def save_checkpoint(self, path, include_config=True, use_compression=False, **extra_state):
         """
         Save diffusion model checkpoint with all components nested.
         
@@ -443,12 +451,21 @@ class DiffusionModel(BaseModel):
         # embedding_projection is optional (only if conditioning is used)
         # but if it exists, it should be in state_dict
         
+        import gzip
+        import pickle
+        
         payload = {"state_dict": state_dict}
         if include_config:
             payload["config"] = self.to_config()
         
         payload.update(extra_state)
-        torch.save(payload, path)
+        
+        if use_compression:
+            # Save with gzip compression
+            with gzip.open(path, 'wb') as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            torch.save(payload, path)
     
     @classmethod
     def load_checkpoint(cls, path, map_location="cpu", return_extra=False, config=None):
@@ -459,8 +476,16 @@ class DiffusionModel(BaseModel):
         not from an external autoencoder checkpoint. All components (decoder, UNet, scheduler)
         are saved in the checkpoint's state_dict and config.
         """
+        import gzip
+        import pickle
+        
         path = Path(path)
-        payload = torch.load(path, map_location=map_location)
+        # Try to detect if file is compressed
+        try:
+            with gzip.open(path, 'rb') as f:
+                payload = pickle.load(f)
+        except (gzip.BadGzipFile, OSError):
+            payload = torch.load(path, map_location=map_location)
         
         state_dict = payload.get("state_dict", payload)
         has_decoder_state = any(key.startswith("decoder.") for key in state_dict.keys())

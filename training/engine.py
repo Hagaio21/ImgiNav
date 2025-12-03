@@ -303,6 +303,7 @@ class Trainer:
         best_val_loss: float,
         training_history: list,
         is_best: bool = False,
+        use_compression: bool = False,
     ) -> None:
         """
         Save training checkpoint including model, optimizer, scheduler, and training state.
@@ -334,12 +335,12 @@ class Trainer:
         
         # Save latest checkpoint (excludes projections - they're saved separately)
         latest_path = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
-        self.model.save_checkpoint(latest_path, include_config=True, exclude_projections=True, **extra_state)
+        self.model.save_checkpoint(latest_path, include_config=True, exclude_projections=True, use_compression=use_compression, **extra_state)
         
         # Save best checkpoint if this is the best
         if is_best:
             best_path = checkpoint_dir / f"{exp_name}_checkpoint_best.pt"
-            self.model.save_checkpoint(best_path, include_config=True, exclude_projections=True, **extra_state)
+            self.model.save_checkpoint(best_path, include_config=True, exclude_projections=True, use_compression=use_compression, **extra_state)
         
         # Save projection components separately
         saved_projections = self.save_projection_components(output_dir, exp_name, epoch=epoch)

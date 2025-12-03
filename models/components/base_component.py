@@ -165,27 +165,48 @@ class BaseComponent(nn.Module):
     # -----------------------
     # Checkpoint handling
     # -----------------------
-    def save_checkpoint(self, path, include_config=True, **extra_state):
+    def save_checkpoint(self, path, include_config=True, use_compression=False, **extra_state):
         """
         Save model checkpoint. Override in subclasses for extended checkpointing.
         
         Args:
             path: Path to save checkpoint
             include_config: Whether to include model config
+            use_compression: If True, save with gzip compression (reduces file size significantly)
             **extra_state: Additional state to save (e.g., optimizer, step, epoch, etc.)
         """
+        import gzip
+        import pickle
+        
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"state_dict": self.state_dict()}
         if include_config:
             payload["config"] = self.to_config()
         payload.update(extra_state)
-        torch.save(payload, path)
+        
+        if use_compression:
+            # Save with gzip compression
+            with gzip.open(path, 'wb') as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            torch.save(payload, path)
 
     @classmethod
     def load_checkpoint(cls, path, map_location="cpu"):
         """Load model checkpoint. Override in subclasses for extended checkpointing."""
-        payload = torch.load(path, map_location=map_location)
+        import gzip
+        import pickle
+        
+        path = Path(path)
+        # Try to detect if file is compressed (check extension or try to open as gzip)
+        try:
+            # Try opening as gzip first
+            with gzip.open(path, 'rb') as f:
+                payload = pickle.load(f)
+        except (gzip.BadGzipFile, OSError):
+            # Not compressed, use regular torch.load
+            payload = torch.load(path, map_location=map_location)
         config = payload.get("config")
         model = cls.from_config(config) if config else cls()
         # Use strict=False for backward compatibility
