@@ -6,7 +6,6 @@
 #BSUB -W 4:00
 #BSUB -n 4
 #BSUB -R "rusage[mem=2000]"
-#BSUB -R "select[ngpus>0]"
 
 # Stage 4 v2: Improved POV Rendering with Layout Rotation
 # ========================================================
