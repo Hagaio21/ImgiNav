@@ -241,14 +241,11 @@ def compute_improved_pov_camera(
     config: CameraConfig = DEFAULT_CONFIG
 ) -> Optional[Dict]:
     """
-    Compute improved POV camera position.
+    Compute POV camera position.
     
     Strategy:
-    1. Find opening center and normal
-    2. Determine which direction is "outside" (away from room center)
-    3. Step back from opening in that direction
-    4. Look at furniture centroid (or room center)
-    5. Apply slight downward tilt
+    1. Camera positioned AT the door/window opening
+    2. Look straight forward (perpendicular to door, into room)
     """
     # Get room bounds
     bbox = room_meta.get("bbox", {})
@@ -266,39 +263,30 @@ def compute_improved_pov_camera(
     
     opening_normal = compute_opening_normal(opening)
     
-    # Determine which side of the opening is "outside" the room
-    # Test both directions, pick the one farther from room center
+    # Determine which direction points INTO the room
+    # Test both directions, pick the one closer to room center
     test_pos_positive = opening_center + opening_normal * 0.5
     test_pos_negative = opening_center - opening_normal * 0.5
     
     dist_positive = np.linalg.norm(test_pos_positive[[0, 2]] - room_center[[0, 2]])
     dist_negative = np.linalg.norm(test_pos_negative[[0, 2]] - room_center[[0, 2]])
     
-    # Outside direction is the one farther from room center
-    if dist_positive > dist_negative:
-        outside_normal = opening_normal
+    # Inside direction is the one closer to room center
+    if dist_positive < dist_negative:
+        inside_normal = opening_normal
     else:
-        outside_normal = -opening_normal
+        inside_normal = -opening_normal
     
-    # Step back from opening
+    # Camera AT the door opening (not stepped back)
     eye = opening_center.copy()
-    eye = eye + outside_normal * config.step_back_distance
     eye[1] = config.camera_height
     
-    # Compute look-at target
-    # Use furniture centroid if available, otherwise room center
-    furniture_center = compute_furniture_centroid(room_meta)
-    if furniture_center is not None:
-        look_at = furniture_center.copy()
-    else:
-        look_at = room_center.copy()
-    
+    # Look STRAIGHT FORWARD (into the room, perpendicular to door)
+    look_at = opening_center + inside_normal * 5.0  # 5m ahead
     look_at[1] = config.look_at_height
     
-    # Apply downward tilt
-    # We do this by lowering the look_at point slightly
-    view_dir = look_at - eye
-    view_dist = np.linalg.norm(view_dir[[0, 2]])  # Horizontal distance
+    # Apply slight downward tilt
+    view_dist = np.linalg.norm(look_at[[0, 2]] - eye[[0, 2]])
     tilt_offset = view_dist * math.tan(math.radians(config.downward_tilt_deg))
     look_at[1] -= tilt_offset
     
@@ -312,8 +300,8 @@ def compute_improved_pov_camera(
         "up": [0.0, 1.0, 0.0],
         "fov": config.fov,
         "view_direction": view_direction.tolist(),
+        "inside_normal": inside_normal.tolist(),  # Direction into room
         "opening_center": opening_center.tolist(),
-        "step_back_distance": config.step_back_distance,
     }
 
 
@@ -321,38 +309,126 @@ def compute_improved_pov_camera(
 # Layout Rotation
 # ============================================================================
 
-def compute_pov_rotation_angle(camera: Dict) -> float:
+def compute_pov_rotation_angle(room_meta: Dict, opening: Dict) -> float:
     """
-    Compute rotation angle for layout based on POV viewing direction.
+    Compute rotation angle for layout based on where the door/window is in the layout IMAGE.
     
-    Returns angle in degrees to rotate layout so viewing direction is "up".
+    Returns angle in degrees (0, 90, 180, or 270) to rotate layout
+    so that the door/window is at the BOTTOM of the layout.
+    
+    Layout image coordinates:
+    - Top of image corresponds to -Z in world
+    - Bottom of image corresponds to +Z in world  
+    - Left of image corresponds to -X in world
+    - Right of image corresponds to +X in world
     """
-    eye = np.array(camera["eye"])
-    center = np.array(camera["center"])
-    
-    # Viewing direction in XZ plane
-    view_dir = np.array([center[0] - eye[0], center[2] - eye[2]])
-    
-    if np.linalg.norm(view_dir) < 1e-6:
+    bbox = room_meta.get("bbox", {})
+    if not bbox or "min" not in bbox:
         return 0.0
     
-    view_dir = view_dir / np.linalg.norm(view_dir)
+    bbox_min = np.array(bbox["min"])
+    bbox_max = np.array(bbox["max"])
+    room_size = bbox_max - bbox_min
     
-    # Angle from -Z axis (which is "up" in layout) to view direction
-    # atan2(x, -z) gives angle where -Z is 0
-    angle_rad = math.atan2(view_dir[0], -view_dir[1])
-    angle_deg = math.degrees(angle_rad)
+    opening_center = compute_opening_center(opening)
+    if opening_center is None:
+        return 0.0
     
-    return angle_deg
+    # Convert opening position to normalized layout coordinates [0, 1]
+    # layout_x = (world_x - min_x) / size_x
+    # layout_y = (max_z - world_z) / size_z  (inverted because image Y is flipped)
+    rel_x = (opening_center[0] - bbox_min[0]) / (room_size[0] + 1e-9)
+    rel_y = (bbox_max[2] - opening_center[2]) / (room_size[2] + 1e-9)  # Inverted Z
+    
+    # Determine which edge the opening is closest to in layout image
+    dist_to_top = rel_y
+    dist_to_bottom = 1.0 - rel_y
+    dist_to_left = rel_x
+    dist_to_right = 1.0 - rel_x
+    
+    min_dist = min(dist_to_top, dist_to_bottom, dist_to_left, dist_to_right)
+    
+    # Rotate so that edge becomes the bottom
+    if min_dist == dist_to_bottom:
+        # Already at bottom → no rotation
+        rotation = 0.0
+    elif min_dist == dist_to_top:
+        # At top → rotate 180°
+        rotation = 180.0
+    elif min_dist == dist_to_right:
+        # At right → rotate 90° CCW (right becomes bottom)
+        rotation = 90.0
+    elif min_dist == dist_to_left:
+        # At left → rotate 270° CCW (left becomes bottom)
+        rotation = 270.0
+    else:
+        rotation = 0.0
+    
+    return rotation
+
+
+def get_opening_position_in_rotated_layout(
+    room_meta: Dict, 
+    opening: Dict, 
+    layout_size: int,
+    rotation_angle_deg: float
+) -> Optional[Tuple[int, int]]:
+    """
+    Get the center position of an opening in the ROTATED layout image coordinates.
+    
+    Returns (x, y) in pixels, or None if can't compute.
+    """
+    bbox = room_meta.get("bbox", {})
+    if not bbox or "min" not in bbox:
+        return None
+    
+    bbox_min = np.array(bbox["min"])
+    bbox_max = np.array(bbox["max"])
+    room_size = bbox_max - bbox_min
+    
+    opening_center = compute_opening_center(opening)
+    if opening_center is None:
+        return None
+    
+    # Convert to original layout image coordinates
+    rel_x = (opening_center[0] - bbox_min[0]) / (room_size[0] + 1e-9)
+    rel_y = (bbox_max[2] - opening_center[2]) / (room_size[2] + 1e-9)  # Inverted Z
+    
+    ox = rel_x * layout_size
+    oy = rel_y * layout_size
+    
+    # Apply rotation transform
+    cx, cy = layout_size / 2, layout_size / 2
+    
+    if rotation_angle_deg == 0:
+        rx, ry = ox, oy
+    elif rotation_angle_deg == 90:
+        # 90° CCW: (x, y) -> (y, size - x)
+        rx = oy
+        ry = layout_size - ox
+    elif rotation_angle_deg == 180:
+        # 180°: (x, y) -> (size - x, size - y)
+        rx = layout_size - ox
+        ry = layout_size - oy
+    elif rotation_angle_deg == 270:
+        # 270° CCW: (x, y) -> (size - y, x)
+        rx = layout_size - oy
+        ry = ox
+    else:
+        rx, ry = ox, oy
+    
+    return (int(rx), int(ry))
+
+
 
 
 def rotate_layout_image(layout_path: Path, rotation_angle_deg: float) -> Optional[Image.Image]:
     """
-    Rotate an existing layout image.
+    Rotate an existing layout image by 0, 90, 180, or 270 degrees.
     
     Args:
         layout_path: Path to the layout image
-        rotation_angle_deg: Rotation angle in degrees (counter-clockwise)
+        rotation_angle_deg: Rotation angle in degrees (0, 90, 180, or 270)
     
     Returns:
         Rotated PIL Image
@@ -363,19 +439,69 @@ def rotate_layout_image(layout_path: Path, rotation_angle_deg: float) -> Optiona
     try:
         img = Image.open(layout_path)
         
-        # Rotate (PIL rotates counter-clockwise for positive angles)
-        # We use BILINEAR for smooth rotation, expand=False to keep size
-        rotated = img.rotate(
-            rotation_angle_deg,
-            resample=Image.BILINEAR,
-            expand=False,  # Keep original dimensions
-            fillcolor=(255, 255, 255)  # White background for corners
-        )
+        # Skip if no rotation needed
+        if rotation_angle_deg == 0:
+            return img.copy()
         
-        return rotated
+        # For 90° multiples, use transpose which is exact (no interpolation)
+        if rotation_angle_deg == 90:
+            return img.transpose(Image.ROTATE_90)
+        elif rotation_angle_deg == 180:
+            return img.transpose(Image.ROTATE_180)
+        elif rotation_angle_deg == 270:
+            return img.transpose(Image.ROTATE_270)
+        else:
+            # Fallback for other angles (shouldn't happen)
+            return img.rotate(rotation_angle_deg, resample=Image.BILINEAR, expand=False)
     except Exception as e:
         logger.warning(f"Failed to rotate layout {layout_path}: {e}")
         return None
+
+
+def create_debug_layout(
+    rotated_layout: Image.Image,
+    room_meta: Dict,
+    opening: Dict,
+    rotation_angle_deg: float
+) -> Image.Image:
+    """
+    Create debug layout with black triangle showing camera position and orientation.
+    
+    The triangle is at the door/window position, pointing into the room (upward).
+    """
+    debug_img = rotated_layout.copy().convert("RGB")
+    draw = ImageDraw.Draw(debug_img)
+    width, height = debug_img.size
+    
+    # Get opening position in rotated layout
+    pos = get_opening_position_in_rotated_layout(room_meta, opening, width, rotation_angle_deg)
+    
+    if pos is None:
+        # Fallback: draw triangle at bottom center
+        cx = width // 2
+        cy = height - 20
+    else:
+        cx, cy = pos
+        # Clamp to image bounds
+        cx = max(20, min(width - 20, cx))
+        cy = max(20, min(height - 20, cy))
+    
+    # Draw black triangle pointing UP (into the room)
+    # Triangle size
+    tri_size = 25
+    
+    # Triangle vertices: tip at top, base at bottom
+    tip = (cx, cy - tri_size)
+    left = (cx - tri_size // 2, cy + tri_size // 3)
+    right = (cx + tri_size // 2, cy + tri_size // 3)
+    
+    # Draw filled black triangle
+    draw.polygon([tip, left, right], fill=(0, 0, 0), outline=(0, 0, 0))
+    
+    # Draw a small white circle at camera position for visibility
+    draw.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=(255, 255, 255), outline=(0, 0, 0))
+    
+    return debug_img
 
 
 # ============================================================================
@@ -899,8 +1025,8 @@ def process_one_scene(
                     tex_pov.save(tex_pov_path)
                     seg_pov.save(seg_pov_path)
                 
-                # Compute rotation for layout
-                rotation_angle = compute_pov_rotation_angle(camera)
+                # Compute rotation for layout (based on door/window position, not viewing direction)
+                rotation_angle = compute_pov_rotation_angle(room_meta, opening)
                 
                 # Rotate existing layouts
                 if rotate_layouts:
@@ -914,6 +1040,13 @@ def process_one_scene(
                     if tex_rotated:
                         tex_rotated_path = rotated_layouts_dir / "tex" / f"{scene_id}_{room_id}_{pov_id}_tex_layout.png"
                         tex_rotated.save(tex_rotated_path)
+                        
+                        # Create debug layout with red door/window highlight
+                        debug_layouts_dir = output_dir.parent / "layouts_debug"
+                        debug_layouts_dir.mkdir(parents=True, exist_ok=True)
+                        debug_layout = create_debug_layout(tex_rotated, room_meta, opening, rotation_angle)
+                        debug_path = debug_layouts_dir / f"{scene_id}_{room_id}_{pov_id}_debug_layout.png"
+                        debug_layout.save(debug_path)
                     
                     if seg_rotated:
                         seg_rotated_path = rotated_layouts_dir / "seg" / f"{scene_id}_{room_id}_{pov_id}_seg_layout.png"
@@ -926,7 +1059,7 @@ def process_one_scene(
                     graph = build_pov_graph(room_meta, camera, pov_id)
                     graph_text = graph_to_text(graph, room_meta)  # Pass room_meta for shape info
                     
-                    graphs_dir = output_dir.parent / "graphs"
+                    graphs_dir = output_dir.parent / "pov_graphs"
                     (graphs_dir / "jsons").mkdir(parents=True, exist_ok=True)
                     (graphs_dir / "texts").mkdir(parents=True, exist_ok=True)
                     
@@ -951,8 +1084,8 @@ def process_one_scene(
                     "pov_path_seg": str(seg_pov_path.relative_to(output_dir.parent)),
                     "layout_path_tex": f"layouts_pov/tex/{scene_id}_{room_id}_{pov_id}_tex_layout.png",
                     "layout_path_seg": f"layouts_pov/seg/{scene_id}_{room_id}_{pov_id}_seg_layout.png",
-                    "graph_path": f"graphs/jsons/{scene_id}_{room_id}_{pov_id}_room_graph.json" if graph else "",
-                    "graph_text_path": f"graphs/texts/{scene_id}_{room_id}_{pov_id}_room_description.txt" if graph else "",
+                    "graph_path": f"pov_graphs/jsons/{scene_id}_{room_id}_{pov_id}_room_graph.json" if graph else "",
+                    "graph_text_path": f"pov_graphs/texts/{scene_id}_{room_id}_{pov_id}_room_description.txt" if graph else "",
                     "furniture_count": room_meta.get("furniture_count", 0),
                     "is_empty": room_meta.get("is_empty", False),
                 }
