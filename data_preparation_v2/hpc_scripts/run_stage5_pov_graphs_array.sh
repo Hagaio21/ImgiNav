@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=stage5_pov_graphs
-#SBATCH --output=logs/stage5_pov_%A_%a.out
-#SBATCH --error=logs/stage5_pov_%A_%a.err
-#SBATCH --time=4:00:00
-#SBATCH --mem=16G
-#SBATCH --cpus-per-task=2
-#SBATCH --array=1-10%10
+#BSUB -J stage5_pov_graphs[1-10]
+#BSUB -o logs/stage5_pov_%J_%I.out
+#BSUB -e logs/stage5_pov_%J_%I.err
+#BSUB -q hpc
+#BSUB -W 4:00
+#BSUB -n 2
+#BSUB -R "rusage[mem=2000]"
 
 # Stage 5 v2: POV-Normalized Graph Generation
 # Generates POV-specific graphs with:
@@ -17,7 +17,7 @@ set -e
 
 # Configuration
 CONFIG_FILE="${CONFIG_FILE:-paths.yaml}"
-SHARD_INDEX="${SLURM_ARRAY_TASK_ID:-1}"
+SHARD_INDEX="${LSB_JOBINDEX:-1}"
 SHARDS_DIR="${SHARDS_DIR:-shards}"
 SCENE_LIST="${SHARDS_DIR}/shard_${SHARD_INDEX}.txt"
 

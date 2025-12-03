@@ -69,10 +69,18 @@ DEFAULT_CONFIG = CameraConfig()
 # ============================================================================
 
 def setup_hpc_rendering(backend: str = "auto") -> bool:
-    """Set up rendering backend for HPC headless rendering."""
+    """
+    Set up rendering backend for HPC headless rendering.
+    
+    Args:
+        backend: One of "auto", "egl", "osmesa", "xvfb"
+    
+    Returns True if successful, False otherwise.
+    """
     global _xvfb_display
     
     if backend == "auto":
+        # Try backends in order: xvfb first (most reliable on CPU nodes), then others
         for try_backend in ["xvfb", "osmesa", "egl"]:
             if setup_hpc_rendering(try_backend):
                 return True
@@ -85,19 +93,24 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
             _xvfb_display.start()
             logger.info(f"Xvfb started on display :{_xvfb_display.new_display}")
             
+            # Test if pyrender works
             try:
                 import pyrender
                 renderer = pyrender.OffscreenRenderer(64, 64)
                 renderer.delete()
+                logger.info("Xvfb backend working with pyrender")
                 return True
             except Exception as e:
                 logger.warning(f"Xvfb started but pyrender failed: {e}")
                 _xvfb_display.stop()
                 _xvfb_display = None
                 return False
+                
         except ImportError:
+            logger.debug("xvfbwrapper not installed")
             return False
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Xvfb backend failed: {e}")
             return False
     
     elif backend == "egl":
@@ -106,9 +119,10 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
             import pyrender
             renderer = pyrender.OffscreenRenderer(64, 64)
             renderer.delete()
-            logger.info("Using EGL backend")
+            logger.info("Using EGL backend (GPU headless)")
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"EGL backend failed: {e}")
             if "PYOPENGL_PLATFORM" in os.environ:
                 del os.environ["PYOPENGL_PLATFORM"]
             return False
@@ -119,9 +133,10 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
             import pyrender
             renderer = pyrender.OffscreenRenderer(64, 64)
             renderer.delete()
-            logger.info("Using OSMesa backend")
+            logger.info("Using OSMesa backend (CPU software)")
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"OSMesa backend failed: {e}")
             if "PYOPENGL_PLATFORM" in os.environ:
                 del os.environ["PYOPENGL_PLATFORM"]
             return False

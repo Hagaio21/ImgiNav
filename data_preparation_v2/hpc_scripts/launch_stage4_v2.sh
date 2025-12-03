@@ -7,11 +7,12 @@
 # 3. Submits array job
 #
 # Usage:
-#   ./launch_stage4_v2.sh /path/to/dataset [num_shards]
+#   ./launch_stage4_v2.sh /path/to/dataset [num_shards] [extra_args...]
 #
 # Examples:
 #   ./launch_stage4_v2.sh /data/structured3d 500
-#   ./launch_stage4_v2.sh /data/structured3d 100 --only-graphs
+#   ./launch_stage4_v2.sh /data/structured3d 500 --only-graphs
+#   ./launch_stage4_v2.sh /data/structured3d 100 --no-layouts
 
 set -e
 
@@ -88,14 +89,31 @@ cat > "$JOB_SCRIPT" << 'JOBSCRIPT'
 #BSUB -J stage4v2[1-NUM_SHARDS_PLACEHOLDER]
 #BSUB -o LOGS_DIR_PLACEHOLDER/stage4v2_%J_%I.out
 #BSUB -e LOGS_DIR_PLACEHOLDER/stage4v2_%J_%I.err
-#BSUB -q gpu
+#BSUB -q hpc
 #BSUB -W 4:00
 #BSUB -n 4
 #BSUB -R "rusage[mem=4GB]"
-#BSUB -R "select[ngpus>0]"
-#BSUB -gpu "num=1:mode=exclusive_process"
 
-# Configuration
+set -euo pipefail
+export MKL_INTERFACE_LAYER=LP64
+
+# ==============================================================================
+# HEADLESS RENDERING SETUP (must be before Python imports OpenGL)
+# ==============================================================================
+# Fix XDG_RUNTIME_DIR error
+export XDG_RUNTIME_DIR="${HOME}/.cache/xdg-runtime-$$"
+mkdir -p "${XDG_RUNTIME_DIR}"
+
+# Use OSMesa (software rendering) - most reliable on CPU nodes
+export PYOPENGL_PLATFORM=osmesa
+
+# Mesa software rendering settings
+export LIBGL_ALWAYS_SOFTWARE=1
+export MESA_GL_VERSION_OVERRIDE=3.3
+
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
 DATASET_ROOT="DATASET_ROOT_PLACEHOLDER"
 SCRIPTS_DIR="SCRIPTS_DIR_PLACEHOLDER"
 SHARDS_DIR="SHARDS_DIR_PLACEHOLDER"
@@ -107,35 +125,57 @@ SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_ID}.txt"
 
 if [[ ! -f "$SHARD_FILE" ]]; then
     echo "Shard file not found: $SHARD_FILE (OK if fewer shards exist)"
+    rm -rf "${XDG_RUNTIME_DIR}" 2>/dev/null || true
     exit 0
 fi
 
 ROOM_COUNT=$(wc -l < "$SHARD_FILE")
-echo "========================================"
+echo "=========================================="
 echo "Stage 4 v2: Shard ${SHARD_ID}"
+echo "=========================================="
+echo "Dataset: ${DATASET_ROOT}"
 echo "Rooms: ${ROOM_COUNT}"
 echo "Extra args: ${EXTRA_ARGS}"
-echo "========================================"
+echo "PYOPENGL_PLATFORM: ${PYOPENGL_PLATFORM}"
+echo "=========================================="
 
-# Load modules
-module load python/3.10 2>/dev/null || true
-module load cuda/11.8 2>/dev/null || true
-
-# Activate venv if exists
-if [[ -f "${SCRIPTS_DIR}/venv/bin/activate" ]]; then
-    source "${SCRIPTS_DIR}/venv/bin/activate"
+# ==============================================================================
+# CONDA ACTIVATION
+# ==============================================================================
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate imginav || { echo "Failed to activate conda" >&2; exit 1; }
+elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+    conda activate imginav || { echo "Failed to activate conda" >&2; exit 1; }
 fi
 
-# Run
+# ==============================================================================
+# RUN STAGE 4 V2
+# ==============================================================================
+cd "${SCRIPTS_DIR}"
+export PYTHONPATH="${SCRIPTS_DIR}:${PYTHONPATH:-}"
+
 python "${SCRIPTS_DIR}/stage4_render_povs_v2.py" \
     --dataset-root "${DATASET_ROOT}" \
     --room-list "${SHARD_FILE}" \
     --shard-id "${SHARD_ID}" \
     --hpc \
+    --backend osmesa \
     --skip-existing \
     ${EXTRA_ARGS}
 
-echo "Shard ${SHARD_ID} completed with exit code: $?"
+EXIT_CODE=$?
+
+# Cleanup runtime dir
+rm -rf "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+
+echo "=========================================="
+echo "Stage 4 v2 shard ${SHARD_ID} completed with exit code: ${EXIT_CODE}"
+echo "Output: povs/pov_info_shard_${SHARD_ID}.json"
+echo "=========================================="
+
+exit ${EXIT_CODE}
 JOBSCRIPT
 
 # Replace placeholders

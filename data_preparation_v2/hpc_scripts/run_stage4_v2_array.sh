@@ -1,13 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=stage4v2
-#SBATCH --output=logs/stage4v2_%A_%a.out
-#SBATCH --error=logs/stage4v2_%A_%a.err
-#SBATCH --array=0-499
-#SBATCH --time=04:00:00
-#SBATCH --mem=16G
-#SBATCH --cpus-per-task=4
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#BSUB -J stage4v2[1-500]
+#BSUB -o logs/stage4v2_%J_%I.out
+#BSUB -e logs/stage4v2_%J_%I.err
+#BSUB -q hpc
+#BSUB -W 4:00
+#BSUB -n 4
+#BSUB -R "rusage[mem=2000]"
+#BSUB -R "select[ngpus>0]"
 
 # Stage 4 v2: Improved POV Rendering with Layout Rotation
 # ========================================================
@@ -49,8 +48,8 @@ HEIGHT="${HEIGHT:-720}"
 # Create logs directory
 mkdir -p logs
 
-# Get shard file for this array task
-SHARD_ID=$(printf "%04d" ${SLURM_ARRAY_TASK_ID})
+# Get shard file for this array task (LSB_JOBINDEX is 1-based, convert to 0-based for shard ID)
+SHARD_ID=$(printf "%04d" $((LSB_JOBINDEX - 1)))
 SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_ID}.txt"
 
 if [[ ! -f "$SHARD_FILE" ]]; then
