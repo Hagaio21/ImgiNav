@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Stage 4 v2: Improved POV Rendering with Layout Rotation
+Stage 3+4 Combined: POV-Oriented Layout Rendering
 
-Key improvements:
-1. Camera stepped BACK from door/window (outside room, looking in)
-2. Wider FOV (80°) for better room coverage  
-3. Smart outside detection using door normal + room center
-4. Furniture-weighted look-at target
-5. Rotates EXISTING layout images (no re-rendering from 3D)
-6. Generates POV-normalized graphs with descriptive naming
+Instead of rendering layouts in world orientation and then rotating,
+this script renders layouts directly from each POV camera orientation.
 
-Camera positioning strategy:
-- Find door/window normal direction
-- Determine which side is "outside" the room (away from room center)
-- Step back from opening by configurable distance
-- Look at furniture center-of-mass (or room center if empty)
+For each door/window:
+1. Determine which wall it's on
+2. Render layout with rotation so that door/window is at bottom-center
+3. Camera is always at bottom-center, looking up into the room
+
+Benefits:
+- No image quality loss from rotation
+- No complex post-processing
+- Layout is rendered exactly as the camera sees it
 """
 
 import argparse
@@ -40,47 +39,14 @@ _xvfb_display = None
 
 
 # ============================================================================
-# Camera Configuration
-# ============================================================================
-
-class CameraConfig:
-    """Configuration for POV camera parameters."""
-    
-    def __init__(
-        self,
-        step_back_distance: float = 0.8,   # How far to step back from door/window
-        camera_height: float = 1.6,         # Eye level height
-        fov: float = 80.0,                  # Field of view in degrees (wider!)
-        look_at_height: float = 0.9,        # Height of look-at target
-        downward_tilt_deg: float = 5.0,     # Degrees to tilt camera down
-    ):
-        self.step_back_distance = step_back_distance
-        self.camera_height = camera_height
-        self.fov = fov
-        self.look_at_height = look_at_height
-        self.downward_tilt_deg = downward_tilt_deg
-
-
-DEFAULT_CONFIG = CameraConfig()
-
-
-# ============================================================================
 # HPC Setup
 # ============================================================================
 
 def setup_hpc_rendering(backend: str = "auto") -> bool:
-    """
-    Set up rendering backend for HPC headless rendering.
-    
-    Args:
-        backend: One of "auto", "egl", "osmesa", "xvfb"
-    
-    Returns True if successful, False otherwise.
-    """
+    """Set up rendering backend for HPC headless rendering."""
     global _xvfb_display
     
     if backend == "auto":
-        # Try backends in order: xvfb first (most reliable on CPU nodes), then others
         for try_backend in ["xvfb", "osmesa", "egl"]:
             if setup_hpc_rendering(try_backend):
                 return True
@@ -92,20 +58,7 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
             _xvfb_display = Xvfb(width=1280, height=720)
             _xvfb_display.start()
             logger.info(f"Xvfb started on display :{_xvfb_display.new_display}")
-            
-            # Test if pyrender works
-            try:
-                import pyrender
-                renderer = pyrender.OffscreenRenderer(64, 64)
-                renderer.delete()
-                logger.info("Xvfb backend working with pyrender")
-                return True
-            except Exception as e:
-                logger.warning(f"Xvfb started but pyrender failed: {e}")
-                _xvfb_display.stop()
-                _xvfb_display = None
-                return False
-                
+            return True
         except ImportError:
             logger.debug("xvfbwrapper not installed")
             return False
@@ -119,7 +72,7 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
             import pyrender
             renderer = pyrender.OffscreenRenderer(64, 64)
             renderer.delete()
-            logger.info("Using EGL backend (GPU headless)")
+            logger.info("Using EGL backend")
             return True
         except Exception as e:
             logger.debug(f"EGL backend failed: {e}")
@@ -133,7 +86,7 @@ def setup_hpc_rendering(backend: str = "auto") -> bool:
             import pyrender
             renderer = pyrender.OffscreenRenderer(64, 64)
             renderer.delete()
-            logger.info("Using OSMesa backend (CPU software)")
+            logger.info("Using OSMesa backend")
             return True
         except Exception as e:
             logger.debug(f"OSMesa backend failed: {e}")
@@ -174,12 +127,110 @@ def load_glb_with_transforms(glb_path: Path) -> List[trimesh.Trimesh]:
         return []
 
 
+def get_mesh_color(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Extract vertex colors from mesh."""
+    n_vertices = len(mesh.vertices)
+    default_color = np.full((n_vertices, 3), 180, dtype=np.uint8)
+    
+    if not hasattr(mesh, 'visual'):
+        return default_color
+    
+    visual = mesh.visual
+    
+    if hasattr(visual, 'vertex_colors') and visual.vertex_colors is not None:
+        colors = np.array(visual.vertex_colors)
+        if len(colors) == n_vertices and colors.shape[-1] >= 3:
+            return colors[:, :3].astype(np.uint8)
+    
+    try:
+        if hasattr(visual, 'to_color'):
+            color_visual = visual.to_color()
+            if hasattr(color_visual, 'vertex_colors') and color_visual.vertex_colors is not None:
+                colors = np.array(color_visual.vertex_colors)
+                if len(colors) == n_vertices and colors.shape[-1] >= 3:
+                    return colors[:, :3].astype(np.uint8)
+    except Exception:
+        pass
+    
+    if hasattr(visual, 'material') and visual.material is not None:
+        mat = visual.material
+        for attr in ['diffuse', 'baseColorFactor', 'main_color']:
+            if hasattr(mat, attr):
+                color = getattr(mat, attr)
+                if color is not None:
+                    color = np.array(color).flatten()
+                    if len(color) >= 3:
+                        if color.max() <= 1.0:
+                            color = (color * 255).astype(np.uint8)
+                        return np.tile(color[:3].astype(np.uint8), (n_vertices, 1))
+    
+    return default_color
+
+
+def clip_mesh_to_bbox(
+    mesh: trimesh.Trimesh,
+    bbox_min: np.ndarray,
+    bbox_max: np.ndarray
+) -> Optional[trimesh.Trimesh]:
+    """Clip mesh to bounding box (XZ plane only)."""
+    if len(mesh.vertices) == 0:
+        return None
+    
+    vertices = mesh.vertices
+    faces = mesh.faces
+    
+    margin = 0.1
+    inside_x = (vertices[:, 0] >= bbox_min[0] - margin) & (vertices[:, 0] <= bbox_max[0] + margin)
+    inside_z = (vertices[:, 2] >= bbox_min[2] - margin) & (vertices[:, 2] <= bbox_max[2] + margin)
+    inside = inside_x & inside_z
+    
+    face_mask = inside[faces].any(axis=1)
+    
+    if not face_mask.any():
+        return None
+    
+    kept_faces = faces[face_mask]
+    unique_verts = np.unique(kept_faces.flatten())
+    
+    vert_map = np.zeros(len(vertices), dtype=np.int64)
+    vert_map[unique_verts] = np.arange(len(unique_verts))
+    
+    new_vertices = vertices[unique_verts]
+    new_faces = vert_map[kept_faces]
+    
+    new_mesh = trimesh.Trimesh(vertices=new_vertices, faces=new_faces, process=False)
+    
+    if hasattr(mesh, 'visual'):
+        if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+            old_colors = np.array(mesh.visual.vertex_colors)
+            if len(old_colors) == len(vertices):
+                new_mesh.visual.vertex_colors = old_colors[unique_verts]
+        elif hasattr(mesh.visual, 'material'):
+            new_mesh.visual.material = mesh.visual.material
+    
+    return new_mesh
+
+
+def filter_meshes_to_bbox(
+    meshes: List[trimesh.Trimesh],
+    bbox_min: np.ndarray,
+    bbox_max: np.ndarray
+) -> List[trimesh.Trimesh]:
+    """Filter and clip meshes to bounding box."""
+    filtered = []
+    for mesh in meshes:
+        clipped = clip_mesh_to_bbox(mesh, bbox_min, bbox_max)
+        if clipped is not None and len(clipped.vertices) > 0:
+            filtered.append(clipped)
+    return filtered
+
+
 # ============================================================================
-# Improved Camera Computation
+# Opening / Wall Detection
 # ============================================================================
 
 def compute_opening_center(opening: Dict) -> Optional[np.ndarray]:
-    """Get the center position of a door/window from its bbox."""
+    """Get center position of door/window."""
     bbox = opening.get("bbox")
     if bbox and "min" in bbox and "max" in bbox:
         bbox_min = np.array(bbox["min"])
@@ -192,328 +243,257 @@ def compute_opening_center(opening: Dict) -> Optional[np.ndarray]:
     return None
 
 
-def compute_opening_normal(opening: Dict) -> np.ndarray:
-    """
-    Compute the normal direction of a door/window.
-    Normal is perpendicular to the thin dimension.
-    """
-    bbox = opening.get("bbox")
-    if not bbox or "min" not in bbox:
-        return np.array([0.0, 0.0, 1.0])
-    
-    bbox_min = np.array(bbox["min"])
-    bbox_max = np.array(bbox["max"])
-    size = bbox_max - bbox_min
-    
-    # The thin dimension indicates the normal direction
-    # Door/window is thin in one horizontal direction
-    if size[0] < size[2]:
-        # Thin in X, so normal points in X direction
-        return np.array([1.0, 0.0, 0.0])
-    else:
-        # Thin in Z, so normal points in Z direction
-        return np.array([0.0, 0.0, 1.0])
-
-
-def compute_furniture_centroid(room_meta: Dict) -> Optional[np.ndarray]:
-    """Compute center-of-mass of furniture in the room."""
-    furniture = room_meta.get("furniture", [])
-    if not furniture:
-        return None
-    
-    positions = []
-    for item in furniture:
-        transform = item.get("transform", {})
-        pos = transform.get("pos")
-        if pos and len(pos) >= 3:
-            positions.append(pos)
-    
-    if not positions:
-        return None
-    
-    positions = np.array(positions)
-    return positions.mean(axis=0)
-
-
-def compute_improved_pov_camera(
-    room_meta: Dict,
+def determine_opening_wall(
     opening: Dict,
-    config: CameraConfig = DEFAULT_CONFIG
-) -> Optional[Dict]:
+    room_bbox_min: np.ndarray,
+    room_bbox_max: np.ndarray
+) -> str:
     """
-    Compute POV camera position.
-    
-    Strategy:
-    1. Camera positioned AT the door/window opening
-    2. Look straight forward (perpendicular to door, into room)
+    Determine which wall the opening is on.
+    Returns: "min_x", "max_x", "min_z", or "max_z"
     """
-    # Get room bounds
-    bbox = room_meta.get("bbox", {})
-    if not bbox or "min" not in bbox:
-        return None
-    
-    bbox_min = np.array(bbox["min"])
-    bbox_max = np.array(bbox["max"])
-    room_center = (bbox_min + bbox_max) / 2.0
-    
-    # Get opening position and normal
     opening_center = compute_opening_center(opening)
     if opening_center is None:
-        return None
+        return "min_z"
     
-    opening_normal = compute_opening_normal(opening)
+    dist_to_min_x = abs(opening_center[0] - room_bbox_min[0])
+    dist_to_max_x = abs(opening_center[0] - room_bbox_max[0])
+    dist_to_min_z = abs(opening_center[2] - room_bbox_min[2])
+    dist_to_max_z = abs(opening_center[2] - room_bbox_max[2])
     
-    # Determine which direction points INTO the room
-    # Test both directions, pick the one closer to room center
-    test_pos_positive = opening_center + opening_normal * 0.5
-    test_pos_negative = opening_center - opening_normal * 0.5
+    min_dist = min(dist_to_min_x, dist_to_max_x, dist_to_min_z, dist_to_max_z)
     
-    dist_positive = np.linalg.norm(test_pos_positive[[0, 2]] - room_center[[0, 2]])
-    dist_negative = np.linalg.norm(test_pos_negative[[0, 2]] - room_center[[0, 2]])
-    
-    # Inside direction is the one closer to room center
-    if dist_positive < dist_negative:
-        inside_normal = opening_normal
+    if min_dist == dist_to_min_x:
+        return "min_x"
+    elif min_dist == dist_to_max_x:
+        return "max_x"
+    elif min_dist == dist_to_min_z:
+        return "min_z"
     else:
-        inside_normal = -opening_normal
+        return "max_z"
+
+
+def get_wall_rotation(wall: str) -> float:
+    """
+    Get rotation angle (degrees) to bring wall to bottom of image.
     
-    # Camera AT the door opening (not stepped back)
-    eye = opening_center.copy()
-    eye[1] = config.camera_height
+    In the standard top-down projection:
+    - World +X → Image +X (right)
+    - World +Z → Image -Y (up)
     
-    # Look STRAIGHT FORWARD (into the room, perpendicular to door)
-    look_at = opening_center + inside_normal * 5.0  # 5m ahead
-    look_at[1] = config.look_at_height
-    
-    # Apply slight downward tilt
-    view_dist = np.linalg.norm(look_at[[0, 2]] - eye[[0, 2]])
-    tilt_offset = view_dist * math.tan(math.radians(config.downward_tilt_deg))
-    look_at[1] -= tilt_offset
-    
-    # Compute view direction for metadata
-    view_direction = look_at - eye
-    view_direction = view_direction / (np.linalg.norm(view_direction) + 1e-9)
-    
-    return {
-        "eye": eye.tolist(),
-        "center": look_at.tolist(),
-        "up": [0.0, 1.0, 0.0],
-        "fov": config.fov,
-        "view_direction": view_direction.tolist(),
-        "inside_normal": inside_normal.tolist(),  # Direction into room
-        "opening_center": opening_center.tolist(),
+    So currently:
+    - min_z wall → bottom of image (no rotation)
+    - max_z wall → top of image (180° rotation)
+    - min_x wall → left of image (90° rotation)
+    - max_x wall → right of image (270° rotation)
+    """
+    rotation_map = {
+        "min_z": 0.0,
+        "max_z": 180.0,
+        "min_x": 90.0,
+        "max_x": 270.0,
     }
+    return rotation_map.get(wall, 0.0)
+
+
+def get_inside_direction(wall: str) -> np.ndarray:
+    """Get unit vector pointing from wall into room."""
+    directions = {
+        "min_x": np.array([1.0, 0.0, 0.0]),
+        "max_x": np.array([-1.0, 0.0, 0.0]),
+        "min_z": np.array([0.0, 0.0, 1.0]),
+        "max_z": np.array([0.0, 0.0, -1.0]),
+    }
+    return directions.get(wall, np.array([0.0, 0.0, 1.0]))
 
 
 # ============================================================================
-# Layout Rotation
+# POV-Oriented Layout Rendering
 # ============================================================================
 
-def compute_pov_rotation_angle(room_meta: Dict, opening: Dict) -> float:
-    """
-    Compute rotation angle for layout based on where the door/window is in the layout IMAGE.
-    
-    Returns angle in degrees (0, 90, 180, or 270) to rotate layout
-    so that the door/window is at the BOTTOM of the layout.
-    
-    Layout image coordinates:
-    - Top of image corresponds to -Z in world
-    - Bottom of image corresponds to +Z in world  
-    - Left of image corresponds to -X in world
-    - Right of image corresponds to +X in world
-    """
-    bbox = room_meta.get("bbox", {})
-    if not bbox or "min" not in bbox:
-        return 0.0
-    
-    bbox_min = np.array(bbox["min"])
-    bbox_max = np.array(bbox["max"])
-    room_size = bbox_max - bbox_min
-    
-    opening_center = compute_opening_center(opening)
-    if opening_center is None:
-        return 0.0
-    
-    # Convert opening position to normalized layout coordinates [0, 1]
-    # layout_x = (world_x - min_x) / size_x
-    # layout_y = (max_z - world_z) / size_z  (inverted because image Y is flipped)
-    rel_x = (opening_center[0] - bbox_min[0]) / (room_size[0] + 1e-9)
-    rel_y = (bbox_max[2] - opening_center[2]) / (room_size[2] + 1e-9)  # Inverted Z
-    
-    # Determine which edge the opening is closest to in layout image
-    dist_to_top = rel_y
-    dist_to_bottom = 1.0 - rel_y
-    dist_to_left = rel_x
-    dist_to_right = 1.0 - rel_x
-    
-    min_dist = min(dist_to_top, dist_to_bottom, dist_to_left, dist_to_right)
-    
-    # Rotate so that edge becomes the bottom
-    if min_dist == dist_to_bottom:
-        # Already at bottom → no rotation
-        rotation = 0.0
-    elif min_dist == dist_to_top:
-        # At top → rotate 180°
-        rotation = 180.0
-    elif min_dist == dist_to_right:
-        # At right → rotate 90° CCW (right becomes bottom)
-        rotation = 90.0
-    elif min_dist == dist_to_left:
-        # At left → rotate 270° CCW (left becomes bottom)
-        rotation = 270.0
-    else:
-        rotation = 0.0
-    
-    return rotation
-
-
-def get_opening_position_in_rotated_layout(
-    room_meta: Dict, 
-    opening: Dict, 
-    layout_size: int,
-    rotation_angle_deg: float
-) -> Optional[Tuple[int, int]]:
-    """
-    Get the center position of an opening in the ROTATED layout image coordinates.
-    
-    Returns (x, y) in pixels, or None if can't compute.
-    """
-    bbox = room_meta.get("bbox", {})
-    if not bbox or "min" not in bbox:
-        return None
-    
-    bbox_min = np.array(bbox["min"])
-    bbox_max = np.array(bbox["max"])
-    room_size = bbox_max - bbox_min
-    
-    opening_center = compute_opening_center(opening)
-    if opening_center is None:
-        return None
-    
-    # Convert to original layout image coordinates
-    rel_x = (opening_center[0] - bbox_min[0]) / (room_size[0] + 1e-9)
-    rel_y = (bbox_max[2] - opening_center[2]) / (room_size[2] + 1e-9)  # Inverted Z
-    
-    ox = rel_x * layout_size
-    oy = rel_y * layout_size
-    
-    # Apply rotation transform
-    cx, cy = layout_size / 2, layout_size / 2
-    
-    if rotation_angle_deg == 0:
-        rx, ry = ox, oy
-    elif rotation_angle_deg == 90:
-        # 90° CCW: (x, y) -> (y, size - x)
-        rx = oy
-        ry = layout_size - ox
-    elif rotation_angle_deg == 180:
-        # 180°: (x, y) -> (size - x, size - y)
-        rx = layout_size - ox
-        ry = layout_size - oy
-    elif rotation_angle_deg == 270:
-        # 270° CCW: (x, y) -> (size - y, x)
-        rx = layout_size - oy
-        ry = ox
-    else:
-        rx, ry = ox, oy
-    
-    return (int(rx), int(ry))
-
-
-
-
-def rotate_layout_image(layout_path: Path, rotation_angle_deg: float) -> Optional[Image.Image]:
-    """
-    Rotate an existing layout image by 0, 90, 180, or 270 degrees.
-    
-    Args:
-        layout_path: Path to the layout image
-        rotation_angle_deg: Rotation angle in degrees (0, 90, 180, or 270)
-    
-    Returns:
-        Rotated PIL Image
-    """
-    if not layout_path.exists():
-        return None
-    
-    try:
-        img = Image.open(layout_path)
-        
-        # Skip if no rotation needed
-        if rotation_angle_deg == 0:
-            return img.copy()
-        
-        # For 90° multiples, use transpose which is exact (no interpolation)
-        if rotation_angle_deg == 90:
-            return img.transpose(Image.ROTATE_90)
-        elif rotation_angle_deg == 180:
-            return img.transpose(Image.ROTATE_180)
-        elif rotation_angle_deg == 270:
-            return img.transpose(Image.ROTATE_270)
-        else:
-            # Fallback for other angles (shouldn't happen)
-            return img.rotate(rotation_angle_deg, resample=Image.BILINEAR, expand=False)
-    except Exception as e:
-        logger.warning(f"Failed to rotate layout {layout_path}: {e}")
-        return None
-
-
-def create_debug_layout(
-    rotated_layout: Image.Image,
-    room_meta: Dict,
+def render_pov_layout(
+    meshes: List[trimesh.Trimesh],
+    room_bbox_min: np.ndarray,
+    room_bbox_max: np.ndarray,
     opening: Dict,
-    rotation_angle_deg: float
-) -> Image.Image:
+    resolution: int = 512,
+    bg_color: Tuple[int, int, int] = (255, 255, 255),
+    door_color: Tuple[int, int, int] = (255, 100, 100),
+    window_color: Tuple[int, int, int] = (100, 200, 255),
+    doors: List[Dict] = None,
+    windows: List[Dict] = None,
+) -> Tuple[Image.Image, Dict]:
     """
-    Create debug layout with black triangle showing camera position and orientation.
+    Render layout from POV orientation.
     
-    The triangle is at the door/window position, pointing into the room (upward).
+    The opening (door/window where camera is) will be at bottom-center of image.
+    Camera looks "up" into the room.
+    
+    Returns: (image, metadata dict with camera info)
     """
-    debug_img = rotated_layout.copy().convert("RGB")
+    doors = doors or []
+    windows = windows or []
+    
+    # Determine wall and rotation
+    wall = determine_opening_wall(opening, room_bbox_min, room_bbox_max)
+    rotation_deg = get_wall_rotation(wall)
+    inside_dir = get_inside_direction(wall)
+    
+    opening_center = compute_opening_center(opening)
+    if opening_center is None:
+        opening_center = (room_bbox_min + room_bbox_max) / 2.0
+    
+    # Use opening as the pivot point for rotation
+    pivot_x = opening_center[0]
+    pivot_z = opening_center[2]
+    
+    # Room extent for scaling
+    extent_x = room_bbox_max[0] - room_bbox_min[0]
+    extent_z = room_bbox_max[2] - room_bbox_min[2]
+    extent = max(extent_x, extent_z) * 1.15
+    
+    if extent < 1e-6:
+        extent = 1.0
+    
+    margin = 15
+    scale = (resolution - 2 * margin) / extent
+    
+    # Rotation in radians
+    angle_rad = math.radians(rotation_deg)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    
+    # Camera position in image: bottom-center
+    camera_img_x = resolution / 2
+    camera_img_y = resolution - margin
+    
+    def world_to_img(wx, wz):
+        """Transform world XZ to image XY with rotation around opening."""
+        # Translate so opening is at origin
+        rx = wx - pivot_x
+        rz = wz - pivot_z
+        
+        # Rotate around opening
+        rotated_x = rx * cos_a - rz * sin_a
+        rotated_z = rx * sin_a + rz * cos_a
+        
+        # Project to image with opening at bottom-center
+        ix = rotated_x * scale + camera_img_x
+        iy = camera_img_y - rotated_z * scale  # Camera at bottom, +Z goes up
+        
+        return ix, iy
+    
+    # Create image
+    img = Image.new("RGB", (resolution, resolution), bg_color)
+    
+    # Collect and sort triangles by height (painter's algorithm)
+    triangles = []
+    
+    for mesh in meshes:
+        if len(mesh.vertices) == 0:
+            continue
+        
+        colors = get_mesh_color(mesh)
+        
+        for face in mesh.faces:
+            v0, v1, v2 = mesh.vertices[face]
+            c0, c1, c2 = colors[face]
+            
+            avg_y = (v0[1] + v1[1] + v2[1]) / 3
+            avg_color = tuple(int((int(c0[i]) + int(c1[i]) + int(c2[i])) / 3) for i in range(3))
+            
+            p0 = world_to_img(v0[0], v0[2])
+            p1 = world_to_img(v1[0], v1[2])
+            p2 = world_to_img(v2[0], v2[2])
+            
+            triangles.append((avg_y, [p0, p1, p2], avg_color))
+    
+    # Sort by height (lower first)
+    triangles.sort(key=lambda x: x[0])
+    
+    # Draw triangles
+    draw = ImageDraw.Draw(img)
+    for _, points, color in triangles:
+        flat_points = [coord for point in points for coord in point]
+        try:
+            draw.polygon(flat_points, fill=color)
+        except Exception:
+            pass
+    
+    # Draw doors and windows
+    def draw_opening_rect(opening_item: Dict, color: Tuple[int, int, int]):
+        bbox = opening_item.get("bbox")
+        if not bbox:
+            return
+        
+        corners_world = [
+            (bbox["min"][0], bbox["min"][2]),
+            (bbox["max"][0], bbox["min"][2]),
+            (bbox["max"][0], bbox["max"][2]),
+            (bbox["min"][0], bbox["max"][2]),
+        ]
+        
+        corners_img = [world_to_img(wx, wz) for wx, wz in corners_world]
+        flat = [coord for point in corners_img for coord in point]
+        
+        try:
+            draw.polygon(flat, fill=color)
+        except Exception:
+            pass
+    
+    for door in doors:
+        draw_opening_rect(door, door_color)
+    
+    for window in windows:
+        draw_opening_rect(window, window_color)
+    
+    # Build metadata
+    camera_info = {
+        "wall": wall,
+        "rotation_deg": rotation_deg,
+        "opening_center": opening_center.tolist(),
+        "inside_direction": inside_dir.tolist(),
+        "eye": [opening_center[0], 1.6, opening_center[2]],
+        "look_at": (opening_center + inside_dir * 3.0).tolist(),
+    }
+    
+    return img, camera_info
+
+
+def create_debug_layout(layout: Image.Image, margin: int = 15) -> Image.Image:
+    """Add camera marker at bottom-center pointing up."""
+    debug_img = layout.copy().convert("RGB")
     draw = ImageDraw.Draw(debug_img)
     width, height = debug_img.size
     
-    # Get opening position in rotated layout
-    pos = get_opening_position_in_rotated_layout(room_meta, opening, width, rotation_angle_deg)
+    cam_x = width // 2
+    cam_y = height - margin  # Same margin as rendering
     
-    if pos is None:
-        # Fallback: draw triangle at bottom center
-        cx = width // 2
-        cy = height - 20
-    else:
-        cx, cy = pos
-        # Clamp to image bounds
-        cx = max(20, min(width - 20, cx))
-        cy = max(20, min(height - 20, cy))
+    tri_size = min(width, height) * 0.06
     
-    # Draw black triangle pointing UP (into the room)
-    # Triangle size
-    tri_size = 25
+    # Triangle pointing up
+    tip_x, tip_y = cam_x, cam_y - tri_size
+    base1_x, base1_y = cam_x - tri_size * 0.5, cam_y + tri_size * 0.3
+    base2_x, base2_y = cam_x + tri_size * 0.5, cam_y + tri_size * 0.3
     
-    # Triangle vertices: tip at top, base at bottom
-    tip = (cx, cy - tri_size)
-    left = (cx - tri_size // 2, cy + tri_size // 3)
-    right = (cx + tri_size // 2, cy + tri_size // 3)
-    
-    # Draw filled black triangle
-    draw.polygon([tip, left, right], fill=(0, 0, 0), outline=(0, 0, 0))
-    
-    # Draw a small white circle at camera position for visibility
-    draw.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=(255, 255, 255), outline=(0, 0, 0))
+    draw.polygon([(tip_x, tip_y), (base1_x, base1_y), (base2_x, base2_y)],
+                 fill=(0, 0, 0), outline=(255, 255, 255))
+    draw.ellipse([cam_x - 5, cam_y - 5, cam_x + 5, cam_y + 5],
+                 fill=(255, 255, 255), outline=(0, 0, 0))
     
     return debug_img
 
 
 # ============================================================================
-# POV-Normalized Graph Generation
+# POV Graph Generation
 # ============================================================================
 
-def world_to_pov_coords(pos: np.ndarray, pov_origin: np.ndarray, rotation_angle_rad: float) -> np.ndarray:
+def world_to_pov_coords(pos: np.ndarray, pov_origin: np.ndarray, rotation_rad: float) -> np.ndarray:
     """Transform world position to POV-relative coordinates."""
     rel_pos = pos - pov_origin
     
-    cos_a = math.cos(-rotation_angle_rad)
-    sin_a = math.sin(-rotation_angle_rad)
+    cos_a = math.cos(-rotation_rad)
+    sin_a = math.sin(-rotation_rad)
     
     new_x = rel_pos[0] * cos_a - rel_pos[2] * sin_a
     new_z = rel_pos[0] * sin_a + rel_pos[2] * cos_a
@@ -535,68 +515,17 @@ def get_pov_direction(pov_pos: np.ndarray) -> str:
         return "to your right" if x > threshold else "to your left"
 
 
-def get_position_descriptor(pov_pos: np.ndarray, same_category_positions: List[np.ndarray], category: str) -> str:
-    """Generate descriptive name for an object based on POV-relative position."""
-    if len(same_category_positions) == 1:
-        return f"the {category}"
-    
-    x, z = pov_pos[0], pov_pos[2]
-    
-    all_x = [p[0] for p in same_category_positions]
-    all_z = [p[2] for p in same_category_positions]
-    
-    x_range = max(all_x) - min(all_x)
-    z_range = max(all_z) - min(all_z)
-    
-    descriptors = []
-    
-    if x_range > 0.5:
-        if x < min(all_x) + x_range * 0.33:
-            descriptors.append("left")
-        elif x > max(all_x) - x_range * 0.33:
-            descriptors.append("right")
-    
-    if z_range > 0.5:
-        if z < min(all_z) + z_range * 0.33:
-            descriptors.append("near")
-        elif z > max(all_z) - z_range * 0.33:
-            descriptors.append("far")
-    
-    if descriptors:
-        return f"the {' '.join(descriptors)} {category}"
-    
-    # Fallback
-    direction = get_pov_direction(pov_pos)
-    if direction == "ahead":
-        return f"the {category} ahead"
-    elif direction == "to your left":
-        return f"the left {category}"
-    elif direction == "to your right":
-        return f"the right {category}"
-    else:
-        return f"the {category}"
-
-
-def build_pov_graph(room_meta: Dict, camera: Dict, pov_id: str) -> Dict:
-    """Build POV-normalized graph with descriptive object naming."""
+def build_pov_graph(room_meta: Dict, camera_info: Dict, pov_id: str) -> Dict:
+    """Build POV-normalized scene graph."""
     room_type = room_meta.get("room_type", "Unknown")
     room_id = room_meta.get("room_id", room_type)
     
-    eye = np.array(camera["eye"])
-    center = np.array(camera["center"])
+    opening_center = np.array(camera_info["opening_center"])
+    rotation_rad = math.radians(camera_info["rotation_deg"])
     
-    # Compute rotation
-    view_dir = np.array([center[0] - eye[0], center[2] - eye[2]])
-    if np.linalg.norm(view_dir) > 1e-6:
-        view_dir = view_dir / np.linalg.norm(view_dir)
-        rotation_angle_rad = math.atan2(view_dir[0], view_dir[1])
-    else:
-        rotation_angle_rad = 0.0
+    pov_origin = opening_center.copy()
+    pov_origin[1] = 0
     
-    pov_origin = eye.copy()
-    pov_origin[1] = 0  # Project to floor
-    
-    # Collect objects
     objects = []
     
     for item in room_meta.get("furniture", []):
@@ -632,33 +561,24 @@ def build_pov_graph(room_meta: Dict, camera: Dict, pov_id: str) -> Dict:
                 "position": window_center,
             })
     
-    # Compute POV positions and generate names
+    # Compute POV positions
     pov_positions = {}
     for obj in objects:
-        pov_pos = world_to_pov_coords(obj["position"], pov_origin, rotation_angle_rad)
+        pov_pos = world_to_pov_coords(obj["position"], pov_origin, rotation_rad)
         pov_positions[obj["uid"]] = pov_pos
     
-    # Group by category
+    # Group by category for naming
     category_positions = defaultdict(list)
     for obj in objects:
         category_positions[obj["category"]].append(pov_positions[obj["uid"]])
     
-    # Generate names
-    object_names = {}
     object_locations = []
-    
     for obj in objects:
         pov_pos = pov_positions[obj["uid"]]
-        same_cat_positions = category_positions[obj["category"]]
-        
-        name = get_position_descriptor(pov_pos, same_cat_positions, obj["category"])
-        object_names[obj["uid"]] = name
-        
         direction = get_pov_direction(pov_pos)
         dist = np.sqrt(pov_pos[0]**2 + pov_pos[2]**2)
         
         object_locations.append({
-            "name": name,
             "uid": obj["uid"],
             "category": obj["category"],
             "direction": direction,
@@ -667,129 +587,18 @@ def build_pov_graph(room_meta: Dict, camera: Dict, pov_id: str) -> Dict:
     
     object_locations.sort(key=lambda x: x["distance"])
     
-    # Build relations
-    relations = []
-    for i, obj1 in enumerate(objects):
-        for j, obj2 in enumerate(objects):
-            if i >= j:
-                continue
-            
-            dist = np.linalg.norm(obj1["position"] - obj2["position"])
-            if dist > 8.0:
-                continue
-            
-            pov1 = pov_positions[obj1["uid"]]
-            pov2 = pov_positions[obj2["uid"]]
-            
-            diff = pov2 - pov1
-            if abs(diff[2]) > abs(diff[0]):
-                relation = "ahead of" if diff[2] > 0.3 else "behind" if diff[2] < -0.3 else "next to"
-            else:
-                relation = "to the right of" if diff[0] > 0.3 else "to the left of" if diff[0] < -0.3 else "next to"
-            
-            relations.append({
-                "from": object_names[obj1["uid"]],
-                "to": object_names[obj2["uid"]],
-                "relation": relation,
-                "distance": round(dist, 2),
-            })
-    
     return {
         "room_id": room_id,
         "room_type": room_type,
         "pov_id": pov_id,
         "pov_type": "door" if pov_id.startswith("door") else "window",
-        "camera": camera,
-        "rotation_angle_deg": math.degrees(rotation_angle_rad),
+        "camera": camera_info,
         "num_objects": len(objects),
-        "is_empty": len(objects) == 0,
         "objects": object_locations,
-        "relations": relations,
     }
 
 
-def describe_room_shape(room_meta: Dict) -> str:
-    """Describe room shape based on bounding box aspect ratio."""
-    bbox = room_meta.get("bbox", {})
-    if not bbox or "min" not in bbox:
-        return "rectangular"
-    
-    bbox_min = np.array(bbox["min"])
-    bbox_max = np.array(bbox["max"])
-    size = bbox_max - bbox_min
-    
-    width = size[0]  # X dimension
-    depth = size[2]  # Z dimension
-    
-    aspect = max(width, depth) / (min(width, depth) + 0.01)
-    
-    if aspect > 2.5:
-        return "long and narrow"
-    elif aspect > 1.8:
-        return "narrow"
-    elif aspect < 1.2:
-        return "roughly square"
-    else:
-        return "rectangular"
-
-
-def describe_room_size(room_meta: Dict) -> str:
-    """Describe room size based on floor area."""
-    bbox = room_meta.get("bbox", {})
-    if not bbox or "min" not in bbox:
-        return ""
-    
-    bbox_min = np.array(bbox["min"])
-    bbox_max = np.array(bbox["max"])
-    size = bbox_max - bbox_min
-    
-    area = size[0] * size[2]  # Floor area in m²
-    
-    if area < 6:
-        return "small"
-    elif area < 12:
-        return "modest-sized"
-    elif area < 25:
-        return "spacious"
-    else:
-        return "large"
-
-
-def describe_openings_layout(objects: List[Dict]) -> str:
-    """Describe the layout of doors and windows."""
-    doors = [obj for obj in objects if obj["category"] == "door"]
-    windows = [obj for obj in objects if obj["category"] == "window"]
-    
-    sentences = []
-    
-    # Describe doors
-    if len(doors) == 1:
-        sentences.append(f"There is a door {doors[0]['direction']}.")
-    elif len(doors) == 2:
-        dirs = [d["direction"] for d in doors]
-        if dirs[0] == dirs[1]:
-            sentences.append(f"There are two doors {dirs[0]}.")
-        else:
-            sentences.append(f"There are doors {dirs[0]} and {dirs[1]}.")
-    elif len(doors) > 2:
-        sentences.append(f"There are {len(doors)} doors around the room.")
-    
-    # Describe windows
-    if len(windows) == 1:
-        sentences.append(f"There is a window {windows[0]['direction']}.")
-    elif len(windows) == 2:
-        dirs = [w["direction"] for w in windows]
-        if dirs[0] == dirs[1]:
-            sentences.append(f"There are two windows {dirs[0]}.")
-        else:
-            sentences.append(f"There are windows {dirs[0]} and {dirs[1]}.")
-    elif len(windows) > 2:
-        sentences.append(f"There are {len(windows)} windows.")
-    
-    return " ".join(sentences)
-
-
-def graph_to_text(graph: Dict, room_meta: Optional[Dict] = None) -> str:
+def graph_to_text(graph: Dict) -> str:
     """Convert POV graph to natural language."""
     lines = []
     
@@ -802,35 +611,15 @@ def graph_to_text(graph: Dict, room_meta: Optional[Dict] = None) -> str:
     else:
         lines.append(f"You are looking into the {room_type} from the window.")
     
-    # Handle empty rooms with richer description
-    if graph["is_empty"]:
-        # Get room shape/size if metadata available
-        if room_meta:
-            shape = describe_room_shape(room_meta)
-            size = describe_room_size(room_meta)
-            if size:
-                lines.append(f"The room is empty. It is a {size}, {shape} space.")
-            else:
-                lines.append(f"The room is empty. It is a {shape} space.")
-        else:
-            lines.append("The room is empty.")
-        
-        # Describe openings layout
-        openings_desc = describe_openings_layout(objects)
-        if openings_desc:
-            lines.append(openings_desc)
-        
-        return "\n".join(lines)
-    
-    # Group furniture by direction (exclude doors/windows for main description)
+    # Group by direction
     direction_objects = defaultdict(list)
     for obj in objects:
         if obj["category"] not in ["door", "window"]:
-            direction_objects[obj["direction"]].append(obj["name"])
+            direction_objects[obj["direction"]].append(obj["category"])
     
     for direction in ["ahead", "to your left", "to your right", "behind you", "nearby"]:
-        names = direction_objects.get(direction, [])
-        if not names:
+        items = direction_objects.get(direction, [])
+        if not items:
             continue
         
         prefix = {
@@ -841,263 +630,252 @@ def graph_to_text(graph: Dict, room_meta: Optional[Dict] = None) -> str:
             "nearby": "Nearby,",
         }[direction]
         
-        if len(names) == 1:
-            lines.append(f"{prefix} you see {names[0]}.")
-        elif len(names) == 2:
-            lines.append(f"{prefix} you see {names[0]} and {names[1]}.")
+        if len(items) == 1:
+            lines.append(f"{prefix} you see a {items[0]}.")
         else:
-            lines.append(f"{prefix} you see {', '.join(names[:-1])}, and {names[-1]}.")
+            lines.append(f"{prefix} you see: {', '.join(items)}.")
     
     return "\n".join(lines)
-
-
-# ============================================================================
-# POV Rendering
-# ============================================================================
-
-def get_mesh_color(mesh: trimesh.Trimesh) -> np.ndarray:
-    """Extract vertex colors from mesh."""
-    n_vertices = len(mesh.vertices)
-    default_color = np.full((n_vertices, 3), 180, dtype=np.uint8)
-    
-    if not hasattr(mesh, 'visual'):
-        return default_color
-    
-    visual = mesh.visual
-    
-    if hasattr(visual, 'vertex_colors') and visual.vertex_colors is not None:
-        colors = np.array(visual.vertex_colors)
-        if len(colors) == n_vertices and colors.shape[-1] >= 3:
-            return colors[:, :3].astype(np.uint8)
-    
-    try:
-        if hasattr(visual, 'to_color'):
-            color_visual = visual.to_color()
-            if hasattr(color_visual, 'vertex_colors') and color_visual.vertex_colors is not None:
-                colors = np.array(color_visual.vertex_colors)
-                if len(colors) == n_vertices and colors.shape[-1] >= 3:
-                    return colors[:, :3].astype(np.uint8)
-    except Exception:
-        pass
-    
-    return default_color
-
-
-def try_render_pyrender(meshes: List[trimesh.Trimesh], camera: Dict, width: int, height: int) -> Optional[Image.Image]:
-    """Try to render using pyrender."""
-    try:
-        import pyrender
-    except ImportError:
-        return None
-    
-    try:
-        eye = np.array(camera["eye"])
-        center = np.array(camera["center"])
-        up = np.array(camera["up"])
-        fov = camera.get("fov", 80.0)
-        
-        scene = pyrender.Scene(bg_color=[0.53, 0.81, 0.92, 1.0], ambient_light=[0.4, 0.4, 0.4])
-        
-        for mesh in meshes:
-            if len(mesh.vertices) == 0:
-                continue
-            try:
-                pr_mesh = pyrender.Mesh.from_trimesh(mesh, smooth=False)
-                scene.add(pr_mesh)
-            except Exception:
-                continue
-        
-        cam = pyrender.PerspectiveCamera(yfov=np.radians(fov), aspectRatio=width/height)
-        
-        forward = center - eye
-        forward = forward / (np.linalg.norm(forward) + 1e-9)
-        right = np.cross(forward, up)
-        right = right / (np.linalg.norm(right) + 1e-9)
-        cam_up = np.cross(right, forward)
-        
-        cam_pose = np.eye(4)
-        cam_pose[:3, 0] = right
-        cam_pose[:3, 1] = cam_up
-        cam_pose[:3, 2] = -forward
-        cam_pose[:3, 3] = eye
-        
-        scene.add(cam, pose=cam_pose)
-        
-        light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
-        scene.add(light, pose=cam_pose)
-        
-        renderer = pyrender.OffscreenRenderer(width, height)
-        color, _ = renderer.render(scene)
-        renderer.delete()
-        
-        return Image.fromarray(color)
-    except Exception as e:
-        logger.warning(f"pyrender failed: {e}")
-        return None
-
-
-def render_pov(meshes: List[trimesh.Trimesh], camera: Dict, width: int, height: int) -> Image.Image:
-    """Render POV image."""
-    img = try_render_pyrender(meshes, camera, width, height)
-    if img is not None:
-        return img
-    
-    # Fallback to simple rendering
-    return Image.new("RGB", (width, height), (135, 206, 235))
 
 
 # ============================================================================
 # Main Processing
 # ============================================================================
 
+def process_one_room(
+    scene_id: str,
+    room_meta: Dict,
+    tex_meshes: List[trimesh.Trimesh],
+    seg_meshes: List[trimesh.Trimesh],
+    output_dir: Path,
+    resolution: int,
+    door_color: Tuple[int, int, int],
+    window_color: Tuple[int, int, int],
+    generate_debug: bool = True,
+    generate_graphs: bool = True,
+) -> List[Dict]:
+    """Process one room, generating POV layouts for each door/window."""
+    
+    room_id = room_meta.get("room_id", room_meta.get("room_type", "Unknown"))
+    bbox = room_meta.get("bbox", {})
+    
+    if not bbox or "min" not in bbox:
+        logger.warning(f"  Room {room_id} has no valid bbox")
+        return []
+    
+    bbox_min = np.array(bbox["min"])
+    bbox_max = np.array(bbox["max"])
+    
+    # Filter meshes to room
+    room_tex_meshes = filter_meshes_to_bbox(tex_meshes, bbox_min, bbox_max)
+    room_seg_meshes = filter_meshes_to_bbox(seg_meshes, bbox_min, bbox_max)
+    
+    # Get doors and windows
+    room_doors = room_meta.get("doors", [])
+    room_windows = room_meta.get("windows", [])
+    
+    # Collect all openings
+    openings = []
+    for i, door in enumerate(room_doors):
+        openings.append((f"door{i}", "door", door))
+    for i, window in enumerate(room_windows):
+        openings.append((f"window{i}", "window", window))
+    
+    if not openings:
+        logger.debug(f"  Room {room_id} has no doors or windows")
+        return []
+    
+    pov_info_list = []
+    
+    for pov_id, pov_type, opening in openings:
+        # Render tex layout
+        tex_img, camera_info = render_pov_layout(
+            room_tex_meshes, bbox_min, bbox_max, opening,
+            resolution=resolution,
+            bg_color=(255, 255, 255),
+            door_color=door_color,
+            window_color=window_color,
+            doors=room_doors,
+            windows=room_windows,
+        )
+        
+        # Render seg layout
+        seg_img, _ = render_pov_layout(
+            room_seg_meshes, bbox_min, bbox_max, opening,
+            resolution=resolution,
+            bg_color=(255, 255, 255),
+            door_color=door_color,
+            window_color=window_color,
+            doors=room_doors,
+            windows=room_windows,
+        )
+        
+        # Save layouts
+        tex_dir = output_dir / "layouts_pov" / "tex"
+        seg_dir = output_dir / "layouts_pov" / "seg"
+        tex_dir.mkdir(parents=True, exist_ok=True)
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        
+        tex_path = tex_dir / f"{scene_id}_{room_id}_{pov_id}_tex_layout.png"
+        seg_path = seg_dir / f"{scene_id}_{room_id}_{pov_id}_seg_layout.png"
+        
+        tex_img.save(tex_path)
+        seg_img.save(seg_path)
+        
+        # Debug layout
+        if generate_debug:
+            debug_dir = output_dir / "layouts_debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            debug_img = create_debug_layout(tex_img)
+            debug_path = debug_dir / f"{scene_id}_{room_id}_{pov_id}_debug_layout.png"
+            debug_img.save(debug_path)
+        
+        # Generate graph
+        graph = None
+        if generate_graphs:
+            graph = build_pov_graph(room_meta, camera_info, pov_id)
+            graph_text = graph_to_text(graph)
+            
+            graphs_dir = output_dir / "pov_graphs"
+            (graphs_dir / "jsons").mkdir(parents=True, exist_ok=True)
+            (graphs_dir / "texts").mkdir(parents=True, exist_ok=True)
+            
+            graph_json_path = graphs_dir / "jsons" / f"{scene_id}_{room_id}_{pov_id}_room_graph.json"
+            graph_text_path = graphs_dir / "texts" / f"{scene_id}_{room_id}_{pov_id}_room_description.txt"
+            
+            with open(graph_json_path, "w") as f:
+                json.dump(graph, f, indent=2)
+            with open(graph_text_path, "w") as f:
+                f.write(graph_text)
+        
+        # POV info
+        pov_info = {
+            "scene_id": scene_id,
+            "room_id": room_id,
+            "room_type": room_meta.get("room_type", "Unknown"),
+            "pov_id": pov_id,
+            "pov_type": pov_type,
+            "camera": camera_info,
+            "layout_path_tex": str(tex_path.relative_to(output_dir)),
+            "layout_path_seg": str(seg_path.relative_to(output_dir)),
+            "graph_path": f"pov_graphs/jsons/{scene_id}_{room_id}_{pov_id}_room_graph.json" if graph else "",
+        }
+        pov_info_list.append(pov_info)
+        
+        logger.debug(f"    {pov_id}: wall={camera_info['wall']}, rotation={camera_info['rotation_deg']}°")
+    
+    return pov_info_list
+
+
 def process_one_scene(
     scene_id: str,
     tex_glb: Path,
     seg_glb: Path,
-    scene_meta: Dict,
     rooms_metadata: List[Dict],
-    layouts_dir: Path,
     output_dir: Path,
-    width: int,
-    height: int,
-    config: CameraConfig,
-    generate_graphs: bool = True,
-    render_povs: bool = True,
-    rotate_layouts: bool = True
+    resolution: int,
+    door_color: Tuple[int, int, int],
+    window_color: Tuple[int, int, int],
 ) -> Tuple[bool, Optional[str], List[Dict]]:
     """Process one scene."""
     try:
-        # Create output directories
-        if render_povs:
-            (output_dir / "tex").mkdir(parents=True, exist_ok=True)
-            (output_dir / "seg").mkdir(parents=True, exist_ok=True)
+        tex_meshes = load_glb_with_transforms(tex_glb)
+        seg_meshes = load_glb_with_transforms(seg_glb)
         
-        # Load meshes only if rendering POVs
-        tex_meshes = []
-        seg_meshes = []
-        if render_povs:
-            tex_meshes = load_glb_with_transforms(tex_glb)
-            seg_meshes = load_glb_with_transforms(seg_glb)
-        
-        all_doors = scene_meta.get("doors", [])
-        all_windows = scene_meta.get("windows", [])
-        
-        pov_info_list = []
+        all_pov_info = []
         
         for room_meta in rooms_metadata:
-            room_id = room_meta.get("room_id", room_meta.get("room_type", "Unknown"))
-            bbox = room_meta.get("bbox", {})
-            
-            if not bbox or "min" not in bbox:
-                continue
-            
-            # Get room's doors and windows
-            room_doors = room_meta.get("doors", [])
-            room_windows = room_meta.get("windows", [])
-            
-            # Collect all openings for this room
-            openings = []
-            for i, door in enumerate(room_doors):
-                openings.append((f"door{i}", "door", door))
-            for i, window in enumerate(room_windows):
-                openings.append((f"window{i}", "window", window))
-            
-            if not openings:
-                continue
-            
-            # Find room layout paths
-            tex_layout_path = layouts_dir / "tex" / f"{scene_id}_{room_id}_tex_layout.png"
-            seg_layout_path = layouts_dir / "seg" / f"{scene_id}_{room_id}_seg_layout.png"
-            
-            for pov_id, pov_type, opening in openings:
-                # Compute improved camera
-                camera = compute_improved_pov_camera(room_meta, opening, config)
-                if camera is None:
-                    continue
-                
-                # Render POV images
-                tex_pov_path = output_dir / "tex" / f"{scene_id}_{room_id}_{pov_id}_tex_pov.png"
-                seg_pov_path = output_dir / "seg" / f"{scene_id}_{room_id}_{pov_id}_seg_pov.png"
-                
-                if render_povs:
-                    tex_pov = render_pov(tex_meshes, camera, width, height)
-                    seg_pov = render_pov(seg_meshes, camera, width, height)
-                    tex_pov.save(tex_pov_path)
-                    seg_pov.save(seg_pov_path)
-                
-                # Compute rotation for layout (based on door/window position, not viewing direction)
-                rotation_angle = compute_pov_rotation_angle(room_meta, opening)
-                
-                # Rotate existing layouts
-                if rotate_layouts:
-                    rotated_layouts_dir = output_dir.parent / "layouts_pov"
-                    (rotated_layouts_dir / "tex").mkdir(parents=True, exist_ok=True)
-                    (rotated_layouts_dir / "seg").mkdir(parents=True, exist_ok=True)
-                    
-                    tex_rotated = rotate_layout_image(tex_layout_path, rotation_angle)
-                    seg_rotated = rotate_layout_image(seg_layout_path, rotation_angle)
-                    
-                    if tex_rotated:
-                        tex_rotated_path = rotated_layouts_dir / "tex" / f"{scene_id}_{room_id}_{pov_id}_tex_layout.png"
-                        tex_rotated.save(tex_rotated_path)
-                        
-                        # Create debug layout with red door/window highlight
-                        debug_layouts_dir = output_dir.parent / "layouts_debug"
-                        debug_layouts_dir.mkdir(parents=True, exist_ok=True)
-                        debug_layout = create_debug_layout(tex_rotated, room_meta, opening, rotation_angle)
-                        debug_path = debug_layouts_dir / f"{scene_id}_{room_id}_{pov_id}_debug_layout.png"
-                        debug_layout.save(debug_path)
-                    
-                    if seg_rotated:
-                        seg_rotated_path = rotated_layouts_dir / "seg" / f"{scene_id}_{room_id}_{pov_id}_seg_layout.png"
-                        seg_rotated.save(seg_rotated_path)
-                
-                # Build POV graph
-                graph = None
-                graph_text = None
-                if generate_graphs:
-                    graph = build_pov_graph(room_meta, camera, pov_id)
-                    graph_text = graph_to_text(graph, room_meta)  # Pass room_meta for shape info
-                    
-                    graphs_dir = output_dir.parent / "pov_graphs"
-                    (graphs_dir / "jsons").mkdir(parents=True, exist_ok=True)
-                    (graphs_dir / "texts").mkdir(parents=True, exist_ok=True)
-                    
-                    graph_json_path = graphs_dir / "jsons" / f"{scene_id}_{room_id}_{pov_id}_room_graph.json"
-                    graph_text_path = graphs_dir / "texts" / f"{scene_id}_{room_id}_{pov_id}_room_description.txt"
-                    
-                    with open(graph_json_path, "w") as f:
-                        json.dump(graph, f, indent=2)
-                    with open(graph_text_path, "w") as f:
-                        f.write(graph_text)
-                
-                # Collect POV info
-                pov_info = {
-                    "scene_id": scene_id,
-                    "room_id": room_id,
-                    "room_type": room_meta.get("room_type", "Unknown"),
-                    "pov_id": pov_id,
-                    "pov_type": pov_type,
-                    "camera": camera,
-                    "rotation_angle_deg": rotation_angle,
-                    "pov_path_tex": str(tex_pov_path.relative_to(output_dir.parent)),
-                    "pov_path_seg": str(seg_pov_path.relative_to(output_dir.parent)),
-                    "layout_path_tex": f"layouts_pov/tex/{scene_id}_{room_id}_{pov_id}_tex_layout.png",
-                    "layout_path_seg": f"layouts_pov/seg/{scene_id}_{room_id}_{pov_id}_seg_layout.png",
-                    "graph_path": f"pov_graphs/jsons/{scene_id}_{room_id}_{pov_id}_room_graph.json" if graph else "",
-                    "graph_text_path": f"pov_graphs/texts/{scene_id}_{room_id}_{pov_id}_room_description.txt" if graph else "",
-                    "furniture_count": room_meta.get("furniture_count", 0),
-                    "is_empty": room_meta.get("is_empty", False),
-                }
-                pov_info_list.append(pov_info)
-                
-                logger.debug(f"  {room_id}/{pov_id}: rotation={rotation_angle:.1f}°")
+            pov_info = process_one_room(
+                scene_id, room_meta, tex_meshes, seg_meshes,
+                output_dir, resolution, door_color, window_color
+            )
+            all_pov_info.extend(pov_info)
         
-        return True, None, pov_info_list
+        return True, None, all_pov_info
     
     except Exception as e:
         logger.exception(f"Failed: {e}")
         return False, str(e), []
+
+
+def load_taxonomy(taxonomy_path: Optional[Path]) -> Dict:
+    """Load taxonomy JSON with flexible path discovery."""
+    if taxonomy_path is None:
+        logger.warning("No taxonomy path provided, using default colors")
+        return {}
+    
+    # Try exact path first
+    if taxonomy_path.exists() and taxonomy_path.is_file():
+        try:
+            with open(taxonomy_path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load taxonomy from {taxonomy_path}: {e}")
+            return {}
+    
+    # If path is a directory, look for json files inside
+    if taxonomy_path.exists() and taxonomy_path.is_dir():
+        for json_file in taxonomy_path.glob("*.json"):
+            try:
+                with open(json_file, "r") as f:
+                    logger.info(f"Loaded taxonomy from {json_file}")
+                    return json.load(f)
+            except Exception:
+                continue
+    
+    # Try parent directory / taxonomy / taxonomy.json
+    if taxonomy_path.parent.exists():
+        alt_path = taxonomy_path.parent / "taxonomy.json"
+        if alt_path.exists():
+            try:
+                with open(alt_path, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load taxonomy from {alt_path}: {e}")
+    
+    logger.warning(f"Taxonomy not found at {taxonomy_path}, using default colors")
+    return {}
+
+
+def get_door_window_colors(taxonomy: Dict) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+    """Get door and window colors from taxonomy."""
+    door_color = (255, 100, 100)  # Default red-ish
+    window_color = (100, 200, 255)  # Default blue-ish
+    
+    if not taxonomy:
+        return door_color, window_color
+    
+    try:
+        # Primary format: {"category_to_color": {"Door": [R,G,B], "Window": [R,G,B]}}
+        cat_to_color = taxonomy.get("category_to_color", {})
+        if isinstance(cat_to_color, dict):
+            for cat_name, color in cat_to_color.items():
+                if isinstance(color, (list, tuple)) and len(color) >= 3:
+                    rgb = tuple(int(c) for c in color[:3])
+                    if cat_name.lower() == "door":
+                        door_color = rgb
+                    elif cat_name.lower() == "window":
+                        window_color = rgb
+        
+        # If not found, check if category list contains color info
+        if door_color == (255, 100, 100) or window_color == (100, 200, 255):
+            categories = taxonomy.get("categories", [])
+            if isinstance(categories, list):
+                for cat in categories:
+                    if isinstance(cat, dict):
+                        name = str(cat.get("name", "")).lower()
+                        color = cat.get("color")
+                        if color and len(color) >= 3:
+                            rgb = tuple(int(c) for c in color[:3])
+                            if name == "door":
+                                door_color = rgb
+                            elif name == "window":
+                                window_color = rgb
+    
+    except Exception as e:
+        logger.warning(f"Error parsing taxonomy: {e}, using default colors")
+    
+    return door_color, window_color
 
 
 def load_scene_list(path: Path) -> List[str]:
@@ -1112,36 +890,41 @@ def load_scene_list(path: Path) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Stage 4 v2: Improved POV rendering")
+    parser = argparse.ArgumentParser(description="Combined POV-Oriented Layout Rendering")
     parser.add_argument("--dataset-root", required=True, help="Root directory of dataset")
-    parser.add_argument("--scene-list", default=None, help="File with scene IDs (one per line)")
-    parser.add_argument("--room-list", default=None, help="File with room metadata paths (one per line)")
-    parser.add_argument("--width", type=int, default=1280, help="POV image width")
-    parser.add_argument("--height", type=int, default=720, help="POV image height")
-    parser.add_argument("--fov", type=float, default=80.0, help="Camera FOV in degrees")
-    parser.add_argument("--step-back", type=float, default=0.8, help="Step back distance from opening")
-    parser.add_argument("--camera-height", type=float, default=1.6, help="Camera height")
+    parser.add_argument("--scene-list", default=None, help="File with scene IDs")
+    parser.add_argument("--room-list", default=None, help="File with room metadata paths")
+    parser.add_argument("--resolution", type=int, default=512, help="Output image resolution")
     parser.add_argument("--hpc", action="store_true", help="Enable HPC mode")
     parser.add_argument("--backend", default="auto", choices=["auto", "egl", "osmesa", "xvfb"])
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--shard-id", type=str, default=None, help="Shard ID for output file naming")
+    parser.add_argument("--shard-id", type=str, default=None)
+    parser.add_argument("--no-debug", action="store_true", help="Skip debug layout generation")
     parser.add_argument("--no-graphs", action="store_true", help="Skip graph generation")
-    parser.add_argument("--no-layouts", action="store_true", help="Skip layout rotation (just render POVs)")
-    parser.add_argument("--only-graphs", action="store_true", help="Only generate graphs (skip POV and layout rendering)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
+    
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
     
     dataset_root = Path(args.dataset_root)
     geometry_dir = dataset_root / "geometry"
     metadata_dir = dataset_root / "metadata"
-    layouts_dir = dataset_root / "layouts"
-    output_dir = dataset_root / "povs"
+    output_dir = dataset_root
     
-    config = CameraConfig(
-        step_back_distance=args.step_back,
-        camera_height=args.camera_height,
-        fov=args.fov,
-    )
+    # Try multiple taxonomy paths
+    taxonomy_candidates = [
+        dataset_root / "taxonomy" / "taxonomy.json",
+        dataset_root / "taxonomy.json",
+        dataset_root / "taxonomy",  # Will search for *.json inside
+    ]
+    
+    taxonomy_path = None
+    for candidate in taxonomy_candidates:
+        if candidate.exists():
+            taxonomy_path = candidate
+            break
     
     if args.hpc:
         if not setup_hpc_rendering(args.backend):
@@ -1149,26 +932,17 @@ def main():
             return
     
     try:
-        # Log mode
-        mode_parts = []
-        if not args.only_graphs:
-            mode_parts.append("POVs")
-        if not args.no_layouts and not args.only_graphs:
-            mode_parts.append("layouts")
-        if not args.no_graphs:
-            mode_parts.append("graphs")
-        mode_str = " + ".join(mode_parts) if mode_parts else "nothing"
-        logger.info(f"Mode: {mode_str}")
+        # Load taxonomy for colors
+        taxonomy = load_taxonomy(taxonomy_path) if taxonomy_path else {}
+        door_color, window_color = get_door_window_colors(taxonomy)
+        logger.info(f"Door color: {door_color}, Window color: {window_color}")
         
         all_pov_info = []
         success_count = 0
         
-        # Group rooms by scene for processing
-        # Dict: scene_id -> list of room metadata
         scene_rooms: Dict[str, List[Dict]] = {}
         
         if args.room_list:
-            # Load room metadata files from list
             logger.info(f"Loading rooms from: {args.room_list}")
             with open(args.room_list, "r") as f:
                 room_paths = [line.strip() for line in f if line.strip()]
@@ -1176,10 +950,7 @@ def main():
             if args.limit:
                 room_paths = room_paths[:args.limit]
             
-            logger.info(f"Processing {len(room_paths)} room files...")
-            
             for room_path in room_paths:
-                # Handle both absolute and relative paths
                 if not Path(room_path).is_absolute():
                     room_path = dataset_root / room_path
                 else:
@@ -1198,9 +969,7 @@ def main():
                 if scene_id not in scene_rooms:
                     scene_rooms[scene_id] = []
                 scene_rooms[scene_id].append(room_meta)
-        
         else:
-            # Use scene list or discover all scenes
             if args.scene_list:
                 scene_ids = load_scene_list(Path(args.scene_list))
             else:
@@ -1208,8 +977,6 @@ def main():
             
             if args.limit:
                 scene_ids = scene_ids[:args.limit]
-            
-            logger.info(f"Processing {len(scene_ids)} scenes...")
             
             for scene_id in scene_ids:
                 rooms_metadata = []
@@ -1221,33 +988,20 @@ def main():
                 if rooms_metadata:
                     scene_rooms[scene_id] = rooms_metadata
         
-        # Process each scene
+        logger.info(f"Processing {len(scene_rooms)} scenes...")
+        
         total_scenes = len(scene_rooms)
         for i, (scene_id, rooms_metadata) in enumerate(scene_rooms.items(), 1):
-            scene_meta_path = metadata_dir / "scenes" / f"{scene_id}.json"
-            if not scene_meta_path.exists():
-                continue
-            
-            with open(scene_meta_path) as f:
-                scene_meta = json.load(f)
-            
             tex_glb = geometry_dir / "tex" / f"{scene_id}_tex.glb"
             seg_glb = geometry_dir / "seg" / f"{scene_id}_seg.glb"
             
             if not tex_glb.exists() or not seg_glb.exists():
+                logger.warning(f"GLB not found for {scene_id}")
                 continue
             
-            # Determine what to generate
-            render_povs = not args.only_graphs
-            rotate_layouts = not args.no_layouts and not args.only_graphs
-            generate_graphs = not args.no_graphs
-            
             success, error, pov_info = process_one_scene(
-                scene_id, tex_glb, seg_glb, scene_meta, rooms_metadata,
-                layouts_dir, output_dir, args.width, args.height, config,
-                generate_graphs=generate_graphs,
-                render_povs=render_povs,
-                rotate_layouts=rotate_layouts
+                scene_id, tex_glb, seg_glb, rooms_metadata,
+                output_dir, args.resolution, door_color, window_color
             )
             
             if success:
@@ -1257,7 +1011,7 @@ def main():
             else:
                 logger.warning(f"[{i}/{total_scenes}] ✗ {scene_id}: {error}")
         
-        # Save POV info (per-shard if shard-id provided)
+        # Save POV info
         if args.shard_id:
             info_path = output_dir / f"pov_info_shard_{args.shard_id}.json"
         else:
