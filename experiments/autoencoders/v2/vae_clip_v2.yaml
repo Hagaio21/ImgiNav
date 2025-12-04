@@ -70,7 +70,7 @@ autoencoder:
 training:
   seed: 42
   epochs: 150
-  batch_size: 128                 # Can afford larger batch with lightweight model
+  batch_size: 32                 # Can afford larger batch with lightweight model
   num_workers: 8
   
   use_precomputed_weights: true
