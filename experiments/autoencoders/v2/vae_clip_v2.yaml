@@ -78,8 +78,8 @@ training:
   max_weight: 10.0
   # Multiply weights for non-empty rooms to give them more emphasis
   non_empty_multiplier: 2.0
-  # Print weight statistics grouped by is_empty and type
-  weight_stats_columns: ["is_empty", "type"]
+  # Print weight statistics grouped by is_empty
+  weight_stats_columns: ["is_empty"]
   
   train_split: 0.8
   split_seed: 42
