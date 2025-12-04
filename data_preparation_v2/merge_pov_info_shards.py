@@ -17,25 +17,41 @@ logger = logging.getLogger(__name__)
 
 
 def merge_pov_info_shards(dataset_root: Path) -> int:
-    """Merge all pov_info_shard_*.json files into pov_info.json."""
-    povs_dir = dataset_root / "povs"
+    """Merge all shard_*.json files from pov_info/ directory into pov_info.json."""
+    # Check new location first (pov_info/)
+    pov_info_dir = dataset_root / "pov_info"
     
-    if not povs_dir.exists():
-        logger.error(f"POVs directory not found: {povs_dir}")
-        return 1
+    if not pov_info_dir.exists():
+        # Fallback to old location (povs/)
+        povs_dir = dataset_root / "povs"
+        if povs_dir.exists():
+            logger.info(f"Using legacy location: {povs_dir}")
+            pov_info_dir = povs_dir
+        else:
+            logger.error(f"POV info directory not found: {pov_info_dir} or {povs_dir}")
+            return 1
     
-    # Find all shard files
-    shard_files = sorted(povs_dir.glob("pov_info_shard_*.json"))
+    logger.info(f"Looking for shard files in: {pov_info_dir}")
+    
+    # Find all shard files (new format: shard_XXXX.json)
+    shard_files = sorted(pov_info_dir.glob("shard_*.json"))
+    
+    if not shard_files:
+        # Try old pattern (pov_info_shard_*.json)
+        logger.info("No shard_*.json files found, trying old pattern...")
+        shard_files = sorted(pov_info_dir.glob("pov_info_shard_*.json"))
     
     if not shard_files:
         logger.warning("No shard files found. Looking for existing pov_info.json...")
-        if (povs_dir / "pov_info.json").exists():
-            logger.info("Found existing pov_info.json")
-            return 0
+        # Check both locations
+        for check_dir in [pov_info_dir, dataset_root / "povs"]:
+            if (check_dir / "pov_info.json").exists():
+                logger.info(f"Found existing pov_info.json at: {check_dir / 'pov_info.json'}")
+                return 0
         logger.error("No POV info files found")
         return 1
     
-    logger.info(f"Found {len(shard_files)} shard files")
+    logger.info(f"Found {len(shard_files)} shard files in {pov_info_dir}")
     
     # Merge all shards
     all_pov_info: List[dict] = []
@@ -51,8 +67,8 @@ def merge_pov_info_shards(dataset_root: Path) -> int:
     
     logger.info(f"Total POVs: {len(all_pov_info)}")
     
-    # Write merged file
-    output_path = povs_dir / "pov_info.json"
+    # Write merged file to pov_info directory
+    output_path = pov_info_dir / "pov_info.json"
     with open(output_path, "w") as f:
         json.dump(all_pov_info, f, indent=2)
     
@@ -76,10 +92,15 @@ def main():
     exit_code = merge_pov_info_shards(dataset_root)
     
     if exit_code == 0 and args.clean:
-        povs_dir = dataset_root / "povs"
-        for shard_file in povs_dir.glob("pov_info_shard_*.json"):
-            shard_file.unlink()
-            logger.info(f"Deleted {shard_file.name}")
+        pov_info_dir = dataset_root / "pov_info"
+        if not pov_info_dir.exists():
+            pov_info_dir = dataset_root / "povs"
+        
+        # Clean both old and new patterns
+        for pattern in ["shard_*.json", "pov_info_shard_*.json"]:
+            for shard_file in pov_info_dir.glob(pattern):
+                shard_file.unlink()
+                logger.info(f"Deleted {shard_file.name}")
     
     return exit_code
 

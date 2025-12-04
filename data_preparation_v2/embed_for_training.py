@@ -2,9 +2,13 @@
 """
 Embed for Training - Create POV image and graph text embeddings.
 
-Takes the manifest CSV from collect_manifest.py and creates:
-1. POV image embeddings (ResNet18) - one per room
-2. Graph text embeddings (sentence-transformers) - one per room
+Takes the manifest CSV and creates:
+1. POV image embeddings (ResNet18)
+2. Graph text embeddings (sentence-transformers)
+
+Supports two modes:
+- Regular manifests: One embedding per (scene_id, room_id)
+- POV-normalized manifests: One embedding per (scene_id, room_id, pov_id)
 
 Updates the manifest in-place or creates a new one.
 
@@ -12,6 +16,11 @@ Usage:
     # Create both POV and graph embeddings
     python embed_for_training.py \
         --manifest dataset_v2/manifests/manifest_tex.csv \
+        --dataset-root dataset_v2
+
+    # POV-normalized manifest (creates POV-specific embeddings)
+    python embed_for_training.py \
+        --manifest dataset_v2/manifests/manifest_seg_pov_normalized.csv \
         --dataset-root dataset_v2
 
     # Only POV embeddings
@@ -27,13 +36,15 @@ Usage:
         --skip-pov
 
 Output Structure:
-    dataset_v2/
-    ├── povs/
-    │   └── embeddings_{variant}/
-    │       └── {scene_id}_{room_id}_pov.pt
-    └── graphs/
-        └── embeddings/
-            └── {scene_id}_{room_id}_text.pt
+    Regular:
+        dataset_v2/
+        ├── povs/embeddings_{variant}/{scene_id}_{room_id}_pov.pt
+        └── graphs/embeddings/{scene_id}_{room_id}_text.pt
+    
+    POV-normalized:
+        dataset_v2/
+        ├── povs/embeddings_{variant}/{scene_id}_{room_id}_{pov_id}_pov.pt
+        └── graphs/embeddings/{scene_id}_{room_id}_{pov_id}_text.pt
 """
 
 import argparse
@@ -114,38 +125,61 @@ def embed_povs(
     device: torch.device,
     batch_size: int = 64,
     skip_existing: bool = True,
-) -> Dict[Tuple[str, str], str]:
+) -> Dict[Tuple, str]:
     """
-    Embed POV images. One embedding per (scene_id, room_id).
+    Embed POV images. 
+    - If pov_id column exists: One embedding per (scene_id, room_id, pov_id)
+    - Otherwise: One embedding per (scene_id, room_id)
     
-    Returns: dict of (scene_id, room_id) -> relative_embedding_path
+    Returns: dict of key -> relative_embedding_path
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Get unique rooms with POVs
+    # Check if POV-normalized (has pov_id column)
+    is_pov_normalized = "pov_id" in df.columns
+    
+    # Get rows with POVs
     has_pov = df["pov_path"].notna() & (df["pov_path"] != "")
-    rooms_df = df[has_pov][["scene_id", "room_id", "pov_path"]].drop_duplicates(subset=["scene_id", "room_id"])
+    
+    if is_pov_normalized:
+        # POV-normalized: one embedding per POV
+        povs_df = df[has_pov][["scene_id", "room_id", "pov_id", "pov_path"]].copy()
+        key_cols = ["scene_id", "room_id", "pov_id"]
+    else:
+        # Regular: one embedding per room (take first POV)
+        povs_df = df[has_pov][["scene_id", "room_id", "pov_path"]].drop_duplicates(subset=["scene_id", "room_id"])
+        key_cols = ["scene_id", "room_id"]
     
     # Filter already processed if skip_existing
     if skip_existing:
         to_process = []
-        for _, row in rooms_df.iterrows():
-            emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_pov.pt"
+        for _, row in povs_df.iterrows():
+            if is_pov_normalized:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_{row['pov_id']}_pov.pt"
+            else:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_pov.pt"
             if not emb_path.exists():
                 to_process.append(row)
-        rooms_df = pd.DataFrame(to_process)
-        logger.info(f"POV: {len(to_process)} to process, {len(rooms_df)} skipped (existing)")
+        povs_df = pd.DataFrame(to_process)
+        logger.info(f"POV: {len(to_process)} to process, {len(povs_df)} skipped (existing)")
     
-    if len(rooms_df) == 0:
+    if len(povs_df) == 0:
         logger.info("POV: All embeddings exist, skipping")
         # Return map for existing files
         embedding_map = {}
-        for _, row in df[has_pov][["scene_id", "room_id"]].drop_duplicates().iterrows():
-            rel_path = f"povs/embeddings_{output_dir.name.split('_')[-1]}/{row['scene_id']}_{row['room_id']}_pov.pt"
-            embedding_map[(row["scene_id"], row["room_id"])] = rel_path
+        if is_pov_normalized:
+            for _, row in df[has_pov][key_cols].drop_duplicates().iterrows():
+                key = (row["scene_id"], row["room_id"], row["pov_id"])
+                rel_path = f"povs/embeddings_{output_dir.name.split('_')[-1]}/{row['scene_id']}_{row['room_id']}_{row['pov_id']}_pov.pt"
+                embedding_map[key] = rel_path
+        else:
+            for _, row in df[has_pov][key_cols].drop_duplicates().iterrows():
+                key = (row["scene_id"], row["room_id"])
+                rel_path = f"povs/embeddings_{output_dir.name.split('_')[-1]}/{row['scene_id']}_{row['room_id']}_pov.pt"
+                embedding_map[key] = rel_path
         return embedding_map
     
-    logger.info(f"Embedding {len(rooms_df)} POV images...")
+    logger.info(f"Embedding {len(povs_df)} POV images ({'POV-normalized' if is_pov_normalized else 'room-level'})...")
     
     # Load model
     encoder = POVEncoder().to(device).eval()
@@ -154,8 +188,8 @@ def embed_povs(
     embedding_map = {}
     
     with torch.no_grad():
-        for start in tqdm(range(0, len(rooms_df), batch_size), desc="POV embeddings"):
-            batch = rooms_df.iloc[start:start + batch_size]
+        for start in tqdm(range(0, len(povs_df), batch_size), desc="POV embeddings"):
+            batch = povs_df.iloc[start:start + batch_size]
             
             images = []
             valid_rows = []
@@ -182,22 +216,36 @@ def embed_povs(
             
             # Save
             for emb, row in zip(embeddings, valid_rows):
-                scene_id, room_id = row["scene_id"], row["room_id"]
-                emb_name = f"{scene_id}_{room_id}_pov.pt"
+                if is_pov_normalized:
+                    scene_id, room_id, pov_id = row["scene_id"], row["room_id"], row["pov_id"]
+                    emb_name = f"{scene_id}_{room_id}_{pov_id}_pov.pt"
+                    key = (scene_id, room_id, pov_id)
+                else:
+                    scene_id, room_id = row["scene_id"], row["room_id"]
+                    emb_name = f"{scene_id}_{room_id}_pov.pt"
+                    key = (scene_id, room_id)
+                
                 emb_path = output_dir / emb_name
                 torch.save(emb.cpu(), emb_path)
                 
                 rel_path = str(emb_path.relative_to(dataset_root))
-                embedding_map[(scene_id, room_id)] = rel_path
+                embedding_map[key] = rel_path
     
     # Add existing embeddings to map
-    has_pov_unique = df[has_pov][["scene_id", "room_id"]].drop_duplicates()
-    for _, row in has_pov_unique.iterrows():
-        key = (row["scene_id"], row["room_id"])
-        if key not in embedding_map:
-            emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_pov.pt"
-            if emb_path.exists():
-                embedding_map[key] = str(emb_path.relative_to(dataset_root))
+    if is_pov_normalized:
+        for _, row in df[has_pov][key_cols].drop_duplicates().iterrows():
+            key = (row["scene_id"], row["room_id"], row["pov_id"])
+            if key not in embedding_map:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_{row['pov_id']}_pov.pt"
+                if emb_path.exists():
+                    embedding_map[key] = str(emb_path.relative_to(dataset_root))
+    else:
+        for _, row in df[has_pov][key_cols].drop_duplicates().iterrows():
+            key = (row["scene_id"], row["room_id"])
+            if key not in embedding_map:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_pov.pt"
+                if emb_path.exists():
+                    embedding_map[key] = str(emb_path.relative_to(dataset_root))
     
     logger.info(f"POV: Saved {len(embedding_map)} embeddings")
     return embedding_map
@@ -210,38 +258,61 @@ def embed_graph_texts(
     device: torch.device,
     batch_size: int = 128,
     skip_existing: bool = True,
-) -> Dict[Tuple[str, str], str]:
+) -> Dict[Tuple, str]:
     """
-    Embed graph text descriptions. One embedding per (scene_id, room_id).
+    Embed graph text descriptions.
+    - If pov_id column exists: One embedding per (scene_id, room_id, pov_id)
+    - Otherwise: One embedding per (scene_id, room_id)
     
-    Returns: dict of (scene_id, room_id) -> relative_embedding_path
+    Returns: dict of key -> relative_embedding_path
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Get unique rooms with graph text
+    # Check if POV-normalized (has pov_id column)
+    is_pov_normalized = "pov_id" in df.columns
+    
+    # Get rows with graph text
     has_text = df["graph_text_path"].notna() & (df["graph_text_path"] != "")
-    rooms_df = df[has_text][["scene_id", "room_id", "graph_text_path"]].drop_duplicates(subset=["scene_id", "room_id"])
+    
+    if is_pov_normalized:
+        # POV-normalized: one embedding per POV
+        texts_df = df[has_text][["scene_id", "room_id", "pov_id", "graph_text_path"]].copy()
+        key_cols = ["scene_id", "room_id", "pov_id"]
+    else:
+        # Regular: one embedding per room (take first text)
+        texts_df = df[has_text][["scene_id", "room_id", "graph_text_path"]].drop_duplicates(subset=["scene_id", "room_id"])
+        key_cols = ["scene_id", "room_id"]
     
     # Filter already processed if skip_existing
     if skip_existing:
         to_process = []
-        for _, row in rooms_df.iterrows():
-            emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_text.pt"
+        for _, row in texts_df.iterrows():
+            if is_pov_normalized:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_{row['pov_id']}_text.pt"
+            else:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_text.pt"
             if not emb_path.exists():
                 to_process.append(row)
-        original_count = len(rooms_df)
-        rooms_df = pd.DataFrame(to_process)
-        logger.info(f"Graph text: {len(rooms_df)} to process, {original_count - len(rooms_df)} skipped (existing)")
+        original_count = len(texts_df)
+        texts_df = pd.DataFrame(to_process)
+        logger.info(f"Graph text: {len(texts_df)} to process, {original_count - len(texts_df)} skipped (existing)")
     
-    if len(rooms_df) == 0:
+    if len(texts_df) == 0:
         logger.info("Graph text: All embeddings exist, skipping")
         embedding_map = {}
-        for _, row in df[has_text][["scene_id", "room_id"]].drop_duplicates().iterrows():
-            rel_path = f"graphs/embeddings/{row['scene_id']}_{row['room_id']}_text.pt"
-            embedding_map[(row["scene_id"], row["room_id"])] = rel_path
+        if is_pov_normalized:
+            for _, row in df[has_text][key_cols].drop_duplicates().iterrows():
+                key = (row["scene_id"], row["room_id"], row["pov_id"])
+                rel_path = f"graphs/embeddings/{row['scene_id']}_{row['room_id']}_{row['pov_id']}_text.pt"
+                embedding_map[key] = rel_path
+        else:
+            for _, row in df[has_text][key_cols].drop_duplicates().iterrows():
+                key = (row["scene_id"], row["room_id"])
+                rel_path = f"graphs/embeddings/{row['scene_id']}_{row['room_id']}_text.pt"
+                embedding_map[key] = rel_path
         return embedding_map
     
-    logger.info(f"Embedding {len(rooms_df)} graph texts...")
+    logger.info(f"Embedding {len(texts_df)} graph texts ({'POV-normalized' if is_pov_normalized else 'room-level'})...")
     
     # Load model
     encoder = TextEncoder(device=str(device))
@@ -252,7 +323,7 @@ def embed_graph_texts(
     texts = []
     valid_rows = []
     
-    for _, row in rooms_df.iterrows():
+    for _, row in texts_df.iterrows():
         text_path = dataset_root / row["graph_text_path"]
         if not text_path.exists():
             logger.warning(f"Graph text not found: {text_path}")
@@ -275,22 +346,36 @@ def embed_graph_texts(
         embeddings = encoder.encode_batch(batch_texts)
         
         for emb, row in zip(embeddings, batch_rows):
-            scene_id, room_id = row["scene_id"], row["room_id"]
-            emb_name = f"{scene_id}_{room_id}_text.pt"
+            if is_pov_normalized:
+                scene_id, room_id, pov_id = row["scene_id"], row["room_id"], row["pov_id"]
+                emb_name = f"{scene_id}_{room_id}_{pov_id}_text.pt"
+                key = (scene_id, room_id, pov_id)
+            else:
+                scene_id, room_id = row["scene_id"], row["room_id"]
+                emb_name = f"{scene_id}_{room_id}_text.pt"
+                key = (scene_id, room_id)
+            
             emb_path = output_dir / emb_name
             torch.save(emb.cpu(), emb_path)
             
             rel_path = str(emb_path.relative_to(dataset_root))
-            embedding_map[(scene_id, room_id)] = rel_path
+            embedding_map[key] = rel_path
     
     # Add existing embeddings to map
-    has_text_unique = df[has_text][["scene_id", "room_id"]].drop_duplicates()
-    for _, row in has_text_unique.iterrows():
-        key = (row["scene_id"], row["room_id"])
-        if key not in embedding_map:
-            emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_text.pt"
-            if emb_path.exists():
-                embedding_map[key] = str(emb_path.relative_to(dataset_root))
+    if is_pov_normalized:
+        for _, row in df[has_text][key_cols].drop_duplicates().iterrows():
+            key = (row["scene_id"], row["room_id"], row["pov_id"])
+            if key not in embedding_map:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_{row['pov_id']}_text.pt"
+                if emb_path.exists():
+                    embedding_map[key] = str(emb_path.relative_to(dataset_root))
+    else:
+        for _, row in df[has_text][key_cols].drop_duplicates().iterrows():
+            key = (row["scene_id"], row["room_id"])
+            if key not in embedding_map:
+                emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_text.pt"
+                if emb_path.exists():
+                    embedding_map[key] = str(emb_path.relative_to(dataset_root))
     
     logger.info(f"Graph text: Saved {len(embedding_map)} embeddings")
     return embedding_map
@@ -331,6 +416,11 @@ def main():
         variant = "seg"
     logger.info(f"Detected variant: {variant}")
     
+    # Check if POV-normalized
+    is_pov_normalized = "pov_id" in df.columns
+    if is_pov_normalized:
+        logger.info("Detected POV-normalized manifest - creating POV-specific embeddings")
+    
     # POV embeddings
     if not args.skip_pov:
         pov_output_dir = args.dataset_root / "povs" / f"embeddings_{variant}"
@@ -344,10 +434,16 @@ def main():
         )
         
         # Update manifest
-        df["pov_embedding_path"] = df.apply(
-            lambda row: pov_map.get((row["scene_id"], row["room_id"]), ""),
-            axis=1
-        )
+        if is_pov_normalized:
+            df["pov_embedding_path"] = df.apply(
+                lambda row: pov_map.get((row["scene_id"], row["room_id"], row["pov_id"]), ""),
+                axis=1
+            )
+        else:
+            df["pov_embedding_path"] = df.apply(
+                lambda row: pov_map.get((row["scene_id"], row["room_id"]), ""),
+                axis=1
+            )
     
     # Graph text embeddings
     if not args.skip_graph:
@@ -362,10 +458,16 @@ def main():
         )
         
         # Update manifest
-        df["graph_embedding_path"] = df.apply(
-            lambda row: graph_map.get((row["scene_id"], row["room_id"]), ""),
-            axis=1
-        )
+        if is_pov_normalized:
+            df["graph_embedding_path"] = df.apply(
+                lambda row: graph_map.get((row["scene_id"], row["room_id"], row["pov_id"]), ""),
+                axis=1
+            )
+        else:
+            df["graph_embedding_path"] = df.apply(
+                lambda row: graph_map.get((row["scene_id"], row["room_id"]), ""),
+                axis=1
+            )
     
     # Save manifest (preserve all columns including sample_weight)
     output_path = args.output_manifest or args.manifest

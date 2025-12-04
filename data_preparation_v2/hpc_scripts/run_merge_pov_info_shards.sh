@@ -92,7 +92,8 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "POV Info Merge COMPLETE - SUCCESS"
     echo "=========================================="
     echo "Output:"
-    echo "  ${DATASET_ROOT}/povs/pov_info.json"
+    echo "  ${DATASET_ROOT}/pov_info/pov_info.json"
+    echo "  (or ${DATASET_ROOT}/povs/pov_info.json if using legacy location)"
     echo ""
     if [ "${CLEAN}" = "1" ]; then
         echo "Shard files have been deleted."
