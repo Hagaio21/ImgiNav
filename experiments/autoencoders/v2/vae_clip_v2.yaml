@@ -71,7 +71,7 @@ training:
   seed: 42
   epochs: 150
   batch_size: 32                 # Can afford larger batch with lightweight model
-  num_workers: 8
+  num_workers: 4
   
   use_precomputed_weights: true
   precomputed_weight_column: "sample_weight"
