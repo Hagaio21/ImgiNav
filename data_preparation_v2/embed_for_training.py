@@ -44,7 +44,7 @@ Output Structure:
     POV-normalized:
         dataset_v2/
         ├── povs/embeddings_{variant}/{scene_id}_{room_id}_{pov_id}_pov.pt
-        └── graphs/embeddings/{scene_id}_{room_id}_{pov_id}_text.pt
+        └── pov_graphs/embeddings/{scene_id}_{room_id}_{pov_id}_text.pt
 """
 
 import argparse
@@ -151,17 +151,24 @@ def embed_povs(
         key_cols = ["scene_id", "room_id"]
     
     # Filter already processed if skip_existing
+    original_count = len(povs_df)
     if skip_existing:
         to_process = []
+        existing_count = 0
         for _, row in povs_df.iterrows():
             if is_pov_normalized:
                 emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_{row['pov_id']}_pov.pt"
             else:
                 emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_pov.pt"
-            if not emb_path.exists():
+            if emb_path.exists():
+                existing_count += 1
+            else:
                 to_process.append(row)
+        skipped_count = existing_count
         povs_df = pd.DataFrame(to_process)
-        logger.info(f"POV: {len(to_process)} to process, {len(povs_df)} skipped (existing)")
+        logger.info(f"POV: {len(to_process)} to process, {skipped_count} skipped (existing)")
+        if skipped_count > 0:
+            logger.info(f"  Checking embeddings in: {output_dir}")
     
     if len(povs_df) == 0:
         logger.info("POV: All embeddings exist, skipping")
@@ -284,6 +291,7 @@ def embed_graph_texts(
         key_cols = ["scene_id", "room_id"]
     
     # Filter already processed if skip_existing
+    original_count = len(texts_df)
     if skip_existing:
         to_process = []
         for _, row in texts_df.iterrows():
@@ -293,22 +301,24 @@ def embed_graph_texts(
                 emb_path = output_dir / f"{row['scene_id']}_{row['room_id']}_text.pt"
             if not emb_path.exists():
                 to_process.append(row)
-        original_count = len(texts_df)
+        skipped_count = original_count - len(to_process)
         texts_df = pd.DataFrame(to_process)
-        logger.info(f"Graph text: {len(texts_df)} to process, {original_count - len(texts_df)} skipped (existing)")
+        logger.info(f"Graph text: {len(to_process)} to process, {skipped_count} skipped (existing)")
     
     if len(texts_df) == 0:
         logger.info("Graph text: All embeddings exist, skipping")
         embedding_map = {}
+        # Determine correct directory name based on output_dir location
+        graphs_dir_name = output_dir.parent.name  # "pov_graphs" or "graphs"
         if is_pov_normalized:
             for _, row in df[has_text][key_cols].drop_duplicates().iterrows():
                 key = (row["scene_id"], row["room_id"], row["pov_id"])
-                rel_path = f"graphs/embeddings/{row['scene_id']}_{row['room_id']}_{row['pov_id']}_text.pt"
+                rel_path = f"{graphs_dir_name}/embeddings/{row['scene_id']}_{row['room_id']}_{row['pov_id']}_text.pt"
                 embedding_map[key] = rel_path
         else:
             for _, row in df[has_text][key_cols].drop_duplicates().iterrows():
                 key = (row["scene_id"], row["room_id"])
-                rel_path = f"graphs/embeddings/{row['scene_id']}_{row['room_id']}_text.pt"
+                rel_path = f"{graphs_dir_name}/embeddings/{row['scene_id']}_{row['room_id']}_text.pt"
                 embedding_map[key] = rel_path
         return embedding_map
     
@@ -447,7 +457,13 @@ def main():
     
     # Graph text embeddings
     if not args.skip_graph:
-        graph_output_dir = args.dataset_root / "graphs" / "embeddings"
+        # For POV-normalized, use pov_graphs/embeddings, otherwise graphs/embeddings
+        if is_pov_normalized:
+            graph_output_dir = args.dataset_root / "pov_graphs" / "embeddings"
+            logger.info("Using pov_graphs/embeddings for POV-normalized graph embeddings")
+        else:
+            graph_output_dir = args.dataset_root / "graphs" / "embeddings"
+        
         graph_map = embed_graph_texts(
             df=df,
             dataset_root=args.dataset_root,

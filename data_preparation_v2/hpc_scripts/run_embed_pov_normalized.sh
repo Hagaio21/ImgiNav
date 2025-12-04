@@ -93,7 +93,8 @@ case ${VARIANT} in
             --manifest "${MANIFEST}" \
             --dataset-root "${DATASET_ROOT}" \
             --batch-size 64 \
-            --device cuda
+            --device cuda \
+            --overwrite
         ;;
     seg)
         MANIFEST="${DATASET_ROOT}/manifests/manifest_seg_pov_normalized.csv"
@@ -108,7 +109,8 @@ case ${VARIANT} in
             --manifest "${MANIFEST}" \
             --dataset-root "${DATASET_ROOT}" \
             --batch-size 64 \
-            --device cuda
+            --device cuda \
+            --overwrite
         ;;
     both)
         # Process tex
