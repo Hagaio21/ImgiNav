@@ -92,7 +92,7 @@ case ${VARIANT} in
         python "${PYTHON_SCRIPT}" \
             --manifest "${MANIFEST}" \
             --dataset-root "${DATASET_ROOT}" \
-            --batch-size 64 \
+            --batch-size 128 \
             --device cuda \
             --overwrite
         ;;
@@ -108,7 +108,7 @@ case ${VARIANT} in
         python "${PYTHON_SCRIPT}" \
             --manifest "${MANIFEST}" \
             --dataset-root "${DATASET_ROOT}" \
-            --batch-size 64 \
+            --batch-size 128 \
             --device cuda \
             --overwrite
         ;;
@@ -122,7 +122,7 @@ case ${VARIANT} in
             python "${PYTHON_SCRIPT}" \
                 --manifest "${MANIFEST_TEX}" \
                 --dataset-root "${DATASET_ROOT}" \
-                --batch-size 64 \
+                --batch-size 128 \
                 --device cuda
         else
             echo "WARNING: Tex manifest not found: ${MANIFEST_TEX}" >&2
@@ -137,7 +137,7 @@ case ${VARIANT} in
             python "${PYTHON_SCRIPT}" \
                 --manifest "${MANIFEST_SEG}" \
                 --dataset-root "${DATASET_ROOT}" \
-                --batch-size 64 \
+                --batch-size 128 \
                 --device cuda
         else
             echo "WARNING: Seg manifest not found: ${MANIFEST_SEG}" >&2

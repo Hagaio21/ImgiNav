@@ -221,8 +221,9 @@ def embed_povs(
             batch_tensor = torch.stack(images).to(device)
             embeddings = encoder(batch_tensor)
             
-            # Save
-            for emb, row in zip(embeddings, valid_rows):
+            # Save embeddings (batch CPU transfer for efficiency)
+            embeddings_cpu = embeddings.cpu()
+            for emb, row in zip(embeddings_cpu, valid_rows):
                 if is_pov_normalized:
                     scene_id, room_id, pov_id = row["scene_id"], row["room_id"], row["pov_id"]
                     emb_name = f"{scene_id}_{room_id}_{pov_id}_pov.pt"
@@ -233,7 +234,7 @@ def embed_povs(
                     key = (scene_id, room_id)
                 
                 emb_path = output_dir / emb_name
-                torch.save(emb.cpu(), emb_path)
+                torch.save(emb, emb_path)
                 
                 rel_path = str(emb_path.relative_to(dataset_root))
                 embedding_map[key] = rel_path
@@ -355,6 +356,10 @@ def embed_graph_texts(
         
         embeddings = encoder.encode_batch(batch_texts)
         
+        # Batch CPU transfer for efficiency
+        if isinstance(embeddings, torch.Tensor):
+            embeddings = embeddings.cpu()
+        
         for emb, row in zip(embeddings, batch_rows):
             if is_pov_normalized:
                 scene_id, room_id, pov_id = row["scene_id"], row["room_id"], row["pov_id"]
@@ -366,7 +371,11 @@ def embed_graph_texts(
                 key = (scene_id, room_id)
             
             emb_path = output_dir / emb_name
-            torch.save(emb.cpu(), emb_path)
+            # Ensure tensor is on CPU before saving
+            if isinstance(emb, torch.Tensor):
+                torch.save(emb.cpu() if emb.is_cuda else emb, emb_path)
+            else:
+                torch.save(emb, emb_path)
             
             rel_path = str(emb_path.relative_to(dataset_root))
             embedding_map[key] = rel_path
