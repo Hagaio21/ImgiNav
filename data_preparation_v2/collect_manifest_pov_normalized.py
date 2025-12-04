@@ -353,20 +353,18 @@ def load_pov_layouts_info(dataset_root: Path) -> Dict[Tuple[str, str, str], Dict
     """
     # Try new location first (pov_info/pov_info.json)
     info_path = dataset_root / "pov_info" / "pov_info.json"
-    logger.debug(f"  Checking for POV info at: {info_path}")
     
     if not info_path.exists():
         # Try old location (povs/pov_info.json)
         info_path = dataset_root / "povs" / "pov_info.json"
-        logger.debug(f"  Checking for POV info at: {info_path}")
     
     if not info_path.exists():
         # Fallback to very old location
         info_path = dataset_root / "layouts" / "pov_layouts_info.json"
-        logger.debug(f"  Checking for POV info at: {info_path}")
     
     if not info_path.exists():
-        logger.warning(f"  POV info file not found in any expected location")
+        logger.warning(f"  POV info file not found in any expected location (checked: pov_info/pov_info.json, povs/pov_info.json, layouts/pov_layouts_info.json)")
+        logger.warning(f"  Continuing without rotation metadata - run merge_pov_info_shards.py first if needed")
         return {}
     
     logger.info(f"  Loading POV info from {info_path}...")
