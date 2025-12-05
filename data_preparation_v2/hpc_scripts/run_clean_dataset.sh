@@ -1,8 +1,10 @@
 #!/bin/bash
 #BSUB -J clean_dataset
-#BSUB -n 2
-#BSUB -R "rusage[mem=4000]"
-#BSUB -W 01:00
+#BSUB -o /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/clean_dataset.%J.out
+#BSUB -e /work3/s233249/ImgiNav/ImgiNav/data_preparation_v2/hpc_scripts/logs/clean_dataset.%J.err
+#BSUB -n 4
+#BSUB -R "rusage[mem=8000]"
+#BSUB -W 12:00
 #BSUB -q hpc
 
 set -euo pipefail
@@ -12,127 +14,111 @@ export MKL_INTERFACE_LAYER=LP64
 # CONFIGURATION
 # =============================================================================
 BASE_DIR="/work3/s233249/ImgiNav"
-CONFIG_FILE="${BASE_DIR}/dataset_v2/shards/clean_config.sh"
+PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/data_preparation_v2/clean_dataset.py"
+LOG_DIR="${BASE_DIR}/ImgiNav/data_preparation_v2/hpc_scripts/logs"
+
+# Dataset paths
+DATASET_ROOT="${BASE_DIR}/dataset_v2"
+
+# Manifest paths (can be overridden via environment)
+MANIFEST="${MANIFEST:-${DATASET_ROOT}/manifests/manifest_seg.csv}"
+OUTPUT="${OUTPUT:-${DATASET_ROOT}/manifests/manifest_seg_cleaned.csv}"
+
+# Ensure log directory exists
+mkdir -p "${LOG_DIR}"
 
 # =============================================================================
-# LOAD CONFIG
-# =============================================================================
-if [ ! -f "${CONFIG_FILE}" ]; then
-    echo "ERROR: Config file not found: ${CONFIG_FILE}" >&2
-    exit 1
-fi
-source "${CONFIG_FILE}"
-
-# =============================================================================
-# DETERMINE SHARD FROM ARRAY INDEX
-# =============================================================================
-# LSB_JOBINDEX is 1-indexed, shard files are 0-indexed (shard_000, shard_001, ...)
-if [ -z "${LSB_JOBINDEX:-}" ]; then
-    echo "ERROR: LSB_JOBINDEX not set. This script must be run as a job array." >&2
-    echo "  Use launch_clean_dataset.sh to submit as an array job." >&2
-    exit 1
-fi
-
-SHARD_INDEX=$(printf "%03d" $((LSB_JOBINDEX - 1)))
-# Try CSV first (new format), fall back to .txt (legacy)
-if [ -f "${SHARDS_DIR}/shard_${SHARD_INDEX}.csv" ]; then
-    SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_INDEX}.csv"
-elif [ -f "${SHARDS_DIR}/shard_${SHARD_INDEX}.txt" ]; then
-    SHARD_FILE="${SHARDS_DIR}/shard_${SHARD_INDEX}.txt"
-else
-    echo "ERROR: Shard file not found: ${SHARDS_DIR}/shard_${SHARD_INDEX}.csv or .txt" >&2
-    exit 1
-fi
-OUTPUT_FILE="${OUTPUT_DIR}/rejections_shard_${SHARD_INDEX}.csv"
-
-echo "=========================================="
-echo "Clean Dataset - Array Job"
-echo "=========================================="
-echo "LSB_JOBINDEX: ${LSB_JOBINDEX}"
-echo "Shard: ${SHARD_FILE}"
-echo "Output: ${OUTPUT_FILE}"
-echo "Start: $(date)"
-echo ""
-
-# =============================================================================
-# VALIDATE SHARD FILE
-# =============================================================================
-if [ ! -f "${SHARD_FILE}" ]; then
-    echo "ERROR: Shard file not found: ${SHARD_FILE}" >&2
-    exit 1
-fi
-
-# Count samples/scenes in shard
-if [ "${SHARD_FILE##*.}" = "csv" ]; then
-    NUM_SAMPLES=$(tail -n +2 "${SHARD_FILE}" | wc -l)
-    echo "Samples in shard: ${NUM_SAMPLES}"
-else
-    NUM_SCENES=$(wc -l < "${SHARD_FILE}")
-    echo "Scenes in shard: ${NUM_SCENES}"
-fi
-echo ""
-
-# =============================================================================
-# CONDA ENVIRONMENT
+# CONDA ENV
 # =============================================================================
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     source "$HOME/miniconda3/etc/profile.d/conda.sh"
-    conda activate imginav || conda activate scenefactor || {
-        echo "ERROR: Failed to activate conda environment" >&2
-        exit 1
+    conda activate imginav || {
+        echo "Failed to activate conda environment 'imginav'" >&2
+        conda activate scenefactor || {
+            echo "Failed to activate any conda environment" >&2
+            exit 1
+        }
     }
-    echo "Conda environment: $(conda info --envs | grep '*' | awk '{print $1}')"
-    echo ""
+fi
+
+# =============================================================================
+# VALIDATION
+# =============================================================================
+echo "=========================================="
+echo "Clean Dataset - Check Layout Quality"
+echo "=========================================="
+echo "Dataset Root: ${DATASET_ROOT}"
+echo "Manifest: ${MANIFEST}"
+echo "Output: ${OUTPUT}"
+echo "Start: $(date)"
+echo "=========================================="
+
+# Validate paths
+if [ ! -d "${DATASET_ROOT}" ]; then
+    echo "ERROR: Dataset root not found: ${DATASET_ROOT}" >&2
+    exit 1
+fi
+
+if [ ! -f "${MANIFEST}" ]; then
+    echo "ERROR: Manifest not found: ${MANIFEST}" >&2
+    exit 1
+fi
+
+# Validate Python script exists
+if [ ! -f "${PYTHON_SCRIPT}" ]; then
+    echo "ERROR: Python script not found: ${PYTHON_SCRIPT}" >&2
+    exit 1
 fi
 
 # =============================================================================
 # RUN
 # =============================================================================
+echo ""
+echo "Starting layout quality check..."
+echo "=========================================="
+
 cd "${BASE_DIR}"
 
-echo "Running clean_dataset.py..."
-echo ""
+python "${PYTHON_SCRIPT}" \
+    --manifest "${MANIFEST}" \
+    --dataset-root "${DATASET_ROOT}" \
+    --output "${OUTPUT}"
 
-# Build command
-CMD_ARGS=(
-    --dataset-root "${DATASET_ROOT}"
-    --shard-file "${SHARD_FILE}"
-    --output "${OUTPUT_FILE}"
-    --min-pixels "${MIN_PIXELS}"
-    --max-black-fraction "${MAX_BLACK_FRACTION}"
-    --min-content-fraction "${MIN_CONTENT_FRACTION}"
-)
+EXIT_CODE=$?
 
-# Add manifest if provided (required for sample-based checking)
-if [ -n "${MANIFEST_PATH:-}" ]; then
-    if [ -f "${MANIFEST_PATH}" ]; then
-        echo "Using manifest: ${MANIFEST_PATH}"
-        CMD_ARGS+=(--manifest "${MANIFEST_PATH}")
-        
-        # Add POV palette checking if enabled
-        if [ "${CHECK_POV_PALETTE:-0}" = "1" ]; then
-            echo "POV palette checking enabled"
-            CMD_ARGS+=(
-                --check-pov-palette
-                --pov-color-tolerance "${POV_COLOR_TOLERANCE:-20}"
-                --pov-min-match-ratio "${POV_MIN_MATCH_RATIO:-0.3}"
-                --palette-color-tolerance "${PALETTE_COLOR_TOLERANCE:-10}"
-            )
-        fi
-    else
-        echo "WARNING: Manifest file not found: ${MANIFEST_PATH}"
-        echo "  Will fall back to layout-only checking"
-    fi
-fi
-
-python "${SCRIPTS_DIR}/clean_dataset.py" "${CMD_ARGS[@]}"
-
-# =============================================================================
-# DONE
-# =============================================================================
 echo ""
 echo "=========================================="
-echo "Shard ${SHARD_INDEX} COMPLETE"
-echo "Output: ${OUTPUT_FILE}"
+if [ ${EXIT_CODE} -eq 0 ]; then
+    echo "✓ Dataset cleaning completed successfully"
+    if [ -f "${OUTPUT}" ]; then
+        line_count=$(wc -l < "${OUTPUT}")
+        echo "  Output manifest: ${OUTPUT} (${line_count} lines)"
+        
+        # Count rejected rows if possible
+        if command -v python3 &> /dev/null; then
+            rejected_count=$(python3 -c "
+import pandas as pd
+df = pd.read_csv('${OUTPUT}', low_memory=False)
+if 'rejected' in df.columns:
+    print(df['rejected'].sum())
+else:
+    print(0)
+" 2>/dev/null || echo "0")
+            total_count=$(python3 -c "
+import pandas as pd
+df = pd.read_csv('${OUTPUT}', low_memory=False)
+print(len(df))
+" 2>/dev/null || echo "0")
+            if [ "${rejected_count}" != "0" ] && [ "${total_count}" != "0" ]; then
+                percent=$(python3 -c "print(f'{100*${rejected_count}/${total_count}:.1f}')" 2>/dev/null || echo "0.0")
+                echo "  Rejected rows: ${rejected_count} / ${total_count} (${percent}%)"
+            fi
+        fi
+    fi
+else
+    echo "✗ Dataset cleaning failed with exit code ${EXIT_CODE}"
+fi
 echo "End: $(date)"
 echo "=========================================="
+
+exit ${EXIT_CODE}

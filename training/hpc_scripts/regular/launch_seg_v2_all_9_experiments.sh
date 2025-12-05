@@ -25,8 +25,8 @@ echo "Submitting 2 jobs to gpul40s queue (large_povs, large_graphs)..."
 echo ""
 
 GPUL40S_CONFIGS=(
-    "experiments/diffusion/v2/seg/rooms/povs/large_down_bottleneck_v2.yaml"
-    "experiments/diffusion/v2/seg/rooms/graphs/large_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_povs_large_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_graphs_large_down_bottleneck_v2.yaml"
 )
 
 for config in "${GPUL40S_CONFIGS[@]}"; do
@@ -81,8 +81,8 @@ echo "Submitting 2 jobs to gpua100 queue (large_both, medium_both)..."
 echo ""
 
 GPUA100_CONFIGS=(
-    "experiments/diffusion/v2/seg/rooms/both/large_down_bottleneck_v2.yaml"
-    "experiments/diffusion/v2/seg/rooms/both/medium_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_both_large_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_both_medium_down_bottleneck_v2.yaml"
 )
 
 for config in "${GPUA100_CONFIGS[@]}"; do
@@ -137,11 +137,11 @@ echo "Submitting 5 jobs to gpuv100 queue (all small: 3 + medium_povs, medium_gra
 echo ""
 
 GPUV100_CONFIGS=(
-    "experiments/diffusion/v2/seg/rooms/both/small_down_bottleneck_v2.yaml"
-    "experiments/diffusion/v2/seg/rooms/graphs/small_down_bottleneck_v2.yaml"
-    "experiments/diffusion/v2/seg/rooms/povs/small_down_bottleneck_v2.yaml"
-    "experiments/diffusion/v2/seg/rooms/povs/medium_down_bottleneck_v2.yaml"
-    "experiments/diffusion/v2/seg/rooms/graphs/medium_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_both_small_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_graphs_small_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_povs_small_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_povs_medium_down_bottleneck_v2.yaml"
+    "experiments/diffusion/v2/seg/rooms_graphs_medium_down_bottleneck_v2.yaml"
 )
 
 for config in "${GPUV100_CONFIGS[@]}"; do
