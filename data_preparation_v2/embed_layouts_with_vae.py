@@ -325,7 +325,10 @@ def main():
                 if len(all_latents) < 10000:  # Limit to avoid memory issues
                     try:
                         existing_latent = torch.load(emb_path)
-                        all_latents.append(existing_latent.unsqueeze(0))
+                        # Ensure it has batch dimension [1, C, H, W]
+                        if existing_latent.dim() == 3:
+                            existing_latent = existing_latent.unsqueeze(0)
+                        all_latents.append(existing_latent)
                     except Exception as e:
                         logger.warning(f"Failed to load {emb_path} for statistics: {e}")
     
