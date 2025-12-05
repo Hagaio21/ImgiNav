@@ -20,11 +20,11 @@ PYTHON_SCRIPT="${BASE_DIR}/ImgiNav/data_preparation_v2/embed_layouts_with_vae.py
 LOG_DIR="${BASE_DIR}/ImgiNav/data_preparation_v2/hpc_scripts/logs"
 
 # Dataset and VAE paths
-DATASET_ROOT="${BASE_DIR}/dataset_v2"
-VAE_CHECKPOINT="${BASE_DIR}/experiments/v2/autoencoders/vae_clip_v2/checkpoints/vae_clip_v2_checkpoint_best.pt"
+DATASET_ROOT="/work3/s233249/ImgiNav/dataset_v2"
+VAE_CHECKPOINT="/work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_clip_v2/checkpoints/vae_clip_v2_checkpoint_best.pt"
 
 # Manifest and output options
-MANIFEST="${DATASET_ROOT}/manifests/manifest_seg_pov_normalized.csv"
+MANIFEST="/work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg_pov_normalized.csv"
 OUTPUT_MANIFEST="${DATASET_ROOT}/manifests/manifest_seg_pov_normalized_with_latents.csv"
 
 # Batch size
@@ -108,8 +108,7 @@ python "${PYTHON_SCRIPT}" \
     --output-manifest "${OUTPUT_MANIFEST}" \
     --vae-name "vae_clip_v2" \
     --batch-size "${BATCH_SIZE}" \
-    --device cuda \
-    --skip-existing
+    --device cuda
 
 exit_code=$?
 
