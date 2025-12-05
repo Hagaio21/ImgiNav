@@ -71,9 +71,9 @@ autoencoder:
 # Training
 # =============================================================================
 training:
-  seed: 42
-  epochs: 150
-  batch_size: 32                 # Can afford larger batch with lightweight model
+  seed: 1234
+  epochs: 100
+  batch_size: 64                 # Can afford larger batch with lightweight model
   num_workers: 4
   
   use_precomputed_weights: true
@@ -98,7 +98,7 @@ training:
   early_stopping_restore_best: true
   
   use_amp: true
-  
+    
   loss:
     type: CompositeLoss
     losses:
@@ -106,17 +106,17 @@ training:
         key: rgb
         target_key: rgb
         weight: 1.0
-      
+
       - type: KLDLoss
-        weight: 0.0001
-      
+        weight: 0.001
+
       - type: LatentStandardizationLoss
         key: mu
-        weight: 0.1
+        weight: 0.02
         mean_penalty_type: l2
         std_penalty_type: l2
         per_channel: true
-      
+
       - type: CLIPLoss
         key: latent_features
         text_key: text_emb
