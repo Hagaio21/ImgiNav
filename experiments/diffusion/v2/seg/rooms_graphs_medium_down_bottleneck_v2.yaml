@@ -13,8 +13,9 @@ dataset:
 autoencoder:
   checkpoint: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_clip_v2/checkpoints/vae_clip_v2_checkpoint_best.pt
   frozen: true
-# Note: latent_clamp_min, latent_clamp_max, and scale_factor should be set after computing VAE v2 latent statistics
-# These will be loaded from VAE metadata if available
+latent_clamp_min: -5.870734
+latent_clamp_max: 5.444793
+scale_factor: 1.013010
 embedding_projection:
   type: CLIPEmbeddingToSpatial
   clip_projections: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_clip_v2/checkpoints/vae_clip_v2_clip_projection_best.pt
