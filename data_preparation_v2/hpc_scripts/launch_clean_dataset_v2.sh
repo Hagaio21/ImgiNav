@@ -9,6 +9,9 @@
 #   bash launch_clean_dataset_v2.sh --num-shards 100  # Uses default manifest
 #   bash launch_clean_dataset_v2.sh --manifest custom.csv --output custom_cleaned.csv --num-shards 100
 #
+# After array job completes, run merge separately:
+#   bsub < hpc_scripts/run_merge_clean_dataset_v2.sh
+#
 
 set -euo pipefail
 export MKL_INTERFACE_LAYER=LP64
@@ -289,48 +292,26 @@ fi
 
 echo "  Submitted array job: ${ARRAY_JOB_ID}"
 
-# Submit merge job (depends on array job)
-echo ""
-echo "Submitting merge job (will run after array completes)..."
-
-MERGE_OUTPUT=$(bsub -J "merge_clean_dataset_v2" \
-    -w "done(${ARRAY_JOB_ID})" \
-    -o "${LOG_DIR}/merge_clean_dataset_v2.%J.out" \
-    -e "${LOG_DIR}/merge_clean_dataset_v2.%J.err" \
-    -n 1 \
-    -R "rusage[mem=8000]" \
-    -W 00:30 \
-    -q hpc \
-    < "${HPC_SCRIPTS_DIR}/run_merge_clean_dataset_v2.sh")
-
-MERGE_JOB_ID=$(echo "${MERGE_OUTPUT}" | grep -oP '(?<=Job <)\d+(?=>)' || echo "")
-
-if [ -z "${MERGE_JOB_ID}" ]; then
-    echo "WARNING: Failed to extract merge job ID" >&2
-else
-    echo "  Submitted merge job: ${MERGE_JOB_ID}"
-fi
-
 # =============================================================================
 # SUMMARY
 # =============================================================================
 echo ""
 echo "=========================================="
-echo "Jobs Submitted"
+echo "Array Job Submitted"
 echo "=========================================="
 echo "Array job: ${ARRAY_JOB_ID} (${ACTUAL_SHARDS} tasks)"
-if [ -n "${MERGE_JOB_ID}" ]; then
-    echo "Merge job: ${MERGE_JOB_ID} (depends on array)"
-fi
 echo ""
 echo "Monitor with:"
 echo "  bjobs -A ${ARRAY_JOB_ID}"
-if [ -n "${MERGE_JOB_ID}" ]; then
-    echo "  bjobs ${MERGE_JOB_ID}"
-fi
 echo ""
 echo "Shard outputs will be in:"
 echo "  ${SHARDS_DIR}/manifest_shard_*_cleaned.csv"
+echo ""
+echo "After array job completes, run merge with:"
+echo "  bsub < ${HPC_SCRIPTS_DIR}/run_merge_clean_dataset_v2.sh"
+echo ""
+echo "Or wait for array and run:"
+echo "  bsub -w 'done(${ARRAY_JOB_ID})' < ${HPC_SCRIPTS_DIR}/run_merge_clean_dataset_v2.sh"
 echo ""
 echo "Final merged output will be:"
 echo "  ${RESOLVED_OUTPUT_PATH}"
