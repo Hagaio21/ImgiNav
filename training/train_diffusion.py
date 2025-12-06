@@ -30,6 +30,7 @@ from training.utils import (
     to_device,
     move_batch_to_device,
     split_dataset,
+    split_dataset_by_scene,
     create_grad_scaler,
     save_metrics_csv,
 )
@@ -38,6 +39,164 @@ from training.plotting_utils import plot_loss_curves
 from models.diffusion import DiffusionModel
 from models.autoencoder import Autoencoder
 from models.losses.base_loss import LOSS_REGISTRY
+
+
+def create_image_grid(images, grid_cols=4, border_width=2, border_color=(128, 128, 128), 
+                      padding=0, background_color=(255, 255, 255)):
+    """
+    Create an image grid with borders around each image.
+    
+    Args:
+        images: List of PIL Images
+        grid_cols: Number of columns in grid
+        border_width: Width of border around each image (pixels)
+        border_color: RGB tuple for border color (default: gray)
+        padding: Extra padding between images (pixels)
+        background_color: RGB tuple for background color
+    
+    Returns:
+        PIL Image of the grid
+    """
+    if not images:
+        return None
+    
+    img_size = images[0].size[0]
+    num_images = len(images)
+    grid_rows = (num_images + grid_cols - 1) // grid_cols
+    
+    # Calculate cell size (image + border on all sides)
+    cell_size = img_size + 2 * border_width + padding
+    
+    # Create grid
+    grid_width = cell_size * grid_cols - padding  # No padding after last column
+    grid_height = cell_size * grid_rows - padding  # No padding after last row
+    grid = Image.new('RGB', (grid_width, grid_height), background_color)
+    
+    for idx, img in enumerate(images):
+        row = idx // grid_cols
+        col = idx % grid_cols
+        
+        # Calculate position
+        x = col * cell_size
+        y = row * cell_size
+        
+        # Draw border (by filling a rectangle and pasting image on top)
+        if border_width > 0:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(grid)
+            # Draw border rectangle
+            draw.rectangle(
+                [x, y, x + img_size + 2 * border_width - 1, y + img_size + 2 * border_width - 1],
+                fill=border_color
+            )
+        
+        # Paste image inside border
+        grid.paste(img, (x + border_width, y + border_width))
+    
+    return grid
+
+
+def create_comparison_grid(target_images, generated_images, grid_cols=4, 
+                           border_width=2, border_color=(128, 128, 128),
+                           label_height=30, add_labels=True):
+    """
+    Create a side-by-side comparison grid with targets on left, generated on right.
+    
+    Args:
+        target_images: List of PIL target images
+        generated_images: List of PIL generated images
+        grid_cols: Number of columns per side
+        border_width: Border width around each image
+        border_color: RGB tuple for border color
+        label_height: Height of label area at top
+        add_labels: Whether to add "Target" and "Generated" labels
+    
+    Returns:
+        PIL Image of the comparison
+    """
+    if not target_images or not generated_images:
+        return None
+    
+    # Create individual grids
+    target_grid = create_image_grid(
+        target_images[:len(generated_images)], 
+        grid_cols=grid_cols, 
+        border_width=border_width, 
+        border_color=border_color
+    )
+    generated_grid = create_image_grid(
+        generated_images[:len(target_images)], 
+        grid_cols=grid_cols, 
+        border_width=border_width, 
+        border_color=border_color
+    )
+    
+    if target_grid is None or generated_grid is None:
+        return None
+    
+    # Add separator between grids
+    separator_width = 4
+    
+    # Calculate total dimensions
+    total_width = target_grid.width + separator_width + generated_grid.width
+    total_height = target_grid.height + (label_height if add_labels else 0)
+    
+    # Create combined image
+    comparison = Image.new('RGB', (total_width, total_height), (255, 255, 255))
+    
+    y_offset = label_height if add_labels else 0
+    
+    # Paste grids
+    comparison.paste(target_grid, (0, y_offset))
+    comparison.paste(generated_grid, (target_grid.width + separator_width, y_offset))
+    
+    # Draw separator line
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(comparison)
+    separator_x = target_grid.width + separator_width // 2
+    draw.line(
+        [(separator_x, y_offset), (separator_x, total_height)],
+        fill=(64, 64, 64),
+        width=separator_width
+    )
+    
+    # Add labels
+    if add_labels:
+        try:
+            from PIL import ImageFont
+            # Try to get a nice font, fall back to default
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+            except:
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", 20)
+                except:
+                    font = ImageFont.load_default()
+        except:
+            font = None
+        
+        # Draw labels
+        target_label = "Target"
+        generated_label = "Generated"
+        
+        # Center labels above each grid
+        if font:
+            # Get text bounding box for centering
+            target_bbox = draw.textbbox((0, 0), target_label, font=font)
+            generated_bbox = draw.textbbox((0, 0), generated_label, font=font)
+            target_text_width = target_bbox[2] - target_bbox[0]
+            generated_text_width = generated_bbox[2] - generated_bbox[0]
+        else:
+            target_text_width = len(target_label) * 8
+            generated_text_width = len(generated_label) * 8
+        
+        target_x = (target_grid.width - target_text_width) // 2
+        generated_x = target_grid.width + separator_width + (generated_grid.width - generated_text_width) // 2
+        
+        draw.text((target_x, 5), target_label, fill=(0, 0, 0), font=font)
+        draw.text((generated_x, 5), generated_label, fill=(0, 0, 0), font=font)
+    
+    return comparison
 
 
 def latents2rgb(model, output_dict, warning_prefix="Decoder"):
@@ -132,14 +291,22 @@ def diffusion_step_fn(model, batch, batch_idx, loss_fn, trainer):
         if pov_emb.shape[0] != batch_size:
             raise ValueError(f"pov_emb batch size {pov_emb.shape[0]} doesn't match latents batch size {batch_size}")
     
-    # Apply CFG dropout during training
+    # Apply CFG dropout during training (per-sample, not per-batch)
+    # This ensures unconditional path sees diverse, uncorrelated samples
+    # rather than the same batch groupings repeatedly (which causes memorization)
     if cfg_dropout_rate > 0.0 and (text_emb is not None or pov_emb is not None):
-        if torch.rand(1, device=device_obj).item() < cfg_dropout_rate:
-            # When dropping condition, set both to zeros_like if they exist (do NOT set to None)
+        # Create dropout mask per sample - each sample independently dropped
+        dropout_mask = torch.rand(batch_size, device=device_obj) < cfg_dropout_rate
+        
+        if dropout_mask.any():
             if text_emb is not None:
-                text_emb = torch.zeros_like(text_emb)
+                # Expand mask to match embedding dims: [B] -> [B, 1, ...] for broadcasting
+                mask = dropout_mask.view(-1, *([1] * (text_emb.dim() - 1)))
+                text_emb = text_emb * (~mask).float()
+            
             if pov_emb is not None:
-                pov_emb = torch.zeros_like(pov_emb)
+                mask = dropout_mask.view(-1, *([1] * (pov_emb.dim() - 1)))
+                pov_emb = pov_emb * (~mask).float()
             
     # Handle embedding projection requirements based on config
     # Only create zero tensors for embeddings that are configured but missing
@@ -625,7 +792,7 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
         # Decode unconditioned samples
         unconditioned_rgb = latents2rgb(model, unconditioned_output, warning_prefix="Decoder for unconditioned samples")
     
-    # Save 4x4 unconditioned grid
+    # Save 4x4 unconditioned grid with borders
     if unconditioned_rgb is not None:
         unconditioned_np = (unconditioned_rgb.cpu().numpy() * 255.0).astype(np.uint8)
         unconditioned_images = []
@@ -633,13 +800,13 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
             img = Image.fromarray(unconditioned_np[i].transpose(1, 2, 0))
             unconditioned_images.append(img)
         
-        img_size = unconditioned_images[0].size[0]
-        grid_n = 4  # 4x4 grid
-        unconditioned_grid = Image.new('RGB', (img_size * grid_n, img_size * grid_n))
-        for idx, img in enumerate(unconditioned_images):
-            row = idx // grid_n
-            col = idx % grid_n
-            unconditioned_grid.paste(img, (col * img_size, row * img_size))
+        # Create grid with borders
+        unconditioned_grid = create_image_grid(
+            unconditioned_images, 
+            grid_cols=4, 
+            border_width=2, 
+            border_color=(100, 100, 100)
+        )
         
         # Save to unconditioned directory
         unconditioned_dir = samples_dir / "unconditioned"
@@ -837,40 +1004,23 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     print(f"  Saved {len(all_generated_images)} generated samples inside sample folders")
     
-    # Create comparison grids for easy viewing
-    # Show one generated sample per condition
-    img_size = target_images[0].size[0]
-    grid_n = 4  # 4 columns
-    num_rows = (min(len(target_images), len(all_generated_images)) + grid_n - 1) // grid_n
+    # Create comparison grid with borders and labels
+    comparison_img = create_comparison_grid(
+        target_images=target_images[:len(all_generated_images)],
+        generated_images=all_generated_images[:len(target_images)],
+        grid_cols=4,
+        border_width=2,
+        border_color=(100, 100, 100),
+        label_height=30,
+        add_labels=True
+    )
     
-    # Create target grid
-    target_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
-    for idx, img in enumerate(target_images[:len(all_generated_images)]):
-        row = idx // grid_n
-        col = idx % grid_n
-        target_grid.paste(img, (col * img_size, row * img_size))
-    
-    # Create generated grid - one sample per condition
-    generated_grid = Image.new('RGB', (img_size * grid_n, img_size * num_rows))
-    for idx in range(min(len(target_images), len(all_generated_images))):
-        if idx < len(all_generated_images):
-            generated_img = all_generated_images[idx]
-            row = idx // grid_n
-            col = idx % grid_n
-            generated_grid.paste(generated_img, (col * img_size, row * img_size))
-    
-    # Concatenate horizontally (side by side) for comparison
-    comparison_width = img_size * grid_n * 2
-    comparison_height = img_size * num_rows
-    comparison_img = Image.new('RGB', (comparison_width, comparison_height))
-    comparison_img.paste(target_grid, (0, 0))
-    comparison_img.paste(generated_grid, (img_size * grid_n, 0))
-    
-    # Save comparison grid
-    comparison_dir = samples_dir / "comparison"
-    comparison_dir.mkdir(parents=True, exist_ok=True)
-    comparison_path = comparison_dir / f"comparison_epoch_{epoch:03d}.png"
-    comparison_img.save(comparison_path)
+    if comparison_img is not None:
+        # Save comparison grid
+        comparison_dir = samples_dir / "comparison"
+        comparison_dir.mkdir(parents=True, exist_ok=True)
+        comparison_path = comparison_dir / f"comparison_epoch_{epoch:03d}.png"
+        comparison_img.save(comparison_path)
 
 
 def main():
@@ -920,8 +1070,9 @@ def main():
     # Build dataset
     dataset = build_dataset(config)
     
-    # Build validation dataset
-    train_dataset, val_dataset = split_dataset(dataset, config["training"])
+    # Split by scene_id to prevent data leakage
+    # (different POVs of same scene should stay together in train or val, not split across)
+    train_dataset, val_dataset = split_dataset_by_scene(dataset, config["training"])
     
     # Save train/val split indices
     if hasattr(train_dataset, 'df'):

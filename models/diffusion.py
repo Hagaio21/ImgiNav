@@ -191,8 +191,8 @@ class DiffusionModel(BaseModel):
             latents: Latent tensor [B, C, H, W]
             t: Timestep tensor [B]
             noise: Optional noise tensor (generated if None)
-            text_emb: Optional text embeddings
-            pov_emb: Optional POV embeddings
+            text_emb: Optional text embeddings (may have per-sample zeros from CFG dropout)
+            pov_emb: Optional POV embeddings (may have per-sample zeros from CFG dropout)
         
         Returns:
             Dict with prediction outputs
@@ -200,18 +200,12 @@ class DiffusionModel(BaseModel):
         # Prepare conditioning signal
         embedding_proj = getattr(self, 'embedding_projection', None)
         
-        # Check if embeddings are effectively zero (from CFG dropout) - treat as None
-        # This is critical: during CFG dropout, embeddings are set to zeros (not None),
-        # but we should treat them as unconditional (None) to disable conditioning
-        text_emb_valid = text_emb is not None and text_emb.abs().max().item() > 1e-6
-        pov_emb_valid = pov_emb is not None and pov_emb.abs().max().item() > 1e-6
-        
-        if embedding_proj is not None and (text_emb_valid or pov_emb_valid):
-            # Only pass valid (non-zero) embeddings to projection
-            # Pass None for zero embeddings so projection treats them as unconditional
-            text_emb_for_proj = text_emb if text_emb_valid else None
-            pov_emb_for_proj = pov_emb if pov_emb_valid else None
-            conditioning_signal = embedding_proj(text_emb_for_proj, pov_emb_for_proj)
+        # Pass embeddings to projection if available
+        # Per-sample CFG dropout zeros individual samples within the tensor
+        # The projection and cross-attention handle zeroed samples naturally:
+        # - Zero embeddings -> near-zero conditioning -> effectively unconditional
+        if embedding_proj is not None and (text_emb is not None or pov_emb is not None):
+            conditioning_signal = embedding_proj(text_emb, pov_emb)
         else:
             conditioning_signal = None
         
@@ -271,40 +265,28 @@ class DiffusionModel(BaseModel):
         # Prepare conditioning signal for conditional pass
         embedding_proj = getattr(self, 'embedding_projection', None)
         
-        # Check if embeddings are effectively zero (from CFG dropout) - treat as None
-        # This is critical: during CFG dropout, embeddings are set to zeros (not None),
-        # but we should treat them as unconditional (None) to disable conditioning
-        text_emb_valid = text_emb is not None and text_emb.abs().max().item() > 1e-6
-        pov_emb_valid = pov_emb is not None and pov_emb.abs().max().item() > 1e-6
+        # Check if embeddings are provided for inference
+        has_text_emb = text_emb is not None
+        has_pov_emb = pov_emb is not None
         
-        if embedding_proj is not None and (text_emb_valid or pov_emb_valid):
-            # Only pass valid (non-zero) embeddings to projection
-            # Pass None for zero embeddings so projection treats them as unconditional
-            text_emb_for_proj = text_emb if text_emb_valid else None
-            pov_emb_for_proj = pov_emb if pov_emb_valid else None
-            conditioning_signal = embedding_proj(text_emb_for_proj, pov_emb_for_proj)
+        if embedding_proj is not None and (has_text_emb or has_pov_emb):
+            conditioning_signal = embedding_proj(text_emb, pov_emb)
             
             # For CFG, prepare unconditional signal
-            # During training, CFG dropout sets embeddings to zeros (tensors), not None
-            # For unconditional signal, pass None to embedding_proj
-            # If both embeddings are None (not configured), projection returns None
-            # UNet will fall back to self-attention when conditioning_signal is None
             use_cfg = guidance_scale > 1.0
             if use_cfg:
-                # For unconditional signal, pass None to embedding_proj
-                # Need to provide batch_size and device if both embeddings are None
-                if text_emb_valid:
+                # Get batch size and device from available embeddings
+                if has_text_emb:
                     batch_size_cfg = text_emb.shape[0]
                     device_cfg = text_emb.device
-                elif pov_emb_valid:
+                elif has_pov_emb:
                     batch_size_cfg = pov_emb.shape[0]
                     device_cfg = pov_emb.device
                 else:
                     batch_size_cfg = batch_size
                     device_cfg = device
                 
-                # Pass None for unconditional - projection will return None if no embeddings configured
-                # UNet handles None by falling back to self-attention
+                # Pass None for unconditional - projection returns learned null or None
                 unconditional_signal = embedding_proj(None, None, batch_size=batch_size_cfg, device=device_cfg)
             else:
                 unconditional_signal = None

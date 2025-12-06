@@ -181,7 +181,7 @@ except Exception as e:
         -n 4 \
         -R "rusage[mem=16000]" \
         -gpu "num=1" \
-        -W 48:00 \
+        -W 24:00 \
         -q gpuv100 \
         bash -c "cd ${BASE_DIR} && module load cuda/11.8 && module load cudnn/v8.6.0.163-prod-cuda-11.X && export MKL_INTERFACE_LAYER=LP64 && export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && if [ -f \"\$HOME/miniconda3/etc/profile.d/conda.sh\" ]; then source \"\$HOME/miniconda3/etc/profile.d/conda.sh\" && conda activate imginav || conda activate scenefactor; fi && python ${PYTHON_SCRIPT} ${config_path} --resume"
     
