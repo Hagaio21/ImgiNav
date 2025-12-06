@@ -78,7 +78,7 @@ python "${SCRIPTS_DIR}/clean_dataset.py" \
 EXIT_CODE=$?
 
 # =============================================================================
-# SUMMARY
+# SUMMARY AND CLEANUP
 # =============================================================================
 echo ""
 echo "=========================================="
@@ -102,12 +102,34 @@ try:
 except Exception as e:
     print(f"  Could not read statistics: {e}")
 PYTHON_SCRIPT
+        
+        # Clean up shard files after successful merge
+        echo ""
+        echo "Cleaning up shard files..."
+        SHARD_FILES_TO_REMOVE=$(ls -1 "${SHARDS_DIR}"/manifest_shard_*.csv 2>/dev/null | wc -l)
+        if [ "${SHARD_FILES_TO_REMOVE}" -gt 0 ]; then
+            rm -f "${SHARDS_DIR}"/manifest_shard_*.csv
+            echo "  Removed ${SHARD_FILES_TO_REMOVE} shard files"
+            
+            # Also remove config and metadata files
+            rm -f "${SHARDS_DIR}"/config.sh
+            rm -f "${SHARDS_DIR}"/num_shards.txt
+            rm -f "${SHARDS_DIR}"/manifest_path.txt
+            rm -f "${SHARDS_DIR}"/output_path.txt
+            echo "  Removed shard metadata files"
+            
+            # Try to remove shards directory if empty (may fail if not empty, that's OK)
+            rmdir "${SHARDS_DIR}" 2>/dev/null || true
+        else
+            echo "  No shard files found to remove"
+        fi
     else
         echo "✗ Merge completed but output file not found"
         EXIT_CODE=1
     fi
 else
     echo "✗ Merge failed with exit code ${EXIT_CODE}"
+    echo "  Shard files preserved for debugging"
 fi
 echo "End: $(date)"
 echo "=========================================="

@@ -6,8 +6,8 @@
 # layout quality sample by sample. Each job processes one shard.
 #
 # Usage:
-#   bash launch_clean_dataset_v2.sh --manifest manifest_seg.csv --num-shards 100
-#   bash launch_clean_dataset_v2.sh --manifest manifest_seg.csv --num-shards 100 --dataset-root dataset_v2
+#   bash launch_clean_dataset_v2.sh --num-shards 100  # Uses default manifest
+#   bash launch_clean_dataset_v2.sh --manifest custom.csv --output custom_cleaned.csv --num-shards 100
 #
 
 set -euo pipefail
@@ -26,8 +26,8 @@ SHARDS_DIR="${DATASET_ROOT}/shards_clean_dataset"
 # Defaults
 NUM_SHARDS=100
 DRY_RUN=0
-MANIFEST_PATH=""
-OUTPUT_PATH=""
+MANIFEST_PATH="${DATASET_ROOT}/manifests/manifest_seg_pov_normalized_with_latents.csv"
+OUTPUT_PATH=""  # Will be auto-generated from manifest path
 
 # Layout quality thresholds
 MIN_PIXELS=100
@@ -75,8 +75,10 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --manifest PATH             Input manifest CSV file (required)"
-            echo "  --output PATH               Output manifest CSV file (required)"
+            echo "  --manifest PATH             Input manifest CSV file"
+            echo "                              (default: ${DATASET_ROOT}/manifests/manifest_seg_pov_normalized_with_latents.csv)"
+            echo "  --output PATH               Output manifest CSV file"
+            echo "                              (default: auto-generated from manifest name)"
             echo "  --dataset-root PATH         Dataset root directory (default: ${DATASET_ROOT})"
             echo "  --num-shards N              Number of shards/jobs (default: 100)"
             echo "  --min-pixels N              Minimum pixels for required classes (default: 100)"
@@ -84,6 +86,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --min-content-fraction F    Min fraction of non-background content (default: 0.05)"
             echo "  --dry-run                   Don't submit jobs, just create shards"
             echo "  --help                      Show this help"
+            echo ""
+            echo "Shards are saved to: ${SHARDS_DIR}"
+            echo "Shards are automatically removed after successful merge"
             exit 0
             ;;
         *)
@@ -93,17 +98,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate required arguments
-if [ -z "${MANIFEST_PATH}" ]; then
-    echo "ERROR: --manifest is required" >&2
-    exit 1
-fi
-
-if [ -z "${OUTPUT_PATH}" ]; then
-    echo "ERROR: --output is required" >&2
-    exit 1
-fi
-
 # Resolve manifest path
 if [ -f "${DATASET_ROOT}/${MANIFEST_PATH}" ]; then
     RESOLVED_MANIFEST_PATH="${DATASET_ROOT}/${MANIFEST_PATH}"
@@ -112,6 +106,12 @@ elif [ -f "${MANIFEST_PATH}" ]; then
 else
     echo "ERROR: Manifest file not found: ${MANIFEST_PATH}" >&2
     exit 1
+fi
+
+# Generate output path from manifest path if not provided
+if [ -z "${OUTPUT_PATH}" ]; then
+    # Generate from resolved manifest path
+    OUTPUT_PATH="${RESOLVED_MANIFEST_PATH%.csv}_cleaned.csv"
 fi
 
 # Resolve output path
@@ -127,6 +127,7 @@ echo "=========================================="
 echo "Manifest: ${RESOLVED_MANIFEST_PATH}"
 echo "Output: ${RESOLVED_OUTPUT_PATH}"
 echo "Dataset Root: ${DATASET_ROOT}"
+echo "Shards Directory: ${SHARDS_DIR}"
 echo "Num Shards: ${NUM_SHARDS}"
 echo ""
 echo "Layout Quality Thresholds:"
