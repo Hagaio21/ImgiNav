@@ -65,7 +65,14 @@ def latents2rgb(model, output_dict, warning_prefix="Decoder"):
         return rgb
     elif "latent" in output_dict:
         with torch.no_grad():
-            decoded = model.decoder({"latent": output_dict["latent"]})
+            # Clamp latents before decoding (same as during sampling)
+            latents = output_dict["latent"]
+            if hasattr(model, '_latent_clamp_min') and hasattr(model, '_latent_clamp_max'):
+                clamp_min = model._latent_clamp_min
+                clamp_max = model._latent_clamp_max
+                latents = torch.clamp(latents, clamp_min, clamp_max)
+            
+            decoded = model.decoder({"latent": latents})
             if "rgb" in decoded:
                 rgb = (decoded["rgb"] + 1.0) / 2.0
                 rgb = torch.clamp(rgb, 0.0, 1.0)

@@ -296,24 +296,31 @@ def main():
                 
                 # Encode to latent space
                 batch_tensor = torch.stack(images).to(args.device)
-                encoder_output = vae.encoder(batch_tensor)
                 
-                # Handle both dict (VAEEncoder) and tuple/list outputs
-                if isinstance(encoder_output, dict):
-                    mu = encoder_output.get("mu", encoder_output.get("latent"))
-                    logvar = encoder_output.get("logvar", None)
-                    if mu is None:
-                        raise ValueError("Encoder output dict missing 'mu' or 'latent' key")
-                    # Use mu for deterministic encoding (or latent if it's a regular encoder)
-                    latents = mu.cpu()
+                # Use VAE.sample() with deterministic=True to get latents in the same format
+                # as used during forward pass (handles both VAE and regular Autoencoder)
+                if hasattr(vae, 'sample'):
+                    # VAE: use sample method with deterministic=True (uses mu directly)
+                    sample_output = vae.sample(batch_tensor, deterministic=True)
+                    latents = sample_output["latent"].cpu()
                 else:
-                    # Handle tuple/list output (backward compatibility)
-                    if isinstance(encoder_output, (tuple, list)):
-                        mu = encoder_output[0]
+                    # Regular Autoencoder: encode directly
+                    encoder_output = vae.encoder(batch_tensor)
+                    
+                    # Handle both dict (VAEEncoder) and tuple/list outputs
+                    if isinstance(encoder_output, dict):
+                        mu = encoder_output.get("mu", encoder_output.get("latent"))
+                        if mu is None:
+                            raise ValueError("Encoder output dict missing 'mu' or 'latent' key")
                         latents = mu.cpu()
                     else:
-                        # Single tensor output
-                        latents = encoder_output.cpu()
+                        # Handle tuple/list output (backward compatibility)
+                        if isinstance(encoder_output, (tuple, list)):
+                            mu = encoder_output[0]
+                            latents = mu.cpu()
+                        else:
+                            # Single tensor output
+                            latents = encoder_output.cpu()
                 
                 # Save embeddings and collect for statistics
                 for latent, row in zip(latents, valid_rows):
