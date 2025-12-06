@@ -3,7 +3,7 @@ experiment:
   phase: diffusion_training
   save_path: /work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_graph
 dataset:
-  manifest: /work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg_pov_normalized_with_latents.csv
+  manifest: /work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg_pov_normalized_with_latents_cleaned.csv
   outputs:
     latent: latent_embedding_path
     text_emb: graph_embedding_path

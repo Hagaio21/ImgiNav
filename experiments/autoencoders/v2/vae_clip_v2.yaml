@@ -16,6 +16,10 @@ experiment:
 dataset:
   manifest: "/work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg_pov_normalized.csv"
   
+  # Filter out rejected samples
+  filters:
+    rejected: false
+  
   # Column → batch key mapping
   outputs:
     rgb: "layout_path"                # POV-normalized layout image → reconstruction target

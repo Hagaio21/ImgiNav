@@ -20,6 +20,10 @@ experiment:
 dataset:
   manifest: "dataset_v2/manifests/manifest_tex.csv"
   
+  # Filter out rejected samples
+  filters:
+    rejected: false
+  
   # Column → batch key mapping
   outputs:
     latent: "layout_embedding_path"   # Pre-encoded layout latent
