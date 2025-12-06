@@ -539,27 +539,63 @@ def save_targets_and_conditions(model, val_loader, device, output_dir, config, e
     # For single-type experiments, take samples_per_type from that type
     selected_indices = []
     
-    if hasattr(dataset, 'df') and 'type' in dataset.df.columns:
-        room_indices = []
-        scene_indices = []
+    if hasattr(dataset, 'df'):
+        df = dataset.df
         
-        # Collect indices by type from the filtered dataset
-        for idx in range(len(dataset)):
-            row = dataset.df.iloc[idx]
-            sample_type = str(row.get('type', '')).lower().strip()
-            if sample_type == 'room':
-                room_indices.append(idx)
-            elif sample_type == 'scene':
-                scene_indices.append(idx)
+        # Select samples from DIFFERENT scenes to maximize diversity
+        # Group by scene_id and take one sample per scene
+        if 'scene_id' in df.columns:
+            import numpy as np
+            rng = np.random.RandomState(42)  # Fixed seed for reproducibility
+            
+            unique_scenes = df['scene_id'].unique()
+            shuffled_scenes = rng.permutation(unique_scenes)
+            
+            # Build scene_id -> first index mapping
+            scene_to_idx = {}
+            for idx in range(len(df)):
+                scene_id = df.iloc[idx]['scene_id']
+                if scene_id not in scene_to_idx:
+                    scene_to_idx[scene_id] = idx
+            
+            # Try to diversify by room_type if available
+            if 'room_type' in df.columns:
+                # Group scenes by room_type for balanced selection
+                room_type_to_scenes = {}
+                for scene_id in shuffled_scenes:
+                    idx = scene_to_idx[scene_id]
+                    room_type = str(df.iloc[idx].get('room_type', 'unknown'))
+                    if room_type not in room_type_to_scenes:
+                        room_type_to_scenes[room_type] = []
+                    room_type_to_scenes[room_type].append(idx)
+                
+                # Round-robin selection from each room type for diversity
+                room_types = list(room_type_to_scenes.keys())
+                rng.shuffle(room_types)
+                
+                selected_indices = []
+                type_idx = 0
+                while len(selected_indices) < samples_per_type and any(room_type_to_scenes.values()):
+                    room_type = room_types[type_idx % len(room_types)]
+                    if room_type_to_scenes[room_type]:
+                        selected_indices.append(room_type_to_scenes[room_type].pop(0))
+                    type_idx += 1
+                    # Safety: break if we've cycled through all types with no additions
+                    if type_idx > len(room_types) * 2 and not any(room_type_to_scenes.values()):
+                        break
+                
+                # Count unique room types in selection
+                if selected_indices:
+                    selected_room_types = set(df.iloc[selected_indices]['room_type'])
+                    print(f"  Selected {len(selected_indices)} samples from {len(set(df.iloc[selected_indices]['scene_id']))} scenes, {len(selected_room_types)} room types")
+                else:
+                    print("  Warning: No samples selected for diversity grid")
+            else:
+                # No room_type column, just take one sample per scene
+                selected_indices = [scene_to_idx[s] for s in shuffled_scenes[:samples_per_type]]
+                print(f"  Selected {len(selected_indices)} samples from {len(selected_indices)} different scenes")
         
-        # If both types exist in filtered dataset, take samples_per_type from each type
-        if len(room_indices) > 0 and len(scene_indices) > 0:
-            # Take samples_per_type from each type
-            selected_indices = room_indices[:samples_per_type] + scene_indices[:samples_per_type]
-        elif len(room_indices) > 0:
-            selected_indices = room_indices[:samples_per_type]
-        elif len(scene_indices) > 0:
-            selected_indices = scene_indices[:samples_per_type]
+        # Fallback: no scene_id column
         else:
             selected_indices = list(range(min(samples_per_type, len(dataset))))
     else:
