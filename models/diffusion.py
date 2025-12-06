@@ -275,19 +275,22 @@ class DiffusionModel(BaseModel):
             # For CFG, prepare unconditional signal
             use_cfg = guidance_scale > 1.0
             if use_cfg:
-                # Get batch size and device from available embeddings
-                if has_text_emb:
-                    batch_size_cfg = text_emb.shape[0]
-                    device_cfg = text_emb.device
-                elif has_pov_emb:
-                    batch_size_cfg = pov_emb.shape[0]
-                    device_cfg = pov_emb.device
-                else:
-                    batch_size_cfg = batch_size
-                    device_cfg = device
+                # Match training: use zero tensors, not None
+                # This ensures the unconditional path sees the same input as during 
+                # training with per-sample CFG dropout (zeroed embeddings)
+                model_dtype = next(self.parameters()).dtype
                 
-                # Pass None for unconditional - projection returns learned null or None
-                unconditional_signal = embedding_proj(None, None, batch_size=batch_size_cfg, device=device_cfg)
+                if has_text_emb:
+                    zero_text = torch.zeros_like(text_emb)
+                else:
+                    zero_text = torch.zeros((batch_size, 384), device=device, dtype=model_dtype)
+                
+                if has_pov_emb:
+                    zero_pov = torch.zeros_like(pov_emb)
+                else:
+                    zero_pov = torch.zeros((batch_size, 512), device=device, dtype=model_dtype)
+                
+                unconditional_signal = embedding_proj(zero_text, zero_pov)
             else:
                 unconditional_signal = None
         else:
