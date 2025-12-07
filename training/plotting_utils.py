@@ -29,8 +29,8 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
     x_col = "step" if "step" in history_df.columns else "epoch"
     
     # Find all loss component pairs (train_X, val_X)
-    # Exclude non-loss columns
-    exclude_cols = {'epoch', 'step', 'cfg_dropout_rate', 'learning_rate'}
+    # Exclude non-loss columns and image quality metrics (they're plotted separately)
+    exclude_cols = {'epoch', 'step', 'cfg_dropout_rate', 'learning_rate', 'fid', 'kid', 'lpips', 'clip_score'}
     
     # Special handling for image quality metrics (plot separately)
     image_metrics = {
@@ -40,6 +40,7 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
         'clip_score': {'color': 'blue', 'label': 'CLIP Score (higher is better)', 'title': 'CLIP Score'}
     }
     
+    # Plot image quality metrics separately
     for metric, config in image_metrics.items():
         col_name = f'val_{metric}'
         if col_name in history_df.columns:
@@ -60,12 +61,19 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
                         ax.grid(True, alpha=0.3)
                         
                         plt.tight_layout()
-                        safe_metric_name = metric.replace('_', '_')
                         metric_plot_path = output_dir / f'{exp_name}_{metric}_curve.png'
                         plt.savefig(metric_plot_path, dpi=150, bbox_inches='tight', facecolor='white')
                         plt.close()
+                        print(f"  Saved {metric.upper()} plot: {metric_plot_path}")
+                    else:
+                        print(f"  Warning: No valid data for {metric.upper()}")
+                else:
+                    print(f"  Warning: No data found for {metric.upper()}")
             except Exception as e:
                 warnings.warn(f"Failed to plot {metric}: {e}")
+                print(f"  Error plotting {metric.upper()}: {e}")
+        else:
+            print(f"  Info: {col_name} not found in history (metric may not have been computed)")
     
     loss_components = []
     seen_components = set()
