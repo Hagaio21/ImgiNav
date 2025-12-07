@@ -1,6 +1,12 @@
 """
 Metrics utilities for evaluating diffusion models.
 Includes FID, KID, LPIPS, and CLIP score calculation.
+
+Note on disk space:
+- Temporary image directories are automatically cleaned up after each metric computation
+- clean-fid may cache Inception features in ~/.cache/clean-fid/ which can grow over time
+- If disk space is an issue, consider clearing the clean-fid cache periodically:
+  rm -rf ~/.cache/clean-fid/
 """
 
 import torch
@@ -76,7 +82,10 @@ def calculate_fid(
     import tempfile
     import shutil
     
-    with tempfile.TemporaryDirectory() as temp_dir:
+    temp_dir = None
+    try:
+        # Use a custom temp directory that we can explicitly control
+        temp_dir = tempfile.mkdtemp(prefix="fid_temp_")
         temp_path = Path(temp_dir)
         real_dir = temp_path / "real"
         gen_dir = temp_path / "generated"
@@ -116,8 +125,17 @@ def calculate_fid(
                 )
             except Exception as e2:
                 raise RuntimeError(f"Failed to compute FID: {e2}") from e2
-    
-    return float(fid_score)
+        
+        return float(fid_score)
+    finally:
+        # Explicitly clean up temporary directory
+        if temp_dir and Path(temp_dir).exists():
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                # Log but don't fail if cleanup fails
+                import warnings
+                warnings.warn(f"Failed to clean up temporary FID directory {temp_dir}: {e}")
 
 
 def compute_fid_from_tensors(
@@ -196,8 +214,12 @@ def calculate_kid(
     
     # Create temporary directories for clean-fid
     import tempfile
+    import shutil
     
-    with tempfile.TemporaryDirectory() as temp_dir:
+    temp_dir = None
+    try:
+        # Use a custom temp directory that we can explicitly control
+        temp_dir = tempfile.mkdtemp(prefix="kid_temp_")
         temp_path = Path(temp_dir)
         real_dir = temp_path / "real"
         gen_dir = temp_path / "generated"
@@ -234,8 +256,17 @@ def calculate_kid(
                 )
             except Exception as e2:
                 raise RuntimeError(f"Failed to compute KID: {e2}") from e2
-    
-    return float(kid_score)
+        
+        return float(kid_score)
+    finally:
+        # Explicitly clean up temporary directory
+        if temp_dir and Path(temp_dir).exists():
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                # Log but don't fail if cleanup fails
+                import warnings
+                warnings.warn(f"Failed to clean up temporary KID directory {temp_dir}: {e}")
 
 
 def compute_kid_from_tensors(

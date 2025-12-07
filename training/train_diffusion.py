@@ -527,6 +527,7 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
     guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
     
     # Collect real and generated images, and text embeddings for CLIP score
+    # Store on CPU to avoid GPU memory accumulation
     real_images = []
     generated_images = []
     text_embeddings_list = []
@@ -578,7 +579,8 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
             target_output = {"latent": target_latents}
             target_rgb = latents2rgb(model, target_output, warning_prefix="Metrics: Decoder for real images")
             if target_rgb is not None:
-                real_images.append(target_rgb)
+                # Move to CPU immediately to free GPU memory
+                real_images.append(target_rgb.cpu())
             
             # Get embeddings for generation and CLIP score
             text_emb = batch.get("text_emb", None)
@@ -590,7 +592,8 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
                     text_emb_flat = text_emb.flatten(start_dim=1)
                 else:
                     text_emb_flat = text_emb
-                text_embeddings_list.append(text_emb_flat)
+                # Move to CPU immediately
+                text_embeddings_list.append(text_emb_flat.cpu())
             
             # Flatten embeddings if needed
             if text_emb is not None and text_emb.dim() > 2:
@@ -634,9 +637,15 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
             # Decode generated images
             gen_rgb = latents2rgb(model, gen_output, warning_prefix="Metrics: Decoder for generated images")
             if gen_rgb is not None:
-                generated_images.append(gen_rgb)
+                # Move to CPU immediately to free GPU memory
+                generated_images.append(gen_rgb.cpu())
+            
+            # Clear GPU cache after each batch to prevent memory accumulation
+            del target_rgb, gen_rgb, gen_output, target_latents, batch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     
-    # Concatenate all batches
+    # Concatenate all batches (now on CPU)
     if len(real_images) == 0 or len(generated_images) == 0:
         print("  Warning: No images collected for metrics calculation")
         return metrics
@@ -660,6 +669,9 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
             )
             metrics['fid'] = fid_score
             print(f"  FID: {fid_score:.2f}")
+            # Clear cache after FID computation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except Exception as e:
             print(f"  Warning: FID calculation failed: {e}")
     
@@ -674,19 +686,29 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
             )
             metrics['kid'] = kid_score
             print(f"  KID: {kid_score:.4f}")
+            # Clear cache after KID computation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except Exception as e:
             print(f"  Warning: KID calculation failed: {e}")
     
     # Compute LPIPS (perceptual distance)
     if LPIPS_AVAILABLE:
         try:
+            # Move to GPU only for LPIPS computation
+            real_tensors_gpu = real_tensors.to(device_obj)
+            gen_tensors_gpu = gen_tensors.to(device_obj)
             lpips_score = compute_lpips(
-                real_tensors,
-                gen_tensors,
+                real_tensors_gpu,
+                gen_tensors_gpu,
                 device=device_obj
             )
             metrics['lpips'] = lpips_score
             print(f"  LPIPS: {lpips_score:.4f}")
+            # Clear GPU memory
+            del real_tensors_gpu, gen_tensors_gpu
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except Exception as e:
             print(f"  Warning: LPIPS calculation failed: {e}")
     
@@ -694,15 +716,27 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
     if CLIP_AVAILABLE and len(text_embeddings_list) > 0:
         try:
             text_embeddings = torch.cat(text_embeddings_list, dim=0)[:min_len]
+            # Move to GPU only for CLIP computation
+            gen_tensors_gpu = gen_tensors.to(device_obj)
+            text_embeddings_gpu = text_embeddings.to(device_obj)
             clip_score = compute_clip_score(
-                gen_tensors,
-                text_embeddings,
+                gen_tensors_gpu,
+                text_embeddings_gpu,
                 device=device_obj
             )
             metrics['clip_score'] = clip_score
             print(f"  CLIP Score: {clip_score:.4f}")
+            # Clear GPU memory
+            del gen_tensors_gpu, text_embeddings_gpu
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except Exception as e:
             print(f"  Warning: CLIP score calculation failed: {e}")
+    
+    # Final cleanup
+    del real_tensors, gen_tensors
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     return metrics
 
