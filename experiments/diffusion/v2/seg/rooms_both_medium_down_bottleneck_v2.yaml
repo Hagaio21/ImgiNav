@@ -50,7 +50,7 @@ training:
   seed: 2024
   epochs: 150
   train_split: 0.8
-  batch_size: 64
+  batch_size: 96
   num_workers: 4
   shuffle: true
   learning_rate: 0.0001
