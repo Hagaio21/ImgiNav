@@ -34,7 +34,7 @@ unet:
   num_res_blocks: 2
   time_dim: 256
   norm_groups: 8
-  dropout: 0.1
+  dropout: 0.2
   use_attention: true
   attention_heads: 8
   attention_at:
@@ -44,11 +44,11 @@ unet:
   window_size: 8
   use_ema: false
 scheduler:
-  type: LinearScheduler
-  num_steps: 1000
+  type: CosineScheduler
+  num_steps: 500
 training:
-  seed: 4242
-  epochs: 500
+  seed: 2024
+  epochs: 150
   train_split: 0.8
   batch_size: 32
   num_workers: 4
@@ -56,7 +56,7 @@ training:
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
-  save_interval: 20
+  save_interval: 10
   eval_interval: 10
   sample_interval: 5
   use_amp: true
@@ -65,14 +65,17 @@ training:
   scheduler:
     type: cosine
   cfg_dropout_rate: 0.15
-  guidance_scale: 5.0
+  guidance_scale: 7.5
   use_precomputed_weights: true
   precomputed_weight_column: sample_weight
   sampling_seed_base: 42
   num_conditioned_samples_per_type: 16
   loss:
-    type: MSELoss
+    type: SNRWeightedMSELoss
     key: pred_noise
     target: noise
     weight: 1.0
+    snr_weight_mode: min_snr
+    min_snr_gamma: 5.0
+    reduce_mean: true
 
