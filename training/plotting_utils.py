@@ -32,52 +32,40 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
     # Exclude non-loss columns
     exclude_cols = {'epoch', 'step', 'cfg_dropout_rate', 'learning_rate'}
     
-    # Special handling for image quality metrics (plot together)
-    image_metrics = ['fid', 'kid', 'lpips', 'clip_score']
-    available_metrics = [m for m in image_metrics if f'val_{m}' in history_df.columns]
+    # Special handling for image quality metrics (plot separately)
+    image_metrics = {
+        'fid': {'color': 'purple', 'label': 'FID (lower is better)', 'title': 'FID (Fréchet Inception Distance)'},
+        'kid': {'color': 'orange', 'label': 'KID (lower is better)', 'title': 'KID (Kernel Inception Distance)'},
+        'lpips': {'color': 'green', 'label': 'LPIPS (lower is better)', 'title': 'LPIPS (Learned Perceptual Image Patch Similarity)'},
+        'clip_score': {'color': 'blue', 'label': 'CLIP Score (higher is better)', 'title': 'CLIP Score'}
+    }
     
-    if available_metrics:
-        try:
-            # Create a combined plot for all image quality metrics
-            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-            fig.suptitle(f'Image Quality Metrics - {exp_name}', fontsize=16, fontweight='bold')
-            axes = axes.flatten()
-            
-            colors = {'fid': 'purple', 'kid': 'orange', 'lpips': 'green', 'clip_score': 'blue'}
-            labels = {
-                'fid': 'FID (lower is better)',
-                'kid': 'KID (lower is better)',
-                'lpips': 'LPIPS (lower is better)',
-                'clip_score': 'CLIP Score (higher is better)'
-            }
-            
-            for idx, metric in enumerate(image_metrics):
-                if metric in available_metrics:
-                    ax = axes[idx]
-                    col_name = f'val_{metric}'
-                    metric_data = history_df[[x_col, col_name]].dropna()
+    for metric, config in image_metrics.items():
+        col_name = f'val_{metric}'
+        if col_name in history_df.columns:
+            try:
+                metric_data = history_df[[x_col, col_name]].dropna()
+                if len(metric_data) > 0:
+                    metric_data = metric_data[metric_data[col_name] != float('inf')]
+                    metric_data = metric_data[np.isfinite(metric_data[col_name])]
                     if len(metric_data) > 0:
-                        metric_data = metric_data[metric_data[col_name] != float('inf')]
-                        metric_data = metric_data[np.isfinite(metric_data[col_name])]
-                        if len(metric_data) > 0:
-                            ax.plot(metric_data[x_col], metric_data[col_name], 
-                                   linewidth=2, marker='s', markersize=3, 
-                                   color=colors.get(metric, 'black'), linestyle='-', alpha=0.8)
-                            ax.set_xlabel(x_col.capitalize(), fontsize=10)
-                            ax.set_ylabel(labels[metric], fontsize=10)
-                            ax.grid(True, alpha=0.3)
-                            ax.set_title(metric.upper(), fontsize=11, fontweight='bold')
-            
-            # Hide unused subplots
-            for idx in range(len(available_metrics), 4):
-                axes[idx].axis('off')
-            
-            plt.tight_layout()
-            metrics_plot_path = output_dir / f'{exp_name}_image_quality_metrics.png'
-            plt.savefig(metrics_plot_path, dpi=150, bbox_inches='tight', facecolor='white')
-            plt.close()
-        except Exception as e:
-            warnings.warn(f"Failed to plot image quality metrics: {e}")
+                        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+                        fig.suptitle(f'{config["title"]} - {exp_name}', fontsize=16, fontweight='bold')
+                        
+                        ax.plot(metric_data[x_col], metric_data[col_name], 
+                               linewidth=2, marker='s', markersize=4, 
+                               color=config['color'], linestyle='-', alpha=0.8)
+                        ax.set_xlabel(x_col.capitalize(), fontsize=12)
+                        ax.set_ylabel(config['label'], fontsize=12)
+                        ax.grid(True, alpha=0.3)
+                        
+                        plt.tight_layout()
+                        safe_metric_name = metric.replace('_', '_')
+                        metric_plot_path = output_dir / f'{exp_name}_{metric}_curve.png'
+                        plt.savefig(metric_plot_path, dpi=150, bbox_inches='tight', facecolor='white')
+                        plt.close()
+            except Exception as e:
+                warnings.warn(f"Failed to plot {metric}: {e}")
     
     loss_components = []
     seen_components = set()
