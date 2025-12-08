@@ -56,8 +56,7 @@ training:
   learning_rate: 0.0001
   optimizer: AdamW
   weight_decay: 0.01
-  save_interval: 20
-  eval_interval: 10
+  eval_interval: 5
   sample_interval: 5
   use_amp: true
   max_grad_norm: 0.5
