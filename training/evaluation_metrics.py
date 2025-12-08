@@ -27,6 +27,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+# =============================================================================
+# Image Cleaning (snap to taxonomy colors)
+# =============================================================================
 
 def load_taxonomy(taxonomy_path: Path) -> Dict:
     """Load taxonomy and build color mappings."""
@@ -366,6 +369,10 @@ def compute_blob_matching_metrics(
     }
 
 
+# =============================================================================
+# Path-based Metrics (A* comparison)
+# =============================================================================
+
 def astar_path(
     grid: np.ndarray,
     start: Tuple[int, int],
@@ -438,6 +445,43 @@ def create_traversability_grid(
     return grid
 
 
+def find_nearest_walkable(
+    grid: np.ndarray,
+    position: Tuple[int, int],
+    max_search_radius: int = 10
+) -> Optional[Tuple[int, int]]:
+    """
+    Find nearest walkable cell to a position.
+    Used to find path goals near object centroids.
+    
+    Args:
+        grid: Traversability grid (1=walkable, 0=obstacle)
+        position: Target position (x, y)
+        max_search_radius: Max distance to search
+    
+    Returns:
+        (x, y) of nearest walkable cell, or None if not found
+    """
+    h, w = grid.shape
+    x, y = int(position[0]), int(position[1])
+    
+    # Check if position itself is walkable
+    if 0 <= x < w and 0 <= y < h and grid[y, x] == 1:
+        return (x, y)
+    
+    # Search in expanding squares
+    for radius in range(1, max_search_radius + 1):
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if abs(dx) != radius and abs(dy) != radius:
+                    continue  # Only check perimeter
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and grid[ny, nx] == 1:
+                    return (nx, ny)
+    
+    return None
+
+
 def compute_path_overlap(path1: List[Tuple[int, int]], path2: List[Tuple[int, int]]) -> float:
     """
     Compute overlap ratio between two paths.
@@ -459,43 +503,50 @@ def compute_path_overlap(path1: List[Tuple[int, int]], path2: List[Tuple[int, in
 def compute_path_metrics(
     pred_class_map: np.ndarray,
     target_class_map: np.ndarray,
+    pred_blobs: Dict[int, List[Dict]],
+    target_blobs: Dict[int, List[Dict]],
     traversable_ids: List[int],
     start_position: Optional[Tuple[int, int]] = None,
-    num_goals: int = 10,
-    seed: int = 42
 ) -> Dict[str, Any]:
     """
     Compute path-based metrics.
     
-    Tests A* paths from start to random goal positions.
-    Compares path existence and similarity between pred and target.
+    For each object class that exists in BOTH target and prediction,
+    compare A* paths from start to matched object centroids.
+    
+    Args:
+        pred_class_map: Predicted class map (H, W)
+        target_class_map: Target class map (H, W)
+        pred_blobs: Detected objects in prediction {class_id: [blob_info, ...]}
+        target_blobs: Detected objects in target {class_id: [blob_info, ...]}
+        traversable_ids: Class IDs that are walkable (Floor, Door, Window)
+        start_position: Starting position (x, y). Default: center-bottom (door position)
     """
-    np.random.seed(seed)
     h, w = target_class_map.shape
     
     pred_grid = create_traversability_grid(pred_class_map, traversable_ids)
     target_grid = create_traversability_grid(target_class_map, traversable_ids)
     
-    # Default start: center-bottom
+    # Default start: center-bottom (typical door/POV position)
     if start_position is None:
         start_position = (w // 2, h - 2)
     
-    # Find traversable positions in target
-    target_traversable = np.argwhere(target_grid == 1)
-    if len(target_traversable) < 2:
+    # Find matched classes (exist in both target and pred, excluding traversable)
+    target_classes = set(target_blobs.keys()) - set(traversable_ids)
+    pred_classes = set(pred_blobs.keys()) - set(traversable_ids)
+    matched_classes = target_classes & pred_classes
+    
+    if len(matched_classes) == 0:
         return {
             "path_agreement_rate": 0.0,
             "path_overlap_mean": 0.0,
             "path_length_ratio_mean": 0.0,
-            "tested_goals": 0,
-            "both_valid": 0,
-            "target_only_valid": 0,
-            "pred_only_valid": 0,
-            "neither_valid": 0
+            "matched_objects": 0,
+            "both_reachable": 0,
+            "target_only_reachable": 0,
+            "pred_only_reachable": 0,
+            "neither_reachable": 0
         }
-    
-    num_goals = min(num_goals, len(target_traversable))
-    goal_indices = np.random.choice(len(target_traversable), num_goals, replace=False)
     
     both_valid = 0
     target_only = 0
@@ -503,44 +554,83 @@ def compute_path_metrics(
     neither = 0
     overlaps = []
     length_ratios = []
+    total_matched = 0
     
-    for idx in goal_indices:
-        goal = (int(target_traversable[idx][1]), int(target_traversable[idx][0]))
+    for class_id in matched_classes:
+        # For each matched class, pair up blobs by proximity
+        t_blobs = target_blobs[class_id]
+        p_blobs = pred_blobs[class_id]
         
-        target_path = astar_path(target_grid, start_position, goal)
-        pred_path = astar_path(pred_grid, start_position, goal)
-        
-        target_exists = target_path is not None
-        pred_exists = pred_path is not None
-        
-        if target_exists and pred_exists:
-            both_valid += 1
-            overlap = compute_path_overlap(pred_path, target_path)
-            overlaps.append(overlap)
-            length_ratios.append(len(pred_path) / len(target_path))
-        elif target_exists:
-            target_only += 1
-        elif pred_exists:
-            pred_only += 1
-        else:
-            neither += 1
+        # Simple greedy matching: for each target blob, find closest pred blob
+        used_pred = set()
+        for t_blob in t_blobs:
+            t_centroid = t_blob["centroid"]
+            
+            # Find closest unused pred blob
+            best_p_idx = None
+            best_dist = float('inf')
+            for p_idx, p_blob in enumerate(p_blobs):
+                if p_idx in used_pred:
+                    continue
+                p_centroid = p_blob["centroid"]
+                dist = abs(t_centroid[0] - p_centroid[0]) + abs(t_centroid[1] - p_centroid[1])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_p_idx = p_idx
+            
+            if best_p_idx is None:
+                continue
+            
+            used_pred.add(best_p_idx)
+            p_blob = p_blobs[best_p_idx]
+            total_matched += 1
+            
+            # Find walkable goals near each centroid
+            target_goal = find_nearest_walkable(target_grid, t_blob["centroid"])
+            pred_goal = find_nearest_walkable(pred_grid, p_blob["centroid"])
+            
+            if target_goal is None or pred_goal is None:
+                neither += 1
+                continue
+            
+            # Compute paths
+            target_path = astar_path(target_grid, start_position, target_goal)
+            pred_path = astar_path(pred_grid, start_position, pred_goal)
+            
+            target_exists = target_path is not None
+            pred_exists = pred_path is not None
+            
+            if target_exists and pred_exists:
+                both_valid += 1
+                overlap = compute_path_overlap(pred_path, target_path)
+                overlaps.append(overlap)
+                if len(target_path) > 0:
+                    length_ratios.append(len(pred_path) / len(target_path))
+            elif target_exists:
+                target_only += 1
+            elif pred_exists:
+                pred_only += 1
+            else:
+                neither += 1
     
-    total = num_goals
-    agreement = (both_valid + neither) / total if total > 0 else 0.0
+    total = total_matched if total_matched > 0 else 1
+    agreement = (both_valid + neither) / total
     
     return {
         "path_agreement_rate": float(agreement),
         "path_overlap_mean": float(np.mean(overlaps)) if overlaps else 0.0,
         "path_length_ratio_mean": float(np.mean(length_ratios)) if length_ratios else 0.0,
-        "tested_goals": total,
-        "both_valid": both_valid,
-        "target_only_valid": target_only,
-        "pred_only_valid": pred_only,
-        "neither_valid": neither
+        "matched_objects": total_matched,
+        "both_reachable": both_valid,
+        "target_only_reachable": target_only,
+        "pred_only_reachable": pred_only,
+        "neither_reachable": neither
     }
 
 
-
+# =============================================================================
+# Main Evaluator Class
+# =============================================================================
 
 class FloorplanEvaluator:
     """
@@ -561,7 +651,7 @@ class FloorplanEvaluator:
         self.taxonomy_info = load_taxonomy(taxonomy_path)
         self.min_blob_pixels = min_blob_pixels
         
-        # Traversable classes for pathfinding
+        # Traversable classes for pathfinding (can walk on these)
         if traversable_names is None:
             traversable_names = ["Floor", "Door", "Window"]
         self.traversable_ids = []
@@ -589,9 +679,7 @@ class FloorplanEvaluator:
         self,
         pred_rgb: np.ndarray,
         target_rgb: np.ndarray,
-        compute_paths: bool = True,
-        num_path_goals: int = 10,
-        path_seed: int = 42
+        compute_paths: bool = True
     ) -> Dict[str, Any]:
         """Evaluate predicted image against target."""
         pred_cleaned, pred_class_map, pred_blobs = self.clean_and_extract(pred_rgb)
@@ -619,9 +707,8 @@ class FloorplanEvaluator:
         if compute_paths:
             paths = compute_path_metrics(
                 pred_class_map, target_class_map,
-                self.traversable_ids,
-                num_goals=num_path_goals,
-                seed=path_seed
+                pred_blobs, target_blobs,
+                self.traversable_ids
             )
             results["paths"] = paths
         
@@ -635,6 +722,13 @@ class FloorplanEvaluator:
         if compute_paths:
             results["summary"]["path_agreement"] = results["paths"]["path_agreement_rate"]
             results["summary"]["path_overlap"] = results["paths"]["path_overlap_mean"]
+            # Object reachability: fraction of matched objects reachable in both
+            matched = results["paths"]["matched_objects"]
+            if matched > 0:
+                reachable = results["paths"]["both_reachable"]
+                results["summary"]["object_reachability"] = reachable / matched
+            else:
+                results["summary"]["object_reachability"] = 0.0
         
         # Store cleaned images for visualization
         results["_cleaned_pred"] = pred_cleaned
@@ -666,6 +760,10 @@ class FloorplanEvaluator:
         aggregated["num_samples"] = len(all_metrics)
         return aggregated
 
+
+# =============================================================================
+# Tensor conversion utilities
+# =============================================================================
 
 def tensor_to_numpy_rgb(tensor: torch.Tensor) -> np.ndarray:
     """Convert tensor to numpy RGB image (H, W, 3) with values 0-255."""
