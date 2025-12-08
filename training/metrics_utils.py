@@ -153,19 +153,7 @@ def compute_lpips(
     device: Optional[torch.device] = None,
     net: str = 'alex',
 ) -> float:
-    """
-    Compute LPIPS (Learned Perceptual Image Patch Similarity) between real and generated images.
-    Measures perceptual distance - good for paired data.
-    
-    Args:
-        real_tensors: Tensor of shape [N, C, H, W] with values in [0, 1]
-        generated_tensors: Tensor of shape [N, C, H, W] with values in [0, 1]
-        device: Device to use
-        net: Network to use ('alex', 'vgg', or 'squeeze')
-    
-    Returns:
-        Average LPIPS score (lower is better, 0 = identical)
-    """
+
     if not LPIPS_AVAILABLE:
         raise ImportError(
             "lpips is required for LPIPS calculation. "

@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 import yaml
+import gzip
+import pickle
 
 from models.components.base_model import BaseModel
-from models.decoder import Decoder
-from models.components.unet import UnetWithAttention
 from models.components.registry import create_component, COMPONENT_REGISTRY
 
 
@@ -19,9 +19,6 @@ class DiffusionModel(BaseModel):
         Returns:
             BaseModel instance with decoder attribute
         """
-        import gzip
-        import pickle
-        
         path = Path(checkpoint_path)
         # Try to detect if file is compressed
         try:
@@ -435,9 +432,6 @@ class DiffusionModel(BaseModel):
         # embedding_projection is optional (only if conditioning is used)
         # but if it exists, it should be in state_dict
         
-        import gzip
-        import pickle
-        
         payload = {"state_dict": state_dict}
         if include_config:
             payload["config"] = self.to_config()
@@ -460,9 +454,6 @@ class DiffusionModel(BaseModel):
         not from an external autoencoder checkpoint. All components (decoder, UNet, scheduler)
         are saved in the checkpoint's state_dict and config.
         """
-        import gzip
-        import pickle
-        
         path = Path(path)
         # Try to detect if file is compressed
         try:

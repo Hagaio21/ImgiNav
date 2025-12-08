@@ -423,12 +423,6 @@ def main():
     df = pd.read_csv(args.manifest)
     logger.info(f"Loaded manifest: {len(df)} rows")
     
-    # Verify sample_weight column exists (warn if missing)
-    if "sample_weight" not in df.columns:
-        logger.warning("'sample_weight' column not found in manifest. Weights will not be preserved.")
-    else:
-        logger.info(f"Found 'sample_weight' column - weights will be preserved")
-    
     # Determine variant from manifest name (manifest_tex.csv -> tex)
     variant = "tex"
     if "seg" in args.manifest.stem:
@@ -494,15 +488,8 @@ def main():
                 axis=1
             )
     
-    # Save manifest (preserve all columns including sample_weight)
+    # Save manifest
     output_path = args.output_manifest or args.manifest
-    
-    # Verify sample_weight is preserved
-    if "sample_weight" in df.columns:
-        logger.info(f"Preserving 'sample_weight' column in output manifest")
-    else:
-        logger.warning("'sample_weight' column missing - weights will not be available for training")
-    
     df.to_csv(output_path, index=False)
     logger.info(f"Saved manifest: {output_path} ({len(df.columns)} columns)")
     

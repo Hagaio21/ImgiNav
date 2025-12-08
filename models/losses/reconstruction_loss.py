@@ -252,22 +252,7 @@ class SSIMLoss(LossComponent):
 
 @register_loss
 class CombinedReconstructionLoss(LossComponent):
-    """
-    Combined reconstruction loss: L1 + Perceptual + SSIM.
-    
-    A convenience wrapper that combines multiple reconstruction losses
-    with sensible defaults for sharp reconstructions.
-    
-    Config:
-        key: Key in preds for predictions (default: "rgb")
-        target_key: Key in targets for ground truth (default: "rgb")
-        weight: Overall loss weight (default: 1.0)
-        l1_weight: Weight for L1 loss (default: 1.0)
-        perceptual_weight: Weight for perceptual loss (default: 0.1)
-        ssim_weight: Weight for SSIM loss (default: 0.1)
-        use_perceptual: Whether to include perceptual loss (default: True)
-        use_ssim: Whether to include SSIM loss (default: True)
-    """
+
     def _build(self):
         super()._build()
         

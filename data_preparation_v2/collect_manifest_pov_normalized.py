@@ -519,51 +519,6 @@ def collect_manifest_data_pov_normalized(
     return rows
 
 
-def compute_weights(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Compute sample weights for balanced training."""
-    if not rows:
-        return rows
-    
-    logger.info(f"Computing weights for {len(rows)} rows...")
-    
-    # Count distributions
-    room_type_counts = Counter(r["room_type"] for r in rows)
-    empty_counts = Counter(r["is_empty"] for r in rows)
-    pov_type_counts = Counter(r["pov_type"] for r in rows)
-    
-    total = len(rows)
-    
-    # Inverse frequency weights
-    room_type_weights = {t: total / (len(room_type_counts) * c) for t, c in room_type_counts.items()}
-    empty_weights = {e: total / (len(empty_counts) * c) for e, c in empty_counts.items()}
-    pov_type_weights = {t: total / (len(pov_type_counts) * c) for t, c in pov_type_counts.items()}
-    
-    # Down-weight empty rooms
-    if len(empty_weights) == 2:
-        temp = empty_weights[True]
-        empty_weights[True] = empty_weights[False]
-        empty_weights[False] = temp
-    
-    logger.info(f"  Room type distribution: {dict(room_type_counts.most_common(5))}")
-    logger.info(f"  Empty distribution: {dict(empty_counts)}")
-    logger.info(f"  POV type distribution: {dict(pov_type_counts)}")
-    
-    # Apply weights
-    for row in rows:
-        room_weight = room_type_weights[row["room_type"]]
-        empty_weight = empty_weights[row["is_empty"]]
-        pov_weight = pov_type_weights[row["pov_type"]]
-        
-        sample_weight = room_weight * empty_weight * pov_weight
-        
-        row["room_type_weight"] = round(room_weight, 6)
-        row["empty_weight"] = round(empty_weight, 6)
-        row["pov_type_weight"] = round(pov_weight, 6)
-        row["sample_weight"] = round(sample_weight, 6)
-    
-    return rows
-
-
 def write_manifest(rows: List[Dict[str, Any]], output_path: Path):
     """Write manifest to CSV file."""
     if not rows:
@@ -577,8 +532,7 @@ def write_manifest(rows: List[Dict[str, Any]], output_path: Path):
         "layout_path", "pov_path", "is_pov_normalized", "has_pov_graph",
         "rotation_angle_deg", "rotation_angle_rad",
         "graph_json_path", "graph_text_path",
-        "is_empty", "furniture_count", "door_count", "window_count",
-        "room_type_weight", "empty_weight", "pov_type_weight", "sample_weight"
+        "is_empty", "furniture_count", "door_count", "window_count"
     ]
     
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -658,7 +612,6 @@ def main():
         logger.info(f"{'='*60}")
         
         rows = collect_manifest_data_pov_normalized(dataset_root, variant)
-        rows = compute_weights(rows)
         print_statistics(rows, variant)
         write_manifest(rows, output_path)
     

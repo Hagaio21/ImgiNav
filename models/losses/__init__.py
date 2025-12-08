@@ -8,7 +8,6 @@ from .base_loss import (
 )
 from .clip_loss import CLIPLoss
 # Import reconstruction losses to register them
-from . import reconstruction_loss
 
 __all__ = [
     "LOSS_REGISTRY",
