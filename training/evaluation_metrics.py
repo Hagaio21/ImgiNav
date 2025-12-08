@@ -27,9 +27,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-# =============================================================================
-# Image Cleaning (snap to taxonomy colors)
-# =============================================================================
 
 def load_taxonomy(taxonomy_path: Path) -> Dict:
     """Load taxonomy and build color mappings."""
@@ -369,10 +366,6 @@ def compute_blob_matching_metrics(
     }
 
 
-# =============================================================================
-# Path-based Metrics (A* comparison)
-# =============================================================================
-
 def astar_path(
     grid: np.ndarray,
     start: Tuple[int, int],
@@ -547,9 +540,7 @@ def compute_path_metrics(
     }
 
 
-# =============================================================================
-# Main Evaluator Class
-# =============================================================================
+
 
 class FloorplanEvaluator:
     """
@@ -675,10 +666,6 @@ class FloorplanEvaluator:
         aggregated["num_samples"] = len(all_metrics)
         return aggregated
 
-
-# =============================================================================
-# Tensor conversion utilities
-# =============================================================================
 
 def tensor_to_numpy_rgb(tensor: torch.Tensor) -> np.ndarray:
     """Convert tensor to numpy RGB image (H, W, 3) with values 0-255."""

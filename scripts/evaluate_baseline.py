@@ -124,6 +124,7 @@ def run_evaluation(
     dataset,
     evaluator: FloorplanEvaluator,
     device: str,
+    experiment_name: str,
     guidance_scale: float = 7.5,
     num_steps: int = 50,
     max_samples: int = None,
@@ -140,9 +141,12 @@ def run_evaluation(
     
     n_samples = len(dataset) if max_samples is None else min(max_samples, len(dataset))
     
+    # Create experiment-specific images folder
     if save_images and output_dir:
-        images_dir = output_dir / "images"
+        images_dir = output_dir / "images" / experiment_name
         images_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        images_dir = None
     
     print(f"\nEvaluating {n_samples} samples...")
     
@@ -176,7 +180,7 @@ def run_evaluation(
         all_results.append(result)
         
         # Save images if requested
-        if save_images and output_dir:
+        if images_dir is not None:
             pred_img = Image.fromarray(pred_rgb)
             target_img = Image.fromarray(target_rgb)
             cleaned_pred = Image.fromarray(metrics["_cleaned_pred"])
@@ -331,12 +335,19 @@ def main():
     # Create evaluator
     evaluator = FloorplanEvaluator(args.taxonomy)
     
+    # Get experiment name from checkpoint path
+    experiment_name = args.checkpoint.stem
+    if experiment_name in ["best_checkpoint", "checkpoint"]:
+        # Use parent folder name instead
+        experiment_name = args.checkpoint.parent.parent.name
+    
     # Run evaluation
     results = run_evaluation(
         model=model,
         dataset=dataset,
         evaluator=evaluator,
         device=args.device,
+        experiment_name=experiment_name,
         guidance_scale=args.guidance_scale,
         num_steps=args.num_steps,
         max_samples=args.max_samples,
@@ -354,7 +365,6 @@ def main():
     }
     
     # Save results
-    experiment_name = args.checkpoint.stem
     save_results(results, args.output_dir, experiment_name)
 
 

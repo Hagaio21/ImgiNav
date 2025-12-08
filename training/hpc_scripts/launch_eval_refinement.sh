@@ -1,42 +1,53 @@
 #!/bin/bash
-# Launch baseline evaluation for multiple checkpoints
+# Launch refinement evaluation for multiple checkpoints
 #
 # Usage:
-#   ./launch_eval_baseline.sh checkpoints.txt
-#   ./launch_eval_baseline.sh --checkpoint /path/to/single/checkpoint.pt
-#   ./launch_eval_baseline.sh --find-best /path/to/experiments/dir
+#   ./launch_eval_refinement.sh checkpoints.txt
+#   ./launch_eval_refinement.sh --checkpoint /path/to/single/checkpoint.pt
 #
 # Options:
-#   --num-samples N     Number of samples to evaluate (default: 100)
-#   --guidance-scale G  CFG guidance scale (default: 7.5)
-#   --queue Q           Queue to submit to (default: gpul40s)
-#   --dry-run           Print commands without submitting
+#   --num-samples N       Number of samples to evaluate (default: 50)
+#   --max-povs N          Max POVs per sample (default: 5)
+#   --noise-strengths     Noise strengths to test (default: "0.3 0.5")
+#   --queue Q             Queue to submit to (default: gpul40s)
+#   --no-images           Don't save progression images
+#   --dry-run             Print commands without submitting
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
-RUN_SCRIPT="${SCRIPT_DIR}/eval/run_eval_baseline.sh"
+RUN_SCRIPT="${SCRIPT_DIR}/eval/run_eval_refinement.sh"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Defaults
 NUM_SAMPLES=50
+MAX_POVS=5
+NOISE_STRENGTHS="0.3 0.5"
 GUIDANCE_SCALE=7.5
 QUEUE="gpul40s"
 DRY_RUN=false
+SAVE_IMAGES=true
 MANIFEST="/work3/s233249/ImgiNav/experiments/diffusion/v2/manifest_val.csv"
 TAXONOMY="${BASE_DIR}/data_preparation_v2/taxonomy.json"
-OUTPUT_DIR="${BASE_DIR}/evaluation_results"
+OUTPUT_DIR="${BASE_DIR}/refinement_results"
 
 # Parse arguments
 CHECKPOINTS=()
 CHECKPOINT_FILE=""
-FIND_BEST_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --num-samples)
             NUM_SAMPLES="$2"
+            shift 2
+            ;;
+        --max-povs)
+            MAX_POVS="$2"
+            shift 2
+            ;;
+        --noise-strengths)
+            NOISE_STRENGTHS="$2"
             shift 2
             ;;
         --guidance-scale)
@@ -59,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_DIR="$2"
             shift 2
             ;;
+        --no-images)
+            SAVE_IMAGES=false
+            shift
+            ;;
         --dry-run)
             DRY_RUN=true
             shift
@@ -67,41 +82,21 @@ while [[ $# -gt 0 ]]; do
             CHECKPOINTS+=("$2")
             shift 2
             ;;
-        --find-best)
-            FIND_BEST_DIR="$2"
-            shift 2
-            ;;
         -*)
             echo "Unknown option: $1"
             exit 1
             ;;
         *)
-            # Assume it's a checkpoint file
             CHECKPOINT_FILE="$1"
             shift
             ;;
     esac
 done
 
-# Find best checkpoints in directory
-if [ -n "${FIND_BEST_DIR}" ]; then
-    echo "Finding best checkpoints in: ${FIND_BEST_DIR}"
-    while IFS= read -r -d '' ckpt; do
-        CHECKPOINTS+=("$ckpt")
-    done < <(find "${FIND_BEST_DIR}" -name "best_checkpoint.pt" -print0 2>/dev/null)
-    
-    if [ ${#CHECKPOINTS[@]} -eq 0 ]; then
-        # Try finding any checkpoint
-        while IFS= read -r -d '' ckpt; do
-            CHECKPOINTS+=("$ckpt")
-        done < <(find "${FIND_BEST_DIR}" -name "*.pt" -print0 2>/dev/null | head -20)
-    fi
-fi
-
 # Load from file
 if [ -n "${CHECKPOINT_FILE}" ] && [ -f "${CHECKPOINT_FILE}" ]; then
     while IFS= read -r line; do
-        line=$(echo "$line" | xargs)  # Trim whitespace
+        line=$(echo "$line" | xargs)
         if [ -n "$line" ] && [[ ! "$line" =~ ^# ]]; then
             CHECKPOINTS+=("$line")
         fi
@@ -115,13 +110,14 @@ if [ ${#CHECKPOINTS[@]} -eq 0 ]; then
     echo "Usage:"
     echo "  $0 checkpoints.txt"
     echo "  $0 --checkpoint /path/to/checkpoint.pt"
-    echo "  $0 --find-best /path/to/experiments/"
     echo ""
     echo "Options:"
-    echo "  --num-samples N      Number of samples (default: 100)"
-    echo "  --guidance-scale G   CFG scale (default: 7.5)"
-    echo "  --queue Q            LSF queue (default: gpul40s)"
-    echo "  --dry-run            Print without submitting"
+    echo "  --num-samples N       Samples per checkpoint (default: 50)"
+    echo "  --max-povs N          Max POVs (default: 5)"
+    echo "  --noise-strengths S   Noise strengths (default: \"0.3 0.5\")"
+    echo "  --queue Q             LSF queue (default: gpul40s)"
+    echo "  --no-images           Don't save progression images"
+    echo "  --dry-run             Print without submitting"
     exit 1
 fi
 
@@ -129,11 +125,13 @@ mkdir -p "${LOG_DIR}"
 mkdir -p "${OUTPUT_DIR}"
 
 echo "=============================================="
-echo "Launching Baseline Evaluation Jobs"
+echo "Launching Refinement Evaluation Jobs"
 echo "=============================================="
 echo "Checkpoints: ${#CHECKPOINTS[@]}"
 echo "Samples per checkpoint: ${NUM_SAMPLES}"
-echo "Guidance scale: ${GUIDANCE_SCALE}"
+echo "Max POVs: ${MAX_POVS}"
+echo "Noise strengths: ${NOISE_STRENGTHS}"
+echo "Save images: ${SAVE_IMAGES}"
 echo "Queue: ${QUEUE}"
 echo "Output dir: ${OUTPUT_DIR}"
 echo "=============================================="
@@ -150,7 +148,7 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
         continue
     fi
     
-    # Extract experiment name from path
+    # Extract experiment name
     EXP_NAME=$(basename "$(dirname "${CHECKPOINT}")")
     if [ "${EXP_NAME}" == "checkpoints" ]; then
         EXP_NAME=$(basename "$(dirname "$(dirname "${CHECKPOINT}")")")
@@ -158,14 +156,14 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
     EXP_NAME=$(echo "${EXP_NAME}" | sed 's/[^a-zA-Z0-9_]/_/g')
     
     # Check if already evaluated
-    RESULT_PATTERN="${OUTPUT_DIR}/${EXP_NAME}_*_results_*.json"
+    RESULT_PATTERN="${OUTPUT_DIR}/${EXP_NAME}_refinement_*.json"
     if ls ${RESULT_PATTERN} 1>/dev/null 2>&1; then
         echo "SKIP: Already evaluated: ${EXP_NAME}"
         ((SKIPPED++))
         continue
     fi
     
-    JOB_NAME="eval_${EXP_NAME}"
+    JOB_NAME="refine_${EXP_NAME}"
     
     echo "Submitting: ${JOB_NAME}"
     echo "  Checkpoint: ${CHECKPOINT}"
@@ -174,10 +172,10 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
         echo "  [DRY RUN] Would submit job"
     else
         bsub -J "${JOB_NAME}" \
-             -o "${LOG_DIR}/eval_${EXP_NAME}.%J.out" \
-             -e "${LOG_DIR}/eval_${EXP_NAME}.%J.err" \
+             -o "${LOG_DIR}/refine_${EXP_NAME}.%J.out" \
+             -e "${LOG_DIR}/refine_${EXP_NAME}.%J.err" \
              -q "${QUEUE}" \
-             -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE}" \
+             -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},MAX_POVS=${MAX_POVS},NOISE_STRENGTHS=${NOISE_STRENGTHS},GUIDANCE_SCALE=${GUIDANCE_SCALE},SAVE_IMAGES=${SAVE_IMAGES}" \
              "${RUN_SCRIPT}"
         
         ((SUBMITTED++))
