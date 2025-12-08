@@ -1,5 +1,9 @@
 """
 Training utility functions.
+
+Consolidation notes:
+- Imports set_deterministic from common.utils (use this for all seed setting)
+- load_config is an alias for load_config_with_profile for backward compatibility
 """
 import torch
 from pathlib import Path
@@ -13,8 +17,9 @@ from models.autoencoder import Autoencoder
 from models.datasets.datasets import ManifestDataset
 from models.losses.base_loss import LOSS_REGISTRY
 
-# Alias for backward compatibility
+# Aliases for backward compatibility
 load_config = load_config_with_profile
+set_seeds = set_deterministic  # Deprecated: use set_deterministic instead
 
 
 def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir: Path,
@@ -25,7 +30,10 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
                               min_weight: float = 1.0,
                               filters: dict = None):
     """
-    Ensure weight stats JSON exists for a column. If not, generate it automatically.
+    Ensure weight stats JSON exists for a column. If not, look for existing file.
+    
+    Note: Auto-generation requires the 'analysis' module which may not be present.
+    If stats don't exist and analysis module is unavailable, raises RuntimeError.
     
     Args:
         manifest_path: Path to manifest CSV
@@ -36,40 +44,52 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
         weighting_method: Weighting method
         max_weight: Max weight cap
         min_weight: Min weight
-        filters: Optional filters dict (same format as dataset filters) to apply before computing weights.
-                 This ensures weights are computed on the same filtered dataset that will be used for training.
+        filters: Optional filters dict to apply before computing weights.
     
     Returns:
         Path to stats JSON file
+    
+    Raises:
+        RuntimeError: If stats file doesn't exist and cannot be generated
     """
-    from analysis.analyze_column_distribution import analyze_column_distribution
     import pandas as pd
     
     output_dir = Path(output_dir)
     column_output_dir = output_dir / "weight_stats" / column_name
     
-    # Create a filter signature for the stats filename to ensure different filters get different stats
+    # Create a filter signature for the stats filename
     filter_suffix = ""
     if filters:
-        # Create a simple hash/signature from filters
         filter_str = "_".join([f"{k}_{v}" for k, v in sorted(filters.items())])
-        # Sanitize for filename (remove special chars, limit length)
         filter_str = "".join(c if c.isalnum() or c in "_-" else "_" for c in filter_str)[:50]
         filter_suffix = f"_{filter_str}"
     
-    # First, check if stats file exists directly in experiment directory (user-provided)
+    # Check if stats file exists in experiment directory (user-provided)
     stats_path_experiment = output_dir / f"{column_name}_distribution_stats.json"
     if stats_path_experiment.exists():
         print(f"Using existing weight stats from experiment directory: {stats_path_experiment}")
         return stats_path_experiment
     
-    # Then check in the subdirectory (auto-generated location)
+    # Check in the subdirectory (auto-generated location)
     stats_path = column_output_dir / f"{column_name}_distribution_stats{filter_suffix}.json"
-    
-    # Check if stats already exist
     if stats_path.exists():
         print(f"Using existing weight stats: {stats_path}")
         return stats_path
+    
+    # Stats don't exist - try to generate them
+    try:
+        from analysis.analyze_column_distribution import analyze_column_distribution
+    except ImportError:
+        raise RuntimeError(
+            f"Weight stats file not found at:\n"
+            f"  - {stats_path_experiment}\n"
+            f"  - {stats_path}\n\n"
+            f"Auto-generation requires the 'analysis' module which is not available.\n"
+            f"Please either:\n"
+            f"  1. Provide a pre-computed weight stats JSON file\n"
+            f"  2. Disable weighted sampling in your config\n"
+            f"  3. Install/create the analysis module"
+        )
     
     # Load manifest and apply filters if provided
     df = pd.read_csv(manifest_path, low_memory=False)
@@ -77,7 +97,6 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
     
     if filters:
         print(f"Applying filters before computing weights (original size: {len(df)})...")
-        # Apply same filtering logic as ManifestDataset._apply_filters
         for key, value in filters.items():
             if "__lt" in key:
                 col = key.replace("__lt", "")
@@ -108,7 +127,6 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
         temp_manifest = Path(tmp_file.name)
         df.to_csv(temp_manifest, index=False)
     
-    # Generate stats automatically
     print(f"\n{'='*60}")
     print(f"Generating weight stats for column: {column_name}")
     print(f"{'='*60}")
@@ -123,7 +141,7 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
     
     try:
         analyze_column_distribution(
-            manifest_path=temp_manifest,  # Use filtered manifest
+            manifest_path=temp_manifest,
             column_name=column_name,
             output_dir=column_output_dir,
             rare_threshold_percentile=rare_threshold_percentile,
@@ -132,7 +150,6 @@ def ensure_weight_stats_exist(manifest_path: Path, column_name: str, output_dir:
             max_weight=max_weight,
             min_weight=min_weight
         )
-        # Rename the generated stats file to include filter suffix
         generated_stats = column_output_dir / f"{column_name}_distribution_stats.json"
         if generated_stats.exists() and filter_suffix:
             generated_stats.rename(stats_path)

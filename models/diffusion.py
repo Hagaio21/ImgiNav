@@ -4,7 +4,6 @@ from pathlib import Path
 import yaml
 
 from models.components.base_model import BaseModel
-from models.components.dataflow import DataFlow
 from models.decoder import Decoder
 from models.components.unet import UnetWithAttention
 from models.components.registry import create_component, COMPONENT_REGISTRY
@@ -227,13 +226,13 @@ class DiffusionModel(BaseModel):
         
         pred_latent = (noisy_latents - (1 - alpha_bar).sqrt() * pred_noise) / alpha_bar.sqrt().clamp(min=1e-8)
 
-        return self._to_dataflow({
+        return {
             "latent": latents,
             "pred_latent": pred_latent,
             "noisy_latent": noisy_latents,
             "pred_noise": pred_noise,
             "noise": noise_used,
-        })
+        }
 
     def sample(self, batch_size=1, latent_shape=None, num_steps=50, 
                method="ddim", eta=0.0, device=None, return_history=False, verbose=False, 

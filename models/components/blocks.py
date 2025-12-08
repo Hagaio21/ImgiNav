@@ -218,40 +218,6 @@ class UpBlock(nn.Module):
         return x
 
 
-class MidBlock(nn.Module):
-    """
-    Middle block for processing at lowest resolution.
-    
-    Args:
-        channels: Number of channels
-        time_dim: Time embedding dimension (None to disable time conditioning)
-        norm_groups: Number of groups for GroupNorm
-        dropout: Dropout rate
-        num_blocks: Number of residual blocks (default: 2)
-    """
-    def __init__(self, channels, time_dim=None, norm_groups=8, dropout=0.0, num_blocks=2):
-        super().__init__()
-        self.blocks = nn.ModuleList([
-            ResidualBlock(channels, channels, time_dim, norm_groups, dropout)
-            for _ in range(num_blocks)
-        ])
-    
-    def forward(self, x, t_emb=None, **kwargs):
-        """
-        Forward pass.
-        
-        Args:
-            x: Input tensor [B, C, H, W]
-            t_emb: Optional time embedding [B, time_dim]
-            **kwargs: Additional kwargs passed to res blocks
-        
-        Returns:
-            Output tensor [B, C, H, W]
-        """
-        for block in self.blocks:
-            x = block(x, t_emb, **kwargs)
-        return x
-
 class SelfAttentionBlock(nn.Module):
 
     def __init__(self, channels, num_heads=None, norm_groups=8, enable_cross_attention=False, conditioning_channels=None, window_size=None):

@@ -150,54 +150,34 @@ def save_clip_projection_latest(model, checkpoint_dir, exp_name, epoch):
 # Step functions for Trainer
 def ae_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for autoencoder training - computes loss only (Trainer handles backward/step)."""
-    from models.components.dataflow import DataFlow
-    
-    # Wrap batch in DataFlow for tracking
-    batch_dataflow = DataFlow(batch, source_component="Dataset")
-    
     # Forward pass with AMP if enabled
+    rgb = batch.get("rgb", batch.get("input", batch.get("x")))
+    
     if trainer.use_amp and trainer.device.type == "cuda":
         with torch.amp.autocast(device_type='cuda'):
-            outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
-            # Loss functions work with DataFlow since it's dict-like
-            loss, logs = loss_fn(outputs, batch_dataflow)
+            outputs = model(rgb)
+            loss, logs = loss_fn(outputs, batch)
     else:
-        outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
-        # Loss functions work with DataFlow since it's dict-like
-        loss, logs = loss_fn(outputs, batch_dataflow)
+        outputs = model(rgb)
+        loss, logs = loss_fn(outputs, batch)
     
-    # Return outputs for latent collection (convert DataFlow to dict if needed)
-    if isinstance(outputs, DataFlow):
-        outputs_dict = outputs.to_dict()
-    else:
-        outputs_dict = outputs
-    return loss, logs, outputs_dict
+    return loss, logs, outputs
 
 
 def ae_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
     """Step function for autoencoder evaluation - computes loss only."""
-    from models.components.dataflow import DataFlow
-    
-    # Wrap batch in DataFlow for tracking
-    batch_dataflow = DataFlow(batch, source_component="Dataset")
-    
     # Forward pass with AMP if enabled
+    rgb = batch.get("rgb", batch.get("input", batch.get("x")))
+    
     if trainer.use_amp and trainer.device.type == "cuda":
         with torch.amp.autocast(device_type='cuda'):
-            outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
-            # Loss functions work with DataFlow since it's dict-like
-            loss, logs = loss_fn(outputs, batch_dataflow)
+            outputs = model(rgb)
+            loss, logs = loss_fn(outputs, batch)
     else:
-        outputs = model(batch_dataflow.get("rgb", batch["rgb"]))
-        # Loss functions work with DataFlow since it's dict-like
-        loss, logs = loss_fn(outputs, batch_dataflow)
+        outputs = model(rgb)
+        loss, logs = loss_fn(outputs, batch)
     
-    # Return outputs for latent collection (convert DataFlow to dict if needed)
-    if isinstance(outputs, DataFlow):
-        outputs_dict = outputs.to_dict()
-    else:
-        outputs_dict = outputs
-    return loss, logs, outputs_dict
+    return loss, logs, outputs
 
 
 def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size=8, target_size=256, exp_name=None):
@@ -225,10 +205,6 @@ def save_samples(model, val_loader, device, output_dir, epoch, sample_batch_size
     
     with torch.no_grad():
         outputs = model(batch["rgb"])
-    
-    # Handle DataFlow output
-    if hasattr(outputs, 'to_dict'):
-        outputs = outputs.to_dict()
     
     # Save RGB input and reconstruction as two side-by-side grids
     if "rgb" in batch and "rgb" in outputs:

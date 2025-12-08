@@ -1,8 +1,57 @@
+"""
+Encoder models for autoencoders and VAEs.
+
+Consolidation notes:
+- Extracted `_extract_tensor_from_input()` helper to reduce code duplication
+- Moved channel dropout logic to base class `_apply_channel_dropout()`
+- VAEEncoder now properly inherits from Encoder, only overriding necessary parts
+"""
+
 import torch
 import torch.nn as nn
 
 from .components.base_component import BaseComponent
 from .utils import compute_num_groups
+
+
+def _extract_tensor_from_input(x):
+    """
+    Extract tensor from various input types (dict, tensor).
+    
+    This consolidates the repeated dict unpacking logic that was duplicated
+    across Encoder.forward(), VAEEncoder.forward(), and Autoencoder.forward().
+    
+    Args:
+        x: Input which can be:
+           - torch.Tensor directly
+           - dict with keys like "rgb", "input", "x", "data"
+    
+    Returns:
+        torch.Tensor extracted from the input
+    """
+    if isinstance(x, torch.Tensor):
+        return x
+    
+    if not isinstance(x, dict):
+        raise TypeError(f"Expected Tensor or dict, got {type(x)}")
+    
+    # Priority order for input keys
+    priority_keys = ["rgb", "input", "x", "data"]
+    
+    for key in priority_keys:
+        if key in x:
+            return x[key]
+    
+    # Single entry dict - use that value
+    if len(x) == 1:
+        return next(iter(x.values()))
+    
+    # Fallback: find first tensor value
+    for v in x.values():
+        if isinstance(v, torch.Tensor):
+            return v
+    
+    raise ValueError(f"Could not extract tensor from dict with keys: {list(x.keys())}")
 
 
 class Encoder(BaseComponent):
@@ -43,16 +92,13 @@ class Encoder(BaseComponent):
         layers = []
         
         for i in range(down_steps):
-            # Channel count for this level: doubles each level
             out_ch = base_ch * (2 ** i)
             valid_groups = compute_num_groups(out_ch, norm_groups)
             
             layers += [
-                # First conv: change channels (in_ch → out_ch)
                 nn.Conv2d(in_ch, out_ch, 3, padding=1),
                 nn.GroupNorm(valid_groups, out_ch),
                 act,
-                # Second conv: downsample, keep channels (out_ch → out_ch)
                 nn.Conv2d(out_ch, out_ch, 4, stride=2, padding=1),
                 nn.GroupNorm(valid_groups, out_ch),
                 act,
@@ -73,49 +119,65 @@ class Encoder(BaseComponent):
         self.feature_extractor = nn.Sequential(*layers)
         self._feature_channels = final_ch
         
-        # Latent projection
+        # Latent projection (overridden in VAEEncoder)
         self.latent_proj = nn.Conv2d(final_ch, latent_ch, 1)
+
+    def _apply_channel_dropout(self, features):
+        """
+        Apply channel dropout during training if enabled.
+        
+        Extracted from forward() to avoid duplication between Encoder and VAEEncoder.
+        
+        Args:
+            features: Feature tensor [B, C, H, W]
+        
+        Returns:
+            Features with channel dropout applied (if training and rate > 0)
+        """
+        if self.channel_dropout_rate > 0.0 and self.training:
+            channels = features.shape[1]
+            device = features.device
+            
+            # Create random mask for channels: [channels]
+            keep_prob = 1.0 - self.channel_dropout_rate
+            channel_mask = torch.bernoulli(torch.ones(channels, device=device) * keep_prob)
+            
+            # Reshape to [1, channels, 1, 1] for broadcasting
+            channel_mask = channel_mask.view(1, channels, 1, 1)
+            features = features * channel_mask
+        
+        return features
+
+    def _extract_features(self, x):
+        """
+        Extract features from input, handling dict inputs.
+        
+        Shared between Encoder and VAEEncoder to avoid duplication.
+        
+        Args:
+            x: Input tensor [B, C, H, W] or dict
+        
+        Returns:
+            Feature tensor after feature_extractor and channel dropout
+        """
+        x = _extract_tensor_from_input(x)
+        features = self.feature_extractor(x)
+        features = self._apply_channel_dropout(features)
+        return features
 
     def forward(self, x):
         """
         Forward pass.
         
         Args:
-            x: Input tensor [B, C, H, W] or DataFlow
+            x: Input tensor [B, C, H, W] or dict
         
         Returns:
-            DataFlow: {"latent": z, "latent_features": features}
+            Dict: {"latent": z, "latent_features": features}
         """
-        if isinstance(x, dict) and not isinstance(x, torch.Tensor):
-            if "rgb" in x:
-                x = x["rgb"]
-            elif "input" in x:
-                x = x["input"]
-            elif "x" in x:
-                x = x["x"]
-            elif len(x) == 1:
-                x = next(iter(x.values()))
-            else:
-                for key in ["rgb", "input", "x", "data"]:
-                    if key in x:
-                        x = x[key]
-                        break
-                else:
-                    x = next(v for v in x.values() if isinstance(v, torch.Tensor))
-        
-        features = self.feature_extractor(x)
-        
-        # Apply channel dropout if enabled (only during training)
-        if self.channel_dropout_rate > 0.0 and self.training:
-            batch_size, channels, height, width = features.shape
-            # Create random mask for channels: [channels]
-            channel_mask = torch.bernoulli(torch.ones(channels, device=features.device) * (1.0 - self.channel_dropout_rate))
-            # Reshape to [1, channels, 1, 1] for broadcasting
-            channel_mask = channel_mask.view(1, channels, 1, 1)
-            features = features * channel_mask
-        
+        features = self._extract_features(x)
         z = self.latent_proj(features)
-        return self._to_dataflow({"latent": z, "latent_features": features})
+        return {"latent": z, "latent_features": features}
     
     def get_input_shape(self, batch_size=1):
         in_ch = self._init_kwargs.get("in_channels", 3)
@@ -130,7 +192,12 @@ class Encoder(BaseComponent):
 
 
 class VAEEncoder(Encoder):
-    """Variational encoder - outputs mu and logvar."""
+    """
+    Variational encoder - outputs mu and logvar.
+    
+    Inherits from Encoder and only overrides the projection heads
+    and forward method output.
+    """
     
     def _build(self):
         super()._build()
@@ -148,42 +215,17 @@ class VAEEncoder(Encoder):
         Forward pass.
         
         Args:
-            x: Input tensor [B, C, H, W] or DataFlow
+            x: Input tensor [B, C, H, W] or dict
         
         Returns:
-            DataFlow: {"mu": mu, "logvar": logvar, "latent_features": features}
+            Dict: {"mu": mu, "logvar": logvar, "latent_features": features}
         """
-        if isinstance(x, dict) and not isinstance(x, torch.Tensor):
-            if "rgb" in x:
-                x = x["rgb"]
-            elif "input" in x:
-                x = x["input"]
-            elif "x" in x:
-                x = x["x"]
-            elif len(x) == 1:
-                x = next(iter(x.values()))
-            else:
-                for key in ["rgb", "input", "x", "data"]:
-                    if key in x:
-                        x = x[key]
-                        break
-                else:
-                    x = next(v for v in x.values() if isinstance(v, torch.Tensor))
-        
-        features = self.feature_extractor(x)
-        
-        # Apply channel dropout if enabled (only during training)
-        if self.channel_dropout_rate > 0.0 and self.training:
-            batch_size, channels, height, width = features.shape
-            # Create random mask for channels: [channels]
-            channel_mask = torch.bernoulli(torch.ones(channels, device=features.device) * (1.0 - self.channel_dropout_rate))
-            # Reshape to [1, channels, 1, 1] for broadcasting
-            channel_mask = channel_mask.view(1, channels, 1, 1)
-            features = features * channel_mask
+        # Use parent's _extract_features which handles dict unpacking and channel dropout
+        features = self._extract_features(x)
         
         mu = self.mu_head(features)
         logvar = self.logvar_head(features)
-        return self._to_dataflow({"mu": mu, "logvar": logvar, "latent_features": features})
+        return {"mu": mu, "logvar": logvar, "latent_features": features}
     
     def get_output_shape(self, batch_size=1):
         latent_ch = self._init_kwargs.get("latent_channels", 4)
