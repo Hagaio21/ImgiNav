@@ -1355,51 +1355,15 @@ def main():
     
     device_obj = to_device(device)
     
-    # Try to load VAE metadata first (if autoencoder checkpoint is specified)
-    vae_metadata = None
-    ae_cfg = config.get("autoencoder") or config.get("diffusion", {}).get("autoencoder")
-    if ae_cfg and isinstance(ae_cfg, dict):
-        ae_checkpoint = ae_cfg.get("checkpoint")
-        if ae_checkpoint:
-            from training.utils import load_vae_metadata
-            vae_metadata = load_vae_metadata(ae_checkpoint)
-    
-    # Get scale_factor from config or VAE metadata (should be part of VAE statistics)
-    # Check both diffusion section and top-level config
+    # Get diffusion config section
     diffusion_cfg = config.get("diffusion", {})
     if not diffusion_cfg:
         diffusion_cfg = {}
     
-    # Priority: config > VAE metadata
-    scale_factor = diffusion_cfg.get("scale_factor") or config.get("scale_factor")
-    
-    if scale_factor is None:
-        # Try VAE metadata
-        if vae_metadata and vae_metadata.get("scale_factor") is not None:
-            scale_factor = vae_metadata["scale_factor"]
-            # Add to config for model building
-            if "diffusion" in config:
-                config["diffusion"]["scale_factor"] = scale_factor
-            else:
-                config["scale_factor"] = scale_factor
-        else:
-            scale_factor = 1.0
-            if "diffusion" in config:
-                config["diffusion"]["scale_factor"] = scale_factor
-            else:
-                config["scale_factor"] = scale_factor
-    
-    # Load latent_clamp values (priority: config > VAE metadata > defaults)
-    latent_clamp_min = config.get("latent_clamp_min")
-    latent_clamp_max = config.get("latent_clamp_max")
-    
-    if latent_clamp_min is None and vae_metadata and vae_metadata.get("latent_clamp_min") is not None:
-        latent_clamp_min = vae_metadata["latent_clamp_min"]
-        config["latent_clamp_min"] = latent_clamp_min
-    
-    if latent_clamp_max is None and vae_metadata and vae_metadata.get("latent_clamp_max") is not None:
-        latent_clamp_max = vae_metadata["latent_clamp_max"]
-        config["latent_clamp_max"] = latent_clamp_max
+    # Get scale_factor and latent_clamp values from config (with defaults)
+    scale_factor = diffusion_cfg.get("scale_factor") or config.get("scale_factor", 1.0)
+    latent_clamp_min = diffusion_cfg.get("latent_clamp_min") or config.get("latent_clamp_min")
+    latent_clamp_max = diffusion_cfg.get("latent_clamp_max") or config.get("latent_clamp_max")
     
     # Check if we should resume or start fresh
     should_resume = not args.no_resume and latest_checkpoint.exists()
