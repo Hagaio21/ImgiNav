@@ -384,6 +384,204 @@ class DiffusionModel(BaseModel):
         
         return result
 
+    def sample_from(
+        self, 
+        x_t: torch.Tensor,
+        start_step: int,
+        num_steps: int = 50,
+        method: str = "ddim",
+        eta: float = 0.0,
+        device=None,
+        guidance_scale: float = 1.0,
+        text_emb=None,
+        pov_emb=None,
+        verbose: bool = False
+    ):
+        """
+        Sample starting from a given noisy latent at a specific timestep.
+        Used for iterative refinement: noise a prior, then denoise with new conditioning.
+        
+        Args:
+            x_t: Starting noisy latent tensor [B, C, H, W]
+            start_step: Timestep to start denoising from (0 to num_scheduler_steps-1)
+            num_steps: Number of denoising steps (for DDIM)
+            method: "ddim" or "ddpm"
+            eta: DDIM eta parameter (0 = deterministic)
+            device: Device to use
+            guidance_scale: CFG guidance scale
+            text_emb: Text embeddings for conditioning
+            pov_emb: POV embeddings for conditioning
+            verbose: Print progress
+        
+        Returns:
+            Dict with 'latent' and 'rgb' keys
+        """
+        if device is None:
+            device = x_t.device
+        
+        batch_size = x_t.shape[0]
+        latents = x_t.to(device)
+        
+        self.scheduler = self.scheduler.to(device)
+        
+        # Build timestep schedule starting from start_step
+        if method == "ddim":
+            # DDIM: use subset of timesteps
+            full_step_size = self.scheduler.num_steps // num_steps
+            full_timesteps = torch.arange(
+                self.scheduler.num_steps - 1, -1, -full_step_size, device=device
+            ).long()
+            if full_timesteps[-1] != 0:
+                full_timesteps = torch.cat([full_timesteps, torch.tensor([0], device=device)])
+            # Only keep timesteps <= start_step
+            timesteps = full_timesteps[full_timesteps <= start_step]
+        else:
+            # DDPM: use all timesteps from start_step down
+            timesteps = torch.arange(start_step, -1, -1, device=device).long()
+        
+        if len(timesteps) == 0:
+            timesteps = torch.tensor([0], device=device)
+        
+        # Prepare conditioning (same as sample method)
+        embedding_proj = getattr(self, 'embedding_projection', None)
+        has_text_emb = text_emb is not None
+        has_pov_emb = pov_emb is not None
+        
+        if embedding_proj is not None and (has_text_emb or has_pov_emb):
+            conditioning_signal = embedding_proj(text_emb, pov_emb)
+            
+            use_cfg = guidance_scale > 1.0
+            if use_cfg:
+                model_dtype = next(self.parameters()).dtype
+                if has_text_emb:
+                    zero_text = torch.zeros_like(text_emb)
+                else:
+                    zero_text = torch.zeros((batch_size, 384), device=device, dtype=model_dtype)
+                if has_pov_emb:
+                    zero_pov = torch.zeros_like(pov_emb)
+                else:
+                    zero_pov = torch.zeros((batch_size, 512), device=device, dtype=model_dtype)
+                unconditional_signal = embedding_proj(zero_text, zero_pov)
+            else:
+                unconditional_signal = None
+        else:
+            conditioning_signal = None
+            unconditional_signal = None
+            use_cfg = False
+        
+        # Denoising loop (same logic as sample method)
+        for i, t in enumerate(timesteps):
+            if verbose and (i % max(1, len(timesteps) // 5) == 0):
+                print(f"  Refine step {i+1}/{len(timesteps)} (t={t.item()})")
+            
+            t_batch = t.expand(batch_size)
+            
+            with torch.no_grad():
+                self.unet.eval()
+                cond_pred = self.unet(latents, t_batch, conditioning_signal=conditioning_signal)
+                
+                if use_cfg:
+                    uncond_pred = self.unet(latents, t_batch, conditioning_signal=unconditional_signal)
+                    pred_noise = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
+                else:
+                    pred_noise = cond_pred
+            
+            # DDIM step
+            if method == "ddim":
+                alpha_bars = self.scheduler.alpha_bars.to(device)
+                alpha_bar_t = alpha_bars[t].view(-1, 1, 1, 1)
+                
+                if i < len(timesteps) - 1:
+                    t_prev = timesteps[i + 1]
+                    alpha_bar_prev = alpha_bars[t_prev].view(-1, 1, 1, 1)
+                else:
+                    alpha_bar_prev = torch.tensor(1.0, device=device, dtype=alpha_bar_t.dtype).view(-1, 1, 1, 1)
+                
+                pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt().clamp(min=1e-8)
+                
+                if eta > 0 and i < len(timesteps) - 1:
+                    sigma = eta * ((1 - alpha_bar_prev) / (1 - alpha_bar_t).clamp(min=1e-8) * (1 - alpha_bar_t / alpha_bar_prev.clamp(min=1e-8))).sqrt()
+                    pred_dir = (1 - alpha_bar_prev - sigma**2).sqrt().clamp(min=0.0) * pred_noise
+                    noise = sigma * self.scheduler.randn_like(latents)
+                else:
+                    pred_dir = (1 - alpha_bar_prev).sqrt() * pred_noise
+                    noise = 0
+                
+                latents = alpha_bar_prev.sqrt() * pred_x0 + pred_dir + noise
+            else:
+                # DDPM step
+                alpha_bars = self.scheduler.alpha_bars.to(device)
+                alphas = self.scheduler.alphas.to(device)
+                betas = self.scheduler.betas.to(device)
+                
+                alpha_bar_t = alpha_bars[t].view(-1, 1, 1, 1)
+                beta_t = betas[t].view(-1, 1, 1, 1)
+                
+                if i < len(timesteps) - 1:
+                    alpha_bar_prev = alpha_bars[timesteps[i+1]].view(-1, 1, 1, 1)
+                    alpha_t = alphas[t].view(-1, 1, 1, 1)
+                    
+                    pred_mean = (1.0 / alpha_t.sqrt()) * (latents - (beta_t / (1 - alpha_bar_t).sqrt()) * pred_noise)
+                    posterior_variance = ((1 - alpha_bar_prev) / (1 - alpha_bar_t).clamp(min=1e-8)) * beta_t
+                    posterior_variance = torch.clamp(posterior_variance, min=1e-20)
+                    
+                    noise = self.scheduler.randn_like(latents)
+                    latents = pred_mean + posterior_variance.sqrt() * noise
+                else:
+                    pred_x0 = (latents - (1 - alpha_bar_t).sqrt() * pred_noise) / alpha_bar_t.sqrt()
+                    latents = pred_x0
+        
+        # Unscale and decode
+        if self.scale_factor != 1.0:
+            latents = latents / self.scale_factor
+        
+        clamp_min = getattr(self, '_latent_clamp_min', -6.0)
+        clamp_max = getattr(self, '_latent_clamp_max', 6.0)
+        latents_clamped = torch.clamp(latents, clamp_min, clamp_max)
+        
+        result = {"latent": latents_clamped}
+        
+        with torch.no_grad():
+            decoded_out = self.decoder({"latent": latents_clamped})
+            if "rgb" in decoded_out:
+                rgb = decoded_out["rgb"]
+                rgb = (rgb + 1.0) / 2.0
+                result["rgb"] = rgb
+        
+        return result
+
+    def add_noise_to_latent(
+        self,
+        latent: torch.Tensor,
+        timestep: int,
+        noise: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        Add noise to a latent at a specific timestep.
+        Used to prepare prior latent for refinement.
+        
+        Args:
+            latent: Clean latent [B, C, H, W] (in VAE scale, not diffusion scale)
+            timestep: Noise level (0 = clean, num_steps-1 = pure noise)
+            noise: Optional noise tensor (generated if None)
+        
+        Returns:
+            Noised latent at timestep t
+        """
+        device = latent.device
+        
+        # Scale latent if needed
+        if self.scale_factor != 1.0:
+            latent = latent * self.scale_factor
+        
+        if noise is None:
+            noise = torch.randn_like(latent)
+        
+        t = torch.tensor([timestep], device=device)
+        noised = self.scheduler.add_noise(latent, noise, t)
+        
+        return noised
+
     @classmethod
     def load_config(cls, cfg_path):
         cfg_path = Path(cfg_path)

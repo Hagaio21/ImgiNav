@@ -1,0 +1,18 @@
+# Checkpoint list for baseline evaluation
+# One checkpoint path per line
+# Lines starting with # are ignored
+
+# Small models
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/both/small/checkpoints/best_checkpoint.pt
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/graph/small/checkpoints/best_checkpoint.pt
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/povs/small/checkpoints/best_checkpoint.pt
+
+# Medium models
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/both/medium/checkpoints/best_checkpoint.pt
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/graph/medium/checkpoints/best_checkpoint.pt
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/povs/medium/checkpoints/best_checkpoint.pt
+
+# Large models
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/both/large/checkpoints/best_checkpoint.pt
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/graph/large/checkpoints/best_checkpoint.pt
+/work3/s233249/ImgiNav/ImgiNav/experiments/diffusion/v2/seg/rooms/povs/large/checkpoints/best_checkpoint.pt
