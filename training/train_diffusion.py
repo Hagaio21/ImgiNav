@@ -1353,6 +1353,8 @@ def main():
     latest_checkpoint = checkpoint_dir / f"{exp_name}_checkpoint_latest.pt"
     start_epoch = 0
     best_val_loss = float("inf")
+    best_kid = float("inf")
+    best_lpips = float("inf")
     training_history = []
     
     metrics_csv_path = output_dir / f"{exp_name}_metrics.csv"
@@ -1455,11 +1457,23 @@ def main():
         
         start_epoch = extra_state.get("epoch", 1) - 1
         best_val_loss = extra_state.get("best_val_loss", float("inf"))
+        best_kid = extra_state.get("best_kid", float("inf"))
+        best_lpips = extra_state.get("best_lpips", float("inf"))
         training_history = extra_state.get("training_history", [])
         
         if not training_history:
             from training.utils import load_training_history_from_csv
             training_history = load_training_history_from_csv(metrics_csv_path, start_epoch)
+        
+        # Restore best metrics from training history if available
+        if training_history:
+            for entry in training_history:
+                if "val_kid" in entry and entry["val_kid"] is not None:
+                    if entry["val_kid"] < best_kid:
+                        best_kid = entry["val_kid"]
+                if "val_lpips" in entry and entry["val_lpips"] is not None:
+                    if entry["val_lpips"] < best_lpips:
+                        best_lpips = entry["val_lpips"]
         
         # Check if we need to continue training beyond the checkpoint
         epochs = config["training"].get("epochs", 100)
@@ -1729,7 +1743,20 @@ def main():
                     val_logs[metric_name] = metric_value
             
             # Check if this is the best validation loss BEFORE updating best_val_loss
-            is_best = val_loss < best_val_loss
+            is_best_loss = val_loss < best_val_loss
+            is_best = is_best_loss
+            
+            # Check if metrics are best and save checkpoints per metric
+            is_best_kid = False
+            is_best_lpips = False
+            if "kid" in val_logs and val_logs["kid"] is not None:
+                if val_logs["kid"] < best_kid:
+                    best_kid = val_logs["kid"]
+                    is_best_kid = True
+            if "lpips" in val_logs and val_logs["lpips"] is not None:
+                if val_logs["lpips"] < best_lpips:
+                    best_lpips = val_logs["lpips"]
+                    is_best_lpips = True
             
             # Early stopping logic
             if early_stopping_patience is not None:
@@ -1787,48 +1814,73 @@ def main():
             except Exception:
                 pass
         
-        # Save periodic checkpoint at specified interval
-        should_save_periodic = (epoch + 1) % save_interval == 0 or (epoch + 1) == epochs
-        if should_save_periodic:
-            checkpoint_dir = output_dir / "checkpoints"
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            periodic_checkpoint_path = checkpoint_dir / f"{exp_name}_checkpoint_epoch_{epoch + 1:03d}.pt"
-            
-            # Prepare extra state for model.save_checkpoint
-            extra_state = {
-                "epoch": epoch + 1,
-                "best_val_loss": best_val_loss,
-                "training_history": training_history,
-                "optimizer_state": trainer.optimizer.state_dict(),
-            }
-            
-            if trainer.scheduler is not None:
-                extra_state["scheduler_state"] = trainer.scheduler.state_dict()
-            
-            if trainer.scaler is not None:
-                extra_state["scaler_state"] = trainer.scaler.state_dict()
-            
-            # Save periodic checkpoint
-            model.save_checkpoint(periodic_checkpoint_path, include_config=True, exclude_projections=True, use_compression=compress_checkpoints, **extra_state)
-            print(f"Saved periodic checkpoint: {periodic_checkpoint_path}" + (" (compressed)" if compress_checkpoints else ""))
-        
-        # Save checkpoint using Trainer (always saves latest for resume, and best when applicable)
+        # Save checkpoint using Trainer (always saves latest for resume, and best loss when applicable)
+        # Store best metrics in trainer for checkpoint saving
+        trainer.best_kid = best_kid
+        trainer.best_lpips = best_lpips
         trainer.save_training_checkpoint(
             output_dir=output_dir,
             exp_name=exp_name,
             epoch=epoch + 1,
             best_val_loss=best_val_loss,
             training_history=training_history,
-            is_best=is_best,
+            is_best=is_best_loss,
             use_compression=compress_checkpoints
             )
+        
+        # Save best checkpoints per metric (only when validation ran)
+        if should_eval:
+            if is_best_loss:
+                trainer.save_best_checkpoint_per_metric(
+                    output_dir=output_dir,
+                    exp_name=exp_name,
+                    epoch=epoch + 1,
+                    best_val_loss=best_val_loss,
+                    best_kid=best_kid,
+                    best_lpips=best_lpips,
+                    training_history=training_history,
+                    metric_name="loss",
+                    metric_value=val_loss,
+                    use_compression=compress_checkpoints
+                )
+            if is_best_kid:
+                trainer.save_best_checkpoint_per_metric(
+                    output_dir=output_dir,
+                    exp_name=exp_name,
+                    epoch=epoch + 1,
+                    best_val_loss=best_val_loss,
+                    best_kid=best_kid,
+                    best_lpips=best_lpips,
+                    training_history=training_history,
+                    metric_name="kid",
+                    metric_value=val_logs.get("kid"),
+                    use_compression=compress_checkpoints
+                )
+            if is_best_lpips:
+                trainer.save_best_checkpoint_per_metric(
+                    output_dir=output_dir,
+                    exp_name=exp_name,
+                    epoch=epoch + 1,
+                    best_val_loss=best_val_loss,
+                    best_kid=best_kid,
+                    best_lpips=best_lpips,
+                    training_history=training_history,
+                    metric_name="lpips",
+                    metric_value=val_logs.get("lpips"),
+                    use_compression=compress_checkpoints
+                )
         
         # Early stopping check
         if early_stopping_patience is not None and epochs_without_improvement >= early_stopping_patience:
             print(f"Early stopping triggered after {epoch + 1} epochs")
             break
     
-    print(f"Training completed. Best validation loss: {best_val_loss:.6f}")
+    print(f"Training completed.")
+    print(f"  Best validation loss: {best_val_loss:.6f}")
+    if best_kid < float("inf"):
+        print(f"  Best KID: {best_kid:.6f}")
+    if best_lpips < float("inf"):
+        print(f"  Best LPIPS: {best_lpips:.6f}")
 
 
 if __name__ == "__main__":

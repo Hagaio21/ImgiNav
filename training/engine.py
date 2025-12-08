@@ -323,6 +323,8 @@ class Trainer:
         extra_state = {
             "epoch": epoch,
             "best_val_loss": best_val_loss,
+            "best_kid": getattr(self, 'best_kid', float("inf")),
+            "best_lpips": getattr(self, 'best_lpips', float("inf")),
             "training_history": training_history,
             "optimizer_state": self.optimizer.state_dict(),
         }
@@ -347,6 +349,64 @@ class Trainer:
         if saved_projections:
             for proj_name, proj_path in saved_projections.items():
                 print(f"Saved {proj_name} separately to: {proj_path}")
+    
+    def save_best_checkpoint_per_metric(
+        self,
+        output_dir: Path,
+        exp_name: str,
+        epoch: int,
+        best_val_loss: float,
+        best_kid: float,
+        best_lpips: float,
+        training_history: list,
+        metric_name: str,
+        metric_value: float,
+        use_compression: bool = False,
+    ) -> None:
+        """
+        Save best checkpoint for a specific metric (KID, LPIPS, or loss).
+        
+        Args:
+            output_dir: Output directory for checkpoints
+            exp_name: Experiment name
+            epoch: Current epoch number
+            best_val_loss: Best validation loss so far
+            best_kid: Best KID so far
+            best_lpips: Best LPIPS so far
+            training_history: List of training history dictionaries
+            metric_name: Name of metric ('kid', 'lpips', or 'loss')
+            metric_value: Current metric value
+            use_compression: Whether to compress checkpoint
+        """
+        checkpoint_dir = output_dir / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Prepare extra state for model.save_checkpoint
+        extra_state = {
+            "epoch": epoch,
+            "best_val_loss": best_val_loss,
+            "best_kid": best_kid,
+            "best_lpips": best_lpips,
+            "training_history": training_history,
+            "optimizer_state": self.optimizer.state_dict(),
+        }
+        
+        if self.scheduler is not None:
+            extra_state["scheduler_state"] = self.scheduler.state_dict()
+        
+        if self.scaler is not None:
+            extra_state["scaler_state"] = self.scaler.state_dict()
+        
+        # Save best checkpoint for this metric
+        best_metric_path = checkpoint_dir / f"{exp_name}_checkpoint_best_{metric_name}.pt"
+        self.model.save_checkpoint(
+            best_metric_path, 
+            include_config=True, 
+            exclude_projections=True, 
+            use_compression=use_compression, 
+            **extra_state
+        )
+        print(f"Saved best {metric_name.upper()} checkpoint: {best_metric_path} (value: {metric_value:.6f})" + (" (compressed)" if use_compression else ""))
     
     def load_training_checkpoint(
         self,
