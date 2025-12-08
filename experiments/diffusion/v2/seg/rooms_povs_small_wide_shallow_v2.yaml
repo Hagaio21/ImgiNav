@@ -1,0 +1,78 @@
+experiment:
+  name: diff_clip_v2_seg_rooms_small_wide_shallow_povs
+  phase: diffusion_training
+  save_path: /work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_povs
+dataset:
+  manifest: /work3/s233249/ImgiNav/dataset_v2/manifests/manifest_seg_pov_normalized_with_latents_cleaned.csv
+  outputs:
+    latent: latent_embedding_path
+    pov_emb: pov_embedding_path
+  filters:
+    rejected: false
+  return_path: false
+autoencoder:
+  checkpoint: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_clip_v2/checkpoints/vae_clip_v2_checkpoint_best.pt
+  frozen: true
+latent_clamp_min: -5.870734
+latent_clamp_max: 5.444793
+scale_factor: 1.013010
+embedding_projection:
+  type: CLIPEmbeddingToSpatial
+  clip_projections: /work3/s233249/ImgiNav/experiments/v2/autoencoders/vae_clip_v2/checkpoints/vae_clip_v2_clip_projection_best.pt
+  output_channels: 64
+  spatial_size:
+  - 32
+  - 32
+  combine_method: average
+unet:
+  type: UnetWithAttention
+  in_channels: 4
+  out_channels: 4
+  base_channels: 64
+  depth: 2
+  num_res_blocks: 2
+  time_dim: 256
+  norm_groups: 8
+  dropout: 0.1
+  use_attention: true
+  attention_heads: 4
+  attention_at:
+  - downs
+  - bottleneck
+  enable_cross_attention: true
+  window_size: 8
+  use_ema: false
+scheduler:
+  type: CosineScheduler
+  num_steps: 500
+training:
+  seed: 2024
+  epochs: 150
+  train_split: 0.8
+  batch_size: 64
+  num_workers: 4
+  shuffle: true
+  learning_rate: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.01
+  save_interval: 20
+  eval_interval: 10
+  sample_interval: 5
+  use_amp: true
+  max_grad_norm: 0.5
+  gradient_accumulation_steps: 1
+  scheduler:
+    type: cosine
+  cfg_dropout_rate: 0.15
+  guidance_scale: 7.5
+  sampling_seed_base: 42
+  num_conditioned_samples_per_type: 16
+  loss:
+    type: SNRWeightedMSELoss
+    key: pred_noise
+    target: noise
+    weight: 1.0
+    snr_weight_mode: min_snr
+    min_snr_gamma: 5.0
+    reduce_mean: true
+
