@@ -347,13 +347,6 @@ def main():
     
     dataset = build_dataset(config)
     
-    # Get weighted sampling config
-    training_cfg = config.get("training", {})
-    use_precomputed_weights = training_cfg.get("use_precomputed_weights", False)
-    precomputed_weight_column = training_cfg.get("precomputed_weight_column", "sample_weight")
-    max_weight = training_cfg.get("max_weight", None)
-    non_empty_multiplier = training_cfg.get("non_empty_multiplier", None)
-    
     # Build validation dataset
     val_dataset = None
     val_loader = None
@@ -375,7 +368,6 @@ def main():
         split_seed = config["training"].get("split_seed", 42)
         
         if train_split < 1.0:
-            # Calculate val_ratio from train_split (remaining goes to val, test=0)
             val_ratio = 1.0 - train_split
             train_dataset, val_dataset, _ = dataset.split(train_ratio=train_split, val_ratio=val_ratio, test_ratio=0.0, seed=split_seed)
             val_loader = val_dataset.make_dataloader(
@@ -386,16 +378,11 @@ def main():
         else:
             train_dataset = dataset
     
-    # Create train dataloader with optional precomputed weights
+    # Create train dataloader
     train_loader = train_dataset.make_dataloader(
         batch_size=config.get("training", {}).get("batch_size", 32),
-        shuffle=config.get("training", {}).get("shuffle", True) if not use_precomputed_weights else False,
+        shuffle=config.get("training", {}).get("shuffle", True),
         num_workers=config.get("training", {}).get("num_workers", 4),
-        use_precomputed_weights=use_precomputed_weights,
-        precomputed_weight_column=precomputed_weight_column,
-        max_weight=max_weight,
-        weight_stats_columns=training_cfg.get("weight_stats_columns", None),
-        non_empty_multiplier=non_empty_multiplier,
     )
     
     loss_fn = build_loss(config)

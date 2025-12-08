@@ -28,16 +28,13 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
     # Determine x-axis column
     x_col = "step" if "step" in history_df.columns else "epoch"
     
-    # Find all loss component pairs (train_X, val_X)
-    # Exclude non-loss columns and image quality metrics (they're plotted separately)
-    exclude_cols = {'epoch', 'step', 'cfg_dropout_rate', 'learning_rate', 'fid', 'kid', 'lpips', 'clip_score'}
+    # Exclude non-loss columns
+    exclude_cols = {'epoch', 'step', 'cfg_dropout_rate', 'learning_rate', 'kid', 'lpips'}
     
-    # Special handling for image quality metrics (plot separately)
+    # Image quality metrics to plot separately
     image_metrics = {
-        'fid': {'color': 'purple', 'label': 'FID (lower is better)', 'title': 'FID (Fréchet Inception Distance)'},
         'kid': {'color': 'orange', 'label': 'KID (lower is better)', 'title': 'KID (Kernel Inception Distance)'},
         'lpips': {'color': 'green', 'label': 'LPIPS (lower is better)', 'title': 'LPIPS (Learned Perceptual Image Patch Similarity)'},
-        'clip_score': {'color': 'blue', 'label': 'CLIP Score (higher is better)', 'title': 'CLIP Score'}
     }
     
     # Plot image quality metrics separately
@@ -65,16 +62,10 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
                         plt.savefig(metric_plot_path, dpi=150, bbox_inches='tight', facecolor='white')
                         plt.close()
                         print(f"  Saved {metric.upper()} plot: {metric_plot_path}")
-                    else:
-                        print(f"  Warning: No valid data for {metric.upper()}")
-                else:
-                    print(f"  Warning: No data found for {metric.upper()}")
             except Exception as e:
                 warnings.warn(f"Failed to plot {metric}: {e}")
-                print(f"  Error plotting {metric.upper()}: {e}")
-        else:
-            print(f"  Info: {col_name} not found in history (metric may not have been computed)")
     
+    # Find all loss component pairs
     loss_components = []
     seen_components = set()
     
@@ -94,7 +85,7 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
                     })
     
     if not loss_components:
-        return  # No loss data to plot
+        return
     
     # Plot each component individually
     for component in loss_components:
@@ -109,7 +100,6 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
             try:
                 train_data = history_df[[x_col, component['train_col']]].dropna()
                 if len(train_data) > 0:
-                    # Filter out inf and non-finite values
                     train_data = train_data[train_data[component['train_col']] != float('inf')]
                     train_data = train_data[np.isfinite(train_data[component['train_col']])]
                     if len(train_data) > 0:
@@ -124,7 +114,6 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
             try:
                 val_data = history_df[[x_col, component['val_col']]].dropna()
                 if len(val_data) > 0:
-                    # Filter out inf and non-finite values
                     val_data = val_data[val_data[component['val_col']] != float('inf')]
                     val_data = val_data[np.isfinite(val_data[component['val_col']])]
                     if len(val_data) > 0:
@@ -158,11 +147,7 @@ def plot_loss_curves(history_df, output_dir, exp_name="experiment"):
         
         plt.tight_layout()
         
-        # Save individual component plot
         safe_name = component['name'].replace('/', '_').replace('\\', '_').replace(' ', '_')
         component_plot_path = output_dir / f'{exp_name}_{safe_name}_curves.png'
         plt.savefig(component_plot_path, dpi=150, bbox_inches='tight', facecolor='white')
         plt.close()
-
-
-

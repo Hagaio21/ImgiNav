@@ -36,7 +36,6 @@ from training.utils import (
 )
 from training.engine import Trainer
 from training.plotting_utils import plot_loss_curves
-from training.metrics_utils import compute_fid_from_tensors
 from models.diffusion import DiffusionModel
 from models.autoencoder import Autoencoder
 from models.losses.base_loss import LOSS_REGISTRY
@@ -451,56 +450,44 @@ def diffusion_eval_step_fn(model, batch, batch_idx, loss_fn, trainer):
 
 def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_steps=50):
     """
-    Compute multiple metrics (FID, KID, LPIPS, CLIP score) by generating images and comparing with real images.
+    Compute KID and LPIPS metrics by generating images and comparing with real images.
     
     Args:
         model: DiffusionModel
         val_loader: Validation dataloader
         device: Device string
         config: Experiment configuration
-        num_samples: Number of samples to use for metrics (default: 50 for faster computation)
+        num_samples: Number of samples to use for metrics
         ddim_steps: Number of DDIM steps for sampling
     
     Returns:
-        Dictionary with metrics: {'fid': float, 'kid': float, 'lpips': float, 'clip_score': float}
-        Missing metrics will be None
+        Dictionary with metrics: {'kid': float, 'lpips': float}
     """
     try:
         from training.metrics_utils import (
-            compute_fid_from_tensors, 
             compute_kid_from_tensors,
             compute_lpips,
-            compute_clip_score,
             CLEANFID_AVAILABLE,
-            LPIPS_AVAILABLE,
-            CLIP_AVAILABLE
+            LPIPS_AVAILABLE
         )
     except ImportError:
         print("  Warning: metrics_utils not available, skipping metrics calculation")
         return {}
     
     metrics = {}
-    
     model.eval()
     device_obj = to_device(device)
     
-    # Get guidance_scale from config
     guidance_scale = config.get("training", {}).get("guidance_scale", 1.0)
     
-    # Collect real and generated images, and text embeddings for CLIP score
-    # Store on CPU to avoid GPU memory accumulation
+    # Collect real and generated images on CPU
     real_images = []
     generated_images = []
-    text_embeddings_list = []
     
-    # Get dataset to access original images
     dataset = val_loader.dataset
-    
-    # Sample indices for metrics calculation
     num_samples = min(num_samples, len(dataset))
     sample_indices = list(range(num_samples))
     
-    # Process in batches
     batch_size = 16
     num_batches = (num_samples + batch_size - 1) // batch_size
     
@@ -531,38 +518,26 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
             
             batch = move_batch_to_device(batch, device_obj, non_blocking=False)
             
-            # Get real images (decode target latents)
             target_latents = batch.get("latent", None)
             if target_latents is None:
                 continue
             
             # Decode real images
             target_output = {"latent": target_latents}
-            target_rgb = latents2rgb(model, target_output, warning_prefix="Metrics: Decoder for real images")
+            target_rgb = latents2rgb(model, target_output, warning_prefix="Metrics: real images")
             if target_rgb is not None:
-                # Move to CPU immediately to free GPU memory
                 real_images.append(target_rgb.cpu())
             
-            # Get embeddings for generation and CLIP score
+            # Get embeddings for generation
             text_emb = batch.get("text_emb", None)
             pov_emb = batch.get("pov_emb", None)
             
-            # Store text embeddings for CLIP score (if available)
-            if text_emb is not None:
-                if text_emb.dim() > 2:
-                    text_emb_flat = text_emb.flatten(start_dim=1)
-                else:
-                    text_emb_flat = text_emb
-                # Move to CPU immediately
-                text_embeddings_list.append(text_emb_flat.cpu())
-            
-            # Flatten embeddings if needed
             if text_emb is not None and text_emb.dim() > 2:
                 text_emb = text_emb.flatten(start_dim=1)
             if pov_emb is not None and pov_emb.dim() > 2:
                 pov_emb = pov_emb.flatten(start_dim=1)
             
-            # Handle missing embeddings (create zeros if needed)
+            # Handle missing embeddings
             if hasattr(model, 'embedding_proj') and model.embedding_proj is not None:
                 param_dtype = next(model.embedding_proj.parameters()).dtype
                 batch_size_actual = target_latents.shape[0]
@@ -595,18 +570,15 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
                 verbose=False
             )
             
-            # Decode generated images
-            gen_rgb = latents2rgb(model, gen_output, warning_prefix="Metrics: Decoder for generated images")
+            gen_rgb = latents2rgb(model, gen_output, warning_prefix="Metrics: generated images")
             if gen_rgb is not None:
-                # Move to CPU immediately to free GPU memory
                 generated_images.append(gen_rgb.cpu())
             
-            # Clear GPU cache after each batch to prevent memory accumulation
+            # Clear GPU cache
             del target_rgb, gen_rgb, gen_output, target_latents, batch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
     
-    # Concatenate all batches (now on CPU)
     if len(real_images) == 0 or len(generated_images) == 0:
         print("  Warning: No images collected for metrics calculation")
         return metrics
@@ -614,87 +586,35 @@ def compute_metrics(model, val_loader, device, config, num_samples=50, ddim_step
     real_tensors = torch.cat(real_images, dim=0)
     gen_tensors = torch.cat(generated_images, dim=0)
     
-    # Ensure same number of samples
     min_len = min(real_tensors.shape[0], gen_tensors.shape[0])
     real_tensors = real_tensors[:min_len]
     gen_tensors = gen_tensors[:min_len]
     
-    # Compute FID (smaller sample size)
+    # Compute KID
     if CLEANFID_AVAILABLE:
         try:
-            fid_score = compute_fid_from_tensors(
-                real_tensors,
-                gen_tensors,
-                device=device_obj,
-                batch_size=50
-            )
-            metrics['fid'] = fid_score
-            print(f"  FID: {fid_score:.2f}")
-            # Clear cache after FID computation
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception as e:
-            print(f"  Warning: FID calculation failed: {e}")
-    
-    # Compute KID (more reliable at low sample counts)
-    if CLEANFID_AVAILABLE:
-        try:
-            kid_score = compute_kid_from_tensors(
-                real_tensors,
-                gen_tensors,
-                device=device_obj,
-                batch_size=50
-            )
+            kid_score = compute_kid_from_tensors(real_tensors, gen_tensors, device=device_obj, batch_size=50)
             metrics['kid'] = kid_score
             print(f"  KID: {kid_score:.4f}")
-            # Clear cache after KID computation
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception as e:
             print(f"  Warning: KID calculation failed: {e}")
     
-    # Compute LPIPS (perceptual distance)
+    # Compute LPIPS
     if LPIPS_AVAILABLE:
         try:
-            # Move to GPU only for LPIPS computation
             real_tensors_gpu = real_tensors.to(device_obj)
             gen_tensors_gpu = gen_tensors.to(device_obj)
-            lpips_score = compute_lpips(
-                real_tensors_gpu,
-                gen_tensors_gpu,
-                device=device_obj
-            )
+            lpips_score = compute_lpips(real_tensors_gpu, gen_tensors_gpu, device=device_obj)
             metrics['lpips'] = lpips_score
             print(f"  LPIPS: {lpips_score:.4f}")
-            # Clear GPU memory
             del real_tensors_gpu, gen_tensors_gpu
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception as e:
             print(f"  Warning: LPIPS calculation failed: {e}")
     
-    # Compute CLIP score (if text embeddings available)
-    if CLIP_AVAILABLE and len(text_embeddings_list) > 0:
-        try:
-            text_embeddings = torch.cat(text_embeddings_list, dim=0)[:min_len]
-            # Move to GPU only for CLIP computation
-            gen_tensors_gpu = gen_tensors.to(device_obj)
-            text_embeddings_gpu = text_embeddings.to(device_obj)
-            clip_score = compute_clip_score(
-                gen_tensors_gpu,
-                text_embeddings_gpu,
-                device=device_obj
-            )
-            metrics['clip_score'] = clip_score
-            print(f"  CLIP Score: {clip_score:.4f}")
-            # Clear GPU memory
-            del gen_tensors_gpu, text_embeddings_gpu
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception as e:
-            print(f"  Warning: CLIP score calculation failed: {e}")
-    
-    # Final cleanup
     del real_tensors, gen_tensors
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -1458,78 +1378,14 @@ def main():
     num_workers = config["training"].get("num_workers", 8)
     shuffle = config["training"].get("shuffle", True)
     
-    # Weighted sampling options
-    use_weighted_sampling = config["training"].get("use_weighted_sampling", False)
-    use_precomputed_weights = config["training"].get("use_precomputed_weights", False)
-    precomputed_weight_column = config["training"].get("precomputed_weight_column", "sample_weight")
-    max_weight = config["training"].get("max_weight", None)
-    
-    # Auto-generate weight stats if using column-based weighting (legacy approach)
-    weights_stats_path = None
-    if use_weighted_sampling and not use_precomputed_weights:
-        # Support both "weight_column" (new) and "column" (old) for backward compatibility
-        weight_column = config["training"].get("weight_column", None) or config["training"].get("column", None)
-        if weight_column:
-            # Get manifest path from dataset config
-            manifest_path = Path(config["dataset"]["manifest"])
-            
-            # Get filters from dataset config to apply before computing weights
-            # This ensures weights are computed on the same filtered dataset used for training
-            dataset_filters = config["dataset"].get("filters", None)
-            
-            # Ensure weight stats exist (will generate if needed)
-            from training.utils import ensure_weight_stats_exist
-            weights_stats_path = ensure_weight_stats_exist(
-                manifest_path=manifest_path,
-                column_name=weight_column,
-                output_dir=output_dir,
-                rare_threshold_percentile=config["training"].get("rare_threshold_percentile", 10.0),
-                min_samples_threshold=config["training"].get("min_samples_threshold", 50),
-                weighting_method=config["training"].get("weighting_method", "inverse_frequency"),
-                max_weight=max_weight,
-                min_weight=config["training"].get("min_weight", 1.0),
-                filters=dataset_filters  # Apply same filters as dataset
-            )
-    
-    # Use dataset's make_dataloader to support weighted sampling
     train_loader = train_dataset.make_dataloader(
         batch_size=batch_size,
-        shuffle=shuffle if not (use_weighted_sampling or use_precomputed_weights) else False,
+        shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=device_obj.type == "cuda",
-        persistent_workers=num_workers > 0,
-        # Precomputed weights (new approach)
-        use_precomputed_weights=use_precomputed_weights,
-        precomputed_weight_column=precomputed_weight_column,
-        # Column-based weights (legacy approach)
-        use_weighted_sampling=use_weighted_sampling and not use_precomputed_weights,
-        weight_column=config["training"].get("weight_column", None) or config["training"].get("column", None),
-        weights_stats_path=weights_stats_path,
-        use_grouped_weights=config["training"].get("use_grouped_weights", False),
-        group_rare_classes=config["training"].get("group_rare_classes", False),
-        class_grouping_path=config["training"].get("class_grouping_path", None),
-        max_weight=max_weight,
-        exclude_extremely_rare=config["training"].get("exclude_extremely_rare", False),
-        min_samples_threshold=config["training"].get("min_samples_threshold", 50)
+        persistent_workers=num_workers > 0
     )
     
-    # Verify if weighted sampling is actually active
-    from torch.utils.data import WeightedRandomSampler
-    is_using_weights = hasattr(train_loader, 'sampler') and isinstance(train_loader.sampler, WeightedRandomSampler)
-    print(f"\n{'='*60}")
-    print(f"WEIGHTED SAMPLING STATUS")
-    print(f"{'='*60}")
-    print(f"  Config: use_precomputed_weights = {use_precomputed_weights}")
-    print(f"  Config: precomputed_weight_column = {precomputed_weight_column}")
-    print(f"  Actual: WeightedRandomSampler active = {is_using_weights}")
-    if is_using_weights:
-        print(f"  ✓ Precomputed weights ARE being used for training!")
-        if hasattr(train_loader.sampler, 'weights'):
-            weight_tensor = train_loader.sampler.weights
-            print(f"  Weight stats: min={weight_tensor.min():.4f}, max={weight_tensor.max():.4f}, mean={weight_tensor.mean():.4f}")
-    else:
-        print(f"  ✗ Precomputed weights are NOT being used (regular random sampling)")
-    print(f"{'='*60}\n")
     val_loader = None
     if val_dataset:
         val_loader = val_dataset.make_dataloader(
@@ -1537,8 +1393,7 @@ def main():
             shuffle=False,
             num_workers=num_workers,
             pin_memory=device_obj.type == "cuda",
-            persistent_workers=num_workers > 0,
-            use_weighted_sampling=False  # No weighted sampling for validation
+            persistent_workers=num_workers > 0
         )
     
     # Build loss function from config (uses CompositeLoss)
@@ -1653,7 +1508,7 @@ def main():
                 limit_batches=50
             )
             
-            # Compute metrics (FID, KID, LPIPS, CLIP score)
+            # Compute metrics (KID, LPIPS)
             computed_metrics = compute_metrics(
                 model, 
                 val_loader, 
