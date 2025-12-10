@@ -20,7 +20,7 @@ RUN_SCRIPT="${SCRIPT_DIR}/eval/run_eval_baseline.sh"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Defaults
-NUM_SAMPLES=50
+NUM_SAMPLES=100
 GUIDANCE_SCALE=7.5
 QUEUE="gpul40s"
 DRY_RUN=false
@@ -178,9 +178,9 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
             -e "${LOG_DIR}/eval_${EXP_NAME}.%J.err" \
             -q "${QUEUE}" \
             -n 4 \
-            -R "rusage[mem=16000]" \
+            -R "rusage[mem=4000]" \
             -gpu "num=1" \
-            -W 4:00 \
+            -W 2:00 \
             -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE}" \
             bash "${RUN_SCRIPT}"
         

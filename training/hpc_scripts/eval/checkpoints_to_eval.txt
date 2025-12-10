@@ -14,9 +14,9 @@
 /work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_small_down_bottleneck_povs_checkpoint_best.pt
 
 # Small - Wide Shallow
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_both_checkpoint_best.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_graph_checkpoint_best.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_povs_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_both_checkpoint_best_kid.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_graph_checkpoint_best_kid.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_povs_checkpoint_best_kid.pt
 
 # =============================================================================
 # MEDIUM MODELS (4 done, 2 unfinished)
@@ -28,9 +28,9 @@
 /work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_medium_down_bottleneck_povs_checkpoint_best.pt
 
 # Medium - Wide Shallow (all done)
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_both_checkpoint_best.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_graph_checkpoint_best.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_povs_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_both_checkpoint_best_kid.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_graph_checkpoint_best_kid.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_povs_checkpoint_best_kid.pt
 
 # =============================================================================
 # LARGE MODELS (all done)
@@ -42,6 +42,6 @@
 /work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_large_down_bottleneck_povs_checkpoint_best.pt
 
 # Large - Wide Shallow
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_both_checkpoint_best.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_graph_checkpoint_best.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_povs_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_both_checkpoint_best_kid.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_graph_checkpoint_best_kid.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_povs_checkpoint_best_kid.pt
