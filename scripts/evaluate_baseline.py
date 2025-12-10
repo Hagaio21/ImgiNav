@@ -17,6 +17,11 @@ Usage:
         --manifest /path/to/manifest.csv \
         --taxonomy /path/to/taxonomy.json \
         --output-dir /path/to/results
+    
+    # Specify conditioning type explicitly:
+    python evaluate_baseline.py \
+        --checkpoint /path/to/checkpoint.pt \
+        --conditioning pov
 """
 
 import argparse
@@ -74,23 +79,83 @@ def load_validation_data(
     return dataset
 
 
+def infer_conditioning_type(checkpoint_path: Path, config_path: Path = None) -> str:
+    """Infer conditioning type from checkpoint path or config."""
+    
+    # Try config first if available
+    if config_path and config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+            
+            # Check embedding_projection settings
+            emb_proj = config.get("embedding_projection", {})
+            combine_method = emb_proj.get("combine_method", None)
+            
+            # Check experiment name
+            exp_name = config.get("experiment", {}).get("name", "").lower()
+            
+            if "_both_" in exp_name or "_both" in exp_name:
+                return "both"
+            elif "_graph" in exp_name and "_pov" not in exp_name:
+                return "graph"
+            elif "_pov" in exp_name and "_graph" not in exp_name:
+                return "pov"
+        except Exception as e:
+            print(f"  Warning: Could not parse config: {e}")
+    
+    # Infer from checkpoint path
+    ckpt_str = str(checkpoint_path).lower()
+    
+    if "_both_" in ckpt_str or "_both/" in ckpt_str or "/both_" in ckpt_str:
+        return "both"
+    elif "_graphs_" in ckpt_str or "_graph_" in ckpt_str or "/graph" in ckpt_str:
+        return "graph"
+    elif "_povs_" in ckpt_str or "_pov_" in ckpt_str or "/pov" in ckpt_str:
+        return "pov"
+    
+    # Default fallback
+    print("  Warning: Could not infer conditioning type, defaulting to 'both'")
+    return "both"
+
+
 def generate_single(
     model: DiffusionModel,
     sample: dict,
     device: str,
     guidance_scale: float = 7.5,
-    num_steps: int = 50
+    num_steps: int = 50,
+    conditioning: str = "both"
 ) -> dict:
     """Generate a single floorplan from conditioning."""
     
-    # Get conditioning
-    text_emb = sample.get("text_emb")
-    pov_emb = sample.get("pov_emb")
+    # Get conditioning based on mode
+    text_emb = None
+    pov_emb = None
     
-    if text_emb is not None:
-        text_emb = text_emb.unsqueeze(0).to(device) if text_emb.dim() == 1 else text_emb.to(device)
-    if pov_emb is not None:
-        pov_emb = pov_emb.unsqueeze(0).to(device) if pov_emb.dim() == 1 else pov_emb.to(device)
+    if conditioning in ["graph", "both"]:
+        text_emb = sample.get("text_emb")
+        # Handle case where embeddings are paths (strings) instead of tensors
+        if isinstance(text_emb, str):
+            try:
+                text_emb = torch.load(text_emb, map_location="cpu", weights_only=True)
+            except Exception as e:
+                print(f"Warning: Could not load text embedding from {text_emb}: {e}")
+                text_emb = None
+        if text_emb is not None:
+            text_emb = text_emb.unsqueeze(0).to(device) if text_emb.dim() == 1 else text_emb.to(device)
+    
+    if conditioning in ["pov", "both"]:
+        pov_emb = sample.get("pov_emb")
+        # Handle case where embeddings are paths (strings) instead of tensors
+        if isinstance(pov_emb, str):
+            try:
+                pov_emb = torch.load(pov_emb, map_location="cpu", weights_only=True)
+            except Exception as e:
+                print(f"Warning: Could not load pov embedding from {pov_emb}: {e}")
+                pov_emb = None
+        if pov_emb is not None:
+            pov_emb = pov_emb.unsqueeze(0).to(device) if pov_emb.dim() == 1 else pov_emb.to(device)
     
     # Generate
     with torch.no_grad():
@@ -129,7 +194,8 @@ def run_evaluation(
     num_steps: int = 50,
     max_samples: int = None,
     save_images: bool = False,
-    output_dir: Path = None
+    output_dir: Path = None,
+    conditioning: str = "both"
 ) -> dict:
     """
     Run evaluation on dataset.
@@ -148,13 +214,15 @@ def run_evaluation(
     else:
         images_dir = None
     
-    print(f"\nEvaluating {n_samples} samples...")
+    print(f"\nEvaluating {n_samples} samples with conditioning: {conditioning}...")
     
     for idx in tqdm(range(n_samples), desc="Evaluating"):
         sample = dataset[idx]
         
-        # Generate
-        output = generate_single(model, sample, device, guidance_scale, num_steps)
+        # Generate with correct conditioning
+        output = generate_single(
+            model, sample, device, guidance_scale, num_steps, conditioning=conditioning
+        )
         pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
         
         # Decode target
@@ -203,6 +271,7 @@ def run_evaluation(
         aggregated[f"{key}_max"] = float(np.max(values))
     
     aggregated["num_samples"] = n_samples
+    aggregated["conditioning"] = conditioning
     
     return {
         "per_sample": all_results,
@@ -233,9 +302,10 @@ def save_results(results: dict, output_dir: Path, experiment_name: str):
     print("EVALUATION SUMMARY")
     print("=" * 60)
     for key, value in results["aggregated"].items():
-        if key != "num_samples":
+        if key not in ["num_samples", "conditioning"]:
             print(f"  {key}: {value:.4f}")
     print(f"  num_samples: {results['aggregated']['num_samples']}")
+    print(f"  conditioning: {results['aggregated']['conditioning']}")
     print("=" * 60)
 
 
@@ -257,6 +327,10 @@ def main():
                         help="Path to taxonomy.json")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Output directory for results")
+    
+    # Conditioning type
+    parser.add_argument("--conditioning", type=str, choices=["pov", "graph", "both"],
+                        default=None, help="Conditioning type (inferred from experiment name if not set)")
     
     # Evaluation settings
     parser.add_argument("--guidance-scale", type=float, default=7.5,
@@ -305,10 +379,22 @@ def main():
     if args.taxonomy is None or not args.taxonomy.exists():
         raise ValueError("Could not find taxonomy.json. Specify with --taxonomy")
     
-    print(f"Taxonomy: {args.taxonomy}")
-    print(f"Manifest: {args.manifest}")
-    print(f"Checkpoint: {args.checkpoint}")
-    print(f"Output dir: {args.output_dir}")
+    # Infer conditioning type if not specified
+    if args.conditioning is None:
+        args.conditioning = infer_conditioning_type(args.checkpoint, args.config)
+    
+    print("=" * 60)
+    print("EVALUATION CONFIGURATION")
+    print("=" * 60)
+    print(f"  Checkpoint: {args.checkpoint}")
+    print(f"  Manifest: {args.manifest}")
+    print(f"  Taxonomy: {args.taxonomy}")
+    print(f"  Output dir: {args.output_dir}")
+    print(f"  Conditioning: {args.conditioning}")
+    print(f"  Guidance scale: {args.guidance_scale}")
+    print(f"  Num steps: {args.num_steps}")
+    print(f"  Max samples: {args.max_samples}")
+    print("=" * 60)
     
     # Load model
     model = load_model(args.checkpoint, args.device)
@@ -352,13 +438,15 @@ def main():
         num_steps=args.num_steps,
         max_samples=args.max_samples,
         save_images=args.save_images,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        conditioning=args.conditioning
     )
     
     # Add metadata
     results["metadata"] = {
         "checkpoint": str(args.checkpoint),
         "manifest": str(args.manifest),
+        "conditioning": args.conditioning,
         "guidance_scale": args.guidance_scale,
         "num_steps": args.num_steps,
         "timestamp": datetime.now().isoformat()

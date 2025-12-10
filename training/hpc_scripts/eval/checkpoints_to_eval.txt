@@ -1,30 +1,47 @@
-# Diffusion Model Baseline Checkpoints (best_kid)
-# Selected metric: KID - best for measuring distributional quality of generated samples
-# ================================================================================
+# Baseline Evaluation Checkpoints
+# Generated: 2024-12-08
+# 
+# Finished experiments: 16
+# Unfinished experiments: 2 (commented out - uncomment when done)
 
-# BOTH CONDITIONING (text_emb + pov_emb)
-# ------------------------------------------------------------------------------
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_both/checkpoints/diff_clip_v2_seg_rooms_large_down_bottleneck_both_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_both_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_down_bottleneck_both/checkpoints/diff_clip_v2_seg_rooms_medium_down_bottleneck_both_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_both_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_down_bottleneck_both/checkpoints/diff_clip_v2_seg_rooms_small_down_bottleneck_both_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_both_checkpoint_best_kid.pt
+# =============================================================================
+# SMALL MODELS (all done)
+# =============================================================================
 
-# GRAPH CONDITIONING (text_emb only)
-# ------------------------------------------------------------------------------
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_graph/checkpoints/diff_clip_v2_seg_rooms_large_down_bottleneck_graph_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_graph_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_down_bottleneck_graph/checkpoints/diff_clip_v2_seg_rooms_medium_down_bottleneck_graph_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_graph_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_down_bottleneck_graph/checkpoints/diff_clip_v2_seg_rooms_small_down_bottleneck_graph_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_graph_checkpoint_best_kid.pt
+# Small - Down Bottleneck
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_down_bottleneck_both/checkpoints/diff_clip_v2_seg_rooms_small_down_bottleneck_both_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_down_bottleneck_graph/checkpoints/diff_clip_v2_seg_rooms_small_down_bottleneck_graph_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_small_down_bottleneck_povs_checkpoint_best.pt
 
-# POV CONDITIONING (pov_emb only)
-# ------------------------------------------------------------------------------
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_large_down_bottleneck_povs_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_povs_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_medium_down_bottleneck_povs_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_povs_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_small_down_bottleneck_povs_checkpoint_best_kid.pt
-/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_povs_checkpoint_best_kid.pt
+# Small - Wide Shallow
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_both_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_graph_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_small_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_small_wide_shallow_povs_checkpoint_best.pt
+
+# =============================================================================
+# MEDIUM MODELS (4 done, 2 unfinished)
+# =============================================================================
+
+# Medium - Down Bottleneck (1 done, 2 unfinished)
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_down_bottleneck_both/checkpoints/diff_clip_v2_seg_rooms_medium_down_bottleneck_both_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_down_bottleneck_graph/checkpoints/diff_clip_v2_seg_rooms_medium_down_bottleneck_graph_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_medium_down_bottleneck_povs_checkpoint_best.pt
+
+# Medium - Wide Shallow (all done)
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_both_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_graph_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_medium_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_medium_wide_shallow_povs_checkpoint_best.pt
+
+# =============================================================================
+# LARGE MODELS (all done)
+# =============================================================================
+
+# Large - Down Bottleneck
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_both/checkpoints/diff_clip_v2_seg_rooms_large_down_bottleneck_both_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_graph/checkpoints/diff_clip_v2_seg_rooms_large_down_bottleneck_graph_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_down_bottleneck_povs/checkpoints/diff_clip_v2_seg_rooms_large_down_bottleneck_povs_checkpoint_best.pt
+
+# Large - Wide Shallow
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_both/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_both_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_graph/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_graph_checkpoint_best.pt
+/work3/s233249/ImgiNav/experiments/diffusion/v2/diff_clip_v2_seg_rooms_large_wide_shallow_povs/checkpoints/diff_clip_v2_seg_rooms_large_wide_shallow_povs_checkpoint_best.pt

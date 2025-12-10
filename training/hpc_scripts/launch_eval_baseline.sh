@@ -12,7 +12,7 @@
 #   --queue Q           Queue to submit to (default: gpul40s)
 #   --dry-run           Print commands without submitting
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/work3/s233249/ImgiNav/ImgiNav"
@@ -20,11 +20,11 @@ RUN_SCRIPT="${SCRIPT_DIR}/eval/run_eval_baseline.sh"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Defaults
-NUM_SAMPLES=50
+NUM_SAMPLES=100
 GUIDANCE_SCALE=7.5
 QUEUE="gpul40s"
 DRY_RUN=false
-MANIFEST="/work3/s233249/ImgiNav/experiments/diffusion/v2/manifest_val.csv"
+MANIFEST="/work3/s233249/ImgiNav/dataset_v2/manifests/manifest_val.csv"
 TAXONOMY="${BASE_DIR}/data_preparation_v2/taxonomy.json"
 OUTPUT_DIR="${BASE_DIR}/evaluation_results"
 
@@ -174,11 +174,15 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
         echo "  [DRY RUN] Would submit job"
     else
         bsub -J "${JOB_NAME}" \
-             -o "${LOG_DIR}/eval_${EXP_NAME}.%J.out" \
-             -e "${LOG_DIR}/eval_${EXP_NAME}.%J.err" \
-             -q "${QUEUE}" \
-             -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE}" \
-             "${RUN_SCRIPT}"
+            -o "${LOG_DIR}/eval_${EXP_NAME}.%J.out" \
+            -e "${LOG_DIR}/eval_${EXP_NAME}.%J.err" \
+            -q "${QUEUE}" \
+            -n 4 \
+            -R "rusage[mem=16000]" \
+            -gpu "num=1" \
+            -W 4:00 \
+            -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE}" \
+            bash "${RUN_SCRIPT}"
         
         ((SUBMITTED++))
     fi
