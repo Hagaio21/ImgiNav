@@ -235,12 +235,13 @@ def run_evaluation(
         result = {
             "idx": idx,
             "metrics": metrics["summary"],
-            "palette": metrics["palette"],
-            "object_counts": metrics["object_counts"],
-            "blob_matching": metrics["blob_matching"],
+            "class_presence": metrics["class_presence"],
+            "counts": metrics["counts"],
+            "blobs": metrics["blobs"],
+            "pixels": metrics["pixels"],
             "paths": metrics.get("paths", {})
         }
-        
+                
         # Add path info if available
         if "paths" in sample:
             result["sample_paths"] = sample["paths"]
