@@ -20,7 +20,7 @@ RUN_SCRIPT="${SCRIPT_DIR}/eval/run_eval_baseline.sh"
 LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Defaults
-NUM_SAMPLES=100
+NUM_SAMPLES=50
 GUIDANCE_SCALE=7.5
 QUEUE="gpul40s"
 DRY_RUN=false
