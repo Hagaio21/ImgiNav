@@ -114,10 +114,6 @@ class TextEncoder:
         return embeddings
 
 
-# =============================================================================
-# Embedding Functions
-# =============================================================================
-
 def embed_povs(
     df: pd.DataFrame,
     dataset_root: Path,
