@@ -43,7 +43,6 @@ from training.evaluation_metrics import (
     load_taxonomy
 )
 
-
 def load_model(checkpoint_path: Path, device: str = "cuda") -> DiffusionModel:
     """Load diffusion model from checkpoint."""
     print(f"Loading model from {checkpoint_path}...")
