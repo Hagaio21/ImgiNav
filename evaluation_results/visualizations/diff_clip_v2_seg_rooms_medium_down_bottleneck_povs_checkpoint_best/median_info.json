@@ -1,0 +1,26 @@
+{
+  "eval_idx": 370,
+  "dataset_idx": 14501,
+  "unified_score": 0.5492274107212878,
+  "metrics": {
+    "is_empty": 0.0,
+    "class_f1": 0.3999999999999999,
+    "class_recall": 0.4705882352941176,
+    "class_precision": 0.3478260869565217,
+    "count_accuracy": 0.3854166666666666,
+    "count_exact_match_rate": 0.09375,
+    "detection_f1": 0.2352941176470588,
+    "detection_recall": 0.2702702702702703,
+    "detection_precision": 0.2083333333333333,
+    "mean_bbox_iou": 0.0081143596961105,
+    "mean_density_sim": 0.8255016809991862,
+    "mean_centroid_dist": 0.2476710176864068,
+    "mean_centroid_accuracy": 0.8248701438905683,
+    "mean_camera_similarity": 0.8362409771061798,
+    "object_pixel_accuracy": 0.1476107045930811,
+    "mean_iou": 0.00805045258212,
+    "wall_iou": 0.0366760315731131,
+    "floor_iou": 0.1504530916844349,
+    "unified_score": 0.5492274107212878
+  }
+}

@@ -22,10 +22,12 @@ Usage:
 
 import argparse
 import json
+import csv
 import sys
 import yaml
 import torch
 import numpy as np
+import pandas as pd
 import random
 from pathlib import Path
 from tqdm import tqdm
@@ -43,6 +45,7 @@ from training.evaluation_metrics import (
     load_taxonomy
 )
 
+
 def load_model(checkpoint_path: Path, device: str = "cuda") -> DiffusionModel:
     """Load diffusion model from checkpoint."""
     print(f"Loading model from {checkpoint_path}...")
@@ -56,24 +59,82 @@ def load_model(checkpoint_path: Path, device: str = "cuda") -> DiffusionModel:
 def load_validation_data(
     manifest_path: Path,
     outputs: dict,
-    filters: dict = None,
+    exclude_empty: bool = True,
+    min_furniture: int = 0,
 ):
-    """Load evaluation dataset directly from eval_manifest.csv."""
+    """Load evaluation dataset directly from eval_manifest.csv.
+    
+    Args:
+        manifest_path: Path to manifest CSV
+        outputs: Column mapping for dataset
+        exclude_empty: Whether to exclude empty rooms (is_empty=False)
+        min_furniture: Minimum furniture count required
+    
+    Returns:
+        Tuple of (dataset, valid_indices, manifest_df, manifest_dir) where:
+        - valid_indices maps eval_idx to original row
+        - manifest_df is the filtered dataframe for condition lookup
+        - manifest_dir is the directory containing the manifest (for path resolution)
+    """
     print(f"Loading evaluation dataset from {manifest_path}...")
     
-    if filters is None:
-        filters = {"rejected": False}
+    manifest_path = Path(manifest_path)
+    manifest_dir = manifest_path.parent
     
+    # Load manifest with pandas for proper filtering
+    df = pd.read_csv(manifest_path)
+    print(f"  Total rows in manifest: {len(df)}")
+    print(f"  Columns: {list(df.columns)}")
+    
+    # Debug: show is_empty column info
+    if "is_empty" in df.columns:
+        print(f"  is_empty dtype: {df['is_empty'].dtype}")
+        print(f"  is_empty value_counts: {df['is_empty'].value_counts().to_dict()}")
+    else:
+        print(f"  WARNING: 'is_empty' column not found!")
+    
+    if "furniture_count" in df.columns:
+        print(f"  furniture_count range: {df['furniture_count'].min()} - {df['furniture_count'].max()}")
+        print(f"  furniture_count=0: {(df['furniture_count'] == 0).sum()}")
+    
+    # Apply filters
+    mask = pd.Series([True] * len(df))
+    
+    # Always exclude rejected samples
+    if "rejected" in df.columns:
+        # Convert to bool and exclude where True
+        rejected = df["rejected"].fillna(False).astype(bool)
+        rejected_count = rejected.sum()
+        mask &= ~rejected  # Keep where rejected is False
+        print(f"  Excluding {rejected_count} rejected samples")
+    
+    # Optionally exclude empty rooms
+    if exclude_empty and "is_empty" in df.columns:
+        # Convert to bool and exclude where True
+        is_empty = df["is_empty"].fillna(False).astype(bool)
+        empty_count = is_empty.sum()
+        mask &= ~is_empty  # Keep where is_empty is False
+        print(f"  Excluding {empty_count} empty rooms")
+    
+    # Filter by minimum furniture count
+    if min_furniture > 0 and "furniture_count" in df.columns:
+        low_furniture = (df["furniture_count"] < min_furniture).sum()
+        mask &= (df["furniture_count"] >= min_furniture)
+        print(f"  Excluding {low_furniture} samples with <{min_furniture} furniture")
+    
+    # Get valid indices
+    valid_indices = df[mask].index.tolist()
+    print(f"  Valid samples after filtering: {len(valid_indices)}")
+    
+    # Create dataset with no filters (we'll index directly)
     dataset = ManifestDataset(
         manifest=str(manifest_path),
         outputs=outputs,
-        filters=filters,
+        filters=None,  # No filters, we handle it ourselves
         return_path=True
     )
     
-    print(f"  Evaluation samples: {len(dataset)}")
-    
-    return dataset
+    return dataset, valid_indices, df, manifest_dir
 
 
 def infer_conditioning_type(checkpoint_path: Path, config_path: Path = None) -> str:
@@ -172,6 +233,9 @@ def decode_target(model: DiffusionModel, latent: torch.Tensor, device: str) -> n
 def run_evaluation(
     model: DiffusionModel,
     dataset,
+    valid_indices: list,
+    manifest_df,
+    manifest_dir: Path,
     evaluator: FloorplanEvaluator,
     device: str,
     experiment_name: str,
@@ -183,33 +247,10 @@ def run_evaluation(
     conditioning: str = "both",
     seed: int = None
 ) -> dict:
-    """
-    Run evaluation on dataset.
+    """Run evaluation, stream results to CSV, compute stats at end."""
     
-    Args:
-        model: Diffusion model
-        dataset: Validation dataset
-        evaluator: Floorplan evaluator
-        device: Device to use
-        experiment_name: Name for output folders
-        guidance_scale: CFG scale
-        num_steps: DDIM steps
-        max_samples: Max samples to evaluate (randomly sampled if < len(dataset))
-        save_images: Whether to save all images
-        output_dir: Output directory
-        conditioning: Conditioning type (pov/graph/both)
-        seed: Random seed for reproducible sampling
-    
-    Returns:
-        Dictionary with per-sample and aggregated metrics
-    """
-    all_results = []
-    all_pred_images = []
-    all_target_images = []
-    all_metrics = []
-    
-    n_total = len(dataset)
-    n_samples = n_total if max_samples is None else min(max_samples, n_total)
+    n_valid = len(valid_indices)
+    n_samples = n_valid if max_samples is None else min(max_samples, n_valid)
     
     # Random sampling with seed
     if seed is not None:
@@ -217,216 +258,182 @@ def run_evaluation(
         np.random.seed(seed)
         torch.manual_seed(seed)
     
-    if max_samples is not None and max_samples < n_total:
-        sample_indices = random.sample(range(n_total), n_samples)
-        sample_indices.sort()  # Sort for reproducibility in logs
+    if max_samples is not None and max_samples < n_valid:
+        sampled_valid_indices = random.sample(valid_indices, n_samples)
+        sampled_valid_indices.sort()
     else:
-        sample_indices = list(range(n_samples))
+        sampled_valid_indices = valid_indices[:n_samples]
     
+    # Setup directories
+    images_dir = None
+    conditions_dir = None
     if save_images and output_dir:
         images_dir = output_dir / "images" / experiment_name
         images_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create conditions subdirectory
         conditions_dir = images_dir / "conditions"
         conditions_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        images_dir = None
-        conditions_dir = None
     
-    print(f"\nEvaluating {n_samples} samples (from {n_total} total) with conditioning: {conditioning}")
-    if seed is not None:
-        print(f"  Random seed: {seed}")
+    print(f"\nEvaluating {n_samples} samples with conditioning: {conditioning}")
     
-    for eval_idx, dataset_idx in enumerate(tqdm(sample_indices, desc="Evaluating")):
+    # CSV file for metrics
+    csv_path = output_dir / f"{experiment_name}_metrics.csv" if output_dir else None
+    csv_file = None
+    csv_writer = None
+    conditions_saved = {"pov": 0, "text": 0}
+    
+    for eval_idx, dataset_idx in enumerate(tqdm(sampled_valid_indices, desc="Evaluating")):
         sample = dataset[dataset_idx]
         
         # Generate
-        output = generate_single(
-            model, sample, device, guidance_scale, num_steps, conditioning=conditioning
-        )
+        output = generate_single(model, sample, device, guidance_scale, num_steps, conditioning=conditioning)
         pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
         
         # Decode target
-        target_latent = sample["latent"]
-        target_rgb = decode_target(model, target_latent, device)
+        target_rgb = decode_target(model, sample["latent"], device)
         
         # Evaluate
         metrics = evaluator.evaluate(pred_rgb, target_rgb)
+        summary = metrics["summary"]
         
-        # Build result with condition info
-        result = {
-            "eval_idx": eval_idx,
-            "dataset_idx": dataset_idx,
-            "metrics": metrics["summary"],
-            "class_presence": metrics["class_presence"],
-            "counts": metrics["counts"],
-            "spatial": metrics["spatial"],
-            "pixels": metrics["pixels"],
-            "conditions": {}
-        }
-        
-        # Extract condition paths from sample
-        if "paths" in sample:
-            result["sample_paths"] = sample["paths"]
-        
-        # Store condition information
-        if "pov_emb" in sample:
-            pov_path = sample.get("paths", {}).get("pov_emb", None)
-            if pov_path:
-                result["conditions"]["pov_embedding_path"] = str(pov_path)
-                
-                # Try to find corresponding POV image
-                pov_emb_path = Path(pov_path)
-                # Common pattern: embedding is .pt, image is .png/.jpg in similar location
-                possible_pov_images = [
-                    pov_emb_path.with_suffix(".png"),
-                    pov_emb_path.with_suffix(".jpg"),
-                    pov_emb_path.parent.parent / "povs" / (pov_emb_path.stem + ".png"),
-                    pov_emb_path.parent.parent / "povs" / (pov_emb_path.stem + ".jpg"),
-                ]
-                for pov_img_path in possible_pov_images:
-                    if pov_img_path.exists():
-                        result["conditions"]["pov_image_path"] = str(pov_img_path)
-                        break
-        
-        if "text_emb" in sample:
-            text_path = sample.get("paths", {}).get("text_emb", None)
-            if text_path:
-                result["conditions"]["text_embedding_path"] = str(text_path)
-                
-                # Try to find corresponding text/graph description
-                text_emb_path = Path(text_path)
-                possible_text_files = [
-                    text_emb_path.with_suffix(".txt"),
-                    text_emb_path.with_suffix(".json"),
-                    text_emb_path.parent.parent / "graphs" / (text_emb_path.stem + ".txt"),
-                    text_emb_path.parent.parent / "graphs" / (text_emb_path.stem + ".json"),
-                ]
-                for text_file_path in possible_text_files:
-                    if text_file_path.exists():
-                        result["conditions"]["text_description_path"] = str(text_file_path)
-                        # Try to read the text content
-                        try:
-                            if text_file_path.suffix == ".json":
-                                with open(text_file_path, "r") as f:
-                                    text_data = json.load(f)
-                                    result["conditions"]["text_description"] = text_data
-                            else:
-                                with open(text_file_path, "r") as f:
-                                    result["conditions"]["text_description"] = f.read()
-                        except Exception:
-                            pass
-                        break
-        
-        all_results.append(result)
-        all_pred_images.append(pred_rgb)
-        all_target_images.append(target_rgb)
-        all_metrics.append(metrics)
-        
-        # Save individual images
-        if images_dir is not None:
-            pred_img = Image.fromarray(pred_rgb)
-            target_img = Image.fromarray(target_rgb)
-            cleaned_pred = Image.fromarray(metrics["_cleaned_pred"])
-            cleaned_target = Image.fromarray(metrics["_cleaned_target"])
+        # Write CSV row
+        if csv_path:
+            if csv_file is None:
+                csv_file = open(csv_path, "w", newline="")
+                fieldnames = ["eval_idx", "dataset_idx", "is_empty"] + list(summary.keys())
+                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                csv_writer.writeheader()
             
-            pred_img.save(images_dir / f"{eval_idx:04d}_pred.png")
-            target_img.save(images_dir / f"{eval_idx:04d}_target.png")
-            cleaned_pred.save(images_dir / f"{eval_idx:04d}_pred_cleaned.png")
-            cleaned_target.save(images_dir / f"{eval_idx:04d}_target_cleaned.png")
+            manifest_row = manifest_df.iloc[dataset_idx]
+            is_empty = bool(manifest_row["is_empty"]) if "is_empty" in manifest_df.columns else False
+            
+            row = {"eval_idx": eval_idx, "dataset_idx": dataset_idx, "is_empty": is_empty}
+            row.update(summary)
+            csv_writer.writerow(row)
+            csv_file.flush()
+        
+        # Save images
+        if images_dir:
+            Image.fromarray(pred_rgb).save(images_dir / f"{eval_idx:04d}_pred.png")
+            Image.fromarray(target_rgb).save(images_dir / f"{eval_idx:04d}_target.png")
+            Image.fromarray(metrics["_cleaned_pred"]).save(images_dir / f"{eval_idx:04d}_pred_cleaned.png")
+            Image.fromarray(metrics["_cleaned_target"]).save(images_dir / f"{eval_idx:04d}_target_cleaned.png")
             
             # Save conditions
             if conditions_dir:
-                # Save POV image if available
-                pov_img_path = result["conditions"].get("pov_image_path")
-                if pov_img_path and Path(pov_img_path).exists():
-                    shutil.copy(pov_img_path, conditions_dir / f"{eval_idx:04d}_pov.png")
+                manifest_row = manifest_df.iloc[dataset_idx]
+                if "pov_path" in manifest_df.columns and pd.notna(manifest_row["pov_path"]):
+                    pov_path = str(manifest_row["pov_path"])
+                    if not Path(pov_path).exists():
+                        pov_path = str(manifest_dir / pov_path)
+                    if Path(pov_path).exists():
+                        shutil.copy(pov_path, conditions_dir / f"{eval_idx:04d}_pov.png")
+                        conditions_saved["pov"] += 1
                 
-                # Save text description if available
-                text_desc = result["conditions"].get("text_description")
-                if text_desc:
-                    with open(conditions_dir / f"{eval_idx:04d}_text.txt", "w") as f:
-                        if isinstance(text_desc, dict):
-                            f.write(json.dumps(text_desc, indent=2))
-                        else:
-                            f.write(str(text_desc))
+                if "graph_text_path" in manifest_df.columns and pd.notna(manifest_row["graph_text_path"]):
+                    text_path = str(manifest_row["graph_text_path"])
+                    if not Path(text_path).exists():
+                        text_path = str(manifest_dir / text_path)
+                    if Path(text_path).exists():
+                        shutil.copy(text_path, conditions_dir / f"{eval_idx:04d}_text.txt")
+                        conditions_saved["text"] += 1
+        
+        del pred_rgb, target_rgb, metrics, output, sample
     
-    # Find best and median samples
-    unified_scores = [r["metrics"]["unified_score"] for r in all_results]
-    sorted_indices = np.argsort(unified_scores)
+    if csv_file:
+        csv_file.close()
     
-    best_idx = sorted_indices[-1]
-    worst_idx = sorted_indices[0]
-    median_idx = sorted_indices[len(sorted_indices) // 2]
+    print(f"  Conditions saved: {conditions_saved['pov']} POV, {conditions_saved['text']} text")
     
-    # Create visualizations for best, median, worst
-    if output_dir:
+    # Read CSV and compute stats
+    df = pd.read_csv(csv_path)
+    
+    # Best/median/worst - only non-empty rooms
+    df_nonempty = df[df["is_empty"] == False]
+    if len(df_nonempty) == 0:
+        df_nonempty = df
+    
+    sorted_df = df_nonempty.sort_values("unified_score")
+    worst_row = sorted_df.iloc[0]
+    median_row = sorted_df.iloc[len(sorted_df) // 2]
+    best_row = sorted_df.iloc[-1]
+    
+    if output_dir and images_dir:
         viz_dir = output_dir / "visualizations" / experiment_name
         viz_dir.mkdir(parents=True, exist_ok=True)
         
-        for label, sample_idx in [("best", best_idx), ("median", median_idx), ("worst", worst_idx)]:
-            score = all_results[sample_idx]["metrics"]["unified_score"]
-            dataset_idx = all_results[sample_idx]["dataset_idx"]
-            sample_label = f"{label.capitalize()} Sample (eval_idx={sample_idx}, dataset_idx={dataset_idx}, score={score:.3f})"
+        for label, row in [("best", best_row), ("median", median_row), ("worst", worst_row)]:
+            idx = int(row["eval_idx"])
+            dataset_idx = int(row["dataset_idx"])
+            score = row["unified_score"]
             
-            detailed, summary = evaluator.create_visualization(
-                all_pred_images[sample_idx],
-                all_target_images[sample_idx],
-                all_metrics[sample_idx],
-                sample_label
+            # Load images
+            pred_path = images_dir / f"{idx:04d}_pred.png"
+            target_path = images_dir / f"{idx:04d}_target.png"
+            cleaned_pred_path = images_dir / f"{idx:04d}_pred_cleaned.png"
+            cleaned_target_path = images_dir / f"{idx:04d}_target_cleaned.png"
+            
+            if not pred_path.exists():
+                print(f"  Warning: images not found for {label}")
+                continue
+            
+            pred_img = np.array(Image.open(pred_path))
+            target_img = np.array(Image.open(target_path))
+            cleaned_pred = np.array(Image.open(cleaned_pred_path))
+            cleaned_target = np.array(Image.open(cleaned_target_path))
+            
+            # Re-evaluate to get full metrics for visualization
+            metrics = evaluator.evaluate(pred_img, target_img)
+            
+            # Create detailed visualization
+            sample_label = f"{label.capitalize()} (eval_idx={idx}, score={score:.3f})"
+            detailed, summary_viz = evaluator.create_visualization(
+                pred_img, target_img, metrics, sample_label
             )
             
             detailed.save(viz_dir / f"{label}_detailed.png")
-            summary.save(viz_dir / f"{label}_summary.png")
+            summary_viz.save(viz_dir / f"{label}_summary.png")
             
-            # Save individual images for these samples
-            Image.fromarray(all_pred_images[sample_idx]).save(viz_dir / f"{label}_pred.png")
-            Image.fromarray(all_target_images[sample_idx]).save(viz_dir / f"{label}_target.png")
+            # Copy simple images
+            shutil.copy(pred_path, viz_dir / f"{label}_pred.png")
+            shutil.copy(target_path, viz_dir / f"{label}_target.png")
             
-            # Save conditions for visualization samples
-            conditions = all_results[sample_idx].get("conditions", {})
-            pov_img_path = conditions.get("pov_image_path")
-            if pov_img_path and Path(pov_img_path).exists():
-                shutil.copy(pov_img_path, viz_dir / f"{label}_condition_pov.png")
+            # Copy conditions
+            if conditions_dir:
+                pov = conditions_dir / f"{idx:04d}_pov.png"
+                txt = conditions_dir / f"{idx:04d}_text.txt"
+                if pov.exists():
+                    shutil.copy(pov, viz_dir / f"{label}_pov.png")
+                if txt.exists():
+                    shutil.copy(txt, viz_dir / f"{label}_text.txt")
             
-            text_desc = conditions.get("text_description")
-            if text_desc:
-                with open(viz_dir / f"{label}_condition_text.txt", "w") as f:
-                    if isinstance(text_desc, dict):
-                        f.write(json.dumps(text_desc, indent=2))
-                    else:
-                        f.write(str(text_desc))
+            # Save info JSON
+            info = {
+                "eval_idx": idx,
+                "dataset_idx": dataset_idx,
+                "unified_score": float(score),
+                "metrics": {k: float(v) for k, v in row.items() if k not in ["eval_idx", "dataset_idx"]}
+            }
+            with open(viz_dir / f"{label}_info.json", "w") as f:
+                json.dump(info, f, indent=2)
+            
+            del pred_img, target_img, cleaned_pred, cleaned_target, metrics
         
-        print(f"\n  Visualizations saved to: {viz_dir}")
-        print(f"    Best sample: eval_idx={best_idx}, dataset_idx={all_results[best_idx]['dataset_idx']}, score={unified_scores[best_idx]:.3f}")
-        print(f"    Median sample: eval_idx={median_idx}, dataset_idx={all_results[median_idx]['dataset_idx']}, score={unified_scores[median_idx]:.3f}")
-        print(f"    Worst sample: eval_idx={worst_idx}, dataset_idx={all_results[worst_idx]['dataset_idx']}, score={unified_scores[worst_idx]:.3f}")
+        print(f"  Best: idx={int(best_row['eval_idx'])}, score={best_row['unified_score']:.3f}")
+        print(f"  Median: idx={int(median_row['eval_idx'])}, score={median_row['unified_score']:.3f}")
+        print(f"  Worst: idx={int(worst_row['eval_idx'])}, score={worst_row['unified_score']:.3f}")
     
-    # Aggregate metrics
-    summary_keys = all_results[0]["metrics"].keys()
+    # Aggregated stats
+    metric_cols = [c for c in df.columns if c not in ["eval_idx", "dataset_idx", "is_empty"]]
     aggregated = {}
+    for col in metric_cols:
+        aggregated[f"{col}_mean"] = float(df[col].mean())
+        aggregated[f"{col}_std"] = float(df[col].std())
     
-    for key in summary_keys:
-        values = [r["metrics"][key] for r in all_results]
-        aggregated[f"{key}_mean"] = float(np.mean(values))
-        aggregated[f"{key}_std"] = float(np.std(values))
-        aggregated[f"{key}_min"] = float(np.min(values))
-        aggregated[f"{key}_max"] = float(np.max(values))
-    
-    aggregated["num_samples"] = n_samples
-    aggregated["total_dataset_size"] = n_total
+    aggregated["num_samples"] = len(df)
     aggregated["conditioning"] = conditioning
     aggregated["seed"] = seed
-    aggregated["sample_indices"] = sample_indices
-    aggregated["best_sample_idx"] = int(best_idx)
-    aggregated["median_sample_idx"] = int(median_idx)
-    aggregated["worst_sample_idx"] = int(worst_idx)
     
-    return {
-        "per_sample": all_results,
-        "aggregated": aggregated
-    }
+    return {"aggregated": aggregated, "csv_path": str(csv_path)}
 
 
 def save_results(results: dict, output_dir: Path, experiment_name: str):
@@ -506,6 +513,10 @@ def main():
                         help="Maximum samples to evaluate (randomly sampled from dataset)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducible sampling (default: 42)")
+    parser.add_argument("--include-empty", action="store_true",
+                        help="Include empty rooms (excluded by default)")
+    parser.add_argument("--min-furniture", type=int, default=0,
+                        help="Minimum furniture count required (default: 0)")
     parser.add_argument("--save-images", action="store_true",
                         help="Save generated and target images")
     parser.add_argument("--device", type=str, default="cuda",
@@ -559,28 +570,36 @@ def main():
     print(f"  Num steps: {args.num_steps}")
     print(f"  Max samples: {args.max_samples}")
     print(f"  Seed: {args.seed}")
+    print(f"  Exclude empty rooms: {not args.include_empty}")
+    print(f"  Min furniture: {args.min_furniture}")
     print("=" * 70)
     
     # Load model
     model = load_model(args.checkpoint, args.device)
     
-    # Outputs
+    # Outputs - include paths for conditions
     outputs = {
         "latent": "latent_embedding_path",
         "text_emb": "graph_embedding_path",
-        "pov_emb": "pov_embedding_path"
+        "pov_emb": "pov_embedding_path",
+        "pov_path": "pov_path",              # Actual POV image
+        "graph_text_path": "graph_text_path", # Text description
     }
     
     if args.config:
         config_outputs = config.get("dataset", {}).get("outputs", {})
         if config_outputs:
-            outputs = config_outputs
+            # Merge, keeping our condition paths
+            outputs.update(config_outputs)
+            outputs["pov_path"] = "pov_path"
+            outputs["graph_text_path"] = "graph_text_path"
     
     # Load validation data
-    dataset = load_validation_data(
+    dataset, valid_indices, manifest_df, manifest_dir = load_validation_data(
         args.manifest,
         outputs=outputs,
-        filters={"rejected": False}
+        exclude_empty=not args.include_empty,
+        min_furniture=args.min_furniture,
     )
     
     # Create evaluator
@@ -595,6 +614,9 @@ def main():
     results = run_evaluation(
         model=model,
         dataset=dataset,
+        valid_indices=valid_indices,
+        manifest_df=manifest_df,
+        manifest_dir=manifest_dir,
         evaluator=evaluator,
         device=args.device,
         experiment_name=experiment_name,
