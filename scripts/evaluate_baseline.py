@@ -2,22 +2,21 @@
 """
 Baseline Evaluation Script for Floorplan Generation.
 
-Updated with navigation-focused metrics and visualization.
-
-Evaluates a trained diffusion model on the validation set:
+Evaluates a trained diffusion model with supercategory-level metrics:
 1. Loads checkpoint and validation data
-2. Randomly samples from validation set (with seed for reproducibility)
-3. Generates floorplans for each sample (single-shot)
-4. Saves conditions (POV image, text description) alongside predictions
-5. Computes metrics: class presence, counts, spatial (scale-invariant), camera-centric
-6. Generates visualizations for best and median samples
-7. Saves detailed results and summary statistics
+2. Evaluates BOTH empty and furnished rooms in one run
+3. Computes supercategory-level metrics: Floor/Wall/Openings IoU, furniture presence/count/L1
+4. Generates visualizations for best/worst/median samples (with 80° FOV beam)
+5. Outputs: 1 CSV with all samples, 1 JSON summary with sorted per-supercategory averages
 
 Usage:
     python evaluate_baseline.py --checkpoint path/to/checkpoint.pt --manifest path/to/manifest.csv
     
-    # With random sampling:
-    python evaluate_baseline.py --checkpoint ckpt.pt --manifest val.csv --max-samples 100 --seed 42
+    # Evaluate only furnished rooms:
+    python evaluate_baseline.py --checkpoint ckpt.pt --manifest val.csv --furnished-only
+    
+    # Evaluate only empty rooms:
+    python evaluate_baseline.py --checkpoint ckpt.pt --manifest val.csv --empty-only
 """
 
 import argparse
@@ -59,78 +58,66 @@ def load_model(checkpoint_path: Path, device: str = "cuda") -> DiffusionModel:
 def load_validation_data(
     manifest_path: Path,
     outputs: dict,
-    exclude_empty: bool = True,
-    min_furniture: int = 0,
+    include_empty: bool = True,
+    include_furnished: bool = True,
 ):
-    """Load evaluation dataset directly from eval_manifest.csv.
+    """Load evaluation dataset with both empty and furnished rooms.
     
     Args:
         manifest_path: Path to manifest CSV
         outputs: Column mapping for dataset
-        exclude_empty: Whether to exclude empty rooms (is_empty=False)
-        min_furniture: Minimum furniture count required
+        include_empty: Include empty rooms (is_empty=True)
+        include_furnished: Include furnished rooms (is_empty=False)
     
     Returns:
-        Tuple of (dataset, valid_indices, manifest_df, manifest_dir) where:
-        - valid_indices maps eval_idx to original row
-        - manifest_df is the filtered dataframe for condition lookup
-        - manifest_dir is the directory containing the manifest (for path resolution)
+        Tuple of (dataset, valid_indices, manifest_df, manifest_dir)
     """
     print(f"Loading evaluation dataset from {manifest_path}...")
     
     manifest_path = Path(manifest_path)
     manifest_dir = manifest_path.parent
     
-    # Load manifest with pandas for proper filtering
     df = pd.read_csv(manifest_path)
     print(f"  Total rows in manifest: {len(df)}")
-    print(f"  Columns: {list(df.columns)}")
-    
-    # Debug: show is_empty column info
-    if "is_empty" in df.columns:
-        print(f"  is_empty dtype: {df['is_empty'].dtype}")
-        print(f"  is_empty value_counts: {df['is_empty'].value_counts().to_dict()}")
-    else:
-        print(f"  WARNING: 'is_empty' column not found!")
-    
-    if "furniture_count" in df.columns:
-        print(f"  furniture_count range: {df['furniture_count'].min()} - {df['furniture_count'].max()}")
-        print(f"  furniture_count=0: {(df['furniture_count'] == 0).sum()}")
-    
-    # Apply filters
-    mask = pd.Series([True] * len(df))
     
     # Always exclude rejected samples
+    mask = pd.Series([True] * len(df))
+    
     if "rejected" in df.columns:
-        # Convert to bool and exclude where True
         rejected = df["rejected"].fillna(False).astype(bool)
         rejected_count = rejected.sum()
-        mask &= ~rejected  # Keep where rejected is False
+        mask &= ~rejected
         print(f"  Excluding {rejected_count} rejected samples")
     
-    # Optionally exclude empty rooms
-    if exclude_empty and "is_empty" in df.columns:
-        # Convert to bool and exclude where True
+    # Filter by empty/furnished
+    if "is_empty" in df.columns:
         is_empty = df["is_empty"].fillna(False).astype(bool)
-        empty_count = is_empty.sum()
-        mask &= ~is_empty  # Keep where is_empty is False
-        print(f"  Excluding {empty_count} empty rooms")
+        
+        if include_empty and include_furnished:
+            # Include both
+            print(f"  Including both empty and furnished rooms")
+        elif include_empty and not include_furnished:
+            # Empty only
+            mask &= is_empty
+            print(f"  Including only empty rooms")
+        elif include_furnished and not include_empty:
+            # Furnished only
+            mask &= ~is_empty
+            print(f"  Including only furnished rooms")
+        else:
+            raise ValueError("Must include at least one of empty or furnished rooms")
+        
+        empty_count = (mask & is_empty).sum()
+        furnished_count = (mask & ~is_empty).sum()
+        print(f"  Empty rooms: {empty_count}, Furnished rooms: {furnished_count}")
     
-    # Filter by minimum furniture count
-    if min_furniture > 0 and "furniture_count" in df.columns:
-        low_furniture = (df["furniture_count"] < min_furniture).sum()
-        mask &= (df["furniture_count"] >= min_furniture)
-        print(f"  Excluding {low_furniture} samples with <{min_furniture} furniture")
-    
-    # Get valid indices
     valid_indices = df[mask].index.tolist()
     print(f"  Valid samples after filtering: {len(valid_indices)}")
     
-    # Create dataset with no filters (we'll index directly)
     dataset = ManifestDataset(
         manifest=str(manifest_path),
         outputs=outputs,
-        filters=None,  # No filters, we handle it ourselves
+        filters=None,
         return_path=True
     )
     
@@ -247,7 +234,7 @@ def run_evaluation(
     conditioning: str = "both",
     seed: int = None
 ) -> dict:
-    """Run evaluation, stream results to CSV, compute stats at end."""
+    """Run evaluation on both empty and furnished rooms, output single CSV."""
     
     n_valid = len(valid_indices)
     n_samples = n_valid if max_samples is None else min(max_samples, n_valid)
@@ -273,16 +260,25 @@ def run_evaluation(
         conditions_dir = images_dir / "conditions"
         conditions_dir.mkdir(parents=True, exist_ok=True)
     
+    # Determine if POV conditioning (for FOV visualization)
+    show_fov = conditioning in ["pov", "both"]
+    
     print(f"\nEvaluating {n_samples} samples with conditioning: {conditioning}")
     
-    # CSV file for metrics
+    # CSV file for per-sample metrics
     csv_path = output_dir / f"{experiment_name}_metrics.csv" if output_dir else None
     csv_file = None
     csv_writer = None
+    
+    all_metrics = []
     conditions_saved = {"pov": 0, "text": 0}
     
     for eval_idx, dataset_idx in enumerate(tqdm(sampled_valid_indices, desc="Evaluating")):
         sample = dataset[dataset_idx]
+        manifest_row = manifest_df.iloc[dataset_idx]
+        
+        # Determine if empty room
+        is_empty = bool(manifest_row.get("is_empty", False)) if "is_empty" in manifest_df.columns else False
         
         # Generate
         output = generate_single(model, sample, device, guidance_scale, num_steps, conditioning=conditioning)
@@ -291,9 +287,13 @@ def run_evaluation(
         # Decode target
         target_rgb = decode_target(model, sample["latent"], device)
         
-        # Evaluate
-        metrics = evaluator.evaluate(pred_rgb, target_rgb)
+        # Evaluate with is_empty flag
+        metrics = evaluator.evaluate(pred_rgb, target_rgb, is_empty=is_empty)
         summary = metrics["summary"]
+        
+        # Store for aggregation
+        metrics_for_agg = {**summary, 'is_empty': is_empty, 'eval_idx': eval_idx, 'dataset_idx': dataset_idx}
+        all_metrics.append(metrics_for_agg)
         
         # Write CSV row
         if csv_path:
@@ -303,9 +303,6 @@ def run_evaluation(
                 csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
                 csv_writer.writeheader()
             
-            manifest_row = manifest_df.iloc[dataset_idx]
-            is_empty = bool(manifest_row["is_empty"]) if "is_empty" in manifest_df.columns else False
-            
             row = {"eval_idx": eval_idx, "dataset_idx": dataset_idx, "is_empty": is_empty}
             row.update(summary)
             csv_writer.writerow(row)
@@ -313,14 +310,14 @@ def run_evaluation(
         
         # Save images
         if images_dir:
-            Image.fromarray(pred_rgb).save(images_dir / f"{eval_idx:04d}_pred.png")
-            Image.fromarray(target_rgb).save(images_dir / f"{eval_idx:04d}_target.png")
-            Image.fromarray(metrics["_cleaned_pred"]).save(images_dir / f"{eval_idx:04d}_pred_cleaned.png")
-            Image.fromarray(metrics["_cleaned_target"]).save(images_dir / f"{eval_idx:04d}_target_cleaned.png")
+            prefix = "empty" if is_empty else "furnished"
+            Image.fromarray(pred_rgb).save(images_dir / f"{eval_idx:04d}_{prefix}_pred.png")
+            Image.fromarray(target_rgb).save(images_dir / f"{eval_idx:04d}_{prefix}_target.png")
+            Image.fromarray(metrics["_cleaned_pred"]).save(images_dir / f"{eval_idx:04d}_{prefix}_pred_cleaned.png")
+            Image.fromarray(metrics["_cleaned_target"]).save(images_dir / f"{eval_idx:04d}_{prefix}_target_cleaned.png")
             
             # Save conditions
             if conditions_dir:
-                manifest_row = manifest_df.iloc[dataset_idx]
                 if "pov_path" in manifest_df.columns and pd.notna(manifest_row["pov_path"]):
                     pov_path = str(manifest_row["pov_path"])
                     if not Path(pov_path).exists():
@@ -347,30 +344,38 @@ def run_evaluation(
     # Read CSV and compute stats
     df = pd.read_csv(csv_path)
     
-    # Best/median/worst - only non-empty rooms
-    df_nonempty = df[df["is_empty"] == False]
-    if len(df_nonempty) == 0:
-        df_nonempty = df
+    # Separate empty and furnished
+    df_empty = df[df["is_empty"] == True]
+    df_furnished = df[df["is_empty"] == False]
     
-    sorted_df = df_nonempty.sort_values("unified_score")
-    worst_row = sorted_df.iloc[0]
-    median_row = sorted_df.iloc[len(sorted_df) // 2]
-    best_row = sorted_df.iloc[-1]
+    print(f"  Empty samples: {len(df_empty)}, Furnished samples: {len(df_furnished)}")
     
-    if output_dir and images_dir:
+    # Find best/median/worst for visualization (prefer furnished, fallback to all)
+    viz_df = df_furnished if len(df_furnished) > 0 else df
+    sorted_df = viz_df.sort_values("unified_score")
+    
+    worst_row = sorted_df.iloc[0] if len(sorted_df) > 0 else None
+    median_row = sorted_df.iloc[len(sorted_df) // 2] if len(sorted_df) > 0 else None
+    best_row = sorted_df.iloc[-1] if len(sorted_df) > 0 else None
+    
+    # Generate visualizations for best/median/worst
+    if output_dir and images_dir and best_row is not None:
         viz_dir = output_dir / "visualizations" / experiment_name
         viz_dir.mkdir(parents=True, exist_ok=True)
         
         for label, row in [("best", best_row), ("median", median_row), ("worst", worst_row)]:
+            if row is None:
+                continue
+            
             idx = int(row["eval_idx"])
             dataset_idx = int(row["dataset_idx"])
             score = row["unified_score"]
+            is_empty = bool(row["is_empty"])
+            prefix = "empty" if is_empty else "furnished"
             
             # Load images
-            pred_path = images_dir / f"{idx:04d}_pred.png"
-            target_path = images_dir / f"{idx:04d}_target.png"
-            cleaned_pred_path = images_dir / f"{idx:04d}_pred_cleaned.png"
-            cleaned_target_path = images_dir / f"{idx:04d}_target_cleaned.png"
+            pred_path = images_dir / f"{idx:04d}_{prefix}_pred.png"
+            target_path = images_dir / f"{idx:04d}_{prefix}_target.png"
             
             if not pred_path.exists():
                 print(f"  Warning: images not found for {label}")
@@ -378,16 +383,14 @@ def run_evaluation(
             
             pred_img = np.array(Image.open(pred_path))
             target_img = np.array(Image.open(target_path))
-            cleaned_pred = np.array(Image.open(cleaned_pred_path))
-            cleaned_target = np.array(Image.open(cleaned_target_path))
             
-            # Re-evaluate to get full metrics for visualization
-            metrics = evaluator.evaluate(pred_img, target_img)
+            # Re-evaluate for visualization
+            metrics = evaluator.evaluate(pred_img, target_img, is_empty=is_empty)
             
-            # Create detailed visualization
-            sample_label = f"{label.capitalize()} (eval_idx={idx}, score={score:.3f})"
+            # Create visualization with FOV beam
+            sample_label = f"{label.capitalize()} ({prefix}, idx={idx}, score={score:.3f})"
             detailed, summary_viz = evaluator.create_visualization(
-                pred_img, target_img, metrics, sample_label
+                pred_img, target_img, metrics, sample_label, show_fov=show_fov
             )
             
             detailed.save(viz_dir / f"{label}_detailed.png")
@@ -410,30 +413,88 @@ def run_evaluation(
             info = {
                 "eval_idx": idx,
                 "dataset_idx": dataset_idx,
+                "is_empty": is_empty,
                 "unified_score": float(score),
-                "metrics": {k: float(v) for k, v in row.items() if k not in ["eval_idx", "dataset_idx"]}
+                "metrics": {k: float(v) if isinstance(v, (int, float, np.floating)) else v 
+                           for k, v in row.items() if k not in ["eval_idx", "dataset_idx"]}
             }
             with open(viz_dir / f"{label}_info.json", "w") as f:
                 json.dump(info, f, indent=2)
             
-            del pred_img, target_img, cleaned_pred, cleaned_target, metrics
+            del pred_img, target_img, metrics
         
         print(f"  Best: idx={int(best_row['eval_idx'])}, score={best_row['unified_score']:.3f}")
         print(f"  Median: idx={int(median_row['eval_idx'])}, score={median_row['unified_score']:.3f}")
         print(f"  Worst: idx={int(worst_row['eval_idx'])}, score={worst_row['unified_score']:.3f}")
     
-    # Aggregated stats
+    # Compute aggregated statistics
+    aggregated = compute_aggregated_stats(df, df_empty, df_furnished)
+    aggregated["conditioning"] = conditioning
+    aggregated["seed"] = seed
+    
+    return {"aggregated": aggregated, "csv_path": str(csv_path), "all_metrics": all_metrics}
+
+
+def compute_aggregated_stats(df: pd.DataFrame, df_empty: pd.DataFrame, df_furnished: pd.DataFrame) -> dict:
+    """Compute aggregated statistics with sorting."""
+    
     metric_cols = [c for c in df.columns if c not in ["eval_idx", "dataset_idx", "is_empty"]]
-    aggregated = {}
+    
+    aggregated = {
+        "num_samples": len(df),
+        "num_empty": len(df_empty),
+        "num_furnished": len(df_furnished),
+    }
+    
+    # Overall stats
     for col in metric_cols:
         aggregated[f"{col}_mean"] = float(df[col].mean())
         aggregated[f"{col}_std"] = float(df[col].std())
     
-    aggregated["num_samples"] = len(df)
-    aggregated["conditioning"] = conditioning
-    aggregated["seed"] = seed
+    # Structure metrics (all samples)
+    aggregated["structure"] = {
+        "floor_iou": {"mean": float(df["floor_iou"].mean()), "std": float(df["floor_iou"].std())},
+        "wall_iou": {"mean": float(df["wall_iou"].mean()), "std": float(df["wall_iou"].std())},
+        "openings_iou": {"mean": float(df["openings_iou"].mean()), "std": float(df["openings_iou"].std())},
+    }
     
-    return {"aggregated": aggregated, "csv_path": str(csv_path)}
+    # Empty room stats
+    if len(df_empty) > 0:
+        aggregated["empty"] = {
+            "num_samples": len(df_empty),
+            "floor_iou": {"mean": float(df_empty["floor_iou"].mean()), "std": float(df_empty["floor_iou"].std())},
+            "wall_iou": {"mean": float(df_empty["wall_iou"].mean()), "std": float(df_empty["wall_iou"].std())},
+            "openings_iou": {"mean": float(df_empty["openings_iou"].mean()), "std": float(df_empty["openings_iou"].std())},
+            "unified_score": {"mean": float(df_empty["unified_score"].mean()), "std": float(df_empty["unified_score"].std())},
+        }
+    
+    # Furnished room stats
+    if len(df_furnished) > 0:
+        aggregated["furnished"] = {
+            "num_samples": len(df_furnished),
+            "floor_iou": {"mean": float(df_furnished["floor_iou"].mean()), "std": float(df_furnished["floor_iou"].std())},
+            "wall_iou": {"mean": float(df_furnished["wall_iou"].mean()), "std": float(df_furnished["wall_iou"].std())},
+            "openings_iou": {"mean": float(df_furnished["openings_iou"].mean()), "std": float(df_furnished["openings_iou"].std())},
+            "presence_accuracy": {"mean": float(df_furnished["presence_accuracy"].mean()), "std": float(df_furnished["presence_accuracy"].std())},
+            "count_accuracy": {"mean": float(df_furnished["count_accuracy"].mean()), "std": float(df_furnished["count_accuracy"].std())},
+            "detection_f1": {"mean": float(df_furnished["detection_f1"].mean()), "std": float(df_furnished["detection_f1"].std())},
+            "mean_l1_distance": {"mean": float(df_furnished["mean_l1_distance"].mean()), "std": float(df_furnished["mean_l1_distance"].std())},
+            "mean_bbox_iou": {"mean": float(df_furnished["mean_bbox_iou"].mean()), "std": float(df_furnished["mean_bbox_iou"].std())},
+            "unified_score": {"mean": float(df_furnished["unified_score"].mean()), "std": float(df_furnished["unified_score"].std())},
+        }
+    
+    # Sorted metrics (by mean, descending)
+    sorted_metrics = []
+    for col in metric_cols:
+        sorted_metrics.append({
+            "metric": col,
+            "mean": float(df[col].mean()),
+            "std": float(df[col].std()),
+        })
+    sorted_metrics.sort(key=lambda x: x["mean"], reverse=True)
+    aggregated["sorted_metrics"] = sorted_metrics
+    
+    return aggregated
 
 
 def save_results(results: dict, output_dir: Path, experiment_name: str):
@@ -444,8 +505,9 @@ def save_results(results: dict, output_dir: Path, experiment_name: str):
     
     # Save full results
     full_path = output_dir / f"{experiment_name}_results_{timestamp}.json"
+    results_to_save = {k: v for k, v in results.items() if k != "all_metrics"}
     with open(full_path, "w") as f:
-        json.dump(results, f, indent=2, default=str)
+        json.dump(results_to_save, f, indent=2, default=str)
     print(f"  Full results saved to: {full_path}")
     
     # Save summary
@@ -461,33 +523,36 @@ def save_results(results: dict, output_dir: Path, experiment_name: str):
     
     agg = results["aggregated"]
     
-    print("\n[Class & Count Metrics]")
-    print(f"  Class F1:          {agg.get('class_f1_mean', 0):.4f} ± {agg.get('class_f1_std', 0):.4f}")
-    print(f"  Count Accuracy:    {agg.get('count_accuracy_mean', 0):.4f} ± {agg.get('count_accuracy_std', 0):.4f}")
+    print(f"\n[Samples]")
+    print(f"  Total: {agg['num_samples']} (Empty: {agg['num_empty']}, Furnished: {agg['num_furnished']})")
     
-    print("\n[Detection Metrics]")
-    print(f"  Detection F1:      {agg.get('detection_f1_mean', 0):.4f} ± {agg.get('detection_f1_std', 0):.4f}")
-    print(f"  Detection Recall:  {agg.get('detection_recall_mean', 0):.4f} ± {agg.get('detection_recall_std', 0):.4f}")
+    print("\n[Structure Metrics (All Samples)]")
+    struct = agg.get("structure", {})
+    print(f"  Floor IoU:    {struct.get('floor_iou', {}).get('mean', 0):.4f} ± {struct.get('floor_iou', {}).get('std', 0):.4f}")
+    print(f"  Wall IoU:     {struct.get('wall_iou', {}).get('mean', 0):.4f} ± {struct.get('wall_iou', {}).get('std', 0):.4f}")
+    print(f"  Openings IoU: {struct.get('openings_iou', {}).get('mean', 0):.4f} ± {struct.get('openings_iou', {}).get('std', 0):.4f}")
     
-    print("\n[Spatial Metrics (Scale-Invariant)]")
-    print(f"  BBox IoU:          {agg.get('mean_bbox_iou_mean', 0):.4f} ± {agg.get('mean_bbox_iou_std', 0):.4f}")
-    print(f"  Centroid Accuracy: {agg.get('mean_centroid_accuracy_mean', 0):.4f} ± {agg.get('mean_centroid_accuracy_std', 0):.4f}")
-    print(f"  Density Sim:       {agg.get('mean_density_sim_mean', 0):.4f} ± {agg.get('mean_density_sim_std', 0):.4f}")
+    if "empty" in agg:
+        print(f"\n[Empty Rooms ({agg['empty']['num_samples']} samples)]")
+        print(f"  Unified Score: {agg['empty']['unified_score']['mean']:.4f} ± {agg['empty']['unified_score']['std']:.4f}")
     
-    print("\n[Camera-Centric Metrics]")
-    print(f"  Camera Similarity: {agg.get('mean_camera_similarity_mean', 0):.4f} ± {agg.get('mean_camera_similarity_std', 0):.4f}")
+    if "furnished" in agg:
+        print(f"\n[Furnished Rooms ({agg['furnished']['num_samples']} samples)]")
+        furn = agg["furnished"]
+        print(f"  Presence Acc:  {furn['presence_accuracy']['mean']:.4f} ± {furn['presence_accuracy']['std']:.4f}")
+        print(f"  Count Acc:     {furn['count_accuracy']['mean']:.4f} ± {furn['count_accuracy']['std']:.4f}")
+        print(f"  Detection F1:  {furn['detection_f1']['mean']:.4f} ± {furn['detection_f1']['std']:.4f}")
+        print(f"  Mean L1 Dist:  {furn['mean_l1_distance']['mean']:.4f} ± {furn['mean_l1_distance']['std']:.4f}")
+        print(f"  BBox IoU:      {furn['mean_bbox_iou']['mean']:.4f} ± {furn['mean_bbox_iou']['std']:.4f}")
+        print(f"  Unified Score: {furn['unified_score']['mean']:.4f} ± {furn['unified_score']['std']:.4f}")
     
-    print("\n[Pixel-Level Metrics]")
-    print(f"  Object Accuracy:   {agg.get('object_pixel_accuracy_mean', 0):.4f} ± {agg.get('object_pixel_accuracy_std', 0):.4f}")
-    print(f"  Mean IoU:          {agg.get('mean_iou_mean', 0):.4f} ± {agg.get('mean_iou_std', 0):.4f}")
-    print(f"  Wall IoU:          {agg.get('wall_iou_mean', 0):.4f} ± {agg.get('wall_iou_std', 0):.4f}")
+    print("\n[Sorted Metrics (by mean, descending)]")
+    for item in agg.get("sorted_metrics", [])[:5]:
+        print(f"  {item['metric']:20s}: {item['mean']:.4f} ± {item['std']:.4f}")
     
     print("\n" + "=" * 70)
-    print(f"UNIFIED SCORE:       {agg.get('unified_score_mean', 0):.4f} ± {agg.get('unified_score_std', 0):.4f}")
+    print(f"OVERALL UNIFIED SCORE: {agg.get('unified_score_mean', 0):.4f} ± {agg.get('unified_score_std', 0):.4f}")
     print("=" * 70)
-    
-    print(f"\n  Num samples: {agg['num_samples']}")
-    print(f"  Conditioning: {agg['conditioning']}")
 
 
 def main():
@@ -510,19 +575,31 @@ def main():
     parser.add_argument("--num-steps", type=int, default=50,
                         help="Number of DDIM steps")
     parser.add_argument("--max-samples", type=int, default=None,
-                        help="Maximum samples to evaluate (randomly sampled from dataset)")
+                        help="Maximum samples to evaluate (randomly sampled)")
     parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducible sampling (default: 42)")
-    parser.add_argument("--include-empty", action="store_true",
-                        help="Include empty rooms (excluded by default)")
-    parser.add_argument("--min-furniture", type=int, default=0,
-                        help="Minimum furniture count required (default: 0)")
+                        help="Random seed for reproducible sampling")
+    parser.add_argument("--fov", type=float, default=80.0,
+                        help="Camera field of view in degrees (default: 80)")
+    
+    # Room type selection
+    parser.add_argument("--empty-only", action="store_true",
+                        help="Evaluate only empty rooms")
+    parser.add_argument("--furnished-only", action="store_true",
+                        help="Evaluate only furnished rooms")
+    
     parser.add_argument("--save-images", action="store_true",
                         help="Save generated and target images")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use")
     
     args = parser.parse_args()
+    
+    # Validate room type selection
+    if args.empty_only and args.furnished_only:
+        raise ValueError("Cannot specify both --empty-only and --furnished-only")
+    
+    include_empty = not args.furnished_only
+    include_furnished = not args.empty_only
     
     # Load config if provided
     if args.config:
@@ -558,6 +635,14 @@ def main():
     if args.conditioning is None:
         args.conditioning = infer_conditioning_type(args.checkpoint, args.config)
     
+    # Determine evaluation mode string
+    if args.empty_only:
+        eval_mode = "empty-only"
+    elif args.furnished_only:
+        eval_mode = "furnished-only"
+    else:
+        eval_mode = "all (empty + furnished)"
+    
     print("=" * 70)
     print("EVALUATION CONFIGURATION")
     print("=" * 70)
@@ -570,26 +655,25 @@ def main():
     print(f"  Num steps: {args.num_steps}")
     print(f"  Max samples: {args.max_samples}")
     print(f"  Seed: {args.seed}")
-    print(f"  Exclude empty rooms: {not args.include_empty}")
-    print(f"  Min furniture: {args.min_furniture}")
+    print(f"  FOV: {args.fov}°")
+    print(f"  Evaluation mode: {eval_mode}")
     print("=" * 70)
     
     # Load model
     model = load_model(args.checkpoint, args.device)
     
-    # Outputs - include paths for conditions
+    # Outputs
     outputs = {
         "latent": "latent_embedding_path",
         "text_emb": "graph_embedding_path",
         "pov_emb": "pov_embedding_path",
-        "pov_path": "pov_path",              # Actual POV image
-        "graph_text_path": "graph_text_path", # Text description
+        "pov_path": "pov_path",
+        "graph_text_path": "graph_text_path",
     }
     
     if args.config:
         config_outputs = config.get("dataset", {}).get("outputs", {})
         if config_outputs:
-            # Merge, keeping our condition paths
             outputs.update(config_outputs)
             outputs["pov_path"] = "pov_path"
             outputs["graph_text_path"] = "graph_text_path"
@@ -598,17 +682,23 @@ def main():
     dataset, valid_indices, manifest_df, manifest_dir = load_validation_data(
         args.manifest,
         outputs=outputs,
-        exclude_empty=not args.include_empty,
-        min_furniture=args.min_furniture,
+        include_empty=include_empty,
+        include_furnished=include_furnished,
     )
     
     # Create evaluator
-    evaluator = FloorplanEvaluator(args.taxonomy)
+    evaluator = FloorplanEvaluator(args.taxonomy, fov_degrees=args.fov)
     
     # Get experiment name
     experiment_name = args.checkpoint.stem
     if experiment_name in ["best_checkpoint", "checkpoint"]:
         experiment_name = args.checkpoint.parent.parent.name
+    
+    # Add suffix for evaluation mode
+    if args.empty_only:
+        experiment_name += "_empty"
+    elif args.furnished_only:
+        experiment_name += "_furnished"
     
     # Run evaluation
     results = run_evaluation(
@@ -638,6 +728,9 @@ def main():
         "num_steps": args.num_steps,
         "max_samples": args.max_samples,
         "seed": args.seed,
+        "fov_degrees": args.fov,
+        "include_empty": include_empty,
+        "include_furnished": include_furnished,
         "timestamp": datetime.now().isoformat()
     }
     

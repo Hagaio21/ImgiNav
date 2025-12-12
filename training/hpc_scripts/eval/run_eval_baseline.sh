@@ -22,6 +22,11 @@ OUTPUT_DIR="${OUTPUT_DIR:-${BASE_DIR}/evaluation_results}"
 NUM_SAMPLES="${NUM_SAMPLES:-100}"
 GUIDANCE_SCALE="${GUIDANCE_SCALE:-7.5}"
 NUM_STEPS="${NUM_STEPS:-50}"
+FOV="${FOV:-80.0}"
+
+# Evaluation mode: "all", "empty", or "furnished"
+# Default is "all" which evaluates both empty and furnished rooms together
+EVAL_MODE="${EVAL_MODE:-all}"
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "${OUTPUT_DIR}"
@@ -38,7 +43,7 @@ if [ ! -f "${CHECKPOINT}" ]; then
 fi
 
 echo "=============================================="
-echo "Baseline Evaluation"
+echo "Baseline Evaluation (Supercategory Metrics)"
 echo "=============================================="
 echo "Checkpoint: ${CHECKPOINT}"
 echo "Manifest: ${MANIFEST}"
@@ -47,6 +52,8 @@ echo "Output dir: ${OUTPUT_DIR}"
 echo "Num samples: ${NUM_SAMPLES}"
 echo "Guidance scale: ${GUIDANCE_SCALE}"
 echo "Num steps: ${NUM_STEPS}"
+echo "FOV: ${FOV}°"
+echo "Eval mode: ${EVAL_MODE}"
 echo "=============================================="
 
 # Load modules
@@ -69,6 +76,25 @@ fi
 
 cd "${BASE_DIR}"
 
+# Build eval mode arguments
+EVAL_MODE_ARGS=""
+case "${EVAL_MODE}" in
+    empty)
+        EVAL_MODE_ARGS="--empty-only"
+        ;;
+    furnished)
+        EVAL_MODE_ARGS="--furnished-only"
+        ;;
+    all)
+        # Default: evaluate both empty and furnished together
+        EVAL_MODE_ARGS=""
+        ;;
+    *)
+        echo "WARNING: Unknown EVAL_MODE '${EVAL_MODE}', using 'all'"
+        EVAL_MODE_ARGS=""
+        ;;
+esac
+
 # Run evaluation
 python "${PYTHON_SCRIPT}" \
     --checkpoint "${CHECKPOINT}" \
@@ -78,6 +104,11 @@ python "${PYTHON_SCRIPT}" \
     --max-samples "${NUM_SAMPLES}" \
     --guidance-scale "${GUIDANCE_SCALE}" \
     --num-steps "${NUM_STEPS}" \
-    --save-images
+    --fov "${FOV}" \
+    --save-images \
+    ${EVAL_MODE_ARGS}
 
+echo "=============================================="
 echo "Evaluation complete!"
+echo "Results saved to: ${OUTPUT_DIR}"
+echo "=============================================="

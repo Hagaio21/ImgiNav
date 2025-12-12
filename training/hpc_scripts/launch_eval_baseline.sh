@@ -7,10 +7,17 @@
 #   ./launch_eval_baseline.sh --find-best /path/to/experiments/dir
 #
 # Options:
-#   --num-samples N     Number of samples to evaluate (default: 100)
+#   --num-samples N     Number of samples to evaluate (default: 500)
 #   --guidance-scale G  CFG guidance scale (default: 7.5)
+#   --fov F             Camera field of view in degrees (default: 80)
+#   --eval-mode M       Evaluation mode: "all", "empty", or "furnished" (default: all)
 #   --queue Q           Queue to submit to (default: gpul40s)
 #   --dry-run           Print commands without submitting
+#
+# Evaluation modes:
+#   all       - Evaluate both empty and furnished rooms together (default)
+#   empty     - Evaluate only empty rooms
+#   furnished - Evaluate only furnished rooms
 
 set -uo pipefail
 
@@ -22,6 +29,8 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 # Defaults
 NUM_SAMPLES=500
 GUIDANCE_SCALE=7.5
+FOV=80.0
+EVAL_MODE="all"
 QUEUE="gpul40s"
 DRY_RUN=false
 MANIFEST="/work3/s233249/ImgiNav/dataset_v2/manifests/manifest_val.csv"
@@ -41,6 +50,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --guidance-scale)
             GUIDANCE_SCALE="$2"
+            shift 2
+            ;;
+        --fov)
+            FOV="$2"
+            shift 2
+            ;;
+        --eval-mode)
+            EVAL_MODE="$2"
             shift 2
             ;;
         --queue)
@@ -83,6 +100,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate eval mode
+case "${EVAL_MODE}" in
+    all|empty|furnished)
+        ;;
+    *)
+        echo "ERROR: Invalid eval-mode '${EVAL_MODE}'. Must be: all, empty, or furnished"
+        exit 1
+        ;;
+esac
+
 # Find best checkpoints in directory
 if [ -n "${FIND_BEST_DIR}" ]; then
     echo "Finding best checkpoints in: ${FIND_BEST_DIR}"
@@ -118,8 +145,10 @@ if [ ${#CHECKPOINTS[@]} -eq 0 ]; then
     echo "  $0 --find-best /path/to/experiments/"
     echo ""
     echo "Options:"
-    echo "  --num-samples N      Number of samples (default: 100)"
+    echo "  --num-samples N      Number of samples (default: 500)"
     echo "  --guidance-scale G   CFG scale (default: 7.5)"
+    echo "  --fov F              Camera FOV in degrees (default: 80)"
+    echo "  --eval-mode M        Mode: all, empty, furnished (default: all)"
     echo "  --queue Q            LSF queue (default: gpul40s)"
     echo "  --dry-run            Print without submitting"
     exit 1
@@ -134,6 +163,8 @@ echo "=============================================="
 echo "Checkpoints: ${#CHECKPOINTS[@]}"
 echo "Samples per checkpoint: ${NUM_SAMPLES}"
 echo "Guidance scale: ${GUIDANCE_SCALE}"
+echo "FOV: ${FOV}°"
+echo "Eval mode: ${EVAL_MODE}"
 echo "Queue: ${QUEUE}"
 echo "Output dir: ${OUTPUT_DIR}"
 echo "=============================================="
@@ -157,31 +188,43 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
     fi
     EXP_NAME=$(echo "${EXP_NAME}" | sed 's/[^a-zA-Z0-9_]/_/g')
     
+    # Add eval mode suffix for result checking
+    RESULT_SUFFIX=""
+    if [ "${EVAL_MODE}" == "empty" ]; then
+        RESULT_SUFFIX="_empty"
+    elif [ "${EVAL_MODE}" == "furnished" ]; then
+        RESULT_SUFFIX="_furnished"
+    fi
+    
     # Check if already evaluated
-    RESULT_PATTERN="${OUTPUT_DIR}/${EXP_NAME}_*_results_*.json"
+    RESULT_PATTERN="${OUTPUT_DIR}/${EXP_NAME}${RESULT_SUFFIX}_*_results_*.json"
     if ls ${RESULT_PATTERN} 1>/dev/null 2>&1; then
-        echo "SKIP: Already evaluated: ${EXP_NAME}"
+        echo "SKIP: Already evaluated: ${EXP_NAME}${RESULT_SUFFIX}"
         ((SKIPPED++))
         continue
     fi
     
     JOB_NAME="eval_${EXP_NAME}"
+    if [ -n "${RESULT_SUFFIX}" ]; then
+        JOB_NAME="${JOB_NAME}${RESULT_SUFFIX}"
+    fi
     
     echo "Submitting: ${JOB_NAME}"
     echo "  Checkpoint: ${CHECKPOINT}"
+    echo "  Eval mode: ${EVAL_MODE}"
     
     if [ "${DRY_RUN}" = true ]; then
         echo "  [DRY RUN] Would submit job"
     else
         bsub -J "${JOB_NAME}" \
-            -o "${LOG_DIR}/eval_${EXP_NAME}.%J.out" \
-            -e "${LOG_DIR}/eval_${EXP_NAME}.%J.err" \
+            -o "${LOG_DIR}/eval_${EXP_NAME}${RESULT_SUFFIX}.%J.out" \
+            -e "${LOG_DIR}/eval_${EXP_NAME}${RESULT_SUFFIX}.%J.err" \
             -q "${QUEUE}" \
             -n 4 \
             -R "rusage[mem=4000]" \
             -gpu "num=1" \
             -W 2:00 \
-            -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE}" \
+            -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE},FOV=${FOV},EVAL_MODE=${EVAL_MODE}" \
             bash "${RUN_SCRIPT}"
         
         ((SUBMITTED++))
