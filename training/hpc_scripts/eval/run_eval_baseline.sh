@@ -23,6 +23,7 @@ NUM_SAMPLES="${NUM_SAMPLES:-100}"
 GUIDANCE_SCALE="${GUIDANCE_SCALE:-7.5}"
 NUM_STEPS="${NUM_STEPS:-50}"
 FOV="${FOV:-80.0}"
+EMPTY_THRESHOLD="${EMPTY_THRESHOLD:-3}"
 
 # Evaluation mode: "all", "empty", or "furnished"
 # Default is "all" which evaluates both empty and furnished rooms together
@@ -53,6 +54,7 @@ echo "Num samples: ${NUM_SAMPLES}"
 echo "Guidance scale: ${GUIDANCE_SCALE}"
 echo "Num steps: ${NUM_STEPS}"
 echo "FOV: ${FOV}°"
+echo "Empty threshold: furniture_count < ${EMPTY_THRESHOLD}"
 echo "Eval mode: ${EVAL_MODE}"
 echo "=============================================="
 
@@ -105,6 +107,7 @@ python "${PYTHON_SCRIPT}" \
     --guidance-scale "${GUIDANCE_SCALE}" \
     --num-steps "${NUM_STEPS}" \
     --fov "${FOV}" \
+    --empty-threshold "${EMPTY_THRESHOLD}" \
     --save-images \
     ${EVAL_MODE_ARGS}
 

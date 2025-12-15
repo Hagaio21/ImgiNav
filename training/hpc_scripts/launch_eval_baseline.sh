@@ -10,6 +10,7 @@
 #   --num-samples N     Number of samples to evaluate (default: 500)
 #   --guidance-scale G  CFG guidance scale (default: 7.5)
 #   --fov F             Camera field of view in degrees (default: 80)
+#   --empty-threshold N Furniture count below which room is empty (default: 3)
 #   --eval-mode M       Evaluation mode: "all", "empty", or "furnished" (default: all)
 #   --queue Q           Queue to submit to (default: gpul40s)
 #   --dry-run           Print commands without submitting
@@ -30,6 +31,7 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 NUM_SAMPLES=500
 GUIDANCE_SCALE=7.5
 FOV=80.0
+EMPTY_THRESHOLD=3
 EVAL_MODE="all"
 QUEUE="gpul40s"
 DRY_RUN=false
@@ -54,6 +56,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --fov)
             FOV="$2"
+            shift 2
+            ;;
+        --empty-threshold)
+            EMPTY_THRESHOLD="$2"
             shift 2
             ;;
         --eval-mode)
@@ -148,6 +154,7 @@ if [ ${#CHECKPOINTS[@]} -eq 0 ]; then
     echo "  --num-samples N      Number of samples (default: 500)"
     echo "  --guidance-scale G   CFG scale (default: 7.5)"
     echo "  --fov F              Camera FOV in degrees (default: 80)"
+    echo "  --empty-threshold N  Furniture count threshold for empty (default: 3)"
     echo "  --eval-mode M        Mode: all, empty, furnished (default: all)"
     echo "  --queue Q            LSF queue (default: gpul40s)"
     echo "  --dry-run            Print without submitting"
@@ -164,6 +171,7 @@ echo "Checkpoints: ${#CHECKPOINTS[@]}"
 echo "Samples per checkpoint: ${NUM_SAMPLES}"
 echo "Guidance scale: ${GUIDANCE_SCALE}"
 echo "FOV: ${FOV}°"
+echo "Empty threshold: furniture_count < ${EMPTY_THRESHOLD}"
 echo "Eval mode: ${EVAL_MODE}"
 echo "Queue: ${QUEUE}"
 echo "Output dir: ${OUTPUT_DIR}"
@@ -196,9 +204,9 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
         RESULT_SUFFIX="_furnished"
     fi
     
-    # Check if already evaluated
-    RESULT_PATTERN="${OUTPUT_DIR}/${EXP_NAME}${RESULT_SUFFIX}_*_results_*.json"
-    if ls ${RESULT_PATTERN} 1>/dev/null 2>&1; then
+    # Check if already evaluated (per-experiment folder structure)
+    EXP_FOLDER="${OUTPUT_DIR}/${EXP_NAME}${RESULT_SUFFIX}"
+    if [ -d "${EXP_FOLDER}" ] && ls "${EXP_FOLDER}"/results_*.json 1>/dev/null 2>&1; then
         echo "SKIP: Already evaluated: ${EXP_NAME}${RESULT_SUFFIX}"
         ((SKIPPED++))
         continue
@@ -224,7 +232,7 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
             -R "rusage[mem=4000]" \
             -gpu "num=1" \
             -W 2:00 \
-            -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE},FOV=${FOV},EVAL_MODE=${EVAL_MODE}" \
+            -env "CHECKPOINT=${CHECKPOINT},MANIFEST=${MANIFEST},TAXONOMY=${TAXONOMY},OUTPUT_DIR=${OUTPUT_DIR},NUM_SAMPLES=${NUM_SAMPLES},GUIDANCE_SCALE=${GUIDANCE_SCALE},FOV=${FOV},EMPTY_THRESHOLD=${EMPTY_THRESHOLD},EVAL_MODE=${EVAL_MODE}" \
             bash "${RUN_SCRIPT}"
         
         ((SUBMITTED++))
