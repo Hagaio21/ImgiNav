@@ -754,6 +754,12 @@ def run_full_experiment(
                 # Save condition metadata
                 with open(sample_cond_dir / "condition_info.json", "w") as f:
                     json.dump(condition_info, f, indent=2, default=str)
+        # ✅ MEMORY CLEANUP: Explicitly delete large objects after each sample
+        del baseline, baseline_output, baseline_rgb, baseline_metrics
+        del target_rgb, acc_results, acc_images, acc_metrics
+        del ref_images_by_ns, ref_metrics_by_ns, condition_info, sample, text_emb_batch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     # Create visualizations for best and median samples
     if output_dir:
@@ -841,6 +847,10 @@ def run_full_experiment(
                         f.write(str(text_desc))
         
         print(f"\n  Visualizations saved to: {viz_dir}")
+    # ✅ MEMORY CLEANUP: Delete sample_data (no longer needed after visualization)
+    del sample_data
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # Aggregate results
     def aggregate_by_povs(results_list):
