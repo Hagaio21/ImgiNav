@@ -45,6 +45,21 @@ from training.evaluation_metrics import (
 )
 
 
+def numpy_safe_json_default(obj):
+    """JSON encoder default function that handles numpy types."""
+    if isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
+
+
 def load_model(checkpoint_path: Path, device: str = "cuda") -> DiffusionModel:
     """Load diffusion model from checkpoint."""
     print(f"Loading model from {checkpoint_path}...")
@@ -60,17 +75,23 @@ def load_validation_data(
     outputs: dict,
     include_empty: bool = True,
     include_furnished: bool = True,
+    empty_threshold: int = 3,
 ):
     """Load evaluation dataset with both empty and furnished rooms.
     
     Args:
         manifest_path: Path to manifest CSV
         outputs: Column mapping for dataset
-        include_empty: Include empty rooms (is_empty=True)
-        include_furnished: Include furnished rooms (is_empty=False)
+        include_empty: Include empty rooms (furniture_count < empty_threshold)
+        include_furnished: Include furnished rooms (furniture_count >= empty_threshold)
+        empty_threshold: Furniture count below which a room is considered empty (default: 3)
     
     Returns:
         Tuple of (dataset, valid_indices, manifest_df, manifest_dir)
+    
+    Note:
+        Empty/furnished is determined by furniture_count, not is_empty column.
+        Rooms with only doors/windows (furniture_count < 3) are considered empty.
     """
     print(f"Loading evaluation dataset from {manifest_path}...")
     
@@ -89,27 +110,39 @@ def load_validation_data(
         mask &= ~rejected
         print(f"  Excluding {rejected_count} rejected samples")
     
-    # Filter by empty/furnished
-    if "is_empty" in df.columns:
-        is_empty = df["is_empty"].fillna(False).astype(bool)
+    # Determine empty/furnished based on furniture_count
+    # Rooms with furniture_count < threshold are considered "empty" (only structure + openings)
+    if "furniture_count" in df.columns:
+        furniture_count = df["furniture_count"].fillna(0).astype(int)
+        is_empty_by_furniture = furniture_count < empty_threshold
+        
+        print(f"  Empty threshold: furniture_count < {empty_threshold}")
         
         if include_empty and include_furnished:
             # Include both
             print(f"  Including both empty and furnished rooms")
         elif include_empty and not include_furnished:
-            # Empty only
-            mask &= is_empty
-            print(f"  Including only empty rooms")
+            # Empty only (furniture_count < threshold)
+            mask &= is_empty_by_furniture
+            print(f"  Including only empty rooms (furniture_count < {empty_threshold})")
         elif include_furnished and not include_empty:
-            # Furnished only
-            mask &= ~is_empty
-            print(f"  Including only furnished rooms")
+            # Furnished only (furniture_count >= threshold)
+            mask &= ~is_empty_by_furniture
+            print(f"  Including only furnished rooms (furniture_count >= {empty_threshold})")
         else:
             raise ValueError("Must include at least one of empty or furnished rooms")
         
-        empty_count = (mask & is_empty).sum()
-        furnished_count = (mask & ~is_empty).sum()
+        empty_count = (mask & is_empty_by_furniture).sum()
+        furnished_count = (mask & ~is_empty_by_furniture).sum()
         print(f"  Empty rooms: {empty_count}, Furnished rooms: {furnished_count}")
+    else:
+        print(f"  WARNING: 'furniture_count' column not found, using is_empty column as fallback")
+        if "is_empty" in df.columns:
+            is_empty_by_furniture = df["is_empty"].fillna(False).astype(bool)
+            if include_empty and not include_furnished:
+                mask &= is_empty_by_furniture
+            elif include_furnished and not include_empty:
+                mask &= ~is_empty_by_furniture
     
     valid_indices = df[mask].index.tolist()
     print(f"  Valid samples after filtering: {len(valid_indices)}")
@@ -232,9 +265,14 @@ def run_evaluation(
     save_images: bool = False,
     output_dir: Path = None,
     conditioning: str = "both",
-    seed: int = None
+    seed: int = None,
+    empty_threshold: int = 3
 ) -> dict:
-    """Run evaluation on both empty and furnished rooms, output single CSV."""
+    """Run evaluation on both empty and furnished rooms, output single CSV.
+    
+    Args:
+        empty_threshold: Furniture count below which room is considered empty (default: 3)
+    """
     
     n_valid = len(valid_indices)
     n_samples = n_valid if max_samples is None else min(max_samples, n_valid)
@@ -251,11 +289,13 @@ def run_evaluation(
     else:
         sampled_valid_indices = valid_indices[:n_samples]
     
-    # Setup directories
+    # Setup directories - per-experiment folder structure
+    exp_dir = output_dir / experiment_name if output_dir else None
     images_dir = None
     conditions_dir = None
-    if save_images and output_dir:
-        images_dir = output_dir / "images" / experiment_name
+    if save_images and exp_dir:
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        images_dir = exp_dir / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
         conditions_dir = images_dir / "conditions"
         conditions_dir.mkdir(parents=True, exist_ok=True)
@@ -264,21 +304,28 @@ def run_evaluation(
     show_fov = conditioning in ["pov", "both"]
     
     print(f"\nEvaluating {n_samples} samples with conditioning: {conditioning}")
+    print(f"  Empty threshold: furniture_count < {empty_threshold}")
     
-    # CSV file for per-sample metrics
-    csv_path = output_dir / f"{experiment_name}_metrics.csv" if output_dir else None
+    # CSV file for per-sample metrics (in experiment folder)
+    # We stream results to CSV as we go - no accumulation in memory
+    csv_path = exp_dir / "metrics.csv" if exp_dir else None
     csv_file = None
     csv_writer = None
     
-    all_metrics = []
     conditions_saved = {"pov": 0, "text": 0}
     
+    # Get empty threshold from function parameter
     for eval_idx, dataset_idx in enumerate(tqdm(sampled_valid_indices, desc="Evaluating")):
         sample = dataset[dataset_idx]
         manifest_row = manifest_df.iloc[dataset_idx]
         
-        # Determine if empty room
-        is_empty = bool(manifest_row.get("is_empty", False)) if "is_empty" in manifest_df.columns else False
+        # Determine if empty room based on furniture_count
+        if "furniture_count" in manifest_df.columns:
+            furniture_count = int(manifest_row.get("furniture_count", 0))
+            is_empty = furniture_count < empty_threshold
+        else:
+            # Fallback to is_empty column
+            is_empty = bool(manifest_row.get("is_empty", False)) if "is_empty" in manifest_df.columns else False
         
         # Generate
         output = generate_single(model, sample, device, guidance_scale, num_steps, conditioning=conditioning)
@@ -291,11 +338,7 @@ def run_evaluation(
         metrics = evaluator.evaluate(pred_rgb, target_rgb, is_empty=is_empty)
         summary = metrics["summary"]
         
-        # Store for aggregation
-        metrics_for_agg = {**summary, 'is_empty': is_empty, 'eval_idx': eval_idx, 'dataset_idx': dataset_idx}
-        all_metrics.append(metrics_for_agg)
-        
-        # Write CSV row
+        # Write CSV row (streaming - no memory accumulation)
         if csv_path:
             if csv_file is None:
                 csv_file = open(csv_path, "w", newline="")
@@ -320,19 +363,31 @@ def run_evaluation(
             if conditions_dir:
                 if "pov_path" in manifest_df.columns and pd.notna(manifest_row["pov_path"]):
                     pov_path = str(manifest_row["pov_path"])
-                    if not Path(pov_path).exists():
-                        pov_path = str(manifest_dir / pov_path)
-                    if Path(pov_path).exists():
-                        shutil.copy(pov_path, conditions_dir / f"{eval_idx:04d}_pov.png")
-                        conditions_saved["pov"] += 1
+                    # Try multiple base directories
+                    possible_bases = [
+                        Path(pov_path),  # Absolute path
+                        manifest_dir / pov_path,  # Relative to manifest dir
+                        manifest_dir.parent / pov_path,  # Relative to parent (dataset root)
+                    ]
+                    for p in possible_bases:
+                        if p.exists():
+                            shutil.copy(p, conditions_dir / f"{eval_idx:04d}_pov.png")
+                            conditions_saved["pov"] += 1
+                            break
                 
                 if "graph_text_path" in manifest_df.columns and pd.notna(manifest_row["graph_text_path"]):
                     text_path = str(manifest_row["graph_text_path"])
-                    if not Path(text_path).exists():
-                        text_path = str(manifest_dir / text_path)
-                    if Path(text_path).exists():
-                        shutil.copy(text_path, conditions_dir / f"{eval_idx:04d}_text.txt")
-                        conditions_saved["text"] += 1
+                    # Try multiple base directories
+                    possible_bases = [
+                        Path(text_path),  # Absolute path
+                        manifest_dir / text_path,  # Relative to manifest dir
+                        manifest_dir.parent / text_path,  # Relative to parent (dataset root)
+                    ]
+                    for p in possible_bases:
+                        if p.exists():
+                            shutil.copy(p, conditions_dir / f"{eval_idx:04d}_text.txt")
+                            conditions_saved["text"] += 1
+                            break
         
         del pred_rgb, target_rgb, metrics, output, sample
     
@@ -350,89 +405,117 @@ def run_evaluation(
     
     print(f"  Empty samples: {len(df_empty)}, Furnished samples: {len(df_furnished)}")
     
-    # Find best/median/worst for visualization (prefer furnished, fallback to all)
-    viz_df = df_furnished if len(df_furnished) > 0 else df
-    sorted_df = viz_df.sort_values("unified_score")
-    
-    worst_row = sorted_df.iloc[0] if len(sorted_df) > 0 else None
-    median_row = sorted_df.iloc[len(sorted_df) // 2] if len(sorted_df) > 0 else None
-    best_row = sorted_df.iloc[-1] if len(sorted_df) > 0 else None
-    
-    # Generate visualizations for best/median/worst
-    if output_dir and images_dir and best_row is not None:
-        viz_dir = output_dir / "visualizations" / experiment_name
+    # Generate visualizations for best/median/worst - separately for empty and furnished (6 total)
+    if exp_dir and images_dir:
+        viz_dir = exp_dir / "visualizations"
         viz_dir.mkdir(parents=True, exist_ok=True)
         
-        for label, row in [("best", best_row), ("median", median_row), ("worst", worst_row)]:
-            if row is None:
-                continue
+        # Helper to create visualizations for a subset
+        def create_viz_for_subset(subset_df: pd.DataFrame, subset_name: str):
+            if len(subset_df) == 0:
+                print(f"  No {subset_name} samples for visualization")
+                return
             
-            idx = int(row["eval_idx"])
-            dataset_idx = int(row["dataset_idx"])
-            score = row["unified_score"]
-            is_empty = bool(row["is_empty"])
-            prefix = "empty" if is_empty else "furnished"
+            sorted_df = subset_df.sort_values("unified_score")
             
-            # Load images
-            pred_path = images_dir / f"{idx:04d}_{prefix}_pred.png"
-            target_path = images_dir / f"{idx:04d}_{prefix}_target.png"
+            samples_to_viz = [
+                ("best", sorted_df.iloc[-1]),
+                ("median", sorted_df.iloc[len(sorted_df) // 2]),
+                ("worst", sorted_df.iloc[0]),
+            ]
             
-            if not pred_path.exists():
-                print(f"  Warning: images not found for {label}")
-                continue
+            for label, row in samples_to_viz:
+                viz_label = f"{label}_{subset_name}"  # e.g., "best_furnished"
+                
+                # Create subfolder for this visualization
+                sample_viz_dir = viz_dir / viz_label
+                sample_viz_dir.mkdir(parents=True, exist_ok=True)
+                
+                idx = int(row["eval_idx"])
+                dataset_idx = int(row["dataset_idx"])
+                score = float(row["unified_score"])
+                is_empty = subset_name == "empty"
+                prefix = "empty" if is_empty else "furnished"
+                
+                # Load images
+                pred_path = images_dir / f"{idx:04d}_{prefix}_pred.png"
+                target_path = images_dir / f"{idx:04d}_{prefix}_target.png"
+                
+                if not pred_path.exists():
+                    print(f"  Warning: images not found for {viz_label}")
+                    continue
+                
+                pred_img = np.array(Image.open(pred_path))
+                target_img = np.array(Image.open(target_path))
+                
+                # Re-evaluate for visualization
+                metrics = evaluator.evaluate(pred_img, target_img, is_empty=is_empty)
+                
+                # Create visualization with FOV beam
+                sample_label = f"{label.capitalize()} {subset_name} (idx={idx}, score={score:.3f})"
+                detailed, summary_viz = evaluator.create_visualization(
+                    pred_img, target_img, metrics, sample_label, show_fov=show_fov
+                )
+                
+                # Save all files in the subfolder
+                detailed.save(sample_viz_dir / "detailed.png")
+                summary_viz.save(sample_viz_dir / "summary.png")
+                
+                # Copy simple images
+                shutil.copy(pred_path, sample_viz_dir / "pred.png")
+                shutil.copy(target_path, sample_viz_dir / "target.png")
+                
+                # Also copy cleaned versions if they exist
+                cleaned_pred = images_dir / f"{idx:04d}_{prefix}_pred_cleaned.png"
+                cleaned_target = images_dir / f"{idx:04d}_{prefix}_target_cleaned.png"
+                if cleaned_pred.exists():
+                    shutil.copy(cleaned_pred, sample_viz_dir / "pred_cleaned.png")
+                if cleaned_target.exists():
+                    shutil.copy(cleaned_target, sample_viz_dir / "target_cleaned.png")
+                
+                # Copy conditions
+                if conditions_dir:
+                    pov = conditions_dir / f"{idx:04d}_pov.png"
+                    txt = conditions_dir / f"{idx:04d}_text.txt"
+                    if pov.exists():
+                        shutil.copy(pov, sample_viz_dir / "pov.png")
+                    if txt.exists():
+                        shutil.copy(txt, sample_viz_dir / "text.txt")
+                
+                # Save info JSON
+                info = {
+                    "eval_idx": int(idx),
+                    "dataset_idx": int(dataset_idx),
+                    "is_empty": bool(is_empty),
+                    "subset": subset_name,
+                    "rank": label,
+                    "unified_score": float(score),
+                    "metrics": {k: numpy_safe_json_default(v) if not isinstance(v, (int, float, str, bool)) else v 
+                               for k, v in row.items() if k not in ["eval_idx", "dataset_idx"]}
+                }
+                with open(sample_viz_dir / "info.json", "w") as f:
+                    json.dump(info, f, indent=2, default=numpy_safe_json_default)
+                
+                del pred_img, target_img, metrics
             
-            pred_img = np.array(Image.open(pred_path))
-            target_img = np.array(Image.open(target_path))
-            
-            # Re-evaluate for visualization
-            metrics = evaluator.evaluate(pred_img, target_img, is_empty=is_empty)
-            
-            # Create visualization with FOV beam
-            sample_label = f"{label.capitalize()} ({prefix}, idx={idx}, score={score:.3f})"
-            detailed, summary_viz = evaluator.create_visualization(
-                pred_img, target_img, metrics, sample_label, show_fov=show_fov
-            )
-            
-            detailed.save(viz_dir / f"{label}_detailed.png")
-            summary_viz.save(viz_dir / f"{label}_summary.png")
-            
-            # Copy simple images
-            shutil.copy(pred_path, viz_dir / f"{label}_pred.png")
-            shutil.copy(target_path, viz_dir / f"{label}_target.png")
-            
-            # Copy conditions
-            if conditions_dir:
-                pov = conditions_dir / f"{idx:04d}_pov.png"
-                txt = conditions_dir / f"{idx:04d}_text.txt"
-                if pov.exists():
-                    shutil.copy(pov, viz_dir / f"{label}_pov.png")
-                if txt.exists():
-                    shutil.copy(txt, viz_dir / f"{label}_text.txt")
-            
-            # Save info JSON
-            info = {
-                "eval_idx": idx,
-                "dataset_idx": dataset_idx,
-                "is_empty": is_empty,
-                "unified_score": float(score),
-                "metrics": {k: float(v) if isinstance(v, (int, float, np.floating)) else v 
-                           for k, v in row.items() if k not in ["eval_idx", "dataset_idx"]}
-            }
-            with open(viz_dir / f"{label}_info.json", "w") as f:
-                json.dump(info, f, indent=2)
-            
-            del pred_img, target_img, metrics
+            # Print summary for this subset
+            best_row = sorted_df.iloc[-1]
+            median_row = sorted_df.iloc[len(sorted_df) // 2]
+            worst_row = sorted_df.iloc[0]
+            print(f"  {subset_name.capitalize()}: best={best_row['unified_score']:.3f}, "
+                  f"median={median_row['unified_score']:.3f}, worst={worst_row['unified_score']:.3f}")
         
-        print(f"  Best: idx={int(best_row['eval_idx'])}, score={best_row['unified_score']:.3f}")
-        print(f"  Median: idx={int(median_row['eval_idx'])}, score={median_row['unified_score']:.3f}")
-        print(f"  Worst: idx={int(worst_row['eval_idx'])}, score={worst_row['unified_score']:.3f}")
+        # Create visualizations for both subsets
+        print("\nGenerating visualizations...")
+        create_viz_for_subset(df_furnished, "furnished")
+        create_viz_for_subset(df_empty, "empty")
     
-    # Compute aggregated statistics
+    # Compute aggregated statistics from CSV (not from memory)
     aggregated = compute_aggregated_stats(df, df_empty, df_furnished)
     aggregated["conditioning"] = conditioning
     aggregated["seed"] = seed
     
-    return {"aggregated": aggregated, "csv_path": str(csv_path), "all_metrics": all_metrics}
+    return {"aggregated": aggregated, "csv_path": str(csv_path)}
 
 
 def compute_aggregated_stats(df: pd.DataFrame, df_empty: pd.DataFrame, df_furnished: pd.DataFrame) -> dict:
@@ -441,9 +524,9 @@ def compute_aggregated_stats(df: pd.DataFrame, df_empty: pd.DataFrame, df_furnis
     metric_cols = [c for c in df.columns if c not in ["eval_idx", "dataset_idx", "is_empty"]]
     
     aggregated = {
-        "num_samples": len(df),
-        "num_empty": len(df_empty),
-        "num_furnished": len(df_furnished),
+        "num_samples": int(len(df)),
+        "num_empty": int(len(df_empty)),
+        "num_furnished": int(len(df_furnished)),
     }
     
     # Overall stats
@@ -461,7 +544,7 @@ def compute_aggregated_stats(df: pd.DataFrame, df_empty: pd.DataFrame, df_furnis
     # Empty room stats
     if len(df_empty) > 0:
         aggregated["empty"] = {
-            "num_samples": len(df_empty),
+            "num_samples": int(len(df_empty)),
             "floor_iou": {"mean": float(df_empty["floor_iou"].mean()), "std": float(df_empty["floor_iou"].std())},
             "wall_iou": {"mean": float(df_empty["wall_iou"].mean()), "std": float(df_empty["wall_iou"].std())},
             "openings_iou": {"mean": float(df_empty["openings_iou"].mean()), "std": float(df_empty["openings_iou"].std())},
@@ -471,7 +554,7 @@ def compute_aggregated_stats(df: pd.DataFrame, df_empty: pd.DataFrame, df_furnis
     # Furnished room stats
     if len(df_furnished) > 0:
         aggregated["furnished"] = {
-            "num_samples": len(df_furnished),
+            "num_samples": int(len(df_furnished)),
             "floor_iou": {"mean": float(df_furnished["floor_iou"].mean()), "std": float(df_furnished["floor_iou"].std())},
             "wall_iou": {"mean": float(df_furnished["wall_iou"].mean()), "std": float(df_furnished["wall_iou"].std())},
             "openings_iou": {"mean": float(df_furnished["openings_iou"].mean()), "std": float(df_furnished["openings_iou"].std())},
@@ -498,22 +581,22 @@ def compute_aggregated_stats(df: pd.DataFrame, df_empty: pd.DataFrame, df_furnis
 
 
 def save_results(results: dict, output_dir: Path, experiment_name: str):
-    """Save evaluation results."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    """Save evaluation results to per-experiment folder."""
+    exp_dir = output_dir / experiment_name
+    exp_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Save full results
-    full_path = output_dir / f"{experiment_name}_results_{timestamp}.json"
-    results_to_save = {k: v for k, v in results.items() if k != "all_metrics"}
+    full_path = exp_dir / f"results_{timestamp}.json"
     with open(full_path, "w") as f:
-        json.dump(results_to_save, f, indent=2, default=str)
+        json.dump(results, f, indent=2, default=numpy_safe_json_default)
     print(f"  Full results saved to: {full_path}")
     
     # Save summary
-    summary_path = output_dir / f"{experiment_name}_summary_{timestamp}.json"
+    summary_path = exp_dir / f"summary_{timestamp}.json"
     with open(summary_path, "w") as f:
-        json.dump(results["aggregated"], f, indent=2)
+        json.dump(results["aggregated"], f, indent=2, default=numpy_safe_json_default)
     print(f"  Summary saved to: {summary_path}")
     
     # Print summary
@@ -580,6 +663,8 @@ def main():
                         help="Random seed for reproducible sampling")
     parser.add_argument("--fov", type=float, default=80.0,
                         help="Camera field of view in degrees (default: 80)")
+    parser.add_argument("--empty-threshold", type=int, default=3,
+                        help="Furniture count below which room is considered empty (default: 3)")
     
     # Room type selection
     parser.add_argument("--empty-only", action="store_true",
@@ -656,6 +741,7 @@ def main():
     print(f"  Max samples: {args.max_samples}")
     print(f"  Seed: {args.seed}")
     print(f"  FOV: {args.fov}°")
+    print(f"  Empty threshold: furniture_count < {args.empty_threshold}")
     print(f"  Evaluation mode: {eval_mode}")
     print("=" * 70)
     
@@ -684,6 +770,7 @@ def main():
         outputs=outputs,
         include_empty=include_empty,
         include_furnished=include_furnished,
+        empty_threshold=args.empty_threshold,
     )
     
     # Create evaluator
@@ -716,7 +803,8 @@ def main():
         save_images=args.save_images,
         output_dir=args.output_dir,
         conditioning=args.conditioning,
-        seed=args.seed
+        seed=args.seed,
+        empty_threshold=args.empty_threshold
     )
     
     # Add metadata
@@ -729,6 +817,7 @@ def main():
         "max_samples": args.max_samples,
         "seed": args.seed,
         "fov_degrees": args.fov,
+        "empty_threshold": args.empty_threshold,
         "include_empty": include_empty,
         "include_furnished": include_furnished,
         "timestamp": datetime.now().isoformat()

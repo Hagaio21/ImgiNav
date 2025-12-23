@@ -54,7 +54,8 @@ class MultiPOVDataset(Dataset):
         group_by: str = "room_id",
         filters: Optional[Dict] = None,
         max_povs_per_room: int = 10,
-        return_paths: bool = False
+        return_paths: bool = False,
+        pov_columns: Optional[List[str]] = None
     ):
         """
         Args:
@@ -64,12 +65,15 @@ class MultiPOVDataset(Dataset):
             filters: Optional filters to apply
             max_povs_per_room: Maximum POVs to return per room
             return_paths: Whether to return file paths
+            pov_columns: List of column names for POV embeddings (for column-based format).
+                         If provided, POVs are read from these columns instead of grouping rows.
         """
         self.manifest_path = Path(manifest_path)
         self.outputs = outputs
         self.group_by = group_by
         self.max_povs_per_room = max_povs_per_room
         self.return_paths = return_paths
+        self.pov_columns = pov_columns
         
         # Load manifest
         self.df = pd.read_csv(self.manifest_path, low_memory=False)
@@ -80,12 +84,19 @@ class MultiPOVDataset(Dataset):
         if filters:
             self.df = self._apply_filters(self.df, filters)
         
-        # Validate group_by column exists
-        if group_by not in self.df.columns:
-            raise ValueError(f"Group column '{group_by}' not found. Available: {list(self.df.columns)}")
-        
-        # Group by room/scene
-        self._build_groups()
+        # Check if using column-based POV format
+        if self.pov_columns:
+            # Each row is a sample, POVs come from columns
+            self.group_ids = list(range(len(self.df)))
+            self.groups = {i: [i] for i in range(len(self.df))}
+            print(f"[MultiPOVDataset] Using column-based POV format with {len(self.pov_columns)} POV columns")
+            print(f"[MultiPOVDataset] Found {len(self.group_ids)} samples")
+        else:
+            # Validate group_by column exists
+            if group_by not in self.df.columns:
+                raise ValueError(f"Group column '{group_by}' not found. Available: {list(self.df.columns)}")
+            # Group by room/scene
+            self._build_groups()
     
     def _apply_filters(self, df: pd.DataFrame, filters: Dict) -> pd.DataFrame:
         """Apply filters to DataFrame."""
@@ -188,15 +199,24 @@ class MultiPOVDataset(Dataset):
                     sample[key] = value
         
         # Load all POV embeddings
-        pov_col = self.outputs.get("pov_emb")
         all_pov_embs = []
         
-        if pov_col:
-            for row_idx in row_indices[:self.max_povs_per_room]:
-                row = self.df.iloc[row_idx]
-                pov_emb = self._load_tensor(row[pov_col])
-                if pov_emb is not None:
-                    all_pov_embs.append(pov_emb)
+        if self.pov_columns:
+            # Column-based format: load POVs from specified columns
+            for pov_col in self.pov_columns[:self.max_povs_per_room]:
+                if pov_col in primary_row.index:
+                    pov_emb = self._load_tensor(primary_row[pov_col])
+                    if pov_emb is not None:
+                        all_pov_embs.append(pov_emb)
+        else:
+            # Row-based format: load POVs from multiple rows
+            pov_col = self.outputs.get("pov_emb")
+            if pov_col:
+                for row_idx in row_indices[:self.max_povs_per_room]:
+                    row = self.df.iloc[row_idx]
+                    pov_emb = self._load_tensor(row[pov_col])
+                    if pov_emb is not None:
+                        all_pov_embs.append(pov_emb)
         
         sample["all_pov_embs"] = all_pov_embs
         sample["num_povs"] = len(all_pov_embs)

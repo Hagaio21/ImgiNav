@@ -12,6 +12,7 @@ Features:
 - Random sampling from validation set with seed for reproducibility
 - Saves conditions (POV images, text descriptions) for each sample
 - Generates progression visualizations
+- Saves per-sample metrics in CSV format
 
 Usage:
     python evaluate_refinement.py \
@@ -76,10 +77,14 @@ def run_accumulation_experiment(
     device: str,
     guidance_scale: float = 7.5,
     num_steps: int = 50,
-    max_povs: int = 5
+    max_povs: int = 5,
+    baseline: dict = None
 ) -> Tuple[list, np.ndarray, List[np.ndarray], List[Dict]]:
     """
     Run accumulation experiment: progressively add more POVs.
+    
+    Args:
+        baseline: Optional dict with 'latent', 'rgb', 'metrics' for shared baseline (0 POV)
     
     Returns:
         results: List of metrics per n_povs
@@ -104,28 +109,45 @@ def run_accumulation_experiment(
     max_povs = min(max_povs, len(all_povs))
     
     for n_povs in range(0, max_povs + 1):
-        if n_povs == 0 or len(all_povs) == 0:
-            pov_emb_batch = None
+        if n_povs == 0:
+            # Use shared baseline
+            if baseline is not None:
+                pred_rgb = baseline["rgb"]
+                metrics = baseline["metrics"]
+            else:
+                # Generate baseline (should not happen if called correctly)
+                with torch.no_grad():
+                    output = model.sample(
+                        batch_size=1,
+                        num_steps=num_steps,
+                        method="ddim",
+                        guidance_scale=guidance_scale,
+                        text_emb=text_emb_batch,
+                        pov_emb=None,
+                        verbose=False
+                    )
+                pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
+                metrics = evaluator.evaluate(pred_rgb, target_rgb)
         else:
             povs_to_use = all_povs[:n_povs]
             combined_pov = torch.stack(povs_to_use).mean(dim=0)
             pov_emb_batch = combined_pov.unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                output = model.sample(
+                    batch_size=1,
+                    num_steps=num_steps,
+                    method="ddim",
+                    guidance_scale=guidance_scale,
+                    text_emb=text_emb_batch,
+                    pov_emb=pov_emb_batch,
+                    verbose=False
+                )
+            
+            pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
+            metrics = evaluator.evaluate(pred_rgb, target_rgb)
         
-        with torch.no_grad():
-            output = model.sample(
-                batch_size=1,
-                num_steps=num_steps,
-                method="ddim",
-                guidance_scale=guidance_scale,
-                text_emb=text_emb_batch,
-                pov_emb=pov_emb_batch,
-                verbose=False
-            )
-        
-        pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
         pred_images.append(pred_rgb)
-        
-        metrics = evaluator.evaluate(pred_rgb, target_rgb)
         all_metrics.append(metrics)
         
         results.append({
@@ -145,10 +167,14 @@ def run_refinement_experiment(
     guidance_scale: float = 7.5,
     num_steps: int = 50,
     max_povs: int = 5,
-    noise_strength: float = 0.3
+    noise_strength: float = 0.3,
+    baseline: dict = None
 ) -> Tuple[list, np.ndarray, List[np.ndarray], List[Dict]]:
     """
     Run refinement experiment: each generation builds on the previous.
+    
+    Args:
+        baseline: Optional dict with 'latent', 'rgb', 'metrics' for shared baseline (0 POV)
     
     Returns:
         results: List of metrics per n_povs
@@ -174,24 +200,32 @@ def run_refinement_experiment(
     prior_latent = None
     
     for n_povs in range(0, max_povs + 1):
-        if n_povs == 0 or len(all_povs) == 0:
-            pov_emb_batch = None
+        if n_povs == 0:
+            # Use shared baseline
+            if baseline is not None:
+                pred_rgb = baseline["rgb"]
+                metrics = baseline["metrics"]
+                prior_latent = baseline["latent"].clone()
+            else:
+                # Generate baseline (should not happen if called correctly)
+                with torch.no_grad():
+                    output = model.sample(
+                        batch_size=1,
+                        num_steps=num_steps,
+                        method="ddim",
+                        guidance_scale=guidance_scale,
+                        text_emb=text_emb_batch,
+                        pov_emb=None,
+                        verbose=False
+                    )
+                pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
+                metrics = evaluator.evaluate(pred_rgb, target_rgb)
+                prior_latent = output["latent"].clone()
         else:
             current_pov = all_povs[n_povs - 1]
             pov_emb_batch = current_pov.unsqueeze(0).to(device)
-        
-        with torch.no_grad():
-            if prior_latent is None:
-                output = model.sample(
-                    batch_size=1,
-                    num_steps=num_steps,
-                    method="ddim",
-                    guidance_scale=guidance_scale,
-                    text_emb=text_emb_batch,
-                    pov_emb=pov_emb_batch,
-                    verbose=False
-                )
-            else:
+            
+            with torch.no_grad():
                 start_step = int(model.scheduler.num_steps * noise_strength)
                 noised_prior = model.add_noise_to_latent(prior_latent, start_step)
                 
@@ -205,13 +239,12 @@ def run_refinement_experiment(
                     pov_emb=pov_emb_batch,
                     verbose=False
                 )
+            
+            prior_latent = output["latent"].clone()
+            pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
+            metrics = evaluator.evaluate(pred_rgb, target_rgb)
         
-        prior_latent = output["latent"].clone()
-        
-        pred_rgb = tensor_to_numpy_rgb(output["rgb"][0])
         pred_images.append(pred_rgb)
-        
-        metrics = evaluator.evaluate(pred_rgb, target_rgb)
         all_metrics.append(metrics)
         
         results.append({
@@ -268,6 +301,203 @@ def create_progression_visualization(
         arrow_y = h + 65
         draw.line([(w + 20, arrow_y), (canvas_width - 20, arrow_y)], fill=(0, 128, 0), width=2)
         draw.text((canvas_width // 2, arrow_y + 5), f"+{improvement:.3f}", fill=(0, 128, 0), font=small_font)
+    
+    canvas.save(output_path)
+
+
+def create_comparison_visualization(
+    target_rgb: np.ndarray,
+    baseline_image: np.ndarray,
+    acc_image: np.ndarray,
+    ref_image: np.ndarray,
+    baseline_score: float,
+    acc_score: float,
+    ref_score: float,
+    noise_strength: float,
+    output_path: Path
+):
+    """Create a comparison visualization showing [Target, Baseline, Accumulation, Refinement] side by side."""
+    from PIL import Image, ImageDraw, ImageFont
+    
+    h, w = target_rgb.shape[:2]
+    padding = 10
+    
+    # Layout: 4 images in a row
+    canvas_width = 4 * w + 5 * padding
+    canvas_height = h + 80
+    
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+        small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+    except:
+        font = ImageFont.load_default()
+        small_font = font
+    
+    images = [target_rgb, baseline_image, acc_image, ref_image]
+    titles = ["Target", "Baseline (0 POV)", "Accumulation", f"Refinement (ns={noise_strength})"]
+    scores = [None, baseline_score, acc_score, ref_score]
+    
+    for i, (img, title, score) in enumerate(zip(images, titles, scores)):
+        x_offset = padding + i * (w + padding)
+        canvas.paste(Image.fromarray(img), (x_offset, 40))
+        draw.text((x_offset, 10), title, fill=(0, 0, 0), font=font)
+        if score is not None:
+            draw.text((x_offset, h + 45), f"Score: {score:.3f}", fill=(50, 50, 50), font=small_font)
+    
+    # Show improvements over baseline
+    acc_delta = acc_score - baseline_score
+    ref_delta = ref_score - baseline_score
+    
+    acc_color = (0, 128, 0) if acc_delta > 0 else (200, 0, 0)
+    ref_color = (0, 128, 0) if ref_delta > 0 else (200, 0, 0)
+    
+    acc_x = padding + 2 * (w + padding)
+    ref_x = padding + 3 * (w + padding)
+    
+    acc_sign = "+" if acc_delta > 0 else ""
+    ref_sign = "+" if ref_delta > 0 else ""
+    
+    draw.text((acc_x, h + 62), f"vs baseline: {acc_sign}{acc_delta:.3f}", fill=acc_color, font=small_font)
+    draw.text((ref_x, h + 62), f"vs baseline: {ref_sign}{ref_delta:.3f}", fill=ref_color, font=small_font)
+    
+    canvas.save(output_path)
+
+
+def create_metrics_progression_plot(
+    acc_metrics: List[Dict],
+    ref_metrics_by_ns: Dict[float, List[Dict]],
+    output_path: Path,
+    metric_key: str = "unified_score"
+):
+    """Create a line plot showing metrics at each POV step for accumulation and refinement."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
+    n_povs = len(acc_metrics)
+    x = list(range(n_povs))
+    
+    # Extract metrics
+    acc_scores = [m["summary"][metric_key] for m in acc_metrics]
+    
+    plt.figure(figsize=(10, 6))
+    
+    # Plot accumulation
+    plt.plot(x, acc_scores, 'b-o', label='Accumulation', linewidth=2, markersize=8)
+    
+    # Plot refinement for each noise strength
+    colors = ['r', 'g', 'm', 'c']
+    for i, (ns, ref_metrics) in enumerate(ref_metrics_by_ns.items()):
+        ref_scores = [m["summary"][metric_key] for m in ref_metrics]
+        color = colors[i % len(colors)]
+        plt.plot(x, ref_scores, f'{color}-s', label=f'Refinement (ns={ns})', linewidth=2, markersize=8)
+    
+    plt.xlabel('Number of POVs', fontsize=12)
+    plt.ylabel(metric_key.replace('_', ' ').title(), fontsize=12)
+    plt.title(f'{metric_key.replace("_", " ").title()} vs Number of POVs', fontsize=14)
+    plt.legend(loc='best', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.xticks(x)
+    
+    # Add value annotations
+    for i, score in enumerate(acc_scores):
+        plt.annotate(f'{score:.3f}', (i, score), textcoords="offset points", xytext=(0, 10), ha='center', fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+
+
+def create_metrics_table_image(
+    acc_metrics: List[Dict],
+    ref_metrics_by_ns: Dict[float, List[Dict]],
+    output_path: Path,
+    metrics_to_show: List[str] = None
+):
+    """Create a table image showing metrics at each POV step."""
+    from PIL import Image, ImageDraw, ImageFont
+    
+    if metrics_to_show is None:
+        metrics_to_show = ["unified_score", "mean_bbox_iou", "detection_f1", "count_accuracy"]
+    
+    n_povs = len(acc_metrics)
+    noise_strengths = list(ref_metrics_by_ns.keys())
+    
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
+        small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+    except:
+        font = ImageFont.load_default()
+        small_font = font
+    
+    # Table dimensions
+    col_width = 90
+    row_height = 22
+    header_height = 25
+    metric_col_width = 120
+    
+    n_methods = 1 + len(noise_strengths)  # accumulation + refinements
+    n_cols = 1 + n_povs  # metric name + pov columns
+    n_rows = len(metrics_to_show) * n_methods + n_methods  # metrics per method + method headers
+    
+    canvas_width = metric_col_width + n_povs * col_width + 20
+    canvas_height = header_height + n_rows * row_height + 40
+    
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    
+    # Title
+    draw.text((10, 5), "Metrics Progression by POV Step", fill=(0, 0, 0), font=font)
+    
+    # Column headers (POV numbers)
+    y = header_height + 10
+    draw.text((10, y), "Metric", fill=(0, 0, 0), font=font)
+    for pov_idx in range(n_povs):
+        x = metric_col_width + pov_idx * col_width
+        draw.text((x, y), f"POV {pov_idx}", fill=(0, 0, 0), font=font)
+    
+    y += row_height
+    
+    # Accumulation section
+    draw.rectangle([(5, y), (canvas_width - 5, y + row_height)], fill=(200, 200, 255))
+    draw.text((10, y + 3), "ACCUMULATION", fill=(0, 0, 128), font=font)
+    y += row_height
+    
+    for metric in metrics_to_show:
+        draw.text((10, y + 3), metric.replace('_', ' ')[:15], fill=(50, 50, 50), font=small_font)
+        for pov_idx, m in enumerate(acc_metrics):
+            x = metric_col_width + pov_idx * col_width
+            val = m["summary"].get(metric, 0)
+            draw.text((x, y + 3), f"{val:.3f}", fill=(0, 0, 0), font=small_font)
+        y += row_height
+    
+    # Refinement sections
+    for ns in noise_strengths:
+        draw.rectangle([(5, y), (canvas_width - 5, y + row_height)], fill=(255, 200, 200))
+        draw.text((10, y + 3), f"REFINEMENT (ns={ns})", fill=(128, 0, 0), font=font)
+        y += row_height
+        
+        ref_metrics = ref_metrics_by_ns[ns]
+        for metric in metrics_to_show:
+            draw.text((10, y + 3), metric.replace('_', ' ')[:15], fill=(50, 50, 50), font=small_font)
+            for pov_idx, m in enumerate(ref_metrics):
+                x = metric_col_width + pov_idx * col_width
+                val = m["summary"].get(metric, 0)
+                
+                # Color code: green if better than accumulation, red if worse
+                acc_val = acc_metrics[pov_idx]["summary"].get(metric, 0)
+                if val > acc_val + 0.01:
+                    color = (0, 128, 0)
+                elif val < acc_val - 0.01:
+                    color = (200, 0, 0)
+                else:
+                    color = (0, 0, 0)
+                
+                draw.text((x, y + 3), f"{val:.3f}", fill=color, font=small_font)
+            y += row_height
     
     canvas.save(output_path)
 
@@ -379,9 +609,38 @@ def run_full_experiment(
                         pass
                     break
         
-        # Run accumulation
+        # Generate baseline once (0 POV, text-only) - shared by both methods
+        text_emb = sample.get("text_emb")
+        target_latent = sample.get("latent")
+        target_rgb = decode_latent(model, target_latent, device)
+        
+        if text_emb is not None:
+            text_emb_batch = text_emb.unsqueeze(0).to(device) if text_emb.dim() == 1 else text_emb.to(device)
+        else:
+            text_emb_batch = None
+        
+        with torch.no_grad():
+            baseline_output = model.sample(
+                batch_size=1,
+                num_steps=num_steps,
+                method="ddim",
+                guidance_scale=guidance_scale,
+                text_emb=text_emb_batch,
+                pov_emb=None,
+                verbose=False
+            )
+        
+        baseline_rgb = tensor_to_numpy_rgb(baseline_output["rgb"][0])
+        baseline_metrics = evaluator.evaluate(baseline_rgb, target_rgb)
+        baseline = {
+            "latent": baseline_output["latent"].clone(),
+            "rgb": baseline_rgb,
+            "metrics": baseline_metrics
+        }
+        
+        # Run accumulation with shared baseline
         acc_results, target_rgb, acc_images, acc_metrics = run_accumulation_experiment(
-            model, sample, evaluator, device, guidance_scale, num_steps, max_povs
+            model, sample, evaluator, device, guidance_scale, num_steps, max_povs, baseline=baseline
         )
         for r in acc_results:
             r["eval_idx"] = eval_idx
@@ -393,12 +652,12 @@ def run_full_experiment(
         final_acc_score = acc_results[-1]["metrics"]["unified_score"] if acc_results else 0
         all_final_acc_scores.append(final_acc_score)
         
-        # Run refinement for each noise strength
+        # Run refinement for each noise strength with shared baseline
         ref_images_by_ns = {}
         ref_metrics_by_ns = {}
         for ns in noise_strengths:
             ref_results, _, ref_images, ref_metrics = run_refinement_experiment(
-                model, sample, evaluator, device, guidance_scale, num_steps, max_povs, ns
+                model, sample, evaluator, device, guidance_scale, num_steps, max_povs, ns, baseline=baseline
             )
             for r in ref_results:
                 r["eval_idx"] = eval_idx
@@ -438,6 +697,39 @@ def run_full_experiment(
                 ns_str = str(ns).replace(".", "p")
                 for pov_idx, img in enumerate(ref_imgs):
                     Image.fromarray(img).save(sample_dir / f"refine_ns{ns_str}_pov{pov_idx}.png")
+            
+            # Save comparison image [Target, Baseline, Accumulation, Refinement]
+            # Baseline is the 0-POV generation (same for both methods)
+            baseline_image = acc_images[0]
+            baseline_score = acc_metrics[0]["summary"]["unified_score"] if acc_metrics else 0
+            
+            for ns in noise_strengths:
+                ns_str = str(ns).replace(".", "p")
+                acc_final_score = acc_metrics[-1]["summary"]["unified_score"] if acc_metrics else 0
+                ref_final_score = ref_metrics_by_ns[ns][-1]["summary"]["unified_score"] if ref_metrics_by_ns[ns] else 0
+                create_comparison_visualization(
+                    target_rgb,
+                    baseline_image,
+                    acc_images[-1],
+                    ref_images_by_ns[ns][-1],
+                    baseline_score,
+                    acc_final_score,
+                    ref_final_score,
+                    ns,
+                    sample_dir / f"comparison_ns{ns_str}.png"
+                )
+            
+            # Save metrics progression plot and table
+            create_metrics_progression_plot(
+                acc_metrics,
+                ref_metrics_by_ns,
+                sample_dir / "metrics_progression.png"
+            )
+            create_metrics_table_image(
+                acc_metrics,
+                ref_metrics_by_ns,
+                sample_dir / "metrics_table.png"
+            )
             
             # Save conditions for this sample
             if conditions_dir:
@@ -494,6 +786,33 @@ def run_full_experiment(
                 f"Refine(ns={ns})",
                 ref_scores,
                 viz_dir / f"{label}_refinement_progression.png"
+            )
+            
+            # Comparison visualization: [Target, Baseline, Accumulation, Refinement]
+            baseline_image = data["acc_images"][0]  # 0-POV generation
+            baseline_score = acc_scores[0]
+            create_comparison_visualization(
+                data["target_rgb"],
+                baseline_image,
+                data["acc_images"][-1],  # Final accumulation
+                data["ref_images_by_ns"][ns][-1],  # Final refinement
+                baseline_score,
+                acc_scores[-1],
+                ref_scores[-1],
+                ns,
+                viz_dir / f"{label}_comparison.png"
+            )
+            
+            # Metrics progression plot and table
+            create_metrics_progression_plot(
+                data["acc_metrics"],
+                data["ref_metrics_by_ns"],
+                viz_dir / f"{label}_metrics_progression.png"
+            )
+            create_metrics_table_image(
+                data["acc_metrics"],
+                data["ref_metrics_by_ns"],
+                viz_dir / f"{label}_metrics_table.png"
             )
             
             # Detailed visualization for final predictions
@@ -557,7 +876,63 @@ def run_full_experiment(
             "by_n_povs": aggregate_by_povs(ref_results)
         }
     
+    # Create aggregated metrics plot (average across all samples)
+    if output_dir:
+        viz_dir = output_dir / "visualizations" / experiment_name
+        viz_dir.mkdir(parents=True, exist_ok=True)
+        create_aggregated_metrics_plot(results, viz_dir / "aggregated_metrics.png")
+    
     return results
+
+
+def create_aggregated_metrics_plot(results: dict, output_path: Path):
+    """Create a plot showing aggregated metrics (mean ± std) across all samples."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
+    acc_by_povs = results["accumulation"]["by_n_povs"]
+    n_povs_list = sorted(acc_by_povs.keys())
+    
+    metrics_to_plot = ["unified_score", "mean_bbox_iou", "detection_f1", "count_accuracy"]
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes = axes.flatten()
+    
+    for ax, metric in zip(axes, metrics_to_plot):
+        # Accumulation
+        acc_means = [acc_by_povs[n][f"{metric}_mean"] for n in n_povs_list]
+        acc_stds = [acc_by_povs[n][f"{metric}_std"] for n in n_povs_list]
+        
+        ax.errorbar(n_povs_list, acc_means, yerr=acc_stds, fmt='b-o', 
+                    label='Accumulation', linewidth=2, markersize=8, capsize=4)
+        
+        # Refinement for each noise strength
+        colors = ['r', 'g', 'm', 'c']
+        markers = ['s', '^', 'D', 'v']
+        for i, (ns_key, ref_data) in enumerate(results["refinement"].items()):
+            ref_by_povs = ref_data["by_n_povs"]
+            ref_means = [ref_by_povs[n][f"{metric}_mean"] for n in n_povs_list]
+            ref_stds = [ref_by_povs[n][f"{metric}_std"] for n in n_povs_list]
+            
+            ns = ns_key.replace("ns_", "")
+            ax.errorbar(n_povs_list, ref_means, yerr=ref_stds, 
+                        fmt=f'{colors[i % len(colors)]}-{markers[i % len(markers)]}',
+                        label=f'Refinement (ns={ns})', linewidth=2, markersize=8, capsize=4)
+        
+        ax.set_xlabel('Number of POVs', fontsize=11)
+        ax.set_ylabel(metric.replace('_', ' ').title(), fontsize=11)
+        ax.set_title(metric.replace('_', ' ').title(), fontsize=12, fontweight='bold')
+        ax.legend(loc='best', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_xticks(n_povs_list)
+    
+    plt.suptitle('Aggregated Metrics: Accumulation vs Refinement\n(mean ± std across all samples)', 
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Aggregated metrics plot saved to: {output_path}")
 
 
 def print_comparison_table(results: dict):
@@ -591,6 +966,96 @@ def print_comparison_table(results: dict):
             delta_color = "+" if delta > 0 else ""
             print(f"{n_povs:<8} {metric:<25} {acc_val:<15.4f} {ref_val:<15.4f} {delta_color}{delta:.4f}")
         print()
+
+
+def save_per_sample_final_metrics_csv(results: dict, output_dir: Path, experiment_name: str, timestamp: str):
+    """
+    Save per-sample final metrics in CSV format (streaming to avoid OOM).
+    Each row represents a sample with its final metrics for each method and noise strength.
+    
+    Args:
+        results: Complete results dictionary from run_full_experiment
+        output_dir: Output directory path
+        experiment_name: Name of the experiment
+        timestamp: Timestamp string for file naming
+    """
+    import csv
+    
+    csv_path = output_dir / f"{experiment_name}_per_sample_metrics_{timestamp}.csv"
+    
+    # First pass: collect all metric column names to write header
+    all_metric_keys = set()
+    
+    for r in results["accumulation"]["per_sample"]:
+        for metric_name in r["metrics"].keys():
+            all_metric_keys.add(f"accumulation_{metric_name}")
+    
+    for ns_key, ref_data in results["refinement"].items():
+        ns = ns_key.replace("ns_", "")
+        for r in ref_data["per_sample"]:
+            for metric_name in r["metrics"].keys():
+                all_metric_keys.add(f"refinement_ns{ns}_{metric_name}")
+    
+    all_metric_keys = sorted(list(all_metric_keys))
+    
+    # Collect all unique eval_idx values
+    all_eval_indices = set()
+    for r in results["accumulation"]["per_sample"]:
+        all_eval_indices.add(r.get("eval_idx"))
+    for ns_key, ref_data in results["refinement"].items():
+        for r in ref_data["per_sample"]:
+            all_eval_indices.add(r.get("eval_idx"))
+    all_eval_indices = sorted(list(all_eval_indices))
+    
+    # Stream write CSV - one row per sample
+    with open(csv_path, "w", newline="") as f:
+        fieldnames = ["eval_idx", "dataset_idx"] + all_metric_keys
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        # Process each sample and write immediately
+        for eval_idx in all_eval_indices:
+            row = {"eval_idx": eval_idx, "dataset_idx": ""}
+            
+            # Initialize all metric columns with empty strings
+            for key in all_metric_keys:
+                row[key] = ""
+            
+            # Get dataset_idx and final accumulation metrics
+            acc_results_for_sample = [r for r in results["accumulation"]["per_sample"] if r.get("eval_idx") == eval_idx]
+            if acc_results_for_sample:
+                row["dataset_idx"] = acc_results_for_sample[0].get("dataset_idx", "")
+                
+                # Find the final (max POVs) result for accumulation
+                max_povs = max([r.get("n_povs", 0) for r in acc_results_for_sample])
+                final_acc = next((r for r in acc_results_for_sample if r.get("n_povs") == max_povs), None)
+                
+                if final_acc:
+                    for metric_name, metric_val in final_acc["metrics"].items():
+                        row[f"accumulation_{metric_name}"] = metric_val
+            
+            # Get final refinement metrics for each noise strength
+            for ns_key, ref_data in results["refinement"].items():
+                ns = ns_key.replace("ns_", "")
+                ref_results_for_sample = [r for r in ref_data["per_sample"] if r.get("eval_idx") == eval_idx]
+                
+                if ref_results_for_sample:
+                    # Set dataset_idx if not already set
+                    if not row["dataset_idx"]:
+                        row["dataset_idx"] = ref_results_for_sample[0].get("dataset_idx", "")
+                    
+                    # Find the final (max POVs) result for this refinement
+                    max_povs = max([r.get("n_povs", 0) for r in ref_results_for_sample])
+                    final_ref = next((r for r in ref_results_for_sample if r.get("n_povs") == max_povs), None)
+                    
+                    if final_ref:
+                        for metric_name, metric_val in final_ref["metrics"].items():
+                            row[f"refinement_ns{ns}_{metric_name}"] = metric_val
+            
+            # Write row immediately
+            writer.writerow(row)
+    
+    print(f"Per-sample metrics CSV saved to: {csv_path}")
 
 
 def save_results(results: dict, output_dir: Path, experiment_name: str):
@@ -661,6 +1126,58 @@ def save_results(results: dict, output_dir: Path, experiment_name: str):
                 writer.writerow(row)
     
     print(f"Summary CSV saved to: {csv_path}")
+    
+    # Save per-sample per-step CSV (detailed metrics)
+    detailed_csv_path = output_dir / f"{experiment_name}_refinement_detailed_{timestamp}.csv"
+    
+    with open(detailed_csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        
+        header = [
+            "sample_idx", "dataset_idx", "method", "noise_strength", "n_povs",
+            "unified_score", "mean_bbox_iou", "mean_camera_similarity",
+            "detection_f1", "count_accuracy"
+        ]
+        writer.writerow(header)
+        
+        # Accumulation per-sample results
+        for r in results["accumulation"]["per_sample"]:
+            row = [
+                r.get("eval_idx", ""),
+                r.get("dataset_idx", ""),
+                "accumulation",
+                "N/A",
+                r.get("n_povs", ""),
+                r["metrics"].get("unified_score", ""),
+                r["metrics"].get("mean_bbox_iou", ""),
+                r["metrics"].get("mean_camera_similarity", ""),
+                r["metrics"].get("detection_f1", ""),
+                r["metrics"].get("count_accuracy", "")
+            ]
+            writer.writerow(row)
+        
+        # Refinement per-sample results
+        for ns_key, ref_data in results["refinement"].items():
+            ns = ns_key.replace("ns_", "")
+            for r in ref_data["per_sample"]:
+                row = [
+                    r.get("eval_idx", ""),
+                    r.get("dataset_idx", ""),
+                    "refinement",
+                    ns,
+                    r.get("n_povs", ""),
+                    r["metrics"].get("unified_score", ""),
+                    r["metrics"].get("mean_bbox_iou", ""),
+                    r["metrics"].get("mean_camera_similarity", ""),
+                    r["metrics"].get("detection_f1", ""),
+                    r["metrics"].get("count_accuracy", "")
+                ]
+                writer.writerow(row)
+    
+    print(f"Detailed CSV saved to: {detailed_csv_path}")
+    
+    # Save per-sample final metrics CSV (one row per sample)
+    save_per_sample_final_metrics_csv(results, output_dir, experiment_name, timestamp)
 
 
 def main():
@@ -682,6 +1199,8 @@ def main():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--group-by", type=str, default="room_id")
     parser.add_argument("--save-images", action="store_true")
+    parser.add_argument("--pov-columns", type=str, nargs="+", default=None,
+                        help="List of column names for POV embeddings (for column-based manifest format)")
     
     args = parser.parse_args()
     
@@ -700,6 +1219,12 @@ def main():
     model = load_model(args.checkpoint, args.device)
     
     print(f"\nLoading multi-POV dataset from {args.manifest}...")
+    
+    # Define POV columns for column-based manifest format
+    pov_columns = None
+    if args.pov_columns:
+        pov_columns = args.pov_columns
+    
     dataset = MultiPOVDataset(
         manifest_path=args.manifest,
         outputs={
@@ -708,7 +1233,8 @@ def main():
             "pov_emb": "pov_embedding_path"
         },
         group_by=args.group_by,
-        filters={"rejected": False}
+        filters={"rejected": False} if not args.pov_columns else None,
+        pov_columns=pov_columns
     )
     print(f"  Dataset size: {len(dataset)} rooms/scenes")
     
