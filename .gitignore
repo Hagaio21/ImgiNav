@@ -37,7 +37,6 @@ src/layout_generator.egg-info
 *.pt
 
 # dataset files
-*.csv
 training/runs
 visualization/saved_embeddings/
 app/
