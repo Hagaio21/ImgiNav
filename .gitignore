@@ -41,3 +41,5 @@ src/layout_generator.egg-info
 training/runs
 visualization/saved_embeddings/
 app/
+evaluation_results/
+evaluation_results_old/

@@ -518,14 +518,29 @@ def run_full_experiment(
     seed: int = None
 ) -> dict:
     """Run complete accumulation vs refinement experiment."""
+
+    import csv
+    import pandas as pd
     
-    all_accumulation_results = []
-    all_refinement_results = {ns: [] for ns in noise_strengths}
+    # ✅ NO accumulation lists - write to CSV immediately
+    output_dir_path = Path(output_dir) if output_dir else Path("refinement_results")
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Store for finding best/median
+    # CSV file for streaming results
+    results_csv_path = output_dir_path / f"{experiment_name}_results_{timestamp}.csv"
+    csv_file = open(results_csv_path, "w", newline="")
+    csv_writer = csv.DictWriter(csv_file, fieldnames=[
+        "eval_idx", "dataset_idx", "method", "noise_strength", "n_povs",
+        "unified_score", "mean_bbox_iou", "mean_camera_similarity",
+        "detection_f1", "count_accuracy"
+    ])
+    csv_writer.writeheader()
+    
+    # Store for finding best/median samples
     all_final_acc_scores = []
     all_final_ref_scores = {ns: [] for ns in noise_strengths}
-    sample_data = []  # Store for visualization
+    sample_indices_list = []  # Track sample indices
     
     n_total = len(dataset)
     n_samples = n_total if max_samples is None else min(max_samples, n_total)
@@ -646,7 +661,22 @@ def run_full_experiment(
             r["eval_idx"] = eval_idx
             r["dataset_idx"] = dataset_idx
             r["conditions"] = condition_info
-        all_accumulation_results.extend(acc_results)
+        # ✅ Write accumulation results to CSV instead of accumulating
+        for r in acc_results:
+            row = {
+                "eval_idx": eval_idx,
+                "dataset_idx": dataset_idx,
+                "method": "accumulation",
+                "noise_strength": "N/A",
+                "n_povs": r["n_povs"],
+                "unified_score": r["metrics"].get("unified_score", ""),
+                "mean_bbox_iou": r["metrics"].get("mean_bbox_iou", ""),
+                "mean_camera_similarity": r["metrics"].get("mean_camera_similarity", ""),
+                "detection_f1": r["metrics"].get("detection_f1", ""),
+                "count_accuracy": r["metrics"].get("count_accuracy", "")
+            }
+            csv_writer.writerow(row)
+        csv_file.flush()  # Flush to disk immediately
         
         # Store final accumulation score
         final_acc_score = acc_results[-1]["metrics"]["unified_score"] if acc_results else 0
@@ -663,7 +693,22 @@ def run_full_experiment(
                 r["eval_idx"] = eval_idx
                 r["dataset_idx"] = dataset_idx
                 r["conditions"] = condition_info
-            all_refinement_results[ns].extend(ref_results)
+            # ✅ Write refinement results to CSV instead of accumulating
+            for r in ref_results:
+                row = {
+                    "eval_idx": eval_idx,
+                    "dataset_idx": dataset_idx,
+                    "method": "refinement",
+                    "noise_strength": ns,
+                    "n_povs": r["n_povs"],
+                    "unified_score": r["metrics"].get("unified_score", ""),
+                    "mean_bbox_iou": r["metrics"].get("mean_bbox_iou", ""),
+                    "mean_camera_similarity": r["metrics"].get("mean_camera_similarity", ""),
+                    "detection_f1": r["metrics"].get("detection_f1", ""),
+                    "count_accuracy": r["metrics"].get("count_accuracy", "")
+                }
+                csv_writer.writerow(row)
+            csv_file.flush()  # Flush to disk immediately
             ref_images_by_ns[ns] = ref_images
             ref_metrics_by_ns[ns] = ref_metrics
             
@@ -671,17 +716,13 @@ def run_full_experiment(
             all_final_ref_scores[ns].append(final_ref_score)
         
         # Store for visualization
-        sample_data.append({
-            "eval_idx": eval_idx,
-            "dataset_idx": dataset_idx,
-            "target_rgb": target_rgb,
-            "acc_images": acc_images,
-            "acc_metrics": acc_metrics,
-            "ref_images_by_ns": ref_images_by_ns,
-            "ref_metrics_by_ns": ref_metrics_by_ns,
-            "final_acc_score": final_acc_score,
-            "conditions": condition_info
-        })
+        # ✅ Do NOT store images/data in sample_data - causes OOM
+        # Only keep metrics for final best/median samples
+        all_final_acc_scores.append(final_acc_score)
+        for ns in noise_strengths:
+            final_ref_score = all_final_ref_scores[ns][-1] if ns in all_final_ref_scores else 0
+            all_final_ref_scores[ns][-1] = final_ref_score
+        sample_indices_list.append((eval_idx, dataset_idx))
         
         # Save progression images and conditions
         if images_dir:
@@ -754,148 +795,81 @@ def run_full_experiment(
                 # Save condition metadata
                 with open(sample_cond_dir / "condition_info.json", "w") as f:
                     json.dump(condition_info, f, indent=2, default=str)
-        # ✅ MEMORY CLEANUP: Explicitly delete large objects after each sample
+    
+        
+        # ✅ Explicit memory cleanup after each sample
         del baseline, baseline_output, baseline_rgb, baseline_metrics
         del target_rgb, acc_results, acc_images, acc_metrics
         del ref_images_by_ns, ref_metrics_by_ns, condition_info, sample, text_emb_batch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     
-    # Create visualizations for best and median samples
-    if output_dir:
-        viz_dir = output_dir / "visualizations" / experiment_name
-        viz_dir.mkdir(parents=True, exist_ok=True)
-        
-        sorted_indices = np.argsort(all_final_acc_scores)
-        best_idx = sorted_indices[-1]
-        median_idx = sorted_indices[len(sorted_indices) // 2]
-        
-        for label, sample_idx in [("best", best_idx), ("median", median_idx)]:
-            data = sample_data[sample_idx]
-            
-            # Accumulation progression
-            acc_scores = [m["summary"]["unified_score"] for m in data["acc_metrics"]]
-            create_progression_visualization(
-                data["acc_images"],
-                data["target_rgb"],
-                "Accum",
-                acc_scores,
-                viz_dir / f"{label}_accumulation_progression.png"
-            )
-            
-            # Refinement progression (first noise strength)
-            ns = noise_strengths[0]
-            ref_scores = [m["summary"]["unified_score"] for m in data["ref_metrics_by_ns"][ns]]
-            create_progression_visualization(
-                data["ref_images_by_ns"][ns],
-                data["target_rgb"],
-                f"Refine(ns={ns})",
-                ref_scores,
-                viz_dir / f"{label}_refinement_progression.png"
-            )
-            
-            # Comparison visualization: [Target, Baseline, Accumulation, Refinement]
-            baseline_image = data["acc_images"][0]  # 0-POV generation
-            baseline_score = acc_scores[0]
-            create_comparison_visualization(
-                data["target_rgb"],
-                baseline_image,
-                data["acc_images"][-1],  # Final accumulation
-                data["ref_images_by_ns"][ns][-1],  # Final refinement
-                baseline_score,
-                acc_scores[-1],
-                ref_scores[-1],
-                ns,
-                viz_dir / f"{label}_comparison.png"
-            )
-            
-            # Metrics progression plot and table
-            create_metrics_progression_plot(
-                data["acc_metrics"],
-                data["ref_metrics_by_ns"],
-                viz_dir / f"{label}_metrics_progression.png"
-            )
-            create_metrics_table_image(
-                data["acc_metrics"],
-                data["ref_metrics_by_ns"],
-                viz_dir / f"{label}_metrics_table.png"
-            )
-            
-            # Detailed visualization for final predictions
-            final_acc_metrics = data["acc_metrics"][-1]
-            detailed, summary = evaluator.create_visualization(
-                data["acc_images"][-1],
-                data["target_rgb"],
-                final_acc_metrics,
-                f"{label.capitalize()} Accumulation (score={acc_scores[-1]:.3f})"
-            )
-            summary.save(viz_dir / f"{label}_accumulation_summary.png")
-            
-            # Save conditions for viz samples
-            conditions = data.get("conditions", {})
-            pov_image_paths = conditions.get("pov_image_paths", [])
-            for pov_idx, pov_img_path in enumerate(pov_image_paths[:3]):  # Save first 3 POVs
-                if Path(pov_img_path).exists():
-                    shutil.copy(pov_img_path, viz_dir / f"{label}_condition_pov{pov_idx}.png")
-            
-            text_desc = conditions.get("text_description")
-            if text_desc:
-                with open(viz_dir / f"{label}_condition_text.txt", "w") as f:
-                    if isinstance(text_desc, dict):
-                        f.write(json.dumps(text_desc, indent=2))
-                    else:
-                        f.write(str(text_desc))
-        
-        print(f"\n  Visualizations saved to: {viz_dir}")
-    # ✅ MEMORY CLEANUP: Delete sample_data (no longer needed after visualization)
-    del sample_data
+    # ✅ AGGRESSIVE CLEANUP: Delete all temporary data from main loop
+    # No need to keep images or per-sample data - all results are in CSV
+    del all_final_acc_scores, all_final_ref_scores, sample_indices_list
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
     
-    # Aggregate results
-    def aggregate_by_povs(results_list):
-        by_povs = defaultdict(list)
-        for r in results_list:
-            by_povs[r["n_povs"]].append(r["metrics"])
+    
+    # Create visualizations for best and median samples
+    # ✅ Skipped to save memory - sample_data is not accumulated
+    # ✅ Close CSV file
+    csv_file.close()
+    print(f"Results saved to: {results_csv_path}")
+    
+    # ✅ Calculate aggregations from CSV file (no in-memory accumulation)
+    def calculate_metrics_from_csv(csv_path):
+        """Calculate aggregated metrics from the results CSV file."""
+        df = pd.read_csv(csv_path)
         
-        aggregated = {}
-        for n_povs, metrics_list in sorted(by_povs.items()):
-            agg = {}
-            for key in metrics_list[0].keys():
-                values = [m[key] for m in metrics_list]
-                agg[f"{key}_mean"] = float(np.mean(values))
-                agg[f"{key}_std"] = float(np.std(values))
-            agg["n_samples"] = len(metrics_list)
-            aggregated[n_povs] = agg
-        
-        return aggregated
-    
-    results = {
-        "accumulation": {
-            "per_sample": all_accumulation_results,
-            "by_n_povs": aggregate_by_povs(all_accumulation_results)
-        },
-        "refinement": {},
-        "sample_indices": sample_indices,
-        "seed": seed
-    }
-    
-    for ns, ref_results in all_refinement_results.items():
-        results["refinement"][f"ns_{ns}"] = {
-            "per_sample": ref_results,
-            "by_n_povs": aggregate_by_povs(ref_results)
+        results = {
+            "accumulation": {
+                "per_sample": [],
+                "by_n_povs": {}
+            },
+            "refinement": {},
+            "sample_indices": sample_indices,
+            "seed": seed
         }
+        
+        # Accumulation aggregation
+        acc_data = df[df["method"] == "accumulation"]
+        for n_povs in sorted(acc_data["n_povs"].unique()):
+            subset = acc_data[acc_data["n_povs"] == n_povs]
+            
+            agg = {}
+            for metric in ["unified_score", "mean_bbox_iou", "mean_camera_similarity", "detection_f1", "count_accuracy"]:
+                values = pd.to_numeric(subset[metric], errors='coerce').dropna()
+                agg[f"{metric}_mean"] = float(values.mean())
+                agg[f"{metric}_std"] = float(values.std())
+            agg["n_samples"] = len(subset)
+            results["accumulation"]["by_n_povs"][n_povs] = agg
+        
+        # Refinement aggregation
+        ref_data = df[df["method"] == "refinement"]
+        for noise_strength in sorted(ref_data["noise_strength"].unique()):
+            ns_key = f"ns_{noise_strength}"
+            results["refinement"][ns_key] = {"per_sample": [], "by_n_povs": {}}
+            
+            subset = ref_data[ref_data["noise_strength"] == noise_strength]
+            for n_povs in sorted(subset["n_povs"].unique()):
+                pov_subset = subset[subset["n_povs"] == n_povs]
+                
+                agg = {}
+                for metric in ["unified_score", "mean_bbox_iou", "mean_camera_similarity", "detection_f1", "count_accuracy"]:
+                    values = pd.to_numeric(pov_subset[metric], errors='coerce').dropna()
+                    agg[f"{metric}_mean"] = float(values.mean())
+                    agg[f"{metric}_std"] = float(values.std())
+                agg["n_samples"] = len(pov_subset)
+                results["refinement"][ns_key]["by_n_povs"][n_povs] = agg
+        
+        return results
     
-    # Create aggregated metrics plot (average across all samples)
-    if output_dir:
-        viz_dir = output_dir / "visualizations" / experiment_name
-        viz_dir.mkdir(parents=True, exist_ok=True)
-        create_aggregated_metrics_plot(results, viz_dir / "aggregated_metrics.png")
+    # Calculate metrics from CSV
+    results = calculate_metrics_from_csv(results_csv_path)
     
     return results
-
-
-def create_aggregated_metrics_plot(results: dict, output_path: Path):
     """Create a plot showing aggregated metrics (mean ± std) across all samples."""
     import matplotlib
     matplotlib.use('Agg')

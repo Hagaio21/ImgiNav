@@ -16,15 +16,17 @@ LOG_DIR="${BASE_DIR}/training/hpc_scripts/logs"
 
 # Parameters (can be overridden via bsub -env)
 CHECKPOINT="${CHECKPOINT:-}"
-MANIFEST="${MANIFEST:-/work3/s233249/ImgiNav/experiments/diffusion/v2/manifest_val.csv}"
+MANIFEST="${MANIFEST:-/work3/s233249/ImgiNav/dataset_v2/refinement_eval/manifest_refinement.csv}"
 TAXONOMY="${TAXONOMY:-${BASE_DIR}/data_preparation_v2/taxonomy.json}"
 OUTPUT_DIR="${OUTPUT_DIR:-${BASE_DIR}/refinement_results}"
 NUM_SAMPLES="${NUM_SAMPLES:-50}"
-MAX_POVS="${MAX_POVS:-5}"
+MAX_POVS="${MAX_POVS:-7}"
 NOISE_STRENGTHS="${NOISE_STRENGTHS:-0.3 0.5}"
 GUIDANCE_SCALE="${GUIDANCE_SCALE:-7.5}"
 NUM_STEPS="${NUM_STEPS:-50}"
 SAVE_IMAGES="${SAVE_IMAGES:-true}"
+# POV columns for column-based manifest format (refinement manifest)
+POV_COLUMNS="${POV_COLUMNS:-pov_emb_step0_center pov_emb_step1_left pov_emb_step1_center pov_emb_step1_right pov_emb_step2_left pov_emb_step2_center pov_emb_step2_right}"
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "${OUTPUT_DIR}"
@@ -53,6 +55,7 @@ echo "Noise strengths: ${NOISE_STRENGTHS}"
 echo "Guidance scale: ${GUIDANCE_SCALE}"
 echo "Num steps: ${NUM_STEPS}"
 echo "Save images: ${SAVE_IMAGES}"
+echo "POV columns: ${POV_COLUMNS}"
 echo "=============================================="
 
 # Load modules
@@ -85,7 +88,8 @@ CMD="python ${PYTHON_SCRIPT} \
     --max-povs ${MAX_POVS} \
     --noise-strengths ${NOISE_STRENGTHS} \
     --guidance-scale ${GUIDANCE_SCALE} \
-    --num-steps ${NUM_STEPS}"
+    --num-steps ${NUM_STEPS} \
+    --pov-columns ${POV_COLUMNS}"
 
 if [ "${SAVE_IMAGES}" = "true" ]; then
     CMD="${CMD} --save-images"
