@@ -1605,10 +1605,7 @@ def main():
         print("\nSTEP 5: Generating comprehensive summary...\n")
         generate_comprehensive_summary(df, output_root, results_dir)
         
-        print("STEP 6: Generating statistical summary...\n")
-        generate_statistical_summary(df, output_root)
-        
-        print("STEP 7: Generating LaTeX snippets...\n")
+        print("STEP 6: Generating LaTeX snippets...\n")
         generate_latex_snippets(df, latex_dir)
         
         csv_path = output_root / "all_samples.csv"
@@ -1624,7 +1621,6 @@ def main():
         print(f"  ├── appendix/                 (18 figures: A1-A18 best/median/worst samples)")
         print(f"  ├── latex_snippets/           (LaTeX code for inclusion)")
         print(f"  ├── RESULTS_SUMMARY.txt       (Comprehensive summary with figure descriptions)")
-        print(f"  ├── STATISTICAL_SUMMARY.txt   (Raw statistical breakdown)")
         print(f"  └── all_samples.csv           (Full dataset with all metrics)")
         print(f"\nYou can now:")
         print(f"  1. Copy entire '{output_root.name}' folder")
