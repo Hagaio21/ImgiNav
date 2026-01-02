@@ -235,6 +235,27 @@ def load_pov_conditioning_input(exp_dir: Path, sample_idx: int) -> Optional[Imag
     return None
 
 
+def load_graph_conditioning_text(exp_dir: Path, sample_idx: int) -> Optional[str]:
+    """Load graph/text conditioning input for a sample."""
+    cond_dir = exp_dir / "images" / "conditions"
+    if not cond_dir.exists():
+        return None
+    
+    # Look for {0000-9999}_text.txt (graph or text conditioning)
+    text_file = cond_dir / f"{sample_idx:04d}_text.txt"
+    if text_file.exists():
+        try:
+            with open(text_file, 'r') as f:
+                content = f.read().strip()
+                # Limit text length for display
+                if len(content) > 200:
+                    content = content[:197] + "..."
+                return content
+        except:
+            pass
+    return None
+
+
 def get_best_sample_for_conditioning_group(df: pd.DataFrame, exp_dirs: List[Path], 
                                           room_type: str = "furnished") -> Optional[int]:
     """
@@ -664,6 +685,7 @@ def create_qualitative_results(results_dir: Path, output_dir: Path, df: pd.DataF
         model_labels = []
         target_img = None
         pov_img = None
+        graph_text = None
         
         for exp_dir in exp_dirs_cond:
             gen_img = load_generated_floorplan(exp_dir, sample_idx)
@@ -673,21 +695,25 @@ def create_qualitative_results(results_dir: Path, output_dir: Path, df: pd.DataF
                 label = f"{parsed['architecture']}-{parsed['capacity']}"
                 model_labels.append(label)
                 
-                # Load target and POV once (same for all models)
+                # Load target once (same for all models)
                 if target_img is None:
                     target_img = load_ground_truth_floorplan(exp_dir, sample_idx)
+                # Load POV for POV/Both conditioning
                 if pov_img is None and cond in ["POV", "Both"]:
                     pov_img = load_pov_conditioning_input(exp_dir, sample_idx)
+                # Load graph text for Graph/Both conditioning
+                if graph_text is None and cond in ["Graph", "Both"]:
+                    graph_text = load_graph_conditioning_text(exp_dir, sample_idx)
         
         if not model_images:
             print(f"  ⚠ Could not load images for {cond} sample {sample_idx}")
             continue
         
-        # Create grid: top row [Target] [POV], bottom 2x3 grid of models
+        # Create grid: top row [Target] [POV/Graph] [Graph Text if Both], bottom 2x3 grid of models
         fig = plt.figure(figsize=(16, 10))
         gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.25, wspace=0.15)
         
-        # Top row: Target and POV
+        # Top row: Target and conditioning inputs
         ax_target = fig.add_subplot(gs[0, 0])
         if target_img:
             ax_target.imshow(target_img)
@@ -698,19 +724,49 @@ def create_qualitative_results(results_dir: Path, output_dir: Path, df: pd.DataF
         ax_target.set_xticks([])
         ax_target.set_yticks([])
         
-        ax_pov = fig.add_subplot(gs[0, 1])
-        if pov_img:
-            ax_pov.imshow(pov_img)
-            ax_pov.set_title("POV\n(Input View)", fontsize=11, fontweight="bold")
-        else:
-            ax_pov.text(0.5, 0.5, "POV N/A", ha="center", va="center")
-            ax_pov.set_title("POV", fontsize=11, fontweight="bold")
-        ax_pov.set_xticks([])
-        ax_pov.set_yticks([])
+        ax_middle = fig.add_subplot(gs[0, 1])
+        if cond == "POV":
+            # POV only
+            if pov_img:
+                ax_middle.imshow(pov_img)
+                ax_middle.set_title("POV\n(Input View)", fontsize=11, fontweight="bold")
+            else:
+                ax_middle.text(0.5, 0.5, "POV N/A", ha="center", va="center")
+                ax_middle.set_title("POV", fontsize=11, fontweight="bold")
+            ax_middle.set_xticks([])
+            ax_middle.set_yticks([])
+        elif cond == "Graph":
+            # Graph text only
+            ax_middle.axis('off')
+            if graph_text:
+                ax_middle.text(0.5, 0.5, graph_text, ha="center", va="center", 
+                             fontsize=9, wrap=True, family="monospace",
+                             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
+                ax_middle.set_title("Graph\n(Text Input)", fontsize=11, fontweight="bold")
+            else:
+                ax_middle.text(0.5, 0.5, "Graph N/A", ha="center", va="center")
+                ax_middle.set_title("Graph", fontsize=11, fontweight="bold")
+        elif cond == "Both":
+            # POV image
+            if pov_img:
+                ax_middle.imshow(pov_img)
+                ax_middle.set_title("POV\n(Input View)", fontsize=11, fontweight="bold")
+            else:
+                ax_middle.text(0.5, 0.5, "POV N/A", ha="center", va="center")
+                ax_middle.set_title("POV", fontsize=11, fontweight="bold")
+            ax_middle.set_xticks([])
+            ax_middle.set_yticks([])
         
-        # Keep top-right empty
-        ax_empty = fig.add_subplot(gs[0, 2])
-        ax_empty.axis('off')
+        # Top-right: Graph text for "Both" conditioning
+        ax_right = fig.add_subplot(gs[0, 2])
+        if cond == "Both" and graph_text:
+            ax_right.axis('off')
+            ax_right.text(0.5, 0.5, graph_text, ha="center", va="center", 
+                         fontsize=9, wrap=True, family="monospace",
+                         bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
+            ax_right.set_title("Graph\n(Text Input)", fontsize=11, fontweight="bold")
+        else:
+            ax_right.axis('off')
         
         # Bottom 2x3 grid: model outputs (show up to 6 models)
         for idx, (img, label) in enumerate(zip(model_images[:6], model_labels[:6])):
@@ -786,6 +842,7 @@ def create_appendix_same_samples_per_conditioning(results_dir: Path, output_dir:
                 model_labels = []
                 target_img = None
                 pov_img = None
+                graph_text = None
                 
                 for exp_dir in exp_dirs_cond:
                     gen_img = load_generated_floorplan(exp_dir, sample_idx)
@@ -795,21 +852,27 @@ def create_appendix_same_samples_per_conditioning(results_dir: Path, output_dir:
                         label = f"{parsed['architecture']}-{parsed['capacity']}"
                         model_labels.append(label)
                         
-                        # Load target and POV once (same for all models)
+                        # Load target once (same for all models)
                         if target_img is None:
                             target_img = load_ground_truth_floorplan(exp_dir, sample_idx)
+                        # Load POV for POV/Both conditioning
                         if pov_img is None and cond in ["POV", "Both"]:
                             pov_img = load_pov_conditioning_input(exp_dir, sample_idx)
+                        # Load graph text for Graph/Both conditioning
+                        if graph_text is None and cond in ["Graph", "Both"]:
+                            graph_text = load_graph_conditioning_text(exp_dir, sample_idx)
                 
                 if not model_images:
                     continue
                 
-                # Create comparison figure
-                n_cols = len(model_images) + 1
+                # Calculate number of columns
+                n_cols = len(model_images) + 1  # +1 for target
                 if pov_img is not None:
                     n_cols += 1
+                if graph_text is not None:
+                    n_cols += 1
                 
-                fig_width = max(16, n_cols * 2.8)
+                fig_width = max(16, n_cols * 2.5)
                 fig_height = 3.5
                 
                 fig, axes = plt.subplots(1, n_cols, figsize=(fig_width, fig_height))
@@ -822,10 +885,10 @@ def create_appendix_same_samples_per_conditioning(results_dir: Path, output_dir:
                 ax = axes[col_idx]
                 if target_img:
                     ax.imshow(target_img)
-                    ax.set_title("Target\n(Ground Truth)", fontsize=9, fontweight="bold", pad=5)
+                    ax.set_title("Target\n(Ground Truth)", fontsize=8, fontweight="bold", pad=5)
                 else:
-                    ax.text(0.5, 0.5, "Target N/A", ha="center", va="center", fontsize=8)
-                    ax.set_title("Target", fontsize=9, fontweight="bold")
+                    ax.text(0.5, 0.5, "Target N/A", ha="center", va="center", fontsize=7)
+                    ax.set_title("Target", fontsize=8, fontweight="bold")
                 ax.set_xticks([])
                 ax.set_yticks([])
                 col_idx += 1
@@ -834,9 +897,19 @@ def create_appendix_same_samples_per_conditioning(results_dir: Path, output_dir:
                 if pov_img is not None:
                     ax = axes[col_idx]
                     ax.imshow(pov_img)
-                    ax.set_title("POV Input", fontsize=9, fontweight="bold", pad=5)
+                    ax.set_title("POV\nInput", fontsize=8, fontweight="bold", pad=5)
                     ax.set_xticks([])
                     ax.set_yticks([])
+                    col_idx += 1
+                
+                # Graph text if applicable
+                if graph_text is not None:
+                    ax = axes[col_idx]
+                    ax.axis('off')
+                    ax.text(0.5, 0.5, graph_text, ha="center", va="center", 
+                           fontsize=7, wrap=True, family="monospace",
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
+                    ax.set_title("Graph\nText", fontsize=8, fontweight="bold", pad=5)
                     col_idx += 1
                 
                 # Model outputs
@@ -867,7 +940,316 @@ def create_appendix_same_samples_per_conditioning(results_dir: Path, output_dir:
 # STATISTICAL SUMMARY
 # =============================================================================
 
-def generate_statistical_summary(df: pd.DataFrame, output_dir: Path):
+def generate_comprehensive_summary(df: pd.DataFrame, output_dir: Path, results_dir: Path):
+    """Generate comprehensive summary document describing all figures and findings."""
+    
+    summary_lines = [
+        "=" * 100,
+        "BASELINE EVALUATION - COMPREHENSIVE RESULTS SUMMARY",
+        "=" * 100,
+        "",
+        f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Total samples analyzed: {len(df)}",
+        f"Unique experiments: {df['experiment'].nunique()}",
+        "",
+    ]
+    
+    # Dataset overview
+    if "is_empty" in df.columns:
+        df_copy = df.copy()
+        if df_copy["is_empty"].dtype == object:
+            df_copy["is_empty"] = df_copy["is_empty"].astype(str).str.upper() == "TRUE"
+        n_empty = (df_copy["is_empty"] == True).sum()
+        n_furnished = (df_copy["is_empty"] == False).sum()
+        summary_lines.extend([
+            "DATASET COMPOSITION",
+            "-" * 100,
+            f"  Empty rooms:      {n_empty:6d} ({100*n_empty/len(df):.1f}%)",
+            f"  Furnished rooms:  {n_furnished:6d} ({100*n_furnished/len(df):.1f}%)",
+            "",
+        ])
+    
+    # Model configurations
+    summary_lines.extend([
+        "MODEL CONFIGURATIONS EVALUATED",
+        "-" * 100,
+    ])
+    for exp_name in sorted(df["experiment"].unique()):
+        parsed = parse_experiment_name(exp_name)
+        n_samples = len(df[df["experiment"] == exp_name])
+        summary_lines.append(
+            f"  {parsed['architecture']}-{parsed['capacity']:6s} ({parsed['conditioning']:5s}): {n_samples:4d} samples"
+        )
+    summary_lines.append("")
+    
+    # Key metrics summary
+    summary_lines.extend([
+        "PERFORMANCE METRICS SUMMARY",
+        "-" * 100,
+        "",
+    ])
+    
+    metrics = ["floor_iou", "presence_accuracy", "detection_f1", "unified_score"]
+    metric_names = ["Floor IoU", "Presence Accuracy", "Detection F1", "Unified Score"]
+    
+    for metric, metric_name in zip(metrics, metric_names):
+        data = df[metric].dropna()
+        summary_lines.extend([
+            f"{metric_name}:",
+            f"  Mean:     {data.mean():.4f}",
+            f"  Std:      {data.std():.4f}",
+            f"  Min:      {data.min():.4f}",
+            f"  Max:      {data.max():.4f}",
+            f"  Median:   {data.median():.4f}",
+            "",
+        ])
+    
+    # Architecture comparison
+    summary_lines.extend([
+        "ARCHITECTURE COMPARISON (Deep-Narrow vs Wide-Shallow)",
+        "-" * 100,
+    ])
+    for arch in ["DN", "WS"]:
+        arch_df = df[df["architecture"] == arch]
+        if len(arch_df) > 0:
+            summary_lines.append(f"\n{arch} - {len(arch_df)} samples:")
+            for metric, metric_name in zip(metrics, metric_names):
+                data = arch_df[metric].dropna()
+                if len(data) > 0:
+                    summary_lines.append(f"  {metric_name:20s}: {data.mean():.4f} ± {data.std():.4f}")
+    summary_lines.append("")
+    
+    # Capacity comparison
+    summary_lines.extend([
+        "",
+        "CAPACITY SCALING (Small → Medium → Large)",
+        "-" * 100,
+    ])
+    capacity_order = {"Small": 0, "Medium": 1, "Large": 2}
+    for cap in sorted(df["capacity"].dropna().unique(), key=lambda x: capacity_order.get(x, 99)):
+        cap_df = df[df["capacity"] == cap]
+        if len(cap_df) > 0:
+            summary_lines.append(f"\n{cap} - {len(cap_df)} samples:")
+            for metric, metric_name in zip(metrics, metric_names):
+                data = cap_df[metric].dropna()
+                if len(data) > 0:
+                    summary_lines.append(f"  {metric_name:20s}: {data.mean():.4f} ± {data.std():.4f}")
+    summary_lines.append("")
+    
+    # Conditioning comparison
+    summary_lines.extend([
+        "",
+        "CONDITIONING MODALITY (POV vs Graph vs Both)",
+        "-" * 100,
+    ])
+    cond_order = {"POV": 0, "Graph": 1, "Both": 2}
+    for cond in sorted(df["conditioning"].dropna().unique(), key=lambda x: cond_order.get(x, 99)):
+        cond_df = df[df["conditioning"] == cond]
+        if len(cond_df) > 0:
+            summary_lines.append(f"\n{cond} - {len(cond_df)} samples:")
+            for metric, metric_name in zip(metrics, metric_names):
+                data = cond_df[metric].dropna()
+                if len(data) > 0:
+                    summary_lines.append(f"  {metric_name:20s}: {data.mean():.4f} ± {data.std():.4f}")
+    summary_lines.append("")
+    
+    # Empty vs Furnished
+    summary_lines.extend([
+        "",
+        "ROOM TYPE COMPARISON (Empty vs Furnished)",
+        "-" * 100,
+    ])
+    df_copy = df.copy()
+    if "is_empty" in df_copy.columns and df_copy["is_empty"].dtype == object:
+        df_copy["is_empty"] = df_copy["is_empty"].astype(str).str.upper() == "TRUE"
+    
+    for room_type, room_label in [("empty", "Empty"), ("furnished", "Furnished")]:
+        if room_type == "empty":
+            room_df = df_copy[df_copy["is_empty"] == True]
+        else:
+            room_df = df_copy[df_copy["is_empty"] == False]
+        
+        if len(room_df) > 0:
+            summary_lines.append(f"\n{room_label} - {len(room_df)} samples:")
+            for metric, metric_name in zip(metrics, metric_names):
+                data = room_df[metric].dropna()
+                if len(data) > 0:
+                    summary_lines.append(f"  {metric_name:20s}: {data.mean():.4f} ± {data.std():.4f}")
+    summary_lines.append("")
+    
+    # Top performers
+    summary_lines.extend([
+        "",
+        "=" * 100,
+        "TOP 10 PERFORMING CONFIGURATIONS",
+        "-" * 100,
+    ])
+    
+    top_exps = df.groupby("experiment_label")[metrics].mean().reset_index()
+    top_exps = top_exps.sort_values("unified_score", ascending=False)
+    
+    for i, (_, row) in enumerate(top_exps.head(10).iterrows(), 1):
+        summary_lines.append(f"\n{i:2d}. {row['experiment_label']}")
+        for metric, metric_name in zip(metrics, metric_names):
+            summary_lines.append(f"    {metric_name:20s}: {row[metric]:.4f}")
+    summary_lines.append("")
+    
+    # Figure descriptions
+    summary_lines.extend([
+        "",
+        "=" * 100,
+        "FIGURE DESCRIPTIONS",
+        "=" * 100,
+        "",
+        "RESULTS CHAPTER FIGURES (01-08)",
+        "-" * 100,
+        "",
+        "Figure 01: ARCHITECTURE COMPARISON (Deep-Narrow vs Wide-Shallow)",
+        "  Type: 2×2 boxplot grid",
+        "  Content:",
+        "    - Top-left: Floor IoU (measures floor region detection accuracy)",
+        "    - Top-right: Presence Accuracy (measures furniture presence prediction)",
+        "    - Bottom-left: Detection F1 (measures furniture detection quality)",
+        "    - Bottom-right: Unified Score (combined metric across all objectives)",
+        "  What it shows:",
+        "    - Compares architectural depth-vs-width tradeoff",
+        "    - Shows which architecture family performs better overall",
+        "    - Error bars indicate variance across all models of each architecture",
+        "",
+        "Figure 02: CAPACITY SCALING (Small → Medium → Large)",
+        "  Type: 2×2 boxplot grid",
+        "  Content: Same 4 metrics as Figure 01, but grouped by model capacity",
+        "  What it shows:",
+        "    - How performance improves with larger model capacity",
+        "    - Whether scaling plateaus or continues improving",
+        "    - Capacity-dependent performance trends per metric",
+        "",
+        "Figure 03: CONDITIONING MODALITY (POV vs Graph vs Both)",
+        "  Type: 2×2 boxplot grid",
+        "  Content: Same 4 metrics, grouped by conditioning type",
+        "  What it shows:",
+        "    - Relative contribution of spatial (POV) vs semantic (Graph) information",
+        "    - Whether combining both modalities (Both) provides synergistic benefit",
+        "    - Which input modality is more critical for generation quality",
+        "",
+        "Figure 04: EMPTY vs FURNISHED ROOMS",
+        "  Type: 1×3 boxplot grid (3 key metrics)",
+        "  Content:",
+        "    - Left: Floor IoU (critical for navigation)",
+        "    - Middle: Detection F1 (furniture localization)",
+        "    - Right: Unified Score (overall quality)",
+        "  What it shows:",
+        "    - Whether models perform differently on simple (empty) vs complex (furnished) layouts",
+        "    - P-values indicate statistical significance of differences",
+        "    - Identifies which room type is more challenging for the models",
+        "",
+        "Figure 05: METRIC CORRELATIONS",
+        "  Type: Heatmap (correlation matrix)",
+        "  Content: Pearson correlations between all evaluation metrics",
+        "  What it shows:",
+        "    - Which metrics move together (strong positive correlation)",
+        "    - Which metrics are independent (weak correlation)",
+        "    - Interdependencies in model performance across objectives",
+        "",
+        "Figure 06: PER-EXPERIMENT PERFORMANCE RANKING",
+        "  Type: 2×2 horizontal barplot grid",
+        "  Content: All 15 model configurations ranked by each metric",
+        "  What it shows:",
+        "    - Overall performance ranking of all baseline configurations",
+        "    - Whether best architecture changes depending on metric",
+        "    - Color coding by conditioning type (POV/Graph/Both)",
+        "",
+        "Figure 07: METRIC DISTRIBUTIONS (Empty vs Furnished)",
+        "  Type: 2×2 overlapping histogram grid",
+        "  Content: Distribution of 4 metrics, with empty and furnished samples separated",
+        "  What it shows:",
+        "    - Whether empty rooms cluster at higher scores (easier task)",
+        "    - Whether furnished rooms have wider spread (more variation)",
+        "    - Actual distribution shapes and sample sizes per room type",
+        "",
+        "Figure 08: QUALITATIVE RESULTS",
+        "  Type: 1×N image grid (target + POV + 6 models)",
+        "  Content:",
+        "    - Left 2 columns: Ground truth floorplan and POV conditioning input",
+        "    - Remaining columns: Generated floorplans from each model",
+        "    - One figure per conditioning type (POV, Graph, Both)",
+        "  What it shows:",
+        "    - Visual quality of generated layouts vs ground truth",
+        "    - How different models interpret same conditioning input",
+        "    - Qualitative differences in architecture/capacity choices",
+        "    - Same sample used across all models for fair comparison",
+        "",
+        "APPENDIX FIGURES (A1-A18)",
+        "-" * 100,
+        "",
+        "18 figures total (3 conditioning types × 2 room types × 3 quality levels)",
+        "",
+        "Each figure shows the same layout structure:",
+        "  - Column 1: Ground truth (target floorplan to match)",
+        "  - Column 2: Conditioning input (POV camera view for POV/Both, N/A for Graph)",
+        "  - Columns 3-N: Model outputs (all models in conditioning group)",
+        "",
+        "Organization:",
+        "  A1-A6:   POV conditioning (best/median/worst for empty & furnished)",
+        "  A7-A12:  Graph conditioning (best/median/worst for empty & furnished)",
+        "  A13-A18: Both conditioning (best/median/worst for empty & furnished)",
+        "",
+        "Sample selection:",
+        "  - BEST: Sample with highest unified_score in group",
+        "  - MEDIAN: Sample at 50th percentile of unified_score",
+        "  - WORST: Sample with lowest unified_score in group",
+        "",
+        "What these show:",
+        "  - Best: Models performing well on a favorable sample",
+        "  - Median: Typical model performance on average-difficulty sample",
+        "  - Worst: Challenging cases where models struggle",
+        "  - Cross-model comparison: How architecture/capacity affects same input",
+        "",
+    ])
+    
+    summary_lines.extend([
+        "=" * 100,
+        "KEY FINDINGS & INTERPRETATION",
+        "=" * 100,
+        "",
+        "1. ARCHITECTURE EFFECT",
+        "   - Compare Figure 01 and Figure 06 to assess DN vs WS trade-offs",
+        "   - Check which architecture is more consistent across metrics",
+        "",
+        "2. CAPACITY EFFECT",
+        "   - Figure 02 shows scaling trajectory",
+        "   - Diminishing returns indicate saturation point",
+        "",
+        "3. CONDITIONING COMPLEMENTARITY",
+        "   - Figure 03 shows if POV + Graph > POV alone or Graph alone",
+        "   - Large difference indicates complementary information",
+        "",
+        "4. ROOM COMPLEXITY",
+        "   - Figure 04 reveals whether models handle complexity uniformly",
+        "   - Larger gap favors architectural decisions targeting that room type",
+        "",
+        "5. METRIC RELATIONSHIPS",
+        "   - Figure 05 shows if optimizing one metric optimizes others",
+        "   - Strong correlations simplify multi-objective optimization",
+        "",
+        "6. DISTRIBUTION CHARACTERISTICS",
+        "   - Figure 07 shows whether task difficulty is consistent",
+        "   - Narrow distributions indicate predictable model behavior",
+        "",
+        "7. QUALITATIVE ASSESSMENT",
+        "   - Figures 08 and A1-A18 provide visual validation",
+        "   - Compare visual quality to metric scores",
+        "   - Identify failure modes in worst-case examples",
+        "",
+        "=" * 100,
+    ])
+    
+    summary_path = output_dir / "RESULTS_SUMMARY.txt"
+    with open(summary_path, "w") as f:
+        f.write("\n".join(summary_lines))
+    
+    print(f"✓ Comprehensive summary saved to: {summary_path}")
+    return summary_path
     """Generate statistical summary."""
     report_lines = [
         "=" * 100,
@@ -1220,10 +1602,13 @@ def main():
         print("\nSTEP 4: Generating appendix figures A1-A18...\n")
         create_appendix_same_samples_per_conditioning(results_dir, appendix_dir, df)
         
-        print("\nSTEP 5: Generating statistical summary...\n")
+        print("\nSTEP 5: Generating comprehensive summary...\n")
+        generate_comprehensive_summary(df, output_root, results_dir)
+        
+        print("STEP 6: Generating statistical summary...\n")
         generate_statistical_summary(df, output_root)
         
-        print("STEP 6: Generating LaTeX snippets...\n")
+        print("STEP 7: Generating LaTeX snippets...\n")
         generate_latex_snippets(df, latex_dir)
         
         csv_path = output_root / "all_samples.csv"
@@ -1235,10 +1620,12 @@ def main():
         print("=" * 100)
         print(f"\nFolder structure ready for Overleaf:")
         print(f"  {output_root}/")
-        print(f"  ├── results_chapter/       (7 figures: statistical analysis + qualitative)")
-        print(f"  ├── appendix/              (18 figures: A1-A18 best/median/worst samples)")
-        print(f"  ├── latex_snippets/        (LaTeX code for inclusion)")
-        print(f"  └── STATISTICAL_SUMMARY.txt")
+        print(f"  ├── results_chapter/          (7 figures: statistical analysis + qualitative)")
+        print(f"  ├── appendix/                 (18 figures: A1-A18 best/median/worst samples)")
+        print(f"  ├── latex_snippets/           (LaTeX code for inclusion)")
+        print(f"  ├── RESULTS_SUMMARY.txt       (Comprehensive summary with figure descriptions)")
+        print(f"  ├── STATISTICAL_SUMMARY.txt   (Raw statistical breakdown)")
+        print(f"  └── all_samples.csv           (Full dataset with all metrics)")
         print(f"\nYou can now:")
         print(f"  1. Copy entire '{output_root.name}' folder")
         print(f"  2. Upload to Overleaf in your project")
