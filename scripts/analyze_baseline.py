@@ -245,7 +245,7 @@ def load_graph_conditioning_text(exp_dir: Path, sample_idx: int) -> Optional[str
     text_file = cond_dir / f"{sample_idx:04d}_text.txt"
     if text_file.exists():
         try:
-            with open(text_file, 'r') as f:
+            with open(text_file, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 # Limit text length for display
                 if len(content) > 200:
@@ -254,6 +254,39 @@ def load_graph_conditioning_text(exp_dir: Path, sample_idx: int) -> Optional[str
         except:
             pass
     return None
+
+
+def format_graph_text_for_display(text: str, max_chars_per_line: int = 40) -> str:
+    """Format graph text to wrap into multiple lines for better square display."""
+    if not text:
+        return text
+    
+    # Split by sentences/periods
+    sentences = [s.strip() for s in text.split('.') if s.strip()]
+    
+    lines = []
+    
+    for sentence in sentences:
+        # If sentence is longer than max, break it by words
+        if len(sentence) > max_chars_per_line:
+            words = sentence.split()
+            current_line = ""
+            for word in words:
+                if len(current_line) + len(word) + 1 <= max_chars_per_line:
+                    if current_line:
+                        current_line += " " + word
+                    else:
+                        current_line = word
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+        else:
+            lines.append(sentence)
+    
+    return "\n".join(lines)
 
 
 def get_best_sample_for_conditioning_group(df: pd.DataFrame, exp_dirs: List[Path], 
@@ -372,7 +405,7 @@ def plot_capacity_scaling(df: pd.DataFrame, output_dir: Path):
     metric_labels = ["Floor IoU", "Presence Accuracy", "Detection F1", "Unified Score"]
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("Capacity Scaling: Small → Medium → Large", 
+    fig.suptitle("Capacity Scaling: Small -> Medium -> Large", 
                  fontsize=15, fontweight="bold", y=0.995)
     
     capacity_order = {"Small": 0, "Medium": 1, "Large": 2}
@@ -710,8 +743,16 @@ def create_qualitative_results(results_dir: Path, output_dir: Path, df: pd.DataF
             continue
         
         # Create grid: top row [Target] [POV/Graph] [Graph Text if Both], bottom 2x3 grid of models
-        fig = plt.figure(figsize=(16, 10))
-        gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.25, wspace=0.15)
+        # Make figure wider for "Both" conditioning to give more space to text input
+        fig_width = 18 if cond == "Both" else 16
+        fig = plt.figure(figsize=(fig_width, 10))
+        
+        # For "Both" conditioning, give more width to the text column
+        if cond == "Both":
+            gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.25, wspace=0.15, 
+                                  width_ratios=[1, 1, 1.2])
+        else:
+            gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.25, wspace=0.15)
         
         # Top row: Target and conditioning inputs
         ax_target = fig.add_subplot(gs[0, 0])
@@ -737,15 +778,16 @@ def create_qualitative_results(results_dir: Path, output_dir: Path, df: pd.DataF
             ax_middle.set_yticks([])
         elif cond == "Graph":
             # Graph text only
-            ax_middle.axis('off')
             if graph_text:
-                ax_middle.text(0.5, 0.5, graph_text, ha="center", va="center", 
-                             fontsize=9, wrap=True, family="monospace",
+                formatted_text = format_graph_text_for_display(graph_text, max_chars_per_line=50)
+                ax_middle.text(0.5, 0.5, formatted_text, ha="center", va="center", 
+                             fontsize=7, wrap=True, family="monospace",
                              bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
                 ax_middle.set_title("Graph\n(Text Input)", fontsize=11, fontweight="bold")
             else:
                 ax_middle.text(0.5, 0.5, "Graph N/A", ha="center", va="center")
                 ax_middle.set_title("Graph", fontsize=11, fontweight="bold")
+            ax_middle.axis('off')
         elif cond == "Both":
             # POV image
             if pov_img:
@@ -760,11 +802,12 @@ def create_qualitative_results(results_dir: Path, output_dir: Path, df: pd.DataF
         # Top-right: Graph text for "Both" conditioning
         ax_right = fig.add_subplot(gs[0, 2])
         if cond == "Both" and graph_text:
-            ax_right.axis('off')
-            ax_right.text(0.5, 0.5, graph_text, ha="center", va="center", 
-                         fontsize=9, wrap=True, family="monospace",
+            formatted_text = format_graph_text_for_display(graph_text, max_chars_per_line=50)
+            ax_right.text(0.5, 0.5, formatted_text, ha="center", va="center", 
+                         fontsize=7, wrap=True, family="monospace",
                          bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
             ax_right.set_title("Graph\n(Text Input)", fontsize=11, fontweight="bold")
+            ax_right.axis('off')
         else:
             ax_right.axis('off')
         
@@ -865,61 +908,74 @@ def create_appendix_same_samples_per_conditioning(results_dir: Path, output_dir:
                 if not model_images:
                     continue
                 
-                # Calculate number of columns
-                n_cols = len(model_images) + 1  # +1 for target
+                # Count condition items and models
+                n_condition_items = 1  # target
                 if pov_img is not None:
-                    n_cols += 1
+                    n_condition_items += 1
                 if graph_text is not None:
-                    n_cols += 1
+                    n_condition_items += 1
                 
-                fig_width = max(16, n_cols * 2.5)
-                fig_height = 3.5
+                n_models = len(model_images)
                 
-                fig, axes = plt.subplots(1, n_cols, figsize=(fig_width, fig_height))
-                if n_cols == 1:
-                    axes = [axes]
+                fig_width = max(14, n_models * 2.5)
+                fig_height = 6.5
+                
+                fig = plt.figure(figsize=(fig_width, fig_height))
+                
+                # Create main 2-row layout (1:1.5 height ratio for top:bottom)
+                gs_main = gridspec.GridSpec(2, 1, figure=fig, hspace=0.4, 
+                                            height_ratios=[1, 1.5])
+                
+                # TOP ROW: Conditions and ground truth
+                gs_top = gridspec.GridSpecFromSubplotSpec(1, n_condition_items, 
+                                                         subplot_spec=gs_main[0], 
+                                                         wspace=0.3)
                 
                 col_idx = 0
                 
                 # Target ground truth floorplan
-                ax = axes[col_idx]
+                ax = fig.add_subplot(gs_top[0, col_idx])
                 if target_img:
                     ax.imshow(target_img)
-                    ax.set_title("Target\n(Ground Truth)", fontsize=8, fontweight="bold", pad=5)
+                    ax.set_title("Target\n(Ground Truth)", fontsize=9, fontweight="bold", pad=5)
                 else:
-                    ax.text(0.5, 0.5, "Target N/A", ha="center", va="center", fontsize=7)
-                    ax.set_title("Target", fontsize=8, fontweight="bold")
+                    ax.text(0.5, 0.5, "Target N/A", ha="center", va="center", fontsize=8)
+                    ax.set_title("Target", fontsize=9, fontweight="bold")
                 ax.set_xticks([])
                 ax.set_yticks([])
                 col_idx += 1
                 
                 # POV input if applicable
                 if pov_img is not None:
-                    ax = axes[col_idx]
+                    ax = fig.add_subplot(gs_top[0, col_idx])
                     ax.imshow(pov_img)
-                    ax.set_title("POV\nInput", fontsize=8, fontweight="bold", pad=5)
+                    ax.set_title("POV\nInput", fontsize=9, fontweight="bold", pad=5)
                     ax.set_xticks([])
                     ax.set_yticks([])
                     col_idx += 1
                 
                 # Graph text if applicable
                 if graph_text is not None:
-                    ax = axes[col_idx]
-                    ax.axis('off')
-                    ax.text(0.5, 0.5, graph_text, ha="center", va="center", 
-                           fontsize=7, wrap=True, family="monospace",
+                    ax = fig.add_subplot(gs_top[0, col_idx])
+                    formatted_text = format_graph_text_for_display(graph_text, max_chars_per_line=50)
+                    ax.text(0.5, 0.5, formatted_text, ha="center", va="center", 
+                           fontsize=6, wrap=True, family="monospace",
                            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
-                    ax.set_title("Graph\nText", fontsize=8, fontweight="bold", pad=5)
+                    ax.set_title("Graph\nText", fontsize=9, fontweight="bold", pad=5)
+                    ax.axis('off')
                     col_idx += 1
                 
-                # Model outputs
-                for img, label in zip(model_images, model_labels):
-                    ax = axes[col_idx]
+                # BOTTOM ROW: Model outputs
+                gs_bottom = gridspec.GridSpecFromSubplotSpec(1, n_models, 
+                                                            subplot_spec=gs_main[1], 
+                                                            wspace=0.25)
+                
+                for idx, (img, label) in enumerate(zip(model_images, model_labels)):
+                    ax = fig.add_subplot(gs_bottom[0, idx])
                     ax.imshow(img)
                     ax.set_title(label, fontsize=9, fontweight="bold", pad=5)
                     ax.set_xticks([])
                     ax.set_yticks([])
-                    col_idx += 1
                 
                 room_label = "Empty" if room_type == "empty" else "Furnished"
                 fig.suptitle(
@@ -927,7 +983,7 @@ def create_appendix_same_samples_per_conditioning(results_dir: Path, output_dir:
                     fontsize=12, fontweight="bold", y=0.98
                 )
                 
-                plt.tight_layout()
+                fig.subplots_adjust(top=0.94)
                 output_path = output_dir / f"A{figure_counter}_{cond}_{room_type}_{rank}_sample{sample_idx:04d}.pdf"
                 plt.savefig(output_path, dpi=150, bbox_inches="tight")
                 print(f"  ✓ A{figure_counter}_{cond}_{room_type}_{rank}_sample{sample_idx:04d}.pdf")
@@ -1022,7 +1078,7 @@ def generate_comprehensive_summary(df: pd.DataFrame, output_dir: Path, results_d
     # Capacity comparison
     summary_lines.extend([
         "",
-        "CAPACITY SCALING (Small → Medium → Large)",
+        "CAPACITY SCALING (Small -> Medium -> Large)",
         "-" * 100,
     ])
     capacity_order = {"Small": 0, "Medium": 1, "Large": 2}
@@ -1116,7 +1172,7 @@ def generate_comprehensive_summary(df: pd.DataFrame, output_dir: Path, results_d
         "    - Shows which architecture family performs better overall",
         "    - Error bars indicate variance across all models of each architecture",
         "",
-        "Figure 02: CAPACITY SCALING (Small → Medium → Large)",
+        "Figure 02: CAPACITY SCALING (Small -> Medium -> Large)",
         "  Type: 2×2 boxplot grid",
         "  Content: Same 4 metrics as Figure 01, but grouped by model capacity",
         "  What it shows:",
@@ -1245,95 +1301,11 @@ def generate_comprehensive_summary(df: pd.DataFrame, output_dir: Path, results_d
     ])
     
     summary_path = output_dir / "RESULTS_SUMMARY.txt"
-    with open(summary_path, "w") as f:
+    with open(summary_path, "w", encoding="utf-8") as f:
         f.write("\n".join(summary_lines))
     
     print(f"✓ Comprehensive summary saved to: {summary_path}")
     return summary_path
-    """Generate statistical summary."""
-    report_lines = [
-        "=" * 100,
-        "BASELINE EVALUATION STATISTICAL SUMMARY",
-        "=" * 100,
-        "",
-        f"Total samples analyzed: {len(df)}",
-        f"Unique experiments: {df['experiment'].nunique()}",
-        "",
-    ]
-    
-    if "is_empty" in df.columns:
-        is_empty = (df["is_empty"].astype(str).str.upper() == "TRUE").sum()
-        report_lines.extend([
-            f"Empty rooms: {is_empty}",
-            f"Furnished rooms: {len(df) - is_empty}",
-            "",
-        ])
-    
-    report_lines.extend([
-        "ARCHITECTURE COMPARISON",
-        "-" * 100,
-    ])
-    for arch in ["DN", "WS"]:
-        arch_df = df[df["architecture"] == arch]
-        if len(arch_df) > 0:
-            report_lines.append(f"\n{arch} ({len(arch_df)} samples):")
-            for metric in ["floor_iou", "presence_accuracy", "detection_f1", "unified_score"]:
-                data = arch_df[metric].dropna()
-                if len(data) > 0:
-                    report_lines.append(f"  {metric:25s}: {data.mean():.4f} ± {data.std():.4f}")
-    
-    report_lines.extend([
-        "",
-        "CAPACITY SCALING",
-        "-" * 100,
-    ])
-    capacity_order = {"Small": 0, "Medium": 1, "Large": 2}
-    for cap in sorted(df["capacity"].dropna().unique(), key=lambda x: capacity_order.get(x, 99)):
-        cap_df = df[df["capacity"] == cap]
-        if len(cap_df) > 0:
-            report_lines.append(f"\n{cap} ({len(cap_df)} samples):")
-            for metric in ["floor_iou", "presence_accuracy", "detection_f1", "unified_score"]:
-                data = cap_df[metric].dropna()
-                if len(data) > 0:
-                    report_lines.append(f"  {metric:25s}: {data.mean():.4f} ± {data.std():.4f}")
-    
-    report_lines.extend([
-        "",
-        "CONDITIONING MODALITY",
-        "-" * 100,
-    ])
-    cond_order = {"POV": 0, "Graph": 1, "Both": 2}
-    for cond in sorted(df["conditioning"].dropna().unique(), key=lambda x: cond_order.get(x, 99)):
-        cond_df = df[df["conditioning"] == cond]
-        if len(cond_df) > 0:
-            report_lines.append(f"\n{cond} ({len(cond_df)} samples):")
-            for metric in ["floor_iou", "presence_accuracy", "detection_f1", "unified_score"]:
-                data = cond_df[metric].dropna()
-                if len(data) > 0:
-                    report_lines.append(f"  {metric:25s}: {data.mean():.4f} ± {data.std():.4f}")
-    
-    report_lines.extend([
-        "",
-        "=" * 100,
-        "TOP PERFORMING CONFIGURATIONS",
-        "-" * 100,
-    ])
-    
-    top_exps = df.groupby("experiment_label")[["floor_iou", "presence_accuracy", 
-                                               "detection_f1", "unified_score"]].mean()
-    top_exps = top_exps.sort_values("unified_score", ascending=False)
-    
-    for i, (exp_label, row) in enumerate(top_exps.head(10).iterrows(), 1):
-        report_lines.append(f"{i:2d}. {exp_label:40s} | Unified: {row['unified_score']:.4f}")
-    
-    report_lines.append("=" * 100)
-    
-    report_path = output_dir / "STATISTICAL_SUMMARY.txt"
-    with open(report_path, "w") as f:
-        f.write("\n".join(report_lines))
-    
-    print("\n" + "\n".join(report_lines))
-    print(f"\n✓ Statistical summary saved to: {report_path}")
 
 
 def generate_latex_snippets(df: pd.DataFrame, output_dir: Path):
@@ -1540,7 +1512,7 @@ def generate_latex_snippets(df: pd.DataFrame, output_dir: Path):
 
     
     latex_path = output_dir / "figures.tex"
-    with open(latex_path, "w") as f:
+    with open(latex_path, "w", encoding="utf-8") as f:
         f.write("\n".join(latex_lines))
     
     print(f"✓ LaTeX snippets saved to: {latex_path}")
