@@ -22,6 +22,7 @@ checkpoints/
 # Ignore large data and output files from version control
 test_dataset/
 evaluation_results/images/
+refinement_results/images/
 old/
 logs/
 outputs/
